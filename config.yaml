@@ -1,0 +1,73 @@
+# config.yaml (修正案)
+
+# -----------------------------------------------------------------------------
+# API認証情報 (実際のキーは .env ファイルを参照する)
+# -----------------------------------------------------------------------------
+api_credentials:
+  jquants:
+    mail_address_env_var: "JQUANTS_MAIL"
+    password_env_var: "JQUANTS_PASSWORD"
+    # refresh_token_env_var: "JQUANTS_REFRESH_TOKEN" # 必要であれば
+  line:
+    channel_access_token_env_var: "LINE_CHANNEL_ACCESS_TOKEN"
+    user_id_env_var: "LINE_USER_ID"
+
+# -----------------------------------------------------------------------------
+# 監視対象の株と、それぞれの分析・通知設定
+# -----------------------------------------------------------------------------
+stocks_to_monitor:
+  - code: "7203"
+    name: "トヨタ自動車"
+    enabled: true
+
+    technical_analysis_params:
+      sma:
+        short_period: 5
+        long_period: 25
+      ema:
+        short_period: 12
+        long_period: 26
+      rsi:
+        period: 14
+      macd:
+        fast_period: 12
+        slow_period: 26
+        signal_period: 9
+      # bollinger_bands:
+      #   period: 20
+      #   std_dev: 2
+
+    # ▼▼▼ インデントを修正 ▼▼▼
+    signal_rules:
+      - rule_name: "テスト用HOLD条件 (常にHOLD)"
+        action: "HOLD"
+        conditions:
+          - "1 == 1" 
+      # - rule_name: "SMAゴールデンクロス (BUY)"
+      #   action: "BUY"
+      #   conditions:
+      #     - "latest['SMA_5'] > latest['SMA_25']"
+      #     - "previous['SMA_5'] <= previous['SMA_25']"
+      #     - "latest['RSI_14'] < 70"
+
+    # ▼▼▼ インデントを修正 ▼▼▼
+    notification_settings:
+      on_buy_signal: true
+      on_sell_signal: true
+      on_hold_signal: true # HOLDでも通知をテストするために true に設定
+
+
+# -----------------------------------------------------------------------------
+# J-Quants API に関する共通設定
+# -----------------------------------------------------------------------------
+jquants_api_settings:
+  data_range_days: 200
+
+# -----------------------------------------------------------------------------
+# ロギング（ログ記録）に関する設定
+# -----------------------------------------------------------------------------
+logging_settings:
+  log_file: "stock_analyzer.log"
+  log_level: "INFO" 
+  # log_max_bytes: 10485760 # 10MB
+  # log_backup_count: 5
