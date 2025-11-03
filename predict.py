@@ -1,73 +1,56 @@
-# main.py (AI予測専用・config_loader使用)
+# main.py (AI予測専用バージョン)
 
 import sys
 import os
 import yaml
+from dotenv import load_dotenv
 import logging
 import pandas as pd
 import time
-import joblib 
+import joblib # ★AIモデル読み込みのため必須
 
 # --- 自作モジュールのインポート ---
-from config_loader import load_config_and_logger # ★共通モジュールをインポート
+from logger_setup import setup_logger, APP_LOGGER_NAME
 from jquants_fetcher import JQuantsFetcher
 from technical_analyzer import calculate_indicators
+# from signal_evaluator import evaluate_signals # ← ルールベースなので不要
 from line_notifier import LineNotifier
 
-# --- ★ 冒頭のグローバルな準備 (ごっそり削除) ---
-# (load_dotenv() や config.yaml 読み込みロジックは
-#  config_loader.py に移動したので、ここでは不要)
+# --- グローバルな準備 (既存のコード) ---
+load_dotenv_success = load_dotenv()
+CONFIG_FILE_PATH = 'config.yaml'
+# ... (ロガー設定のコードはそのまま) ...
+logger = setup_logger(log_level_str='INFO') 
+# ... (config読み込みのコードはそのまま) ...
+# ... (環境変数の解決コードはそのまま) ...
+logger.info("設定ファイルの読み込みと環境変数の解決が完了しました。")
 
 
 if __name__ == "__main__":
-    # ★ 共通モジュールを呼び出して logger と config を取得
-    # (ログファイル名を 'app_main.log' に指定)
-    logger, config = load_config_and_logger(log_file_name='app_main.log')
-
-    if not logger or not config:
-        print("設定ファイルの読み込みに失敗したため、main.py を終了します。")
-        exit()
-        
     logger.info("=== 株価分析・通知システム (AI版) 起動 ===")
 
-    # --- JQuantsFetcher初期化 ---
-    # (config は config_loader が解決済み)
+    # --- JQuantsFetcher初期化 (既存のコード) ---
     jquants_creds = config.get('api_credentials', {}).get('jquants', {})
-    j_mail = jquants_creds.get('mail_address')
-    j_pass = jquants_creds.get('password')
-    
-    fetcher = None
-    if j_mail and j_pass:
-        fetcher = JQuantsFetcher(mail_address=j_mail, password=j_pass)
-    else:
-        logger.critical("J-Quants APIの認証情報が設定されていません。処理を終了します。")
-        exit()
-
+    # ... (fetcher の初期化ロジックはそのまま) ...
+    fetcher = JQuantsFetcher(mail_address=jquants_creds.get('mail_address'), 
+                             password=jquants_creds.get('password'))
     if not fetcher.get_id_token():
         logger.critical("J-Quants認証失敗。処理を終了します。")
         exit()
     logger.info(f"JQuantsFetcher経由でIDトークンを正常に取得/確認しました。")
     
-    # --- LineNotifier初期化 ---
+    # --- LineNotifier初期化 (既存のコード) ---
     line_creds = config.get('api_credentials', {}).get('line', {})
     line_channel_access_token = line_creds.get('channel_access_token')
     line_user_id_to_notify = line_creds.get('user_id')
-    
-    line_notifier_instance = None
-    if line_channel_access_token and line_user_id_to_notify:
-        try:
-            line_notifier_instance = LineNotifier(channel_access_token=line_channel_access_token)
-            logger.info("LineNotifierのインスタンス化に成功しました。")
-        except Exception as e:
-            logger.error(f"LineNotifierの初期化中にエラー: {e}")
-    else:
-        logger.warning("LINEの認証情報が不足しています。")
+    # ... (line_notifier_instance の初期化ロジックはそのまま) ...
+    line_notifier_instance = LineNotifier(channel_access_token=line_channel_access_token)
+    logger.info("LineNotifierのインスタンス化に成功しました。")
 
-
-    # --- ★AIモデルの読み込み (既存のコード) ---
+    # --- ★AIモデルの読み込み (必須) ---
     ai_settings = config.get('ai_prediction_settings', {})
     ai_model = None
-    feature_columns = [] 
+    feature_columns = [] # AIが学習した特徴量リスト
     
     if ai_settings.get('enabled', False):
         model_path = ai_settings.get('model_load_path', 'stock_ai_model.pkl')
@@ -76,7 +59,7 @@ if __name__ == "__main__":
             feature_columns = ai_settings.get('feature_columns', [])
             if not feature_columns:
                  logger.error("configに 'feature_columns' が未設定です。AI予測ができません。")
-                 ai_model = None 
+                 ai_model = None # 特徴量が不明ならモデルを使えない
             else:
                  logger.info(f"AIモデル {model_path} と特徴量リスト({len(feature_columns)}個)を読み込みました。")
         except FileNotFoundError:
@@ -89,16 +72,10 @@ if __name__ == "__main__":
         exit()
             
     # --- メインループ (AI予測専用) ---
-    # (この下は、前回の main.py の回答と全く同じです)
     stocks_to_monitor = config.get('stocks_to_monitor', [])
-    # ... (for stock_info in stocks_to_monitor: ... のループ)
-    # ... (データ取得)
-    # ... (テクニカル指標計算)
-    # ... (AIによるシグナル判定)
-    # ... (LINE通知)
-    # (※前回の回答からそのままコピーしてください)
-    
-    # ↓↓↓ (main.py のループ部分を再掲) ↓↓↓
+    if not stocks_to_monitor:
+        logger.warning("監視対象の銘柄がconfig.yamlに設定されていません。")
+
     for stock_info in stocks_to_monitor:
         if not stock_info.get('enabled', False):
             logger.info(f"銘柄 {stock_info.get('code', 'N/A')} は無効のためスキップします。")
@@ -108,19 +85,23 @@ if __name__ == "__main__":
         stock_name = stock_info.get('name', stock_code)
         logger.info(f"--- 処理開始: {stock_name} ({stock_code}) ---")
 
-        # --- 1. データ取得 ---
+        # --- 1. データ取得 (既存のコード) ---
         jquants_settings = config.get('jquants_api_settings', {})
-        # (日付の決定ロジックはご自身のものを使用してください)
-        data_from_str = "2024-01-01" 
-        data_to_str = "2024-12-31"   
+        data_range_days = jquants_settings.get('data_range_days', 90) # AI予測に必要な最低限の日数を取得
+        
+        # J-Quants APIのデータカバレッジに合わせた日付を指定 (ここは既存のロジックを使用)
+        data_from_str = "2025-02-01" # J-Quantsのデータカバレッジ内の過去日付
+        data_to_str = "2025-02-16"   # J-Quantsのデータカバレッジ内の過去日付
         logger.info(f"データ取得期間: {data_from_str} から {data_to_str}")
         
         df_prices = fetcher.get_daily_stock_prices(stock_code, data_from_str, data_to_str)
         
-        # --- 2. テクニカル指標の計算 ---
+        # --- 2. テクニカル指標の計算 (既存のコード) ---
         df_with_indicators = None
         if df_prices is not None and not df_prices.empty:
             logger.info(f"銘柄 {stock_name}: {len(df_prices)} 件の株価データを取得。")
+            
+            # AIが学習した特徴量を計算するため、train.pyと「同じ」設定を使う
             technical_params = ai_settings.get('technical_analysis_params_for_prediction')
             if not technical_params:
                 logger.error(f"AI予測用の 'technical_analysis_params_for_prediction' がconfig未設定。")
@@ -142,6 +123,8 @@ if __name__ == "__main__":
             continue
 
         logger.info(f"銘柄 {stock_name}: AI予測モードで判定します。")
+        
+        # 予測に使う最新のデータ（一番最後の行）
         latest_data = df_with_indicators.iloc[-1:] 
         
         if latest_data.empty or latest_data[feature_columns].isnull().any().any():
@@ -149,16 +132,21 @@ if __name__ == "__main__":
             signal_details = {"message": "最新データ不備(NaN等)"}
         else:
             try:
+                # AIに予測させる (確率を予測)
+                # [0] = クラス0 (上がらない) の確率, [1] = クラス1 (上がる) の確率
                 prediction_proba = ai_model.predict_proba(latest_data[feature_columns])
-                buy_probability = prediction_proba[0][1] 
-                ai_threshold = stock_info.get('ai_threshold', 0.75)
+                buy_probability = prediction_proba[0][1] # 「上がる」確率
+                
+                # configで「買い」と判断する確率の閾値(しきいち)を指定
+                ai_threshold = stock_info.get('ai_threshold', 0.75) # 75%以上ならBUYなど
                 
                 if buy_probability >= ai_threshold:
                     signal = "BUY"
                     signal_details = {
                         "rule_applied": f"AI予測 (確率 {buy_probability:.2%})",
                         "message": f"AIが {buy_probability:.2%} の確率で「買い」と予測 (閾値: {ai_threshold:.0%})",
-                        "RSI_14": round(latest_data['RSI_14'].iloc[0], 2), # 例
+                        # (通知用に参考指標を追加)
+                        "RSI_14": round(latest_data['RSI_14'].iloc[0], 2),
                     }
                 else:
                     signal = "HOLD"
@@ -171,9 +159,10 @@ if __name__ == "__main__":
                 signal_details = {"message": "AI予測エラー(特徴量不一致)"}
             except Exception as e:
                 logger.error(f"AI予測中に予期せぬエラーが発生: {e}")
+                logger.exception("スタックトレース:")
                 signal_details = {"message": "AI予測エラー"}
 
-        # --- 4. LINE通知 ---
+        # --- 4. LINE通知 (既存のコードをほぼ流用) ---
         notification_settings = stock_info.get('notification_settings', {})
         should_notify = False
         
@@ -182,16 +171,24 @@ if __name__ == "__main__":
         elif signal == "SELL" and notification_settings.get('on_sell_signal', False):
             should_notify = True
         elif signal == "HOLD" and notification_settings.get('on_hold_signal', False):
+            logger.info(f"銘柄 {stock_name}: HOLDシグナルですが、テストのため通知対象とします (on_hold_signal: true)。")
             should_notify = True
         
         if should_notify:
             logger.info(f"銘柄 {stock_name}: シグナル '{signal}' のため、通知処理に進みます。")
-            message_to_send = f"【{signal}シグナル検出(AI)】\n"
+            
+            message_to_send = f"【{signal}シグナル検出(AI)】\n" # AI版と明記
             message_to_send += f"銘柄: {stock_name} ({stock_code})\n"
-            if 'rule_applied' in signal_details: message_to_send += f"判定: {signal_details['rule_applied']}\n"
-            if 'message' in signal_details: message_to_send += f"詳細: {signal_details['message']}\n"
+            if 'rule_applied' in signal_details:
+                message_to_send += f"判定: {signal_details['rule_applied']}\n"
+            if 'message' in signal_details:
+                message_to_send += f"詳細: {signal_details['message']}\n"
 
-            details_for_message = {k: v for k, v in signal_details.items() if k not in ['rule_applied', 'message']}
+            details_for_message = {}
+            for key, value in signal_details.items():
+               if key not in ['rule_applied', 'message']:
+                   details_for_message[key] = value
+            
             if details_for_message:
                 message_to_send += "--- 参考指標 ---\n"
                 for key, value in details_for_message.items():
@@ -204,14 +201,16 @@ if __name__ == "__main__":
             
             if line_notifier_instance and line_user_id_to_notify:
                 send_success = line_notifier_instance.send_push_message(line_user_id_to_notify, message_to_send.strip())
-                if send_success: logger.info(f"銘柄 {stock_name}: LINE通知を送信しました。")
-                else: logger.error(f"銘柄 {stock_name}: LINE通知の送信に失敗しました。")
+                if send_success:
+                    logger.info(f"銘柄 {stock_name}: LINE通知を送信しました。")
+                else:
+                    logger.error(f"銘柄 {stock_name}: LINE通知の送信に失敗しました。")
             else:
                 logger.warning(f"銘柄 {stock_name}: LineNotifier未初期化またはユーザーID未設定のため通知スキップ。")
         else:
              logger.info(f"銘柄 {stock_name}: シグナル '{signal}' は通知対象外(HOLD含む)です。")
 
         logger.info(f"--- 処理終了: {stock_name} ({stock_code}) ---")
-        time.sleep(1) 
+        time.sleep(1) # API負荷軽減
 
     logger.info("=== 全ての銘柄の処理が完了しました ===")
