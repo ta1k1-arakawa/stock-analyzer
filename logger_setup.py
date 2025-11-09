@@ -3,6 +3,7 @@
 import logging
 import logging.handlers
 import sys
+import os
 
 APP_LOGGER_NAME = 'stock_analyzer_app' # アプリケーション共通のロガー名
 
@@ -13,6 +14,15 @@ def setup_logger(
     max_bytes=10*1024*1024,  # 10MB
     backup_count=5
 ):
+    # log/ フォルダが存在しない場合は作成
+    log_dir = 'log'
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+        print(f"ログディレクトリ '{log_dir}' を作成しました。", file=sys.stderr)
+    
+    # log/ フォルダ配下にログファイルを配置
+    full_log_path = os.path.join(log_dir, log_file_path)
+    
     numeric_level = getattr(logging, log_level_str.upper(), None)
     if not isinstance(numeric_level, int):
         # デフォルトレベルを設定するか、エラーを発生させる
@@ -32,7 +42,7 @@ def setup_logger(
 
     try:
         file_handler = logging.handlers.RotatingFileHandler(
-            log_file_path,
+            full_log_path,
             maxBytes=max_bytes,
             backupCount=backup_count,
             encoding='utf-8'
@@ -65,4 +75,4 @@ if __name__ == '__main__':
     )
     logger.debug("これはテスト用のデバッグメッセージです。")
     logger.info("これはテスト用の情報メッセージです。")
-    print(f"テストログは '{test_log_settings['log_file']}' とコンソールに出力されました。")
+    print(f"テストログは 'log/{test_log_settings['log_file']}' とコンソールに出力されました。")

@@ -89,12 +89,16 @@ class JQuantsFetcher:
                 return response if 'response' in locals() and response is not None else None
         return None
 
+    def get_id_token(self):
+        """
+        現在のIDトークンを返します。
+        """
+        return self.id_token
 
     def _authenticate_and_get_id_token(self):
         """
         メールアドレスとパスワードを使用して認証し、IDトークンを取得します。
         """
-
         if not self.mail_address or not self.password:
             logger.error("メールアドレスまたはパスワードが設定されていません。")
             return False
@@ -155,7 +159,7 @@ class JQuantsFetcher:
         """
         指定された銘柄コードと期間の日次株価情報を取得し、Pandas DataFrameで返します。
         """
-        current_id_token = self.get_id_token() # 有効期限チェックと更新を考慮する場合
+        current_id_token = self.get_id_token() 
         if not current_id_token:
             logger.error("IDトークンが利用できません。株価データを取得できません。")
             return None
@@ -168,16 +172,8 @@ class JQuantsFetcher:
         if date_to_str:
             params["to"] = date_to_str
         
-        if not date_from_str or not date_to_str: # J-Quantsでは日付指定がほぼ必須
-            logger.warning("日付範囲(from, to)が指定されていません。API仕様を確認してください。")
-            # デフォルトの日付範囲を設定するか、エラーとするかなどを検討
-            # 例: 今日から30日前までなど (ただしAPIのデータカバレッジによる)
-            # end_date = datetime.today()
-            # start_date = end_date - timedelta(days=30)
-            # params["from"] = start_date.strftime("%Y-%m-%d")
-            # params["to"] = end_date.strftime("%Y-%m-%d")
-            # logger.info(f"日付未指定のため、仮の日付範囲 {params['from']}～{params['to']} を使用します。")
-
+        if not date_from_str or not date_to_str: 
+            logger.warning("日付範囲(from, to)が指定されていません。")
 
         response = self._make_request("GET", self.DAILY_QUOTES_URL, headers=headers, params=params)
 

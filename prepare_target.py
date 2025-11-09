@@ -1,7 +1,6 @@
 import pandas as pd
 import logging
 
-# 既存のロガー名を指定
 logger = logging.getLogger('stock_analyzer_app')
 
 def create_target_variable(df: pd.DataFrame, future_days: int, target_percent: float) -> pd.DataFrame:

@@ -4,6 +4,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score
 import joblib
 import logging
+import matplotlib.pyplot as plt
 
 # --- 自作モジュールのインポート ---
 from config_loader import load_config_and_logger 
@@ -58,7 +59,7 @@ def train_ai_model(logger, config):
         logger.error("configに 'technical_analysis_params' がありません。")
         return
         
-    logger.info("テクニカル指標（特徴量）を計算します...")
+    logger.info("特徴量を計算します...")
     df_features = calculate_indicators(df_prices, technical_params)
 
     # 目的変数の作成 
@@ -70,9 +71,10 @@ def train_ai_model(logger, config):
     # 学習データセットの最終準備 
     feature_columns = train_config.get('feature_columns')
     if not feature_columns:
-        logger.error("configに 'feature_columns' (AIの材料リスト) がありません。")
+        logger.error("configに 'feature_columns'がありません。")
         return
         
+    # 'Target' 列を含めてNaNを削除
     target_column = 'Target'
     df_final_data = df_ready.dropna(subset=feature_columns + [target_column])
 
@@ -81,22 +83,42 @@ def train_ai_model(logger, config):
         return
 
     logger.info(f"最終的な学習データ件数: {len(df_final_data)}")
-    X = df_final_data[feature_columns]
+    x = df_final_data[feature_columns]
     y = df_final_data[target_column]
 
     # データを「学習用」と「テスト用」に分割
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, shuffle=False, random_state=42
+    x_train, x_test, y_train, y_test = train_test_split(
+        x, y, test_size=0.2, shuffle=False
     )
 
     # AI (LightGBM) の学習
     logger.info("LightGBMモデルの学習を開始します...")
     model = lgb.LGBMClassifier(random_state=42, verbose=-1)
-    model.fit(X_train, y_train)
+    model.fit(x_train, y_train)
     logger.info("学習完了。")
 
+    try:
+        logger.info("特徴量の重要度（Feature Importance）を計算・表示します...")
+
+        # 特徴量の重要度を表示
+        feature_names = x_train.columns
+        importances = model.feature_importances_
+        importance_df = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': importances
+        }).sort_values(by='Importance', ascending=False)
+        
+        logger.info("--- 特徴量の重要度 (Top 10) ---")
+        logger.info(f"\n{importance_df.head(10).to_string()}")
+        logger.info("----------------------------------")
+
+    except ImportError:
+        logger.warning("matplotlib がインストールされていないため、特徴量の重要度グラフを保存できません。")
+    except Exception as e:
+        logger.error(f"特徴量の重要度グラフの保存中にエラーが発生しました: {e}")
+
     # モデルの評価
-    y_pred = model.predict(X_test)
+    y_pred = model.predict(x_test)
     accuracy = accuracy_score(y_test, y_pred)
     precision = precision_score(y_test, y_pred, zero_division=0)
     

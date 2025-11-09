@@ -9,7 +9,7 @@ def calculate_indicators(df_ohlcv: pd.DataFrame, analysis_params: dict) -> pd.Da
         logger.warning("入力されたDataFrameがNoneまたは空のため、テクニカル指標は計算できません。")
         return df_ohlcv.copy() if df_ohlcv is not None else pd.DataFrame() 
 
-    df_to_analyze = df_ohlcv.copy() # 元のDataFrameを直接変更しないためにコピー
+    df_to_analyze = df_ohlcv.copy() 
 
     logger.info(f"テクニカル指標の計算を開始します。対象期間: {df_to_analyze.index.min()} から {df_to_analyze.index.max() if not df_to_analyze.empty else 'N/A'}。")
     logger.debug(f"使用する分析パラメータ: {analysis_params}")
@@ -19,7 +19,6 @@ def calculate_indicators(df_ohlcv: pd.DataFrame, analysis_params: dict) -> pd.Da
         if 'sma' in analysis_params and isinstance(analysis_params['sma'], dict):
             sma_p = analysis_params['sma']
             if 'short_period' in sma_p and isinstance(sma_p['short_period'], int):
-                # closeパラメータで終値の列を明示的に指定 (J-Quantsの列名が 'Close' の場合)
                 df_to_analyze.ta.sma(length=sma_p['short_period'], close=df_to_analyze['Close'], append=True, col_names=(f"SMA_{sma_p['short_period']}",))
             if 'long_period' in sma_p and isinstance(sma_p['long_period'], int):
                 df_to_analyze.ta.sma(length=sma_p['long_period'], close=df_to_analyze['Close'], append=True, col_names=(f"SMA_{sma_p['long_period']}",))
@@ -31,7 +30,7 @@ def calculate_indicators(df_ohlcv: pd.DataFrame, analysis_params: dict) -> pd.Da
             if 'period' in rsi_p and isinstance(rsi_p['period'], int):
                 df_to_analyze.ta.rsi(length=rsi_p['period'], close=df_to_analyze['Close'], append=True, col_names=(f"RSI_{rsi_p['period']}",))
             logger.debug("RSIを計算・追加しました。")
-
+            
         # MACD の計算
         if 'macd' in analysis_params and isinstance(analysis_params['macd'], dict):
             macd_p = analysis_params['macd']
@@ -44,22 +43,6 @@ def calculate_indicators(df_ohlcv: pd.DataFrame, analysis_params: dict) -> pd.Da
                     append=True
                 )
             logger.debug("MACDを計算・追加しました。")
-
-        # ボリンジャーバンド の計算
-        if 'bollinger_bands' in analysis_params and isinstance(analysis_params['bollinger_bands'], dict):
-            bb_p = analysis_params['bollinger_bands']
-            if all(k in bb_p for k in ['period', 'std_dev']) and \
-               isinstance(bb_p['period'], int) and isinstance(bb_p['std_dev'], (int, float)):
-                # ボリンジャーバンドも複数の列を生成 (BBL, BBM, BBU, BBB, BBP)
-                df_to_analyze.ta.bbands(
-                    length=bb_p['period'],
-                    std=bb_p['std_dev'],
-                    close=df_to_analyze['Close'],
-                    append=True
-                )
-            logger.debug("ボリンジャーバンドを計算・追加しました。")
-
-        # config.yaml で指定された他のテクニカル指標があれば、同様に if ブロックで追加...
 
         logger.info("テクニカル指標の計算が完了しました。")
 
@@ -112,7 +95,6 @@ if __name__ == '__main__':
         'sma': {'short_period': 5, 'long_period': 10},
         'rsi': {'period': 7},
         'macd': {'fast_period': 6, 'slow_period': 13, 'signal_period': 4}, # 通常より短い期間でテスト
-        'bollinger_bands': {'period': 10, 'std_dev': 1.5}
     }
 
     # 関数呼び出し

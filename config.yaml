@@ -19,10 +19,9 @@ ai_training_settings:
     - 'SMA_5'
     - 'SMA_25'
     - 'RSI_14'
-    - 'MACD_12_26_9'
-    - 'MACDh_12_26_9'
-    - 'MACDs_12_26_9'
-  #テクニカル指標パラメータ
+    - 'MACD_12_26_9' # MACDライン
+    - 'MACDh_12_26_9' # MACDヒストグラム
+    - 'MACDs_12_26_9' # MACDシグナルライン
   technical_analysis_params:
     sma: { short_period: 5, long_period: 25 }
     rsi: { period: 14 }
