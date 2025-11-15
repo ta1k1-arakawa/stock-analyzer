@@ -8,20 +8,13 @@ import pandas as pd
 import time
 import joblib 
 
-# --- 自作モジュールのインポート ---
-from config_loader import load_config_and_logger # ★共通モジュールをインポート
+#　自作モジュールのインポート
+from config_loader import load_config_and_logger 
 from jquants_fetcher import JQuantsFetcher
 from technical_analyzer import calculate_indicators
 from line_notifier import LineNotifier
 
-# --- ★ 冒頭のグローバルな準備 (ごっそり削除) ---
-# (load_dotenv() や config.yaml 読み込みロジックは
-#  config_loader.py に移動したので、ここでは不要)
-
-
 if __name__ == "__main__":
-    # ★ 共通モジュールを呼び出して logger と config を取得
-    # (ログファイル名を 'app_main.log' に指定)
     logger, config = load_config_and_logger(log_file_name='app_main.log')
 
     if not logger or not config:
@@ -30,8 +23,7 @@ if __name__ == "__main__":
         
     logger.info("=== 株価分析・通知システム (AI版) 起動 ===")
 
-    # --- JQuantsFetcher初期化 ---
-    # (config は config_loader が解決済み)
+    #　JQuantsFetcher初期化
     jquants_creds = config.get('api_credentials', {}).get('jquants', {})
     j_mail = jquants_creds.get('mail_address')
     j_pass = jquants_creds.get('password')
@@ -48,7 +40,7 @@ if __name__ == "__main__":
         exit()
     logger.info(f"JQuantsFetcher経由でIDトークンを正常に取得/確認しました。")
     
-    # --- LineNotifier初期化 ---
+    #　LineNotifier初期化
     line_creds = config.get('api_credentials', {}).get('line', {})
     line_channel_access_token = line_creds.get('channel_access_token')
     line_user_id_to_notify = line_creds.get('user_id')
@@ -64,13 +56,13 @@ if __name__ == "__main__":
         logger.warning("LINEの認証情報が不足しています。")
 
 
-    # --- ★AIモデルの読み込み (既存のコード) ---
+    #　AIモデルの読み込み
     ai_settings = config.get('ai_prediction_settings', {})
     ai_model = None
     feature_columns = [] 
     
     if ai_settings.get('enabled', False):
-        model_path = ai_settings.get('model_load_path', 'stock_ai_model.pkl')
+        model_path = ai_settings.get('model_load_path')
         try:
             ai_model = joblib.load(model_path)
             feature_columns = ai_settings.get('feature_columns', [])
@@ -88,17 +80,8 @@ if __name__ == "__main__":
         logger.critical("AIモデルが利用できません。処理を終了します。")
         exit()
             
-    # --- メインループ (AI予測専用) ---
-    # (この下は、前回の main.py の回答と全く同じです)
     stocks_to_monitor = config.get('stocks_to_monitor', [])
-    # ... (for stock_info in stocks_to_monitor: ... のループ)
-    # ... (データ取得)
-    # ... (テクニカル指標計算)
-    # ... (AIによるシグナル判定)
-    # ... (LINE通知)
-    # (※前回の回答からそのままコピーしてください)
-    
-    # ↓↓↓ (main.py のループ部分を再掲) ↓↓↓
+
     for stock_info in stocks_to_monitor:
         if not stock_info.get('enabled', False):
             logger.info(f"銘柄 {stock_info.get('code', 'N/A')} は無効のためスキップします。")
@@ -108,16 +91,15 @@ if __name__ == "__main__":
         stock_name = stock_info.get('name', stock_code)
         logger.info(f"--- 処理開始: {stock_name} ({stock_code}) ---")
 
-        # --- 1. データ取得 ---
+        # データ取得
         jquants_settings = config.get('jquants_api_settings', {})
-        # (日付の決定ロジックはご自身のものを使用してください)
         data_from_str = "2024-01-01" 
         data_to_str = "2024-12-31"   
         logger.info(f"データ取得期間: {data_from_str} から {data_to_str}")
         
         df_prices = fetcher.get_daily_stock_prices(stock_code, data_from_str, data_to_str)
         
-        # --- 2. テクニカル指標の計算 ---
+        # テクニカル指標の計算
         df_with_indicators = None
         if df_prices is not None and not df_prices.empty:
             logger.info(f"銘柄 {stock_name}: {len(df_prices)} 件の株価データを取得。")
@@ -133,7 +115,7 @@ if __name__ == "__main__":
             logger.warning(f"銘柄 {stock_name}: 株価データ取得失敗または空。分析スキップ。")
             continue
 
-        # --- 3. AIによるシグナル判定 ---
+        #　AIによるシグナル判定
         signal = "HOLD" 
         signal_details = {"message": "判定スキップ"}
         
@@ -173,7 +155,7 @@ if __name__ == "__main__":
                 logger.error(f"AI予測中に予期せぬエラーが発生: {e}")
                 signal_details = {"message": "AI予測エラー"}
 
-        # --- 4. LINE通知 ---
+        # LINE通知
         notification_settings = stock_info.get('notification_settings', {})
         should_notify = False
         

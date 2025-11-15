@@ -5,12 +5,12 @@
 # ----------------------------------------------------------------------------- 
 ai_training_settings:
   #銘柄
-  stock_code: "1306"
+  stock_code: "1655"
   #データ取得範囲
   data_from: "2024-01-01"
-  data_to: "2024-12-31"
+  data_to: "2025-08-01"
   #保存ファイル
-  model_save_path: "stock_ai_model_1306.pkl"
+  model_save_path: "stock_ai_model_1329.pkl"
   #予測設定
   future_days: 5
   target_percent: 2.0
@@ -22,10 +22,19 @@ ai_training_settings:
     - 'MACD_12_26_9' # MACDライン
     - 'MACDh_12_26_9' # MACDヒストグラム
     - 'MACDs_12_26_9' # MACDシグナルライン
+    - 'ATR_14'
+    - 'BBU_20_2.0'
+    - 'BBL_20_2.0'
+    - 'BBB_20_2.0'
+    - 'Lag_Close_1'
+    - 'Lag_Close_3'
+    - 'Lag_RSI_1'
   technical_analysis_params:
     sma: { short_period: 5, long_period: 25 }
     rsi: { period: 14 }
     macd: { fast_period: 12, slow_period: 26, signal_period: 9 }
+    atr: { period: 14 }
+    bbands: { length: 20, std: 2 }
 # -----------------------------------------------------------------------------
 # API認証情報 
 # -----------------------------------------------------------------------------
@@ -42,7 +51,7 @@ api_credentials:
 # -----------------------------------------------------------------------------
 ai_prediction_settings:
   enabled: true
-  model_load_path: "stock_ai_model_1306.pkl" 
+  model_load_path: "stock_ai_model_1329.pkl" 
   feature_columns:
     - 'SMA_5'
     - 'SMA_25'
@@ -50,31 +59,30 @@ ai_prediction_settings:
     - 'MACD_12_26_9'
     - 'MACDh_12_26_9'
     - 'MACDs_12_26_9'
+    - 'ATR_14'
+    - 'BBU_20_2.0'
+    - 'BBL_20_2.0'
+    - 'BBB_20_2.0'
+    - 'Lag_Close_1'
+    - 'Lag_Close_3'
+    - 'Lag_RSI_1'
   technical_analysis_params_for_prediction:
     sma: { short_period: 5, long_period: 25 }
     rsi: { period: 14 }
     macd: { fast_period: 12, slow_period: 26, signal_period: 9 }
+    atr: { period: 14 }
+    bbands: { length: 20, std: 2 }
 
 # -----------------------------------------------------------------------------
 # 監視対象
 # -----------------------------------------------------------------------------
 stocks_to_monitor:
-  - name: "TOPIX連動ETF (AI予測)"
-    code: "1306"
+  - name: "iシェアーズ 日経225 ETF (AI予測)"
+    code: "1329"
     enabled: true
     ai_threshold: 0.70  # AIの「買い」確率が70%以上なら通知
         
     notification_settings:
       on_buy_signal: true
-      on_sell_signal: false # AIは "SELL" を予測しない
-      on_hold_signal: false # HOLDは通知しない
-      
-  # (もし別の銘柄を「同じAIモデル」で予測したいなら、ここに追加できます)
-  # - name: "日経平均ETF (AI予測)"
-  #   code: "1321"
-  #   enabled: true
-  #   ai_threshold: 0.75 # 銘柄ごとに閾値を変えることも可能
-  #   notification_settings:
-  #     on_buy_signal: true
-  #     on_sell_signal: false
-  #     on_hold_signal: false
+      on_sell_signal: true
+      on_hold_signal: false
