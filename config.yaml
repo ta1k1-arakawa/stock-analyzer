@@ -5,14 +5,14 @@
 # ----------------------------------------------------------------------------- 
 ai_training_settings:
   #銘柄
-  stock_code: "1655"
+  stock_code: "8306"
   #データ取得範囲
   data_from: "2024-01-01"
   data_to: "2025-08-01"
   #保存ファイル
   model_save_path: "stock_ai_model_1329.pkl"
   #予測設定
-  future_days: 5
+  future_days: 3
   target_percent: 2.0
   #特徴量設定 
   feature_columns:
