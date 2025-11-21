@@ -1,72 +1,49 @@
-# config.yaml
+# =============================================================================
+# 運用・学習 共通設定 (ここを書き換えるだけでOK)
+# =============================================================================
+target_stock:
+  code: "8306"           
+  name: "三菱UFJ"        
 
-# =============================================================================
-# API認証情報
-# =============================================================================
-api_credentials:
-  jquants:
-    mail_address_env_var: "JQUANTS_MAIL"
-    password_env_var: "JQUANTS_PASSWORD"
-  line:
-    channel_access_token_env_var: "LINE_CHANNEL_ACCESS_TOKEN"
-    user_id_env_var: "LINE_USER_ID"
+  # AIの判断基準 
+  ai_params:
+    future_days: 3      # 何日後を予測するか 
+    target_percent: 1.5  # 利益確定ライン(%)
+    threshold: 0.70      # AIの「買い」確信度の閾値 (0.7 = 70%以上で買い)
 
-# =============================================================================
-# 共通設定 
-# =============================================================================
-common_feature_settings:
-  # AIに入力する特徴量のリスト
+  # 使用する特徴量 (正規化したものに変更)
   feature_columns:
-    - 'SMA_5'
-    - 'SMA_25'
+    - 'SMA_5_Rate'       # 乖離率に変更
+    - 'SMA_25_Rate'
     - 'RSI_14'
-    - 'MACD_12_26_9'
-    - 'MACDh_12_26_9'
-    - 'MACDs_12_26_9'
-    - 'ATR_14'
-    - 'BBU_20_2.0'
-    - 'BBL_20_2.0'
-    - 'BBB_20_2.0'
-    - 'Lag_Close_1'
-    - 'Lag_Close_3'
-    - 'Lag_RSI_1'
-
-  # テクニカル指標の計算パラメータ
-  technical_analysis_params:
-    sma: { short_period: 5, long_period: 25 }
-    rsi: { period: 14 }
-    macd: { fast_period: 12, slow_period: 26, signal_period: 9 }
-    atr: { period: 14 }
-    bbands: { length: 20, std: 2 }
+    - 'MACD_Rate'        # 正規化したMACD
+    - 'Change_Rate_1'    # 前日比
+    - 'Change_Rate_3'    # 3日前比
+    - 'Volume_Change_1'  # 出来高変化率
 
 # =============================================================================
-# AI学習用設定 
+# テクニカル指標計算パラメータ
 # =============================================================================
-ai_training_settings:
-  stock_code: "8306"       # 学習に使う銘柄
-  data_from: "2020-01-01"  # 学習期間開始 (過去数年分を推奨)
-  data_to: "2025-08-01"    # 学習期間終了
+technical_analysis_params:
+  sma: { short_period: 5, long_period: 25 }
+  rsi: { period: 14 }
+  macd: { fast_period: 12, slow_period: 26, signal_period: 9 }
+
+# =============================================================================
+# 学習用設定 (期間など)
+# =============================================================================
+training_settings:
+  data_from: "2024-01-01"
+  data_to: "2025-07-31"
   model_save_path: "stock_ai_model.pkl"
-  future_days: 3           # 何日後を予測するか
-  target_percent: 2.0      # 目標利益率(%)
 
 # =============================================================================
-# AI予測用設定 
+# バックテスト用 候補銘柄リスト
 # =============================================================================
-ai_prediction_settings:
-  enabled: true
-  model_load_path: "stock_ai_model.pkl" 
-
-# =============================================================================
-# 監視対象
-# =============================================================================
-stocks_to_monitor:
-  - name: "iシェアーズ 日経225 ETF (AI予測)"
-    code: "1329"
-    enabled: true
-    ai_threshold: 0.70  # AIの「買い」確率が70%以上なら通知
-        
-    notification_settings:
-      on_buy_signal: true
-      on_sell_signal: true
-      on_hold_signal: false
+backtest_candidates:
+  - "1329" # 日経225
+  - "1570" # 日経レバ
+  - "8306" # 三菱UFJ
+  - "7203" # トヨタ
+  - "9984" # SBG
+  - "6758" # ソニーG

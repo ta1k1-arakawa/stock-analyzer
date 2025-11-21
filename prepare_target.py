@@ -5,49 +5,36 @@ logger = logging.getLogger('stock_analyzer_app')
 
 def create_target_variable(df: pd.DataFrame, future_days: int, target_percent: float) -> pd.DataFrame:
     """
-    AIに予測させる「答え（目的変数）」を作成する。
-    3クラス分類: 買い(1) / 売り(-1) / 何もしない(0)
-
-    Args:
-        df (pd.DataFrame): テクニカル指標が計算済みのDataFrame
-        future_days (int): 予測する未来の日数 (例: 5)
-        target_percent (float): 目標とする変動率（取引コスト考慮後の最小利益スレッショルド、例: 2.0）
-
-    Returns:
-        pd.DataFrame: 'Target' 列 (1=買い, -1=売り, 0=何もしない) が追加されたDataFrame
+    AIの正解データを作成する。
+    戦略: 「翌日の始値(Open)」で買い、「N日後の終値(Close)」で売る。
     """
     if df.empty:
-        logger.warning("Target作成: 入力DataFrameが空です。")
         return df
 
-    logger.info(f"AIの「答え」を3クラス分類で作成します (基準: {future_days}営業日後に±{target_percent}%)")
+    df = df.copy()
 
-    # N日後の終値
-    future_price = df['Close'].shift(-future_days)
+    # 1. エントリー価格 = 翌日の始値 (Shift -1)
+    # 今日のデータを見て「明日買おう」と判断するため
+    buy_price = df['Open'].shift(-1)
     
-    # 上昇目標価格 (例: 2%UP)
-    buy_target_price = df['Close'] * (1 + target_percent / 100.0)
+    # 2. エグジット価格 = N日後の終値 (Shift -N)
+    # future_days=1なら「翌日の終値」＝デイトレード的な動き
+    # future_days=3なら「3日後の終値」
+    sell_price = df['Close'].shift(-future_days)
     
-    # 下落目標価格 (例: 2%DOWN)
-    sell_target_price = df['Close'] * (1 - target_percent / 100.0)
+    # 3. 収益率 (%)
+    return_percent = (sell_price - buy_price) / buy_price * 100
     
-    # 3クラスの判定
-    # 買い (1): N日後に目標上昇率を超えた
-    # 売り (-1): N日後に目標下落率を下回った
-    # 何もしない (0): その他
-    df['Target'] = 0  # デフォルトは「何もしない」
-    df.loc[future_price > buy_target_price, 'Target'] = 1   # 買い
-    df.loc[future_price < sell_target_price, 'Target'] = -1  # 売り
+    # 4. 正解ラベル付け (Target)
+    # 目標%を超えたら「買い(1)」、それ以外は「0」
+    df['Target'] = 0
     
-    # Target列をint型に明示的に変換
-    df['Target'] = df['Target'].astype(int)
+    # 未来のデータが存在し、かつ利益目標を超えている場所を 1 にする
+    valid_idx = return_percent.notna()
+    df.loc[valid_idx & (return_percent >= target_percent), 'Target'] = 1
     
-    # 'Target' が計算できない未来の行 (NaN) を削除
-    df_cleaned = df.dropna(subset=['Target'])
+    # 学習に使えない行（未来のデータがない行など）は、
+    # 呼び出し元の train.py や backtest.py で dropna して削除します。
+    # ここでは計算結果をそのまま返します。
     
-    logger.info(f"Target作成完了。計算不能な最新{future_days}日分を除外しました。")
-    logger.info(f"クラス分布 - 買い(1): {(df_cleaned['Target']==1).sum()}, "
-                f"売り(-1): {(df_cleaned['Target']==-1).sum()}, "
-                f"何もしない(0): {(df_cleaned['Target']==0).sum()}")
-    
-    return df_cleaned
+    return df
