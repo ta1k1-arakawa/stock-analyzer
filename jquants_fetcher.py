@@ -6,12 +6,8 @@ import os
 import time # リトライ時の待機のため
 import logging
 from logger_setup import APP_LOGGER_NAME # logger_setup.py からインポート
-from datetime import datetime, timedelta # IDトークンの有効期限管理に使える (今回は簡易版)
+from datetime import datetime, timedelta # IDトークンの有効期限管理に使える
 
-# このモジュール用のロガーを取得 (main.py等で設定された共通ロガーを使う想定)
-# from logger_setup import APP_LOGGER_NAME # APP_LOGGER_NAMEを共通定義からインポートする場合
-# logger = logging.getLogger(APP_LOGGER_NAME)
-# もし上記が別ファイルの場合、以下のように直接指定も可 (ただし、main で設定したロガーと同一名に)
 logger = logging.getLogger('stock_analyzer_app')
 
 
@@ -24,20 +20,19 @@ class JQuantsFetcher:
     TOKEN_AUTH_REFRESH_URL_BASE = "https://api.jquants.com/v1/token/auth_refresh"
     DAILY_QUOTES_URL = "https://api.jquants.com/v1/prices/daily_quotes"
 
-    def __init__(self, mail_address=None, password=None, refresh_token=None, retry_count=3, retry_delay=5):
+    def __init__(self, mail_address=None, password=None, retry_count=3, retry_delay=5):
         """
         JQuantsFetcherを初期化します。
 
         Args:
             mail_address (str, optional): J-Quants APIのメールアドレス。
             password (str, optional): J-Quants APIのパスワード。
-            refresh_token (str, optional): 事前に取得したリフレッシュトークン。推奨。
+            refresh_token (str, optional): 事前に取得したリフレッシュトークン。
             retry_count (int): APIリクエスト失敗時のリトライ回数。
             retry_delay (int): リトライ時の待機時間（秒）。
         """
         self.mail_address = mail_address
         self.password = password
-        self.provided_refresh_token = refresh_token # ユーザーが指定したリフレッシュトークン
         
         self.id_token = None
         self.id_token_expires_at = None # IDトークンの有効期限 (今回は簡易的に未実装)
@@ -46,11 +41,7 @@ class JQuantsFetcher:
         self.retry_delay = retry_delay
 
         # 初期化時にIDトークンを取得試行
-        # 優先順位: 1. 提供されたリフレッシュトークン, 2. メール/パスワード
-        if self.provided_refresh_token:
-            logger.info("提供されたリフレッシュトークンを使用してIDトークンを取得します。")
-            self._refresh_id_token(self.provided_refresh_token)
-        elif self.mail_address and self.password:
+        if self.mail_address and self.password:
             logger.info("メールアドレスとパスワードを使用してIDトークンを取得します。")
             self._authenticate_and_get_id_token()
         else:
@@ -98,8 +89,16 @@ class JQuantsFetcher:
                 return response if 'response' in locals() and response is not None else None
         return None
 
+    def get_id_token(self):
+        """
+        現在のIDトークンを返します。
+        """
+        return self.id_token
 
     def _authenticate_and_get_id_token(self):
+        """
+        メールアドレスとパスワードを使用して認証し、IDトークンを取得します。
+        """
         if not self.mail_address or not self.password:
             logger.error("メールアドレスまたはパスワードが設定されていません。")
             return False
@@ -109,7 +108,7 @@ class JQuantsFetcher:
         
         response_auth = self._make_request("POST", self.TOKEN_AUTH_USER_URL, data=json.dumps(auth_data))
 
-        if response_auth and response_auth.status_code == 200:
+        if response_auth and response_auth.status_code == 200: # 200 = 成功
             try:
                 refresh_token_from_auth = response_auth.json().get("refreshToken")
                 if not refresh_token_from_auth:
@@ -143,7 +142,6 @@ class JQuantsFetcher:
                 new_id_token = response_id.json().get("idToken")
                 if new_id_token:
                     self.id_token = new_id_token
-                    # self.id_token_expires_at = datetime.now() + timedelta(hours=1) # 仮: 1時間有効と想定
                     logger.info("新しいIDトークンの取得・更新に成功しました。")
                     return True
                 else:
@@ -157,27 +155,11 @@ class JQuantsFetcher:
             logger.error(f"IDトークンの更新に失敗しました。ステータス: {status}")
             return False
 
-    def get_id_token(self):
-        """
-        現在のIDトークンを返します。
-        将来的にはここで有効期限チェックと自動更新を行うことができます。
-        """
-        # if self.id_token and self.id_token_expires_at and datetime.now() >= self.id_token_expires_at:
-        #     logger.info("IDトークンが期限切れです。更新を試みます...")
-        #     if self.provided_refresh_token: # ユーザー指定のリフレッシュトークンがあればそれを使う
-        #          self._refresh_id_token(self.provided_refresh_token)
-        #     elif self.mail_address and self.password: # なければメール/パスワード認証から再試行 (非推奨)
-        #          self._authenticate_and_get_id_token()
-        #     else:
-        #          logger.warning("IDトークン更新のための認証情報がありません。")
-
-        return self.id_token
-
     def get_daily_stock_prices(self, stock_code, date_from_str=None, date_to_str=None):
         """
         指定された銘柄コードと期間の日次株価情報を取得し、Pandas DataFrameで返します。
         """
-        current_id_token = self.get_id_token() # 有効期限チェックと更新を考慮する場合
+        current_id_token = self.get_id_token() 
         if not current_id_token:
             logger.error("IDトークンが利用できません。株価データを取得できません。")
             return None
@@ -190,16 +172,8 @@ class JQuantsFetcher:
         if date_to_str:
             params["to"] = date_to_str
         
-        if not date_from_str or not date_to_str: # J-Quantsでは日付指定がほぼ必須
-            logger.warning("日付範囲(from, to)が指定されていません。API仕様を確認してください。")
-            # デフォルトの日付範囲を設定するか、エラーとするかなどを検討
-            # 例: 今日から30日前までなど (ただしAPIのデータカバレッジによる)
-            # end_date = datetime.today()
-            # start_date = end_date - timedelta(days=30)
-            # params["from"] = start_date.strftime("%Y-%m-%d")
-            # params["to"] = end_date.strftime("%Y-%m-%d")
-            # logger.info(f"日付未指定のため、仮の日付範囲 {params['from']}～{params['to']} を使用します。")
-
+        if not date_from_str or not date_to_str: 
+            logger.warning("日付範囲(from, to)が指定されていません。")
 
         response = self._make_request("GET", self.DAILY_QUOTES_URL, headers=headers, params=params)
 
@@ -228,7 +202,7 @@ class JQuantsFetcher:
             return None
 
 
-# --- このモジュールを直接実行した際のテストコード ---
+# このモジュールを直接実行した際のテストコード 
 if __name__ == '__main__':
     # 簡易的なロガー設定 (main.pyで設定されたものを使うのが本番)
     if not logging.getLogger(APP_LOGGER_NAME).hasHandlers(): # main.pyで未設定の場合のみ
@@ -251,14 +225,6 @@ if __name__ == '__main__':
     else:
         # メール/パスワードで初期化
         fetcher = JQuantsFetcher(mail_address=TEST_MAIL_ADDRESS, password=TEST_PASSWORD)
-        
-        # リフレッシュトークンで初期化する場合の例 (上記とどちらかを選択)
-        # if TEST_REFRESH_TOKEN:
-        #     fetcher = JQuantsFetcher(refresh_token=TEST_REFRESH_TOKEN)
-        # else:
-        #    logger.critical(".envファイルに JQUANTS_REFRESH_TOKEN を設定してください。")
-        #    fetcher = None
-
 
         if fetcher and fetcher.get_id_token():
             logger.info(f"テスト用のIDトークン取得成功: {fetcher.get_id_token()[:30]}...") # 長いので一部表示
@@ -266,8 +232,6 @@ if __name__ == '__main__':
             # 株価取得テスト
             target_code = "7203" # トヨタ
             # J-Quants APIのデータカバレッジに合わせた日付を指定してください
-            # 例: 2025年5月14日現在であれば、2025年2月16日以前のデータしか取得できない場合が多いです。
-            # ご自身のプランで取得可能な日付を指定してください。
             date_from = "2025-02-01"
             date_to = "2025-02-10" 
             

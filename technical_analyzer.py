@@ -1,15 +1,32 @@
 import pandas as pd
-import pandas_ta as ta # pandas-ta ライブラリをインポート
+import pandas_ta as ta
 import logging
 
 logger = logging.getLogger('stock_analyzer_app')
 
 def calculate_indicators(df_ohlcv: pd.DataFrame, analysis_params: dict) -> pd.DataFrame:
+    """
+    テクニカル指標を計算してDataFrameに追加します。
+    
+    注意: config.yamlのtechnical_analysis_paramsに以下のパラメータを設定してください:
+    - sma: { short_period: 5, long_period: 25 }
+    - rsi: { period: 14 }
+    - macd: { fast_period: 12, slow_period: 26, signal_period: 9 }
+    - atr: { period: 14 }
+    - bbands: { length: 20, std: 2 }
+    
+    Args:
+        df_ohlcv (pd.DataFrame): OHLCV形式の株価データ
+        analysis_params (dict): テクニカル指標の計算パラメータ
+        
+    Returns:
+        pd.DataFrame: テクニカル指標が追加されたDataFrame
+    """
     if df_ohlcv is None or df_ohlcv.empty:
         logger.warning("入力されたDataFrameがNoneまたは空のため、テクニカル指標は計算できません。")
         return df_ohlcv.copy() if df_ohlcv is not None else pd.DataFrame() 
 
-    df_to_analyze = df_ohlcv.copy() # 元のDataFrameを直接変更しないためにコピー
+    df_to_analyze = df_ohlcv.copy() 
 
     logger.info(f"テクニカル指標の計算を開始します。対象期間: {df_to_analyze.index.min()} から {df_to_analyze.index.max() if not df_to_analyze.empty else 'N/A'}。")
     logger.debug(f"使用する分析パラメータ: {analysis_params}")
@@ -19,7 +36,6 @@ def calculate_indicators(df_ohlcv: pd.DataFrame, analysis_params: dict) -> pd.Da
         if 'sma' in analysis_params and isinstance(analysis_params['sma'], dict):
             sma_p = analysis_params['sma']
             if 'short_period' in sma_p and isinstance(sma_p['short_period'], int):
-                # closeパラメータで終値の列を明示的に指定 (J-Quantsの列名が 'Close' の場合)
                 df_to_analyze.ta.sma(length=sma_p['short_period'], close=df_to_analyze['Close'], append=True, col_names=(f"SMA_{sma_p['short_period']}",))
             if 'long_period' in sma_p and isinstance(sma_p['long_period'], int):
                 df_to_analyze.ta.sma(length=sma_p['long_period'], close=df_to_analyze['Close'], append=True, col_names=(f"SMA_{sma_p['long_period']}",))
@@ -31,7 +47,7 @@ def calculate_indicators(df_ohlcv: pd.DataFrame, analysis_params: dict) -> pd.Da
             if 'period' in rsi_p and isinstance(rsi_p['period'], int):
                 df_to_analyze.ta.rsi(length=rsi_p['period'], close=df_to_analyze['Close'], append=True, col_names=(f"RSI_{rsi_p['period']}",))
             logger.debug("RSIを計算・追加しました。")
-
+            
         # MACD の計算
         if 'macd' in analysis_params and isinstance(analysis_params['macd'], dict):
             macd_p = analysis_params['macd']
@@ -45,39 +61,51 @@ def calculate_indicators(df_ohlcv: pd.DataFrame, analysis_params: dict) -> pd.Da
                 )
             logger.debug("MACDを計算・追加しました。")
 
+        # ATR (Average True Range) の計算
+        if 'atr' in analysis_params and isinstance(analysis_params['atr'], dict):
+            atr_p = analysis_params['atr']
+            if 'period' in atr_p and isinstance(atr_p['period'], int):
+                df_to_analyze.ta.atr(length=atr_p['period'], append=True, col_names=(f"ATR_{atr_p['period']}",))
+            logger.debug("ATRを計算・追加しました。")
+
         # ボリンジャーバンド の計算
-        if 'bollinger_bands' in analysis_params and isinstance(analysis_params['bollinger_bands'], dict):
-            bb_p = analysis_params['bollinger_bands']
-            if all(k in bb_p for k in ['period', 'std_dev']) and \
-               isinstance(bb_p['period'], int) and isinstance(bb_p['std_dev'], (int, float)):
-                # ボリンジャーバンドも複数の列を生成 (BBL, BBM, BBU, BBB, BBP)
+        if 'bbands' in analysis_params and isinstance(analysis_params['bbands'], dict):
+            bb_p = analysis_params['bbands']
+            if 'length' in bb_p and isinstance(bb_p['length'], int) and 'std' in bb_p:
                 df_to_analyze.ta.bbands(
-                    length=bb_p['period'],
-                    std=bb_p['std_dev'],
+                    length=bb_p['length'],
+                    std=bb_p['std'],
                     close=df_to_analyze['Close'],
                     append=True
                 )
             logger.debug("ボリンジャーバンドを計算・追加しました。")
 
-        # config.yaml で指定された他のテクニカル指標があれば、同様に if ブロックで追加...
+        # ラグ特徴量の追加
+        df_to_analyze['Lag_Close_1'] = df_to_analyze['Close'].shift(1)
+        df_to_analyze['Lag_Close_3'] = df_to_analyze['Close'].shift(3)
+        
+        # RSI_14が計算済みの場合のみラグRSIを追加
+        if 'RSI_14' in df_to_analyze.columns:
+            df_to_analyze['Lag_RSI_1'] = df_to_analyze['RSI_14'].shift(1)
+            logger.debug("ラグRSI特徴量を追加しました。")
+        
+        logger.debug("ラグ特徴量（Lag_Close_1, Lag_Close_3）を追加しました。")
 
         logger.info("テクニカル指標の計算が完了しました。")
 
     except AttributeError as e:
-        # .ta アクセサがない、または指定した指標が存在しない場合など
         logger.error(f"テクニカル指標の計算中に属性エラーが発生しました: {e}。pandas-taが正しくインストールされているか、列名が正しいか確認してください。")
         logger.exception("スタックトレース:")
-        return df_ohlcv.copy() # エラー時は元のDataFrameのコピーを返す
+        return df_ohlcv.copy()
     except Exception as e:
         logger.error(f"テクニカル指標の計算中に予期せぬエラーが発生しました: {e}")
         logger.exception("スタックトレース:")
-        return df_ohlcv.copy() # エラー時は元のDataFrameのコピーを返す
+        return df_ohlcv.copy()
 
     return df_to_analyze
 
 # --- このモジュールを単体で実行した際のテストコード ---
 if __name__ == '__main__':
-    # 簡易的なロガー設定 (main.pyで共通ロガーが設定されていれば、ここは不要)
     if not logging.getLogger('stock_analyzer_app').hasHandlers():
         logging.basicConfig(
             level=logging.DEBUG,
@@ -102,17 +130,18 @@ if __name__ == '__main__':
         'Volume':[1000,1100,1200,1300,1400,1500,1600,1700,1800,1900,2000,1950,1850,1750,1650,1550,1450,1350,1250,1150,1050,1200,1350,1550,1750,1800,1600,1500,1700,1900]
     }
     test_df = pd.DataFrame(data)
-    test_df = test_df.set_index('Date') # Date列をインデックスにする (pandas-taが推奨する形式)
+    test_df = test_df.set_index('Date')
 
     logger.info("テスト用DataFrame作成完了:")
     print(test_df.head())
 
-    # テスト用の分析パラメータ (config.yaml の一部を想定)
+    # テスト用の分析パラメータ
     test_analysis_params = {
         'sma': {'short_period': 5, 'long_period': 10},
         'rsi': {'period': 7},
-        'macd': {'fast_period': 6, 'slow_period': 13, 'signal_period': 4}, # 通常より短い期間でテスト
-        'bollinger_bands': {'period': 10, 'std_dev': 1.5}
+        'macd': {'fast_period': 6, 'slow_period': 13, 'signal_period': 4},
+        'atr': {'period': 14},
+        'bbands': {'length': 20, 'std': 2},
     }
 
     # 関数呼び出し
@@ -120,7 +149,7 @@ if __name__ == '__main__':
 
     logger.info("テクニカル指標計算後のDataFrame:")
     if df_with_ta is not None:
-        print(df_with_ta.tail()) # 後ろの方のデータ（指標が計算されているはずの部分）を表示
+        print(df_with_ta.tail())
         print("\n追加された列名:")
         print(df_with_ta.columns)
     else:

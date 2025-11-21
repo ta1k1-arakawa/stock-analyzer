@@ -205,3 +205,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ログファイル (log/ フォルダ内のすべてのファイルを除外、フォルダは残す)
+log/*.log
+log/*.log.*
