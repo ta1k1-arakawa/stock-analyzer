@@ -1,57 +1,21 @@
 # config.yaml
 
-# ----------------------------------------------------------------------------- 
-# AI学習用の設定 
-# ----------------------------------------------------------------------------- 
-ai_training_settings:
-  #銘柄
-  stock_code: "8306"
-  #データ取得範囲
-  data_from: "2024-01-01"
-  data_to: "2025-08-01"
-  #保存ファイル
-  model_save_path: "stock_ai_model_1329.pkl"
-  #予測設定
-  future_days: 3
-  target_percent: 2.0
-  #特徴量設定 
-  feature_columns:
-    - 'SMA_5'
-    - 'SMA_25'
-    - 'RSI_14'
-    - 'MACD_12_26_9' # MACDライン
-    - 'MACDh_12_26_9' # MACDヒストグラム
-    - 'MACDs_12_26_9' # MACDシグナルライン
-    - 'ATR_14'
-    - 'BBU_20_2.0'
-    - 'BBL_20_2.0'
-    - 'BBB_20_2.0'
-    - 'Lag_Close_1'
-    - 'Lag_Close_3'
-    - 'Lag_RSI_1'
-  technical_analysis_params:
-    sma: { short_period: 5, long_period: 25 }
-    rsi: { period: 14 }
-    macd: { fast_period: 12, slow_period: 26, signal_period: 9 }
-    atr: { period: 14 }
-    bbands: { length: 20, std: 2 }
-# -----------------------------------------------------------------------------
-# API認証情報 
-# -----------------------------------------------------------------------------
+# =============================================================================
+# API認証情報
+# =============================================================================
 api_credentials:
   jquants:
     mail_address_env_var: "JQUANTS_MAIL"
     password_env_var: "JQUANTS_PASSWORD"
-
   line:
     channel_access_token_env_var: "LINE_CHANNEL_ACCESS_TOKEN"
     user_id_env_var: "LINE_USER_ID"
-# -----------------------------------------------------------------------------
-# AI予測用の設定
-# -----------------------------------------------------------------------------
-ai_prediction_settings:
-  enabled: true
-  model_load_path: "stock_ai_model_1329.pkl" 
+
+# =============================================================================
+# 共通設定 
+# =============================================================================
+common_feature_settings:
+  # AIに入力する特徴量のリスト
   feature_columns:
     - 'SMA_5'
     - 'SMA_25'
@@ -66,16 +30,36 @@ ai_prediction_settings:
     - 'Lag_Close_1'
     - 'Lag_Close_3'
     - 'Lag_RSI_1'
-  technical_analysis_params_for_prediction:
+
+  # テクニカル指標の計算パラメータ
+  technical_analysis_params:
     sma: { short_period: 5, long_period: 25 }
     rsi: { period: 14 }
     macd: { fast_period: 12, slow_period: 26, signal_period: 9 }
     atr: { period: 14 }
     bbands: { length: 20, std: 2 }
 
-# -----------------------------------------------------------------------------
+# =============================================================================
+# AI学習用設定 
+# =============================================================================
+ai_training_settings:
+  stock_code: "8306"       # 学習に使う銘柄
+  data_from: "2020-01-01"  # 学習期間開始 (過去数年分を推奨)
+  data_to: "2025-08-01"    # 学習期間終了
+  model_save_path: "stock_ai_model.pkl"
+  future_days: 3           # 何日後を予測するか
+  target_percent: 2.0      # 目標利益率(%)
+
+# =============================================================================
+# AI予測用設定 
+# =============================================================================
+ai_prediction_settings:
+  enabled: true
+  model_load_path: "stock_ai_model.pkl" 
+
+# =============================================================================
 # 監視対象
-# -----------------------------------------------------------------------------
+# =============================================================================
 stocks_to_monitor:
   - name: "iシェアーズ 日経225 ETF (AI予測)"
     code: "1329"

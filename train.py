@@ -16,27 +16,28 @@ def train_ai_model(logger, config):
     """ AIモデルの学習を実行し、ファイルに保存する """
     logger.info("=== AIモデル学習プロセス開始 ===")
 
-    # 学習用データの取得
+    # 設定の読み込み
     train_config = config.get('ai_training_settings')
-    if not train_config:
-        logger.critical("config.yaml に 'ai_training_settings' が見つかりません。")
+    common_config = config.get('common_feature_settings') 
+
+    if not train_config or not common_config:
+        logger.critical("config.yaml に必要な設定(ai_training_settings / common_feature_settings)が見つかりません。")
         return
+
+    # 共通設定から特徴量リストとパラメータを取得
+    feature_columns = common_config.get('feature_columns')
+    technical_params = common_config.get('technical_analysis_params')
 
     stock_code = train_config['stock_code']
     data_from = train_config['data_from']
     data_to = train_config['data_to']
     
-    # 認証情報を config から取得 
+    # 認証とデータ取得
     jquants_creds = config.get('api_credentials').get('jquants')
-    j_mail = jquants_creds.get('mail_address')
-    j_pass = jquants_creds.get('password')
+    j_mail = jquants_creds.get('mail_address') or jquants_creds.get('mail_address_env_var') # 環境変数のキー名対応等はload_config側依存だが念のため
+    j_pass = jquants_creds.get('password') or jquants_creds.get('password_env_var')
     
-    fetcher = None
-    if j_mail and j_pass:
-        fetcher = JQuantsFetcher(mail_address=j_mail, password=j_pass)
-    else:
-        logger.critical("J-Quants APIの認証情報が設定されていません。処理を終了します。")
-        return
+    fetcher = JQuantsFetcher(mail_address=j_mail, password=j_pass)
     
     if not fetcher.get_id_token():
         logger.critical("J-Quants認証失敗。学習を中止します。")
@@ -53,12 +54,7 @@ def train_ai_model(logger, config):
         logger.error("データ取得失敗またはデータが空です。学習を中止します。")
         return
 
-    # 特徴量の計算 
-    technical_params = train_config.get('technical_analysis_params')
-    if not technical_params:
-        logger.error("configに 'technical_analysis_params' がありません。")
-        return
-        
+    # 特徴量の計算 (共通設定を使用)
     logger.info("特徴量を計算します...")
     df_features = calculate_indicators(df_prices, technical_params)
 
@@ -69,17 +65,12 @@ def train_ai_model(logger, config):
     df_ready = create_target_variable(df_features, future_days, target_percent)
 
     # 学習データセットの最終準備 
-    feature_columns = train_config.get('feature_columns')
-    if not feature_columns:
-        logger.error("configに 'feature_columns'がありません。")
-        return
-        
-    # 'Target' 列を含めてNaNを削除
     target_column = 'Target'
+    # 特徴量とターゲットにあるNaNを削除
     df_final_data = df_ready.dropna(subset=feature_columns + [target_column])
 
     if df_final_data.empty:
-        logger.error("NaNを削除した結果、学習データが0件になりました。")
+        logger.error("NaNを削除した結果、学習データが0件になりました。期間を広げるか条件を見直してください。")
         return
 
     logger.info(f"最終的な学習データ件数: {len(df_final_data)}")
@@ -97,9 +88,8 @@ def train_ai_model(logger, config):
     model.fit(x_train, y_train)
     logger.info("学習完了。")
 
+    # 特徴量重要度の表示
     try:
-        logger.info("特徴量の重要度を計算・表示します...")
-        # 特徴量の重要度を表示
         feature_names = x_train.columns
         importances = model.feature_importances_
         importance_df = pd.DataFrame({
@@ -109,34 +99,20 @@ def train_ai_model(logger, config):
         
         logger.info("--- 特徴量の重要度 (Top 10) ---")
         logger.info(f"\n{importance_df.head(10).to_string()}")
-        logger.info("----------------------------------")
 
-    except ImportError:
-        logger.warning("matplotlib がインストールされていないため、特徴量の重要度グラフを保存できません。")
     except Exception as e:
-        logger.error(f"特徴量の重要度グラフの保存中にエラーが発生しました: {e}")
+        logger.warning(f"特徴量重要度の表示中にエラー: {e}")
 
-    # モデルの評価（3クラス分類対応）
+    # モデルの評価
     y_pred = model.predict(x_test)
     accuracy = accuracy_score(y_test, y_pred)
-    
-    # 3クラス分類用の評価指標（weighted average）
-    precision_weighted = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-    
-    # クラスごとの適合率（買い=1のみ）
     precision_buy = precision_score(y_test, y_pred, labels=[1], average='micro', zero_division=0)
     
     logger.info(f"--- モデル評価 (テストデータ) ---")
     logger.info(f"正解率 (Accuracy): {accuracy * 100:.2f} %")
-    logger.info(f"適合率 (Weighted): {precision_weighted * 100:.2f} % (←全クラス加重平均)")
-    logger.info(f"適合率 (買いシグナル): {precision_buy * 100:.2f} % (←「買い(1)」予測の精度)")
+    logger.info(f"適合率 (買いシグナル): {precision_buy * 100:.2f} %")
     
-    # クラスごとのサンプル数を表示
-    unique, counts = pd.Series(y_test).value_counts().sort_index().index, pd.Series(y_test).value_counts().sort_index().values
-    logger.info(f"テストデータのクラス分布: 売り(-1)={counts[0] if -1 in unique else 0}, 何もしない(0)={counts[1] if 0 in unique else 0}, 買い(1)={counts[2] if 1 in unique else 0}")
-    logger.info("----------------------------------")
-
-    # 学習済みモデルの保存
+    # モデル保存
     model_filename = train_config.get('model_save_path')
     try:
         joblib.dump(model, model_filename)
@@ -144,12 +120,9 @@ def train_ai_model(logger, config):
     except Exception as e:
         logger.error(f"モデルの保存に失敗しました: {e}")
 
-
 if __name__ == "__main__":
-    # 共通モジュールを呼び出して logger と config を取得
     logger, config = load_config_and_logger(log_file_name='train_ai.log')
-    
     if logger and config:
         train_ai_model(logger, config)
     else:
-        print("設定ファイルの読み込みに失敗したため、train.py を終了します。")
+        print("設定ファイルの読み込みに失敗しました。")

@@ -155,7 +155,7 @@ def run_backtest():
         # 翌日のデータ (実際に売買する価格)
         next_day_row = test_df.iloc[i + 1]
         next_day_open = next_day_row['Open']
-        next_day_close = next_day_row['Close'] # デイトレならここで売る、スイングなら保持ロジックへ
+        next_day_close = next_day_row['Close'] 
 
         action = "STAY"
         
