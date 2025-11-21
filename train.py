@@ -2,6 +2,7 @@ import pandas as pd
 import lightgbm as lgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score
+from datetime import datetime
 import joblib
 import logging
 import os
@@ -9,6 +10,7 @@ import os
 # --- 自作モジュールのインポート ---
 from config_loader import load_config_and_logger 
 from jquants_fetcher import JQuantsFetcher
+from yfinance_fetcher import YFinanceFetcher
 from technical_analyzer import calculate_indicators
 from prepare_target import create_target_variable
 
@@ -28,21 +30,22 @@ def train_ai_model(logger, config):
     
     data_from = training_settings.get('data_from')
     data_to = training_settings.get('data_to')
+
+    if data_to == "auto":
+        data_to = datetime.now().strftime('%Y-%m-%d')
+        logger.info(f"終了日(data_to)を自動で今日の日付({data_to})に設定しました。")
+
     model_save_path = training_settings.get('model_save_path', 'stock_ai_model.pkl')
 
     if not stock_code or not feature_columns:
         logger.critical("config.yaml に target_stock (code, feature_columns) が正しく設定されていません。")
         return
 
+    fetcher = YFinanceFetcher()
     # J-Quants認証
-    j_mail = os.getenv("JQUANTS_MAIL")
-    j_pass = os.getenv("JQUANTS_PASSWORD")
-    
-    fetcher = JQuantsFetcher(mail_address=j_mail, password=j_pass)
-    
-    if not fetcher.get_id_token():
-        logger.critical("J-Quants認証失敗。学習を中止します。")
-        return
+    # j_mail = os.getenv("JQUANTS_MAIL")
+    # j_pass = os.getenv("JQUANTS_PASSWORD")
+    # fetcher = JQuantsFetcher(mail_address=j_mail, password=j_pass)
 
     # データ取得
     logger.info(f"銘柄 {stock_code} の {data_from} から {data_to} までのデータを取得します...")

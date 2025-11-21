@@ -7,9 +7,11 @@ import os
 import yaml
 import numpy as np
 from dotenv import load_dotenv 
+from datetime import datetime
 
 # 自作モジュール
 from jquants_fetcher import JQuantsFetcher
+from yfinance_fetcher import YFinanceFetcher
 from technical_analyzer import calculate_indicators
 from prepare_target import create_target_variable
 
@@ -49,24 +51,16 @@ def run_backtest():
     train_settings = config.get('training_settings')
     DATA_FROM = train_settings.get('data_from')
     DATA_TO = train_settings.get('data_to')
-    
-    # J-Quants認証
-    j_mail = os.getenv("JQUANTS_MAIL")
-    j_pass = os.getenv("JQUANTS_PASSWORD")
-    
-    # 認証情報のデバッグ表示（パスワードは隠す）
-    if not j_mail:
-        logger.error("メールアドレスが設定されていません。config.yaml または .env を確認してください。")
-        return
-    else:
-        print(f"J-Quants User: {j_mail}")
 
-    fetcher = JQuantsFetcher(mail_address=j_mail, password=j_pass)
+    if DATA_TO == "auto":
+        DATA_TO = datetime.now().strftime('%Y-%m-%d')
+        print(f"終了日を自動設定: {DATA_TO}")
     
-    # IDトークン取得エラー時の処理
-    if not fetcher.get_id_token():
-        logger.error("J-Quants認証に失敗しました。メールアドレスとパスワードを確認してください。")
-        return
+    fetcher = YFinanceFetcher()
+    # J-Quants認証
+    # j_mail = os.getenv("JQUANTS_MAIL")
+    # j_pass = os.getenv("JQUANTS_PASSWORD")
+    # fetcher = JQuantsFetcher(mail_address=j_mail, password=j_pass)
 
     print(f"\n=== 銘柄選定バックテスト開始 ({len(candidates)}銘柄) ===")
     print(f"期間: {DATA_FROM} 〜 {DATA_TO}\n")

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 # 自作モジュールのインポート
 from config_loader import load_config_and_logger 
 from jquants_fetcher import JQuantsFetcher
+from yfinance_fetcher import YFinanceFetcher
 from technical_analyzer import calculate_indicators
 from line_notifier import LineNotifier
 
@@ -41,15 +42,11 @@ if __name__ == "__main__":
         logger.critical("config.yaml に 監視対象銘柄(target_stock.code) が設定されていません。")
         exit()
 
-    # API初期化
-    # JQuants
-    j_mail = os.getenv("JQUANTS_MAIL")
-    j_pass = os.getenv("JQUANTS_PASSWORD")
-    
-    fetcher = JQuantsFetcher(mail_address=j_mail, password=j_pass)
-    if not fetcher.get_id_token():
-        logger.critical("J-Quants認証失敗。終了します。")
-        exit()
+    fetcher = YFinanceFetcher()
+    # J-Quants認証
+    # j_mail = os.getenv("JQUANTS_MAIL")
+    # j_pass = os.getenv("JQUANTS_PASSWORD")
+    # fetcher = JQuantsFetcher(mail_address=j_mail, password=j_pass)
     
     # LINE
     line_creds = config.get('api_credentials', {}).get('line', {})
