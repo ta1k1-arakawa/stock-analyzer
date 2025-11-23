@@ -177,10 +177,15 @@ def run_backtest():
             "TotalTrades": trade_count
         })
 
-    # 結果発表
-    print("\n" + "="*60)
+    print("\n" + "-"*60)
     print("   選定結果ランキング (利益順)")
-    print("="*60)
+    print("-"*60)
+    
+    print(f"【AI設定 (config.yaml)】")
+    print(f"  • 予測日数 (future_days) : {future_days}日後")
+    print(f"  • 目標利益 (target_percent): {target_percent}%")
+    print(f"  • 買い閾値 (threshold)     : {threshold}")
+    print("-" * 60)
     
     if results:
         df_res = pd.DataFrame(results)
