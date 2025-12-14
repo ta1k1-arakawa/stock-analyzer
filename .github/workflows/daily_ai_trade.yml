@@ -2,12 +2,15 @@ name: Daily Stock AI Prediction
 
 on:
   # スケジュール実行: 日本時間 16:00 (UTC 7:00)
-  # 月曜〜金曜に実行
   schedule:
     - cron: '0 7 * * 1-5'
   
   # 手動実行ボタン (テスト用)
   workflow_dispatch:
+
+# GitHubの権限設定 (CSVを保存するために必要)
+permissions:
+  contents: write
 
 jobs:
   run-prediction:
@@ -15,30 +18,44 @@ jobs:
     timeout-minutes: 15
     
     steps:
-    # コードを取得
+    # 1. コードを取得
     - name: Checkout code
       uses: actions/checkout@v3
 
-    # Python環境のセットアップ
+    # 2. Python環境のセットアップ
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.12'
 
-    # ライブラリのインストール
+    # 3. ライブラリのインストール
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install pandas lightgbm yfinance pandas-ta joblib scikit-learn pyyaml line-bot-sdk requests python-dotenv
 
-    # AIの学習 (最新データでモデルを作成)
+    # 4. AIの学習
     - name: Train Model
       run: python train.py
 
-    # 予測とLINE通知
+    # 5. 予測とLINE通知
     - name: Predict and Notify
       env:
-        # GitHubのSecretsからLINEの鍵を読み込む
         LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
         LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
       run: python main.py
+
+    # ★重要追加: CSV(成績表)をリポジトリに保存する
+    - name: Commit and Push Trade Log
+      run: |
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "actions@github.com"
+        git add trade_log.csv
+        
+        # 変更がある場合のみコミットしてプッシュ
+        if git diff --cached --quiet; then
+          echo "No changes to trade_log.csv"
+        else
+          git commit -m "Update trade log [skip ci]"
+          git push
+        fi
