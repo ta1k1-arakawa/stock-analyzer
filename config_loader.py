@@ -1,5 +1,3 @@
-# config_loader.py
-
 import sys
 import os
 import yaml

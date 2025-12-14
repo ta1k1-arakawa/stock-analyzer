@@ -1,0 +1,2 @@
+signal_date,stock_code,stock_name,prob,threshold,future_days,status,buy_price,sell_price,profit,profit_rate
+2025-12-12,1579,日経平均ブル2倍,0.33935581010480087,0.55,2,PENDING,0,0,0,0

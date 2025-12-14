@@ -15,6 +15,7 @@ from config_loader import load_config_and_logger
 from yfinance_fetcher import YFinanceFetcher 
 from technical_analyzer import calculate_indicators
 from line_notifier import LineNotifier
+from trade_tracker import TradeTracker
 
 if __name__ == "__main__":
     logger, config = load_config_and_logger(log_file_name='app_main.log')
@@ -118,11 +119,17 @@ if __name__ == "__main__":
                 # 判定と通知
                 msg = ""
                 
+                future_days = ai_params.get('future_days')
+                budget = ai_params.get('budget', 100000)
+                
+                tracker = TradeTracker(filename='trade_log.csv', budget=budget)
+                report_msg = tracker.get_daily_report(stock_code, df_prices)
+
                 # 閾値を超えたら買いシグナル
                 if buy_prob >= ai_threshold:
                     signal = "BUY"
                     stop_loss_price = latest_close * (1 - stop_loss_percent / 100)
-                    
+                    tracker.log_signal(latest_date_str, stock_code, stock_name, buy_prob, ai_threshold, future_days)
                     msg = (
                         f"【AI買いシグナル】\n"
                         f"銘柄: {stock_name} ({stock_code})\n"
@@ -147,6 +154,9 @@ if __name__ == "__main__":
                         f"判定: 今回は見送ります。"
                     )
                     logger.info("判定: HOLD (テスト通知送信)")
+
+                if report_msg:
+                    msg = report_msg + "\n" + msg
 
                 # LINE送信 (BUYでもHOLDでも送る)
                 if line_notifier:
