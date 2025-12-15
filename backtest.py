@@ -146,10 +146,24 @@ def run_backtest():
         for i in range(len(test_df) - 1):
             # AIの確信度が閾値を超えたら「翌日Open」で買う
             if probs[i] >= threshold:
-                # 翌日のデータ参照
-                next_day = test_df.iloc[i+1]
-                entry_price = next_day['Open'] # 翌日始値
-                exit_price = next_day['Close'] # 翌日終値 (デイトレ)
+                # エントリー日（翌日）のインデックス
+                entry_idx = i + 1
+                if entry_idx >= len(test_df):
+                    break
+
+                entry_row = test_df.iloc[entry_idx]
+                entry_price = entry_row['Open'] # エントリー価格
+
+                # 決済日（future_daysの設定に合わせる）
+                # future_days=1 なら当日決済(デイトレ)、2なら翌日決済
+                exit_idx = entry_idx + (future_days - 1)
+
+                if exit_idx < len(test_df):
+                    exit_row = test_df.iloc[exit_idx]
+                    exit_price = exit_row['Close'] # 決済価格
+                else:
+                    # 期間外で決済できない場合はスキップ
+                    continue
                 
                 # 予算内で買えるだけ買う（単利運用）
                 if entry_price > 0:
