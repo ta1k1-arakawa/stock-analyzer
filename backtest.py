@@ -207,18 +207,6 @@ def run_backtest():
         df_res = df_res.sort_values(by="Profit", ascending=False)
         print(df_res.to_string(index=False))
         
-        # 条件に近いものを推薦 (週1.5回以上取引 & 利益プラス)
-        good_candidates = df_res[ (df_res['Trades/Week'] >= 1.5) & (df_res['Profit'] > 0) ]
-        
-        print("\n★ おすすめ銘柄 (週1.5回以上取引 & 利益プラス):")
-        if not good_candidates.empty:
-            best = good_candidates.iloc[0]
-            print(f"銘柄コード: {best['Code']}")
-            print(f"利益: {best['Profit']}円, 勝率: {best['WinRate']}%, 週平均取引: {best['Trades/Week']}回")
-            print(f"-> config.yaml の 'target_stock' > 'code' を '{best['Code']}' に変更して train.py を実行してください。")
-        else:
-            print("条件(週1.5回以上かつプラス)に完全一致する銘柄はありませんでした。")
-            print("利益最優先ならリスト最上位の銘柄を選んでください。")
     else:
         print("テスト結果がありませんでした。候補銘柄やデータ取得期間を確認してください。")
 
