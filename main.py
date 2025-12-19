@@ -79,9 +79,9 @@ if __name__ == "__main__":
 
     # データ取得 
     today = datetime.now()
-    start_date = today - timedelta(days=150) 
+    start_date = today - timedelta(days=365) 
     data_from_str = start_date.strftime('%Y-%m-%d')
-    data_to_str = today.strftime('%Y-%m-%d')
+    data_to_str = (today + timedelta(days=1)).strftime('%Y-%m-%d')
     
     logger.info(f"データ取得期間: {data_from_str} 〜 {data_to_str}")
     
@@ -115,10 +115,14 @@ if __name__ == "__main__":
                 # 最新データの情報
                 latest_close = latest_data['Close'].iloc[0]
                 latest_date_str = latest_data.index[-1].strftime('%Y-%m-%d')
+
+                msg = ""
+                today_str = datetime.now().strftime('%Y-%m-%d')
+                if latest_date_str != today_str:
+                    logger.warning(f"注意: 最新データの日付({latest_date_str})が今日({today_str})ではありません。データ更新前の可能性があります。")
+                    msg = f"⚠️【データ未更新の可能性】\nデータ日付が {latest_date_str} です。\nまだ本日のデータが反映されていない可能性があります。\n\n" + msg
                 
                 # 判定と通知
-                msg = ""
-                
                 future_days = ai_params.get('future_days')
                 budget = ai_params.get('budget', 100000)
                 
