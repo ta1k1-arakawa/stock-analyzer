@@ -1,78 +1,47 @@
-# backtest.py
-import pandas as pd
-import lightgbm as lgb
+# backtest.py — 銘柄選定バックテスト エントリポイント
+
+from __future__ import annotations
+
 import logging
-import sys
-import os
-import yaml
-import numpy as np
-from dotenv import load_dotenv 
 from datetime import datetime
 
-# 自作モジュール
-from jquants_fetcher import JQuantsFetcher
-from yfinance_fetcher import YFinanceFetcher
-from technical_analyzer import calculate_indicators
-from prepare_target import create_target_variable
+import lightgbm as lgb
+import pandas as pd
 
-# ロギング設定
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger('backtest')
+from src import LOGGER_NAME
+from src.analysis import calculate_indicators, create_target_variable, sanitize_ohlcv
+from src.config import load_app
+from src.fetchers.yfinance import YFinanceFetcher
 
-def load_config():
-    if not os.path.exists('config.yaml'):
-        logger.error("config.yaml が見つかりません。")
-        sys.exit(1)
-        
-    with open('config.yaml', 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f)
 
-def run_backtest():
-    load_dotenv()
+def run_backtest() -> None:
+    """全候補銘柄に対してバックテストを実行し、ランキングを表示する。"""
+    config, _ = load_app(log_file="backtest.log")
+    logger = logging.getLogger(LOGGER_NAME)
 
-    config = load_config()
-    
-    # 候補銘柄
-    candidates = config.get('backtest_candidates')
-    
-    # 共通設定
-    # configの構造が変わっても動くように安全に取得
-    target_stock_conf = config.get('target_stock')
-    ai_params = target_stock_conf.get('ai_params')
-    # 必須パラメータがない場合のデフォルト値
-    future_days = ai_params.get('future_days')
-    target_percent = ai_params.get('target_percent')
-    threshold = ai_params.get('threshold')
-    
-    tech_params = config.get('technical_analysis_params')
-    feature_cols = target_stock_conf.get('feature_columns')
-    
+    candidates = config.backtest_candidates
+    ai = config.ai_params
+    feature_cols = config.feature_columns
+
     # 期間
-    train_settings = config.get('training_settings')
-    DATA_FROM = train_settings.get('data_from')
-    DATA_TO = train_settings.get('data_to')
+    data_from = config.training_settings.get("data_from")
+    data_to = config.training_settings.get("data_to")
+    if data_to == "auto":
+        data_to = datetime.now().strftime("%Y-%m-%d")
+        print(f"終了日を自動設定: {data_to}")
 
-    if DATA_TO == "auto":
-        DATA_TO = datetime.now().strftime('%Y-%m-%d')
-        print(f"終了日を自動設定: {DATA_TO}")
-    
     fetcher = YFinanceFetcher()
-    # J-Quants認証
-    # j_mail = os.getenv("JQUANTS_MAIL")
-    # j_pass = os.getenv("JQUANTS_PASSWORD")
-    # fetcher = JQuantsFetcher(mail_address=j_mail, password=j_pass)
 
     print(f"\n=== 銘柄選定バックテスト開始 ({len(candidates)}銘柄) ===")
-    print(f"期間: {DATA_FROM} 〜 {DATA_TO}\n")
+    print(f"期間: {data_from} 〜 {data_to}\n")
 
-    results = []
+    results: list[dict] = []
 
     for code in candidates:
         print(f"Testing: {code}...", end=" ", flush=True)
-        
-        # データ取得
+
         try:
-            df = fetcher.get_daily_stock_prices(str(code), DATA_FROM, DATA_TO)
+            df = fetcher.get_daily_stock_prices(str(code), data_from, data_to)
         except Exception as e:
             print(f"Error: {e}")
             continue
@@ -80,135 +49,105 @@ def run_backtest():
         if df is None or df.empty:
             print("Skip (No Data)")
             continue
-            
-        # 数値変換
-        for c in ['Open', 'High', 'Low', 'Close', 'Volume']:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors='coerce')
 
-        # 特徴量計算
-        df_ta = calculate_indicators(df, tech_params)
-        
-        # ターゲット作成
-        df_model = create_target_variable(df_ta, future_days, target_percent)
-        
-        # 必要な列が存在するかチェック
-        missing_cols = [c for c in feature_cols if c not in df_model.columns]
-        if missing_cols:
-            print(f"Skip (特徴量不足: {missing_cols})")
+        df = sanitize_ohlcv(df)
+
+        # 特徴量計算 → ターゲット作成
+        df_ta = calculate_indicators(df, config.tech_params)
+        df_model = create_target_variable(df_ta, ai.future_days, ai.target_percent)
+
+        # 必要な列チェック
+        missing = [c for c in feature_cols if c not in df_model.columns]
+        if missing:
+            print(f"Skip (特徴量不足: {missing})")
             continue
 
-        # 特徴量の欠損削除
-        df_model = df_model.dropna(subset=feature_cols + ['Target'])
-        
-        if len(df_model) < 50: # データが少なすぎる場合はスキップ
+        df_model = df_model.dropna(subset=feature_cols + ["Target"])
+
+        if len(df_model) < 50:
             print(f"Skip (データ不足: {len(df_model)}件)")
             continue
 
-        # 学習/テスト分割 (時系列で分割: 後半20%をテスト)
+        # 時系列分割 (後半20%をテスト)
         split_idx = int(len(df_model) * 0.8)
         train_df = df_model.iloc[:split_idx]
         test_df = df_model.iloc[split_idx:]
-        
-        # 学習データに正解ラベルが1種類しかない場合は学習不可
-        if len(train_df['Target'].unique()) < 2:
-             print("Skip (学習データのラベルが単一)")
-             continue
+
+        if len(train_df["Target"].unique()) < 2:
+            print("Skip (学習データのラベルが単一)")
+            continue
 
         # 学習
-        # LightGBMの出力を抑制
         model = lgb.LGBMClassifier(random_state=42, verbose=-1, force_col_wise=True)
-        
-        # 特徴量データのみ抽出
-        X_train = train_df[feature_cols]
-        y_train = train_df['Target']
-        
-        model.fit(X_train, y_train)
-        
-        # 予測 & シミュレーション
-        X_test = test_df[feature_cols]
-        # 確率を取得 (クラス1 = 買い の確率)
-        if hasattr(model, "predict_proba"):
-            probs = model.predict_proba(X_test)[:, 1]
-        else:
-            probs = model.predict(X_test) # predictで確率が返る場合
+        model.fit(train_df[feature_cols], train_df["Target"])
 
-        # シミュレーション
-        initial_budget = 300000 
+        # 予測 & シミュレーション
+        probs = (
+            model.predict_proba(test_df[feature_cols])[:, 1]
+            if hasattr(model, "predict_proba")
+            else model.predict(test_df[feature_cols])
+        )
+
+        initial_budget = 300_000
         budget = initial_budget
         trade_count = 0
         wins = 0
-        
-        # テスト期間の日数（営業日）
-        test_days_count = len(test_df)
-        
-        # シミュレーションループ
+
         for i in range(len(test_df) - 1):
-            # AIの確信度が閾値を超えたら「翌日Open」で買う
-            if probs[i] >= threshold:
-                # エントリー日（翌日）のインデックス
+            if probs[i] >= ai.threshold:
                 entry_idx = i + 1
                 if entry_idx >= len(test_df):
                     break
 
-                entry_row = test_df.iloc[entry_idx]
-                entry_price = entry_row['Open'] # エントリー価格
-
-                # 決済日（future_daysの設定に合わせる）
-                # future_days=1 なら当日決済(デイトレ)、2なら翌日決済
-                exit_idx = entry_idx + (future_days - 1)
+                entry_price = test_df.iloc[entry_idx]["Open"]
+                exit_idx = entry_idx + (ai.future_days - 1)
 
                 if exit_idx < len(test_df):
-                    exit_row = test_df.iloc[exit_idx]
-                    exit_price = exit_row['Close'] # 決済価格
+                    exit_price = test_df.iloc[exit_idx]["Close"]
                 else:
-                    # 期間外で決済できない場合はスキップ
                     continue
-                
-                # 予算内で買えるだけ買う（単利運用）
+
                 if entry_price > 0:
                     qty = int(budget / entry_price)
                     if qty > 0:
                         profit = (exit_price - entry_price) * qty
                         budget += profit
                         trade_count += 1
-                        if profit > 0: wins += 1
-        
-        # 評価指標の計算
+                        if profit > 0:
+                            wins += 1
+
+        # 評価指標
         total_profit = budget - initial_budget
         win_rate = (wins / trade_count * 100) if trade_count > 0 else 0
-        # 週平均取引回数 (1週間=5営業日換算)
-        weeks = test_days_count / 5.0
+        weeks = len(test_df) / 5.0
         trades_per_week = trade_count / weeks if weeks > 0 else 0
-        
+
         print(f"完了 -> 利益: {total_profit:+.0f}円, 週取引: {trades_per_week:.1f}回, 勝率: {win_rate:.1f}%")
-        
+
         results.append({
             "Code": code,
             "Profit": int(total_profit),
             "Trades/Week": round(trades_per_week, 1),
             "WinRate": round(win_rate, 1),
-            "TotalTrades": trade_count
+            "TotalTrades": trade_count,
         })
 
-    print("\n" + "-"*60)
+    # ランキング表示
+    print("\n" + "-" * 60)
     print("   選定結果ランキング (利益順)")
-    print("-"*60)
-    
-    print(f"【AI設定 (config.yaml)】")
-    print(f"  • 予測日数 (future_days) : {future_days}日後")
-    print(f"  • 目標利益 (target_percent): {target_percent}%")
-    print(f"  • 買い閾値 (threshold)     : {threshold}")
     print("-" * 60)
-    
+    print("【AI設定 (config.yaml)】")
+    print(f"  • 予測日数 (future_days) : {ai.future_days}日後")
+    print(f"  • 目標利益 (target_percent): {ai.target_percent}%")
+    print(f"  • 買い閾値 (threshold)     : {ai.threshold}")
+    print("-" * 60)
+
     if results:
-        df_res = pd.DataFrame(results)
-        # 利益順に並べ替え
-        df_res = df_res.sort_values(by="Profit", ascending=False)
+        df_res = pd.DataFrame(results).sort_values(by="Profit", ascending=False)
         print(df_res.to_string(index=False))
-        
     else:
         print("テスト結果がありませんでした。候補銘柄やデータ取得期間を確認してください。")
+
 
 if __name__ == "__main__":
     run_backtest()

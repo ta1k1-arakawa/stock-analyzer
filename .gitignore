@@ -209,3 +209,12 @@ __marimo__/
 # ログファイル (log/ フォルダ内のすべてのファイルを除外、フォルダは残す)
 log/*.log
 log/*.log.*
+
+# 生成データ・モデル
+models/*.pkl
+data/*.csv
+!data/.gitkeep
+!models/.gitkeep
+
+# 旧パスの生成物（移行後に残っている場合）
+stock_ai_model.pkl
