@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 
 import lightgbm as lgb
 import pandas as pd
 
-from src import LOGGER_NAME
 from src.analysis import calculate_indicators, create_target_variable, sanitize_ohlcv
 from src.config import load_app
 from src.fetchers.yfinance import YFinanceFetcher
@@ -56,7 +54,6 @@ def _simulate(test_df: pd.DataFrame, probs, threshold: float, future_days: int) 
 def run_backtest() -> None:
     """全候補銘柄×閾値グリッドでバックテストを実行し、最良組み合わせを表示する。"""
     config, _ = load_app(log_file="backtest.log")
-    logger = logging.getLogger(LOGGER_NAME)
 
     candidates = config.backtest_candidates
     ai = config.ai_params
@@ -119,8 +116,14 @@ def run_backtest() -> None:
             print("Skip (学習データのラベルが単一)")
             continue
 
-        # 学習
-        model = lgb.LGBMClassifier(random_state=42, verbose=-1, force_col_wise=True)
+        # 学習（並列処理由来のブレを防ぐため n_jobs=1, deterministic=True）
+        model = lgb.LGBMClassifier(
+            random_state=42,
+            verbose=-1,
+            force_col_wise=True,
+            deterministic=True,
+            n_jobs=1,
+        )
         model.fit(train_df[feature_cols], train_df["Target"])
 
         # ラベル分布（陽性率）
