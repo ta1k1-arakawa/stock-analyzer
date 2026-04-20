@@ -26,7 +26,7 @@ FOLDS = [
 
 def _simulate(test_df: pd.DataFrame, probs, threshold: float, future_days: int) -> tuple[int, int, int]:
     """threshold 条件で期間をシミュレートし、(利益, 取引数, 勝数) を返す。"""
-    initial_budget = 100000
+    initial_budget = 200000
     budget = initial_budget
     trade_count = 0
     wins = 0

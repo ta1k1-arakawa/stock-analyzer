@@ -15,15 +15,15 @@ api_credentials:
 # 運用・学習 共通設定
 # =============================================================================
 target_stock:
-  code: "1570"
-  name: "日経レバ"
+  code: "8306"
+  name: "三菱UFJ"
 
   # AIの判断基準
   ai_params:
-    budget: 100000
+    budget: 200000
     future_days: 2
     target_percent: 0.7
-    threshold: 0.15
+    threshold: 0.1
     stop_loss_percent: 3.0
 
   # 使用する特徴量 
