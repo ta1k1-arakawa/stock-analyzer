@@ -7,23 +7,22 @@ api_credentials:
   jquants:
     mail_address_env_var: "JQUANTS_MAIL"
     password_env_var: "JQUANTS_PASSWORD"
-  line:
-    channel_access_token_env_var: "LINE_CHANNEL_ACCESS_TOKEN"
-    user_id_env_var: "LINE_USER_ID"
+  slack:
+    webhook_url_env_var: "SLACK_WEBHOOK_URL"
 
 # =============================================================================
 # 運用・学習 共通設定
 # =============================================================================
 target_stock:
-  code: "1570"
-  name: "日経レバ"
+  code: "8306"
+  name: "三菱UFJ"
 
   # AIの判断基準
   ai_params:
-    budget: 100000
+    budget: 200000
     future_days: 2
     target_percent: 0.7
-    threshold: 0.15
+    threshold: 0.1
     stop_loss_percent: 3.0
 
   # 使用する特徴量 
