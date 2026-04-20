@@ -7,9 +7,8 @@ api_credentials:
   jquants:
     mail_address_env_var: "JQUANTS_MAIL"
     password_env_var: "JQUANTS_PASSWORD"
-  line:
-    channel_access_token_env_var: "LINE_CHANNEL_ACCESS_TOKEN"
-    user_id_env_var: "LINE_USER_ID"
+  slack:
+    webhook_url_env_var: "SLACK_WEBHOOK_URL"
 
 # =============================================================================
 # 運用・学習 共通設定

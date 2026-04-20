@@ -32,7 +32,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pandas lightgbm yfinance pandas-ta joblib scikit-learn pyyaml line-bot-sdk requests python-dotenv
+        pip install pandas lightgbm yfinance pandas-ta joblib scikit-learn pyyaml requests python-dotenv
 
     # 4. AIの学習
     - name: Train Model
@@ -41,8 +41,7 @@ jobs:
     # 5. 予測とLINE通知
     - name: Predict and Notify
       env:
-        LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-        LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       run: python main.py
 
     # ★重要追加: CSV(成績表)をリポジトリに保存する

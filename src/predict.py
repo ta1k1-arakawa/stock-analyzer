@@ -14,7 +14,7 @@ from src import LOGGER_NAME
 from src.analysis import calculate_indicators, sanitize_ohlcv
 from src.config import AppConfig
 from src.fetchers.yfinance import YFinanceFetcher
-from src.notifier import LineNotifier
+from src.notifier import SlackNotifier
 from src.tracker import TradeTracker
 
 logger = logging.getLogger(LOGGER_NAME)
@@ -48,15 +48,13 @@ def run_prediction(config: AppConfig) -> None:
 
     df_prices = sanitize_ohlcv(df_prices)
 
-    # --- LINE 通知の初期化 ---
-    line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-    line_user_id = os.getenv("LINE_USER_ID")
-
-    line_notifier: LineNotifier | None = None
-    if line_token and line_user_id:
-        line_notifier = LineNotifier(channel_access_token=line_token)
+    # --- 通知チャネルの初期化 ---
+    slack_webhook = os.getenv("SLACK_WEBHOOK_URL")
+    slack_notifier: SlackNotifier | None = None
+    if slack_webhook:
+        slack_notifier = SlackNotifier(webhook_url=slack_webhook)
     else:
-        logger.warning("LINE 設定が見つからないため、通知は行われません。")
+        logger.warning("SLACK_WEBHOOK_URL が設定されていないため、Slack 通知は行われません。")
 
     # --- AI モデルの読み込み ---
     model_path = config.model_path
@@ -136,12 +134,12 @@ def run_prediction(config: AppConfig) -> None:
             full_msg += report_msg + "\n"
         full_msg += msg
 
-        # LINE 送信
-        if line_notifier and line_user_id:
-            line_notifier.send_push_message(line_user_id, full_msg)
-            logger.info("LINE 通知を送信しました。")
+        # Slack 送信
+        if slack_notifier:
+            slack_notifier.send_message(full_msg)
+            logger.info("Slack 通知を送信しました。")
         else:
-            logger.info("LINE 設定がないため通知はスキップしました。")
+            logger.info("Slack 設定がないため通知はスキップしました。")
 
     except Exception as e:
         logger.error("予測プロセス中にエラーが発生: %s", e)
