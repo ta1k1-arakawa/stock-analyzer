@@ -68,7 +68,14 @@ def train_ai_model(config: AppConfig) -> None:
     y = df_final[target_column]
 
     logger.info("LightGBM モデルの学習を開始します...")
-    model = lgb.LGBMClassifier(random_state=42, verbose=-1)
+    # backtest.py と同じ決定性オプションで学習し、再現性を保つ
+    model = lgb.LGBMClassifier(
+        random_state=42,
+        verbose=-1,
+        force_col_wise=True,
+        deterministic=True,
+        n_jobs=1,
+    )
     model.fit(x, y)
     logger.info("学習完了。")
 

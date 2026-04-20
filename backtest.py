@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import lightgbm as lgb
 import pandas as pd
@@ -17,7 +17,7 @@ THRESHOLD_GRID = [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]
 
 def _simulate(test_df: pd.DataFrame, probs, threshold: float, future_days: int) -> tuple[int, int, int]:
     """threshold 条件でテスト期間をシミュレートし、(利益, 取引数, 勝数) を返す。"""
-    initial_budget = 300_000
+    initial_budget = 100000
     budget = initial_budget
     trade_count = 0
     wins = 0
@@ -59,11 +59,12 @@ def run_backtest() -> None:
     ai = config.ai_params
     feature_cols = config.feature_columns
 
-    # 期間
+    # 期間: yfinance の end は exclusive なので +1日して今日の足まで含める
+    # (train.py / predict.py と同じ挙動に揃える)
     data_from = config.training_settings.get("data_from")
     data_to = config.training_settings.get("data_to")
     if data_to == "auto":
-        data_to = datetime.now().strftime("%Y-%m-%d")
+        data_to = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
         print(f"終了日を自動設定: {data_to}")
 
     fetcher = YFinanceFetcher()
