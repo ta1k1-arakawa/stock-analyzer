@@ -3,3 +3,4 @@ log/
 .gihub/
 .claude/
 __pycache__
+.env
