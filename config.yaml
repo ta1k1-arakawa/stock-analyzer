@@ -19,10 +19,10 @@ target_stock:
 
   # AIの判断基準
   ai_params:
-    budget: 200000
+    budget: 300000
     future_days: 2
-    target_percent: 0.7
-    threshold: 0.1
+    target_percent: 1.0
+    threshold: 0.15
     stop_loss_percent: 3.0
 
   # 使用する特徴量 

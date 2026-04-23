@@ -1,4 +1,1 @@
 signal_date,stock_code,stock_name,prob,threshold,future_days,status,buy_price,sell_price,profit,profit_rate2026-04-17,8306,三菱UFJ,0.12011225750248722,0.1,2,PENDING,0,0,0,0
-2026-04-21,8306,三菱UFJ,0.2260809527800985,0.1,2,PENDING,0,0,0,0
-2026-04-22,8306,三菱UFJ,0.20107851938619006,0.1,2,PENDING,0,0,0,0
-2026-04-23,8306,三菱UFJ,0.12639833974154704,0.1,2,PENDING,0,0,0,0
