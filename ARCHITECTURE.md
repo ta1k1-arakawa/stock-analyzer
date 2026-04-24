@@ -11,10 +11,9 @@ LightGBM による日本株の買いシグナル予測と Slack 通知を、GitH
 flowchart LR
     subgraph Batch["① 日次バッチ（GitHub Actions, 平日 16:00 JST）"]
         direction TB
-        Cron[cron: 0 7 * * 1-5]
         Train[train.py]
         Predict[main.py]
-        Cron --> Train --> Predict
+        Train --> Predict
     end
 
     subgraph Local["② ローカル実行（手動）"]
