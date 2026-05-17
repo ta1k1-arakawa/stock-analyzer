@@ -43,6 +43,22 @@ class TradeTracker:
             with open(self.filepath, "w", newline="", encoding="utf-8") as f:
                 csv.writer(f).writerow(self.COLUMNS)
 
+    def _read_log(self) -> pd.DataFrame:
+        """CSV を読み込み、銘柄コードの型と列順を正規化する。"""
+        df = pd.read_csv(self.filepath, encoding="utf-8", dtype={"stock_code": str})
+        for col in self.COLUMNS:
+            if col not in df.columns:
+                df[col] = 0 if col in {"buy_price", "sell_price", "profit", "profit_rate"} else ""
+        df["stock_code"] = df["stock_code"].astype(str)
+        df["status"] = df["status"].astype(str)
+        for col in ("prob", "threshold", "future_days", "buy_price", "sell_price", "profit", "profit_rate"):
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        df["future_days"] = df["future_days"].astype(int)
+        for col in ("buy_price", "sell_price", "profit"):
+            df[col] = df[col].astype(int)
+        df["profit_rate"] = df["profit_rate"].astype(float)
+        return df[self.COLUMNS]
+
     # ------------------------------------------------------------------
     # シグナル記録
     # ------------------------------------------------------------------
@@ -58,7 +74,7 @@ class TradeTracker:
     ) -> None:
         """買いシグナルが出た日に記録する。同日・同銘柄の重複は無視。"""
         if self.filepath.exists():
-            df = pd.read_csv(self.filepath, encoding="utf-8")
+            df = self._read_log()
             if not df.empty:
                 exists = df[(df["signal_date"] == date_str) & (df["stock_code"] == str(code))]
                 if not exists.empty:
@@ -100,7 +116,7 @@ class TradeTracker:
         if not self.filepath.exists():
             return
 
-        df_log = pd.read_csv(self.filepath, encoding="utf-8")
+        df_log = self._read_log()
         if df_log.empty:
             return
 
@@ -142,7 +158,7 @@ class TradeTracker:
     def _get_latest_result_msg(self) -> str | None:
         if not self.filepath.exists():
             return None
-        df = pd.read_csv(self.filepath, encoding="utf-8")
+        df = self._read_log()
         done = df[df["status"] == "DONE"]
         if done.empty:
             return None
@@ -154,7 +170,7 @@ class TradeTracker:
     def _get_summary_msg(self) -> str | None:
         if not self.filepath.exists():
             return None
-        df = pd.read_csv(self.filepath, encoding="utf-8")
+        df = self._read_log()
         done = df[df["status"] == "DONE"]
         if done.empty:
             return None
