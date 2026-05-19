@@ -85,11 +85,11 @@ def run() -> None:
     print("\n" + "-" * 50)
     print("【月末判定基準との照合 (通算ベース)】")
     checks = [
-        ("勝率 ≥ 45%", total_stats["win_rate"] >= WIN_RATE_MIN,
+        ("勝率 >= 45%", total_stats["win_rate"] >= WIN_RATE_MIN,
          f"{total_stats['win_rate']:.1f}%"),
-        ("利益 ≥ -5,000円", total_stats["profit"] >= PROFIT_MIN,
+        ("利益 >= -5,000円", total_stats["profit"] >= PROFIT_MIN,
          _fmt(total_stats["profit"], "円")),
-        ("シグナル数 ≥ 15件", total_stats["n"] >= MIN_SIGNALS,
+        ("シグナル数 >= 15件", total_stats["n"] >= MIN_SIGNALS,
          f"{total_stats['n']}件"),
     ]
     for name, ok, value in checks:

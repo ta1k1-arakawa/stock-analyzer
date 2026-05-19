@@ -28,7 +28,13 @@ class YFinanceFetcher:
         logger.info("yfinance でデータ取得開始: %s (%s 〜 %s)", ticker_symbol, date_from_str, date_to_str)
 
         try:
-            df = yf.download(ticker_symbol, start=date_from_str, end=date_to_str, progress=False)
+            df = yf.download(
+                ticker_symbol,
+                start=date_from_str,
+                end=date_to_str,
+                progress=False,
+                auto_adjust=True,
+            )
 
             if df is None or df.empty:
                 logger.warning("データが見つかりませんでした: %s", ticker_symbol)

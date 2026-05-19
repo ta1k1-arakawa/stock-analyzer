@@ -84,7 +84,7 @@ sequenceDiagram
 | 項目 | 値 | 出所 |
 | --- | --- | --- |
 | 対象銘柄 | 8306 三菱UFJ | [config.yaml:16-19](config.yaml#L16-L19) |
-| 買い閾値 | 確率 ≥ 15% | `ai_params.threshold` |
+| 買い閾値 | 確率 >= 15% | `ai_params.threshold` |
 | 保有期間 | 翌営業日始値で買い、2日後終値で売り | `ai_params.future_days` |
 | 損切り目安 | エントリー -3% | `ai_params.stop_loss_percent` |
 
@@ -97,7 +97,7 @@ flowchart TB
     A[config.yaml<br/>target_stock / feature_columns] --> B[YFinanceFetcher<br/>日次 OHLCV]
     B --> C[sanitize_ohlcv<br/>数値化]
     C --> D[calculate_indicators<br/>SMA/RSI/MACD/BB/ATR/ADX<br/>→ Rate 変換]
-    D --> E[create_target_variable<br/>翌日始値買い → N日後終値売り<br/>≥ target_percent を Target=1]
+    D --> E[create_target_variable<br/>翌日始値買い → N日後終値売り<br/>>= target_percent を Target=1]
     E --> F[dropna<br/>特徴量 11 列 + Target]
     F --> G[LightGBM<br/>LGBMClassifier.fit]
     G --> H[(models/<br/>stock_ai_model.pkl)]
@@ -148,7 +148,7 @@ flowchart LR
     P --> T[通算統計]
     W --> O[コンソール出力]
     T --> O
-    T --> J{月末判定基準<br/>勝率≥45% / 利益≥-5,000円 / ≥15件}
+    T --> J{月末判定基準<br/>勝率>=45% / 利益>=-5,000円 / >=15件}
     J -->|OK| OK[継続条件クリア]
     J -->|NG| NG[要注意]
 ```
