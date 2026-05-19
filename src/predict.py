@@ -99,7 +99,11 @@ def run_prediction(config: AppConfig) -> None:
             )
 
         # トレードトラッカー
-        tracker = TradeTracker(budget=config.ai_params.budget, filepath=config.trade_log_path)
+        tracker = TradeTracker(
+            budget=config.ai_params.budget,
+            filepath=config.trade_log_path,
+            stop_loss_percent=config.ai_params.stop_loss_percent,
+        )
         report_msg = tracker.get_daily_report(config.stock_code, df_prices)
 
         # 判定と通知メッセージ作成
@@ -118,7 +122,15 @@ def run_prediction(config: AppConfig) -> None:
             logger.info("判定: SKIP (データ未更新のためBUY通知・ログ記録なし)")
         elif buy_prob >= ai.threshold:
             stop_loss_price = latest_close * (1 - ai.stop_loss_percent / 100)
-            tracker.log_signal(latest_date_str, config.stock_code, config.stock_name, buy_prob, ai.threshold, ai.future_days)
+            tracker.log_signal(
+                latest_date_str,
+                config.stock_code,
+                config.stock_name,
+                buy_prob,
+                ai.threshold,
+                ai.future_days,
+                ai.stop_loss_percent,
+            )
             msg = (
                 f"【AI買いシグナル】\n"
                 f"銘柄: {config.stock_name} ({config.stock_code})\n"

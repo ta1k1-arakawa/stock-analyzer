@@ -1,1 +1,1 @@
-signal_date,stock_code,stock_name,prob,threshold,future_days,status,buy_price,sell_price,profit,profit_rate
+signal_date,stock_code,stock_name,prob,threshold,future_days,stop_loss_percent,status,buy_price,sell_price,profit,profit_rate,exit_reason

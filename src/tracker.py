@@ -24,34 +24,63 @@ class TradeTracker:
         "prob",
         "threshold",
         "future_days",
+        "stop_loss_percent",
         "status",
         "buy_price",
         "sell_price",
         "profit",
         "profit_rate",
+        "exit_reason",
     ]
 
-    def __init__(self, budget: int, filepath: str | Path = "data/trade_log.csv") -> None:
+    def __init__(
+        self,
+        budget: int,
+        filepath: str | Path = "data/trade_log.csv",
+        stop_loss_percent: float = 0.0,
+    ) -> None:
         self.filepath = Path(filepath)
         self.budget = budget
+        self.stop_loss_percent = stop_loss_percent
         self._init_csv()
 
     def _init_csv(self) -> None:
-        """CSV ファイルが無ければヘッダ付きで作成する。"""
+        """CSV ファイルが無ければ作成し、古い列構成なら補完する。"""
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
         if not self.filepath.exists():
             with open(self.filepath, "w", newline="", encoding="utf-8") as f:
                 csv.writer(f).writerow(self.COLUMNS)
+            return
+
+        existing_columns = list(pd.read_csv(self.filepath, encoding="utf-8", nrows=0).columns)
+        df = self._read_log()
+        if existing_columns != self.COLUMNS:
+            df.to_csv(self.filepath, index=False, encoding="utf-8")
 
     def _read_log(self) -> pd.DataFrame:
         """CSV を読み込み、銘柄コードの型と列順を正規化する。"""
         df = pd.read_csv(self.filepath, encoding="utf-8", dtype={"stock_code": str})
         for col in self.COLUMNS:
             if col not in df.columns:
-                df[col] = 0 if col in {"buy_price", "sell_price", "profit", "profit_rate"} else ""
+                if col == "stop_loss_percent":
+                    df[col] = self.stop_loss_percent
+                elif col in {"buy_price", "sell_price", "profit", "profit_rate"}:
+                    df[col] = 0
+                else:
+                    df[col] = ""
         df["stock_code"] = df["stock_code"].astype(str)
-        df["status"] = df["status"].astype(str)
-        for col in ("prob", "threshold", "future_days", "buy_price", "sell_price", "profit", "profit_rate"):
+        df["status"] = df["status"].fillna("").astype(str)
+        df["exit_reason"] = df["exit_reason"].fillna("").astype(str)
+        for col in (
+            "prob",
+            "threshold",
+            "future_days",
+            "stop_loss_percent",
+            "buy_price",
+            "sell_price",
+            "profit",
+            "profit_rate",
+        ):
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
         df["future_days"] = df["future_days"].astype(int)
         for col in ("buy_price", "sell_price", "profit"):
@@ -71,6 +100,7 @@ class TradeTracker:
         prob: float,
         threshold: float,
         future_days: int,
+        stop_loss_percent: float | None = None,
     ) -> None:
         """買いシグナルが出た日に記録する。同日・同銘柄の重複は無視。"""
         if self.filepath.exists():
@@ -80,7 +110,22 @@ class TradeTracker:
                 if not exists.empty:
                     return
 
-        new_row = [date_str, code, name, prob, threshold, future_days, "PENDING", 0, 0, 0, 0]
+        stop_loss = self.stop_loss_percent if stop_loss_percent is None else stop_loss_percent
+        new_row = [
+            date_str,
+            code,
+            name,
+            prob,
+            threshold,
+            future_days,
+            stop_loss,
+            "PENDING",
+            0,
+            0,
+            0,
+            0,
+            "",
+        ]
         with open(self.filepath, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(new_row)
 
@@ -137,7 +182,18 @@ class TradeTracker:
 
                 if sig_loc + future_days < len(df_daily):
                     buy_price = df_daily.iloc[sig_loc + 1]["Open"]
-                    sell_price = df_daily.iloc[sig_loc + future_days]["Close"]
+                    exit_idx = sig_loc + future_days
+                    sell_price = df_daily.iloc[exit_idx]["Close"]
+                    exit_reason = "TIME"
+                    stop_loss_percent = float(row["stop_loss_percent"])
+
+                    if stop_loss_percent > 0:
+                        stop_price = buy_price * (1 - stop_loss_percent / 100)
+                        for j in range(sig_loc + 1, exit_idx + 1):
+                            if df_daily.iloc[j]["Low"] <= stop_price:
+                                sell_price = stop_price
+                                exit_reason = "STOP"
+                                break
 
                     lots = max(int(self.budget / buy_price), 1)
                     profit = (sell_price - buy_price) * lots
@@ -147,6 +203,7 @@ class TradeTracker:
                     df_log.at[i, "sell_price"] = int(sell_price)
                     df_log.at[i, "profit"] = int(profit)
                     df_log.at[i, "profit_rate"] = round(profit_rate, 2)
+                    df_log.at[i, "exit_reason"] = exit_reason
                     df_log.at[i, "status"] = "DONE"
                     updated = True
             except Exception:
@@ -165,7 +222,8 @@ class TradeTracker:
 
         last = done.iloc[-1]
         icon = "🏆 勝ち" if last["profit"] > 0 else "💀 負け"
-        return f"{last['signal_date']}シグナル → {icon}\n損益: {last['profit']:+.0f}円 ({last['profit_rate']:+.1f}%)"
+        exit_note = "（損切り）" if last["exit_reason"] == "STOP" else ""
+        return f"{last['signal_date']}シグナル → {icon}{exit_note}\n損益: {last['profit']:+.0f}円 ({last['profit_rate']:+.1f}%)"
 
     def _get_summary_msg(self) -> str | None:
         if not self.filepath.exists():
