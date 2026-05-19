@@ -88,13 +88,14 @@ def run_prediction(config: AppConfig) -> None:
 
         # データ日付チェック
         today_str = datetime.now().strftime("%Y-%m-%d")
+        is_latest_data = latest_date_str == today_str
         data_warning = ""
-        if latest_date_str != today_str:
+        if not is_latest_data:
             logger.warning("注意: 最新データの日付(%s)が今日(%s)ではありません。", latest_date_str, today_str)
             data_warning = (
                 f"⚠️【データ未更新の可能性】\n"
                 f"データ日付が {latest_date_str} です。\n"
-                f"まだ本日のデータが反映されていない可能性があります。\n\n"
+                f"まだ本日のデータが反映されていない可能性があるため、売買判定はスキップします。\n\n"
             )
 
         # トレードトラッカー
@@ -103,7 +104,19 @@ def run_prediction(config: AppConfig) -> None:
 
         # 判定と通知メッセージ作成
         ai = config.ai_params
-        if buy_prob >= ai.threshold:
+        if not is_latest_data:
+            msg = (
+                f"【AI予測 (判定スキップ)】\n"
+                f"銘柄: {config.stock_name} ({config.stock_code})\n"
+                f"確信度: {buy_prob:.1%}\n"
+                f"基準: {ai.threshold:.0%}\n"
+                f"現在値: {latest_close:.0f}円\n"
+                f"データ日付: {latest_date_str}\n"
+                f"実行日: {today_str}\n"
+                f"判定: データ未更新のため見送ります。"
+            )
+            logger.info("判定: SKIP (データ未更新のためBUY通知・ログ記録なし)")
+        elif buy_prob >= ai.threshold:
             stop_loss_price = latest_close * (1 - ai.stop_loss_percent / 100)
             tracker.log_signal(latest_date_str, config.stock_code, config.stock_name, buy_prob, ai.threshold, ai.future_days)
             msg = (
