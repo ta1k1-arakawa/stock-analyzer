@@ -45,7 +45,13 @@ def train_ai_model(config: AppConfig) -> None:
     # 正解ラベルの作成
     ai = config.ai_params
     logger.info("正解ラベル作成: %d日後に %.1f%% 上昇なら勝ち(1)", ai.future_days, ai.target_percent)
-    df_ready = create_target_variable(df_ta, ai.future_days, ai.target_percent)
+    df_ready = create_target_variable(
+        df_ta,
+        ai.future_days,
+        ai.target_percent,
+        ai.entry_slippage_percent,
+        ai.exit_slippage_percent,
+    )
 
     # 必要なカラム確認
     missing_cols = [c for c in config.feature_columns if c not in df_ready.columns]

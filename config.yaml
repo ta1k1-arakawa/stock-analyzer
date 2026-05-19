@@ -24,6 +24,10 @@ target_stock:
     target_percent: 1.0
     threshold: 0.15
     stop_loss_percent: 3.0
+    commission_percent: 0.0       # SBI現物のゼロ革命を想定
+    entry_slippage_percent: 0.03  # 翌営業日 寄成買いの約定ズレ見込み
+    exit_slippage_percent: 0.03   # 指定日 引成売りの約定ズレ見込み
+    stop_slippage_percent: 0.10   # 損切り時は逆指値後の約定悪化を厚めに見る
 
   # 使用する特徴量 
   feature_columns:

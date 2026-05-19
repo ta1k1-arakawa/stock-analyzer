@@ -31,6 +31,10 @@ class AIParams:
     target_percent: float = 0.7
     threshold: float = 0.5
     stop_loss_percent: float = 3.0
+    commission_percent: float = 0.0
+    entry_slippage_percent: float = 0.03
+    exit_slippage_percent: float = 0.03
+    stop_slippage_percent: float = 0.10
 
 
 @dataclass
@@ -199,6 +203,10 @@ def load_app(
             target_percent=ai_raw.get("target_percent", 0.7),
             threshold=ai_raw.get("threshold", 0.5),
             stop_loss_percent=ai_raw.get("stop_loss_percent", 3.0),
+            commission_percent=ai_raw.get("commission_percent", 0.0),
+            entry_slippage_percent=ai_raw.get("entry_slippage_percent", 0.03),
+            exit_slippage_percent=ai_raw.get("exit_slippage_percent", 0.03),
+            stop_slippage_percent=ai_raw.get("stop_slippage_percent", 0.10),
         ),
         tech_params=raw.get("technical_analysis_params", {}),
         training_settings=training,

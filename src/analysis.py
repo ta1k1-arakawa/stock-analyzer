@@ -130,6 +130,8 @@ def create_target_variable(
     df: pd.DataFrame,
     future_days: int,
     target_percent: float,
+    entry_slippage_percent: float = 0.0,
+    exit_slippage_percent: float = 0.0,
 ) -> pd.DataFrame:
     """
     AIの正解データを作成する。
@@ -143,10 +145,10 @@ def create_target_variable(
     df = df.copy()
 
     # エントリー価格 = 翌日の始値 (Shift -1)
-    buy_price = df["Open"].shift(-1)
+    buy_price = df["Open"].shift(-1) * (1 + entry_slippage_percent / 100)
 
     # エグジット価格 = N日後の終値 (Shift -N)
-    sell_price = df["Close"].shift(-future_days)
+    sell_price = df["Close"].shift(-future_days) * (1 - exit_slippage_percent / 100)
 
     # 収益率 (%)
     return_percent = (sell_price - buy_price) / buy_price * 100

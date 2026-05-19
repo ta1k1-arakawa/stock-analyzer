@@ -34,6 +34,10 @@ def _simulate(
     threshold: float,
     future_days: int,
     stop_loss_pct: float,
+    entry_slippage_pct: float,
+    exit_slippage_pct: float,
+    stop_slippage_pct: float,
+    commission_pct: float,
 ) -> tuple[int, int, int]:
     """threshold 超の日にエントリ、future_days 以内に stop に触れたら損切り。"""
     budget = BUDGET
@@ -47,26 +51,31 @@ def _simulate(
         if entry_idx >= len(df):
             break
 
-        entry_price = df.iloc[entry_idx]["Open"]
+        exit_idx = entry_idx + future_days - 1
+        if exit_idx >= len(df):
+            break
+
+        entry_price = df.iloc[entry_idx]["Open"] * (1 + entry_slippage_pct / 100)
         if entry_price <= 0:
             continue
 
-        exit_idx = min(entry_idx + future_days - 1, len(df) - 1)
         stop_price = entry_price * (1 - stop_loss_pct / 100)
 
         exit_price = None
         for j in range(entry_idx, exit_idx + 1):
             if df.iloc[j]["Low"] <= stop_price:
-                exit_price = stop_price
+                exit_price = stop_price * (1 - stop_slippage_pct / 100)
                 break
         if exit_price is None:
-            exit_price = df.iloc[exit_idx]["Close"]
+            exit_price = df.iloc[exit_idx]["Close"] * (1 - exit_slippage_pct / 100)
 
         qty = int(budget / entry_price)
         if qty <= 0:
             continue
 
-        profit = (exit_price - entry_price) * qty
+        gross_profit = (exit_price - entry_price) * qty
+        commission = (entry_price + exit_price) * qty * commission_pct / 100
+        profit = gross_profit - commission
         budget += profit
         trades += 1
         if profit > 0:
@@ -89,6 +98,10 @@ def _run_fold(
     labeled_by_tp: dict[float, pd.DataFrame],
     feature_cols: list[str],
     future_days: int,
+    entry_slippage_pct: float,
+    exit_slippage_pct: float,
+    stop_slippage_pct: float,
+    commission_pct: float,
     ratios: tuple[float, float, float],
 ) -> dict | None:
     """1 fold: tp ごとに学習し、val で (tp, stop, thr) 最良を選び test で評価。"""
@@ -117,10 +130,30 @@ def _run_fold(
 
         for sl in STOP_GRID:
             for th in THRESHOLD_GRID:
-                val_profit, _, _ = _simulate(val_df, val_probs, th, future_days, sl)
+                val_profit, _, _ = _simulate(
+                    val_df,
+                    val_probs,
+                    th,
+                    future_days,
+                    sl,
+                    entry_slippage_pct,
+                    exit_slippage_pct,
+                    stop_slippage_pct,
+                    commission_pct,
+                )
                 if val_profit > best_val_profit:
                     best_val_profit = val_profit
-                    t_profit, t_trades, t_wins = _simulate(test_df, test_probs, th, future_days, sl)
+                    t_profit, t_trades, t_wins = _simulate(
+                        test_df,
+                        test_probs,
+                        th,
+                        future_days,
+                        sl,
+                        entry_slippage_pct,
+                        exit_slippage_pct,
+                        stop_slippage_pct,
+                        commission_pct,
+                    )
                     best_test_result = {
                         "tp": tp,
                         "stop": sl,
@@ -150,6 +183,12 @@ def run_backtest() -> None:
     print(f"\n=== Walk-forward グリッドサーチ ({len(candidates)}銘柄 × {len(FOLDS)} folds) ===")
     print(f"期間: {data_from} 〜 {data_to}")
     print(f"future_days: {ai.future_days}日 / budget: {BUDGET:,}円")
+    print(
+        f"コスト前提: 手数料{ai.commission_percent:.3f}% / "
+        f"買い滑り{ai.entry_slippage_percent:.3f}% / "
+        f"売り滑り{ai.exit_slippage_percent:.3f}% / "
+        f"損切り滑り{ai.stop_slippage_percent:.3f}%"
+    )
     print(f"グリッド: tp×{len(TARGET_GRID)} × stop×{len(STOP_GRID)} × thr×{len(THRESHOLD_GRID)} = {total_combos} 組合せ")
     print("各 fold: train で学習 → val で (tp, stop, thr) 選定 → test で評価\n")
 
@@ -175,7 +214,13 @@ def run_backtest() -> None:
         # tp ごとにラベル作成を一度だけ行う
         labeled_by_tp: dict[float, pd.DataFrame] = {}
         for tp in TARGET_GRID:
-            df_labeled = create_target_variable(df_ta, ai.future_days, tp)
+            df_labeled = create_target_variable(
+                df_ta,
+                ai.future_days,
+                tp,
+                ai.entry_slippage_percent,
+                ai.exit_slippage_percent,
+            )
             df_labeled = df_labeled.dropna(subset=feature_cols + ["Target"])
             if len(df_labeled) >= 100:
                 labeled_by_tp[tp] = df_labeled
@@ -186,7 +231,16 @@ def run_backtest() -> None:
 
         fold_results = []
         for fi, ratios in enumerate(FOLDS, 1):
-            result = _run_fold(labeled_by_tp, feature_cols, ai.future_days, ratios)
+            result = _run_fold(
+                labeled_by_tp,
+                feature_cols,
+                ai.future_days,
+                ai.entry_slippage_percent,
+                ai.exit_slippage_percent,
+                ai.stop_slippage_percent,
+                ai.commission_percent,
+                ratios,
+            )
             if result is None:
                 print(f"  Fold{fi}: skip (分割不足)")
                 continue

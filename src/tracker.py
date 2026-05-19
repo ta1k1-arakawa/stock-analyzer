@@ -25,11 +25,20 @@ class TradeTracker:
         "threshold",
         "future_days",
         "stop_loss_percent",
+        "entry_slippage_percent",
+        "exit_slippage_percent",
+        "stop_slippage_percent",
+        "commission_percent",
         "status",
+        "planned_buy_price",
+        "actual_buy_price",
+        "planned_sell_price",
+        "actual_sell_price",
         "buy_price",
         "sell_price",
         "profit",
         "profit_rate",
+        "commission",
         "exit_reason",
     ]
 
@@ -38,10 +47,18 @@ class TradeTracker:
         budget: int,
         filepath: str | Path = "data/trade_log.csv",
         stop_loss_percent: float = 0.0,
+        entry_slippage_percent: float = 0.0,
+        exit_slippage_percent: float = 0.0,
+        stop_slippage_percent: float = 0.0,
+        commission_percent: float = 0.0,
     ) -> None:
         self.filepath = Path(filepath)
         self.budget = budget
         self.stop_loss_percent = stop_loss_percent
+        self.entry_slippage_percent = entry_slippage_percent
+        self.exit_slippage_percent = exit_slippage_percent
+        self.stop_slippage_percent = stop_slippage_percent
+        self.commission_percent = commission_percent
         self._init_csv()
 
     def _init_csv(self) -> None:
@@ -64,7 +81,25 @@ class TradeTracker:
             if col not in df.columns:
                 if col == "stop_loss_percent":
                     df[col] = self.stop_loss_percent
-                elif col in {"buy_price", "sell_price", "profit", "profit_rate"}:
+                elif col == "entry_slippage_percent":
+                    df[col] = self.entry_slippage_percent
+                elif col == "exit_slippage_percent":
+                    df[col] = self.exit_slippage_percent
+                elif col == "stop_slippage_percent":
+                    df[col] = self.stop_slippage_percent
+                elif col == "commission_percent":
+                    df[col] = self.commission_percent
+                elif col in {
+                    "planned_buy_price",
+                    "actual_buy_price",
+                    "planned_sell_price",
+                    "actual_sell_price",
+                    "buy_price",
+                    "sell_price",
+                    "profit",
+                    "profit_rate",
+                    "commission",
+                }:
                     df[col] = 0
                 else:
                     df[col] = ""
@@ -76,16 +111,41 @@ class TradeTracker:
             "threshold",
             "future_days",
             "stop_loss_percent",
+            "entry_slippage_percent",
+            "exit_slippage_percent",
+            "stop_slippage_percent",
+            "commission_percent",
+            "planned_buy_price",
+            "actual_buy_price",
+            "planned_sell_price",
+            "actual_sell_price",
             "buy_price",
             "sell_price",
             "profit",
             "profit_rate",
+            "commission",
         ):
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
         df["future_days"] = df["future_days"].astype(int)
-        for col in ("buy_price", "sell_price", "profit"):
-            df[col] = df[col].astype(int)
-        df["profit_rate"] = df["profit_rate"].astype(float)
+        df["profit"] = df["profit"].astype(int)
+        for col in (
+            "prob",
+            "threshold",
+            "stop_loss_percent",
+            "entry_slippage_percent",
+            "exit_slippage_percent",
+            "stop_slippage_percent",
+            "commission_percent",
+            "planned_buy_price",
+            "actual_buy_price",
+            "planned_sell_price",
+            "actual_sell_price",
+            "buy_price",
+            "sell_price",
+            "profit_rate",
+            "commission",
+        ):
+            df[col] = df[col].astype(float)
         return df[self.COLUMNS]
 
     # ------------------------------------------------------------------
@@ -101,6 +161,10 @@ class TradeTracker:
         threshold: float,
         future_days: int,
         stop_loss_percent: float | None = None,
+        entry_slippage_percent: float | None = None,
+        exit_slippage_percent: float | None = None,
+        stop_slippage_percent: float | None = None,
+        commission_percent: float | None = None,
     ) -> None:
         """買いシグナルが出た日に記録する。同日・同銘柄の重複は無視。"""
         if self.filepath.exists():
@@ -111,6 +175,10 @@ class TradeTracker:
                     return
 
         stop_loss = self.stop_loss_percent if stop_loss_percent is None else stop_loss_percent
+        entry_slippage = self.entry_slippage_percent if entry_slippage_percent is None else entry_slippage_percent
+        exit_slippage = self.exit_slippage_percent if exit_slippage_percent is None else exit_slippage_percent
+        stop_slippage = self.stop_slippage_percent if stop_slippage_percent is None else stop_slippage_percent
+        commission_pct = self.commission_percent if commission_percent is None else commission_percent
         new_row = [
             date_str,
             code,
@@ -119,7 +187,16 @@ class TradeTracker:
             threshold,
             future_days,
             stop_loss,
+            entry_slippage,
+            exit_slippage,
+            stop_slippage,
+            commission_pct,
             "PENDING",
+            0,
+            0,
+            0,
+            0,
+            0,
             0,
             0,
             0,
@@ -181,28 +258,43 @@ class TradeTracker:
                 sig_loc = df_daily.index.get_loc(signal_date)
 
                 if sig_loc + future_days < len(df_daily):
-                    buy_price = df_daily.iloc[sig_loc + 1]["Open"]
+                    planned_buy_price = df_daily.iloc[sig_loc + 1]["Open"]
+                    entry_slippage_percent = float(row["entry_slippage_percent"])
+                    exit_slippage_percent = float(row["exit_slippage_percent"])
+                    stop_slippage_percent = float(row["stop_slippage_percent"])
+                    commission_percent = float(row["commission_percent"])
+
+                    actual_buy_price = planned_buy_price * (1 + entry_slippage_percent / 100)
                     exit_idx = sig_loc + future_days
-                    sell_price = df_daily.iloc[exit_idx]["Close"]
+                    planned_sell_price = df_daily.iloc[exit_idx]["Close"]
+                    actual_sell_price = planned_sell_price * (1 - exit_slippage_percent / 100)
                     exit_reason = "TIME"
                     stop_loss_percent = float(row["stop_loss_percent"])
 
                     if stop_loss_percent > 0:
-                        stop_price = buy_price * (1 - stop_loss_percent / 100)
+                        stop_price = actual_buy_price * (1 - stop_loss_percent / 100)
                         for j in range(sig_loc + 1, exit_idx + 1):
                             if df_daily.iloc[j]["Low"] <= stop_price:
-                                sell_price = stop_price
+                                planned_sell_price = stop_price
+                                actual_sell_price = stop_price * (1 - stop_slippage_percent / 100)
                                 exit_reason = "STOP"
                                 break
 
-                    lots = max(int(self.budget / buy_price), 1)
-                    profit = (sell_price - buy_price) * lots
-                    profit_rate = (profit / (buy_price * lots)) * 100
+                    lots = max(int(self.budget / actual_buy_price), 1)
+                    gross_profit = (actual_sell_price - actual_buy_price) * lots
+                    commission = (actual_buy_price + actual_sell_price) * lots * commission_percent / 100
+                    profit = gross_profit - commission
+                    profit_rate = (profit / (actual_buy_price * lots)) * 100
 
-                    df_log.at[i, "buy_price"] = int(buy_price)
-                    df_log.at[i, "sell_price"] = int(sell_price)
+                    df_log.at[i, "planned_buy_price"] = round(float(planned_buy_price), 2)
+                    df_log.at[i, "actual_buy_price"] = round(float(actual_buy_price), 2)
+                    df_log.at[i, "planned_sell_price"] = round(float(planned_sell_price), 2)
+                    df_log.at[i, "actual_sell_price"] = round(float(actual_sell_price), 2)
+                    df_log.at[i, "buy_price"] = round(float(actual_buy_price), 2)
+                    df_log.at[i, "sell_price"] = round(float(actual_sell_price), 2)
                     df_log.at[i, "profit"] = int(profit)
                     df_log.at[i, "profit_rate"] = round(profit_rate, 2)
+                    df_log.at[i, "commission"] = round(float(commission), 2)
                     df_log.at[i, "exit_reason"] = exit_reason
                     df_log.at[i, "status"] = "DONE"
                     updated = True

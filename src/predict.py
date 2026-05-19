@@ -103,6 +103,10 @@ def run_prediction(config: AppConfig) -> None:
             budget=config.ai_params.budget,
             filepath=config.trade_log_path,
             stop_loss_percent=config.ai_params.stop_loss_percent,
+            entry_slippage_percent=config.ai_params.entry_slippage_percent,
+            exit_slippage_percent=config.ai_params.exit_slippage_percent,
+            stop_slippage_percent=config.ai_params.stop_slippage_percent,
+            commission_percent=config.ai_params.commission_percent,
         )
         report_msg = tracker.get_daily_report(config.stock_code, df_prices)
 
@@ -130,6 +134,10 @@ def run_prediction(config: AppConfig) -> None:
                 ai.threshold,
                 ai.future_days,
                 ai.stop_loss_percent,
+                ai.entry_slippage_percent,
+                ai.exit_slippage_percent,
+                ai.stop_slippage_percent,
+                ai.commission_percent,
             )
             msg = (
                 f"【AI買いシグナル】\n"
