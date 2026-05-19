@@ -116,7 +116,9 @@ def _run_fold(
         val_end = int(m * val_ratio)
         te_end = int(m * te_ratio)
 
-        train_df = df_labeled.iloc[:tr_end]
+        # train 末尾の future_days 行は、正解ラベル作成に val 側の未来価格を使う可能性があるため学習から除外する。
+        train_label_end = max(tr_end - future_days, 0)
+        train_df = df_labeled.iloc[:train_label_end]
         val_df = df_labeled.iloc[tr_end:val_end]
         test_df = df_labeled.iloc[val_end:te_end]
 
@@ -315,9 +317,6 @@ def run_backtest() -> None:
     print(f"  勝ち fold         : {best['FoldsPos']}")
     print(f"  取引数 / 勝率     : {best['Trades']} 回 / {best['WinRate']}%")
     print(f"  組合せ一致度      : {best['ComboAgree']}  (fold 間で同じ組合せが選ばれた数)")
-    print("\n※ val で選定した params を test で評価した不偏推定です。")
-    print("  ComboAgree が低い銘柄はパラメータが時期依存なので、運用時の分散も検討してください。")
-
 
 if __name__ == "__main__":
     run_backtest()
