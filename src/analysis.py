@@ -152,8 +152,10 @@ def create_target_variable(
     return_percent = (sell_price - buy_price) / buy_price * 100
 
     # 正解ラベル付け
-    df["Target"] = 0
+    # future_days 先の終値がまだ存在しない直近行は未確定のため、学習対象から外す。
+    df["Target"] = pd.Series(pd.NA, index=df.index, dtype="Int64")
     valid_idx = return_percent.notna()
+    df.loc[valid_idx, "Target"] = 0
     df.loc[valid_idx & (return_percent >= target_percent), "Target"] = 1
 
     return df
