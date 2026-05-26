@@ -14,16 +14,16 @@ api_credentials:
 # 運用・学習 共通設定
 # =============================================================================
 target_stock:
-  code: "5020"
-  name: "ENEOS"
+  code: "8306"
+  name: "三菱UFJ"
 
   # AIの判断基準
   ai_params:
     budget: 300000
     future_days: 2
     target_percent: 1.0
-    threshold: 0.20
-    stop_loss_percent: 2.0
+    threshold: 0.15
+    stop_loss_percent: 5.0
     commission_percent: 0.0       # SBI現物のゼロ革命を想定
     entry_slippage_percent: 0.03  # 翌営業日 寄成買いの約定ズレ見込み
     exit_slippage_percent: 0.03   # 指定日 引成売りの約定ズレ見込み
@@ -58,6 +58,21 @@ training_settings:
   data_from: "2020-01-01"
   data_to: "auto"
   model_save_path: "models/stock_ai_model.pkl"
+
+# =============================================================================
+# Backtest research 
+# =============================================================================
+backtest_settings:
+  research_from: "2020-01-01"
+  research_to: "2025-03-31"
+  final_from: "2025-04-01"
+  final_to: "2026-05-20"
+  budget: 300000
+  min_research_trades: 10
+  min_final_trades: 10
+  max_drawdown_percent: 15.0
+  min_month_win_rate: 50.0
+  max_single_month_profit_share: 70.0
 
 # =============================================================================
 # バックテスト用 候補銘柄リスト
