@@ -1,3 +1,4 @@
 signal_date,stock_code,stock_name,prob,threshold,future_days,stop_loss_percent,entry_slippage_percent,exit_slippage_percent,stop_slippage_percent,commission_percent,status,planned_buy_price,actual_buy_price,planned_sell_price,actual_sell_price,buy_price,sell_price,profit,profit_rate,commission,exit_reason
-2026-05-27,8306,三菱UFJ,0.1700256153191246,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
-2026-05-28,8306,三菱UFJ,0.7423406528699504,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
+2026-05-27,8306,三菱UFJ,0.1700256153191246,0.15,2,5.0,0.03,0.03,0.1,0.0,DONE,3010.0,3010.9,2999.0,2998.1,3010.9,2998.1,-1267,-0.43,0.0,TIME
+2026-05-28,8306,三菱UFJ,0.7423406528699504,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,
+2026-05-29,8306,三菱UFJ,0.17282772708408484,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
