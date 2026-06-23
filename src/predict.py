@@ -20,8 +20,8 @@ from src.tracker import TradeTracker
 logger = logging.getLogger(LOGGER_NAME)
 
 
-def run_prediction(config: AppConfig) -> None:
-    """AI モデルによる株価予測とLINE通知を実行する。"""
+def run_prediction(config: AppConfig, notification_enabled: bool = True) -> None:
+    """1銘柄を予測し、必要なら通知しつつ売買ログを更新する。"""
 
     logger.info("=== 株価分析・通知システム (AI本番運用版) 起動 ===")
 
@@ -49,12 +49,14 @@ def run_prediction(config: AppConfig) -> None:
     df_prices = sanitize_ohlcv(df_prices)
 
     # --- 通知チャネルの初期化 ---
-    slack_webhook = os.getenv("SLACK_WEBHOOK_URL")
+    slack_webhook = os.getenv("SLACK_WEBHOOK_URL") if notification_enabled else None
     slack_notifier: SlackNotifier | None = None
     if slack_webhook:
         slack_notifier = SlackNotifier(webhook_url=slack_webhook)
-    else:
+    elif notification_enabled:
         logger.warning("SLACK_WEBHOOK_URL が設定されていないため、Slack 通知は行われません。")
+    else:
+        logger.info("ログ専用銘柄のため、Slack 通知は行いません。")
 
     # --- AI モデルの読み込み ---
     model_path = config.model_path
@@ -171,10 +173,29 @@ def run_prediction(config: AppConfig) -> None:
         if slack_notifier:
             slack_notifier.send_message(full_msg)
             logger.info("Slack 通知を送信しました。")
-        else:
+        elif notification_enabled:
             logger.info("Slack 設定がないため通知はスキップしました。")
+        else:
+            logger.info("ログ専用銘柄の予測・ログ更新が完了しました。")
 
     except Exception as e:
         logger.error("予測プロセス中にエラーが発生: %s", e)
 
     logger.info("=== 全処理完了 ===")
+
+
+def run_all_predictions(config: AppConfig) -> None:
+    """8306は通知あり、追加銘柄は通知なしで独立して処理する。"""
+
+    targets = [(config, True)] + [
+        (config.for_log_only_stock(stock), False) for stock in config.log_only_stocks
+    ]
+    for stock_config, notification_enabled in targets:
+        try:
+            run_prediction(stock_config, notification_enabled=notification_enabled)
+        except Exception:
+            logger.exception(
+                "銘柄 %s (%s) の予測処理に失敗しました。次の銘柄へ進みます。",
+                stock_config.stock_name,
+                stock_config.stock_code,
+            )

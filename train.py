@@ -93,6 +93,24 @@ def train_ai_model(config: AppConfig) -> None:
         logger.error("モデル保存エラー: %s", e)
 
 
+def train_all_models(config: AppConfig) -> None:
+    """主銘柄とログ専用銘柄のモデルをそれぞれ独立して学習する。"""
+
+    targets = [config] + [
+        config.for_log_only_stock(stock) for stock in config.log_only_stocks
+    ]
+    logger = logging.getLogger(LOGGER_NAME)
+    for stock_config in targets:
+        try:
+            train_ai_model(stock_config)
+        except Exception:
+            logger.exception(
+                "銘柄 %s (%s) の学習に失敗しました。次の銘柄へ進みます。",
+                stock_config.stock_name,
+                stock_config.stock_code,
+            )
+
+
 if __name__ == "__main__":
     config, logger = load_app(log_file="app_train.log")
-    train_ai_model(config)
+    train_all_models(config)

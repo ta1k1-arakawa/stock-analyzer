@@ -88,6 +88,19 @@ python main.py
 python weekly_report.py
 ```
 
+`weekly_report.py` は8306とログ専用銘柄をまとめて読み込み、銘柄ごとの勝率、通算損益、PENDING件数を損益順に表示します。
+
+## ログ専用の複数銘柄運用
+
+`config.yaml` の `log_only_stocks` に指定した銘柄は、8306と同じ条件で銘柄別にモデルを学習・予測します。これらの銘柄はSlack通知を行わず、仮想売買の結果だけを個別CSVへ保存します。
+
+| 対象 | モデル | 売買ログ | Slack通知 |
+| --- | --- | --- | --- |
+| `target_stock`（8306） | `models/stock_ai_model.pkl` | `data/trade_log.csv` | あり |
+| `log_only_stocks` | `models/monitoring/stock_ai_model_<code>.pkl` | `data/monitoring/trade_log_<code>.csv` | なし |
+
+追加銘柄の `ai_params` を省略した場合は、`target_stock.ai_params` と同じ条件を引き継ぎます。銘柄ごとに条件を変えたい場合だけ、その銘柄の下へ `ai_params` を追加してください。
+
 ## 設定の見方
 
 主な設定は `config.yaml` にあります。
@@ -103,6 +116,7 @@ python weekly_report.py
 | `ai_params.stop_loss_percent` | バックテスト上の損切り率 |
 | `feature_columns` | AIモデルに入力する特徴量 |
 | `backtest_candidates` | バックテストで比較する銘柄コード |
+| `log_only_stocks` | 通知せず、銘柄別CSVへ成績を残す監視銘柄 |
 
 しきい値を上げると、通知は減りますが、より慎重な判定になります。しきい値を下げると、通知は増えますが、誤判定も増える可能性があります。
 

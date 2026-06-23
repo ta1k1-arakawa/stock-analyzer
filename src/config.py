@@ -11,7 +11,7 @@ import logging
 import logging.handlers
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,17 @@ class AIParams:
 
 
 @dataclass
+class LogOnlyStock:
+    """通知せず、銘柄別のモデルと売買ログだけを運用する銘柄。"""
+
+    stock_code: str
+    stock_name: str
+    ai_params: AIParams
+    model_path: Path
+    trade_log_path: Path
+
+
+@dataclass
 class AppConfig:
     """アプリケーション全体の設定を保持する。"""
 
@@ -48,11 +59,25 @@ class AppConfig:
     tech_params: dict[str, Any] = field(default_factory=dict)
     training_settings: dict[str, Any] = field(default_factory=dict)
     backtest_candidates: list[str] = field(default_factory=list)
+    log_only_stocks: list[LogOnlyStock] = field(default_factory=list)
     model_path: Path = Path("models/stock_ai_model.pkl")
     trade_log_path: Path = Path("data/trade_log.csv")
 
     # 元の生 YAML 辞書（後方互換用）
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    def for_log_only_stock(self, stock: LogOnlyStock) -> "AppConfig":
+        """既存の学習・予測処理をログ専用銘柄向けに再利用する。"""
+
+        return replace(
+            self,
+            stock_code=stock.stock_code,
+            stock_name=stock.stock_name,
+            ai_params=stock.ai_params,
+            model_path=stock.model_path,
+            trade_log_path=stock.trade_log_path,
+            log_only_stocks=[],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +165,23 @@ def _resolve_env_credentials(raw_creds: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
+def _build_ai_params(raw: dict[str, Any], base: AIParams | None = None) -> AIParams:
+    """省略値を ``base`` から引き継いで AI パラメータを構築する。"""
+
+    defaults = base or AIParams()
+    return AIParams(
+        budget=raw.get("budget", defaults.budget),
+        future_days=raw.get("future_days", defaults.future_days),
+        target_percent=raw.get("target_percent", defaults.target_percent),
+        threshold=raw.get("threshold", defaults.threshold),
+        stop_loss_percent=raw.get("stop_loss_percent", defaults.stop_loss_percent),
+        commission_percent=raw.get("commission_percent", defaults.commission_percent),
+        entry_slippage_percent=raw.get("entry_slippage_percent", defaults.entry_slippage_percent),
+        exit_slippage_percent=raw.get("exit_slippage_percent", defaults.exit_slippage_percent),
+        stop_slippage_percent=raw.get("stop_slippage_percent", defaults.stop_slippage_percent),
+    )
+
+
 def load_app(
     log_file: str = "app.log",
     config_path: str = "config.yaml",
@@ -193,24 +235,50 @@ def load_app(
     ai_raw = ts.get("ai_params", {})
     training = raw.get("training_settings", {})
 
+    primary_code = str(ts.get("code", "")).strip()
+    primary_ai_params = _build_ai_params(ai_raw)
+    log_only_stocks: list[LogOnlyStock] = []
+    seen_codes = {primary_code}
+
+    for item in raw.get("log_only_stocks", []):
+        if not isinstance(item, dict):
+            logger.warning("log_only_stocks の不正な設定をスキップします: %r", item)
+            continue
+
+        code = str(item.get("code", "")).strip()
+        if not code or code in seen_codes:
+            logger.warning("log_only_stocks の空または重複した銘柄をスキップします: %r", code)
+            continue
+
+        item_ai_raw = item.get("ai_params", {})
+        if not isinstance(item_ai_raw, dict):
+            logger.warning("%s の ai_params が不正なため主銘柄の設定を使用します。", code)
+            item_ai_raw = {}
+
+        log_only_stocks.append(
+            LogOnlyStock(
+                stock_code=code,
+                stock_name=str(item.get("name", code)),
+                ai_params=_build_ai_params(item_ai_raw, primary_ai_params),
+                model_path=Path(
+                    item.get("model_save_path", f"models/monitoring/stock_ai_model_{code}.pkl")
+                ),
+                trade_log_path=Path(
+                    item.get("trade_log_path", f"data/monitoring/trade_log_{code}.csv")
+                ),
+            )
+        )
+        seen_codes.add(code)
+
     config = AppConfig(
-        stock_code=ts.get("code", ""),
+        stock_code=primary_code,
         stock_name=ts.get("name", ts.get("code", "")),
         feature_columns=ts.get("feature_columns", []),
-        ai_params=AIParams(
-            budget=ai_raw.get("budget", 100_000),
-            future_days=ai_raw.get("future_days", 2),
-            target_percent=ai_raw.get("target_percent", 0.7),
-            threshold=ai_raw.get("threshold", 0.5),
-            stop_loss_percent=ai_raw.get("stop_loss_percent", 3.0),
-            commission_percent=ai_raw.get("commission_percent", 0.0),
-            entry_slippage_percent=ai_raw.get("entry_slippage_percent", 0.03),
-            exit_slippage_percent=ai_raw.get("exit_slippage_percent", 0.03),
-            stop_slippage_percent=ai_raw.get("stop_slippage_percent", 0.10),
-        ),
+        ai_params=primary_ai_params,
         tech_params=raw.get("technical_analysis_params", {}),
         training_settings=training,
         backtest_candidates=raw.get("backtest_candidates", []),
+        log_only_stocks=log_only_stocks,
         model_path=Path(training.get("model_save_path", "models/stock_ai_model.pkl")),
         trade_log_path=Path("data/trade_log.csv"),
         raw=raw,
