@@ -15,10 +15,17 @@ from src.config import AppConfig, load_app
 from src.fetchers.yfinance import YFinanceFetcher
 
 
-def train_ai_model(config: AppConfig) -> None:
-    """AIモデルの学習を実行し、ファイルに保存する（フル学習モード）。"""
+def train_ai_model(config: AppConfig) -> bool:
+    """AIモデルを学習・保存し、成功した場合だけ ``True`` を返す。"""
     logger = logging.getLogger(LOGGER_NAME)
     logger.info("=== AIモデル学習プロセス開始 (フル学習モード) ===")
+
+    # 前回のモデルを誤って再利用しないよう、学習前に必ず削除する。
+    try:
+        config.model_path.unlink(missing_ok=True)
+    except OSError:
+        logger.exception("古いモデルを削除できませんでした: %s", config.model_path)
+        return False
 
     data_from = config.training_settings.get("data_from")
     data_to = config.training_settings.get("data_to")
@@ -34,7 +41,7 @@ def train_ai_model(config: AppConfig) -> None:
 
     if df is None or df.empty:
         logger.error("データ取得に失敗したため、学習を中止します。")
-        return
+        return False
 
     df = sanitize_ohlcv(df)
 
@@ -57,7 +64,7 @@ def train_ai_model(config: AppConfig) -> None:
     missing_cols = [c for c in config.feature_columns if c not in df_ready.columns]
     if missing_cols:
         logger.error("必要な特徴量が不足しています: %s", missing_cols)
-        return
+        return False
 
     # NaN 削除
     target_column = "Target"
@@ -65,7 +72,7 @@ def train_ai_model(config: AppConfig) -> None:
 
     if df_final.empty:
         logger.error("有効な学習データが0件になりました。データ期間を広げるか条件を見直してください。")
-        return
+        return False
 
     logger.info("学習データ件数: %d 件 (全データを学習に使用)", len(df_final))
 
@@ -89,28 +96,43 @@ def train_ai_model(config: AppConfig) -> None:
         config.model_path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(model, config.model_path)
         logger.info("モデルを保存しました: %s", config.model_path)
+        return True
     except Exception as e:
         logger.error("モデル保存エラー: %s", e)
+        return False
 
 
-def train_all_models(config: AppConfig) -> None:
-    """主銘柄とログ専用銘柄のモデルをそれぞれ独立して学習する。"""
+def train_all_models(config: AppConfig) -> bool:
+    """全銘柄を学習し、すべて成功した場合だけ ``True`` を返す。"""
 
     targets = [config] + [
         config.for_log_only_stock(stock) for stock in config.log_only_stocks
     ]
     logger = logging.getLogger(LOGGER_NAME)
+    failed_stocks: list[str] = []
     for stock_config in targets:
         try:
-            train_ai_model(stock_config)
+            if not train_ai_model(stock_config):
+                failed_stocks.append(stock_config.stock_code)
         except Exception:
             logger.exception(
-                "銘柄 %s (%s) の学習に失敗しました。次の銘柄へ進みます。",
+                "銘柄 %s (%s) の学習中に予期しないエラーが発生しました。",
                 stock_config.stock_name,
                 stock_config.stock_code,
             )
+            failed_stocks.append(stock_config.stock_code)
+
+    if failed_stocks:
+        logger.critical(
+            "学習に失敗した銘柄があります。予測処理を停止します: %s",
+            ", ".join(failed_stocks),
+        )
+        return False
+
+    return True
 
 
 if __name__ == "__main__":
     config, logger = load_app(log_file="app_train.log")
-    train_all_models(config)
+    if not train_all_models(config):
+        raise SystemExit(1)
