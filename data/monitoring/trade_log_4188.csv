@@ -1,2 +1,3 @@
 signal_date,stock_code,stock_name,prob,threshold,future_days,stop_loss_percent,entry_slippage_percent,exit_slippage_percent,stop_slippage_percent,commission_percent,status,planned_buy_price,actual_buy_price,planned_sell_price,actual_sell_price,buy_price,sell_price,profit,profit_rate,commission,exit_reason
 2026-06-23,4188,三菱ケミカルグループ,0.41298585045746805,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
+2026-06-24,4188,三菱ケミカルグループ,0.40567607334328365,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
