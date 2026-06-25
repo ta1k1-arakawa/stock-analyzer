@@ -1,3 +1,4 @@
 signal_date,stock_code,stock_name,prob,threshold,future_days,stop_loss_percent,entry_slippage_percent,exit_slippage_percent,stop_slippage_percent,commission_percent,status,planned_buy_price,actual_buy_price,planned_sell_price,actual_sell_price,buy_price,sell_price,profit,profit_rate,commission,exit_reason
-2026-06-23,4689,LINEヤフー,0.17627905606224906,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
-2026-06-24,4689,LINEヤフー,0.32906564871214317,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
+2026-06-23,4689,LINEヤフー,0.176279056062249,0.15,2,5.0,0.03,0.03,0.1,0.0,DONE,412.0,412.12,409.7,409.58,412.12,409.58,-1851,-0.62,0.0,TIME
+2026-06-24,4689,LINEヤフー,0.3290656487121431,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,
+2026-06-25,4689,LINEヤフー,0.1533858412908778,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
