@@ -1,0 +1,9 @@
+pandas
+pandas-ta
+lightgbm
+scikit-learn
+joblib
+yfinance
+PyYAML
+requests
+python-dotenv
