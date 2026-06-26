@@ -1,2 +1,4 @@
 signal_date,stock_code,stock_name,prob,threshold,future_days,stop_loss_percent,entry_slippage_percent,exit_slippage_percent,stop_slippage_percent,commission_percent,status,planned_buy_price,actual_buy_price,planned_sell_price,actual_sell_price,buy_price,sell_price,profit,profit_rate,commission,exit_reason
-2026-06-23,7211,三菱自動車,0.21607322644134933,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
+2026-06-23,7211,三菱自動車,0.2160732264413493,0.15,2,5.0,0.03,0.03,0.1,0.0,DONE,311.9,311.99,309.4,309.31,311.99,309.31,-2581,-0.86,0.0,TIME
+2026-06-24,7211,三菱自動車,0.409224903318178,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,
+2026-06-25,7211,三菱自動車,0.25740780057872503,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
