@@ -89,6 +89,7 @@ def setup_logger(
     log_level_str: str = "INFO",
     max_bytes: int = 10 * 1024 * 1024,
     backup_count: int = 5,
+    console: bool = True,
 ) -> logging.Logger:
     """パッケージ共通のルートロガーを構成して返す。"""
 
@@ -128,10 +129,11 @@ def setup_logger(
         print(f"エラー: ログファイルハンドラの設定に失敗しました: {e}", file=sys.stderr)
 
     # コンソールハンドラ
-    ch = logging.StreamHandler(sys.stderr)
-    ch.setLevel(numeric_level)
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+    if console:
+        ch = logging.StreamHandler(sys.stderr)
+        ch.setLevel(numeric_level)
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
 
     return logger
 
@@ -185,6 +187,7 @@ def _build_ai_params(raw: dict[str, Any], base: AIParams | None = None) -> AIPar
 def load_app(
     log_file: str = "app.log",
     config_path: str = "config.yaml",
+    console: bool = True,
 ) -> tuple[AppConfig, logging.Logger]:
     """
     .env と config.yaml を読み込み、ロガーを初期化して ``(AppConfig, Logger)`` を返す。
@@ -196,7 +199,7 @@ def load_app(
     dotenv_ok = load_dotenv()
 
     # まずロガーを仮設定
-    logger = setup_logger(log_file=log_file)
+    logger = setup_logger(log_file=log_file, console=console)
 
     if dotenv_ok:
         logger.info(".env ファイルが正常に読み込まれました。")
@@ -228,6 +231,7 @@ def load_app(
         logger = setup_logger(
             log_file=log_file,
             log_level_str=log_settings["log_level"],
+            console=console,
         )
 
     # AppConfig 構築

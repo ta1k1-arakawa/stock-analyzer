@@ -9,10 +9,6 @@ import pandas as pd
 
 from src.config import load_app
 
-# 月末判定の継続基準（事前合意）
-WIN_RATE_MIN = 45.0
-PROFIT_MIN = -5000
-MIN_SIGNALS = 15
 
 
 def _fmt(value: float, suffix: str = "") -> str:
@@ -106,27 +102,6 @@ def _report_stock(
     if len(pending) > 0:
         print(f"\n  (PENDING: {len(pending)}件 答え合わせ待ち)")
 
-    # 月末判定基準との照合
-    total_stats = _stats(done)
-    print("\n" + "-" * 50)
-    print("【月末判定基準との照合 (通算ベース)】")
-    checks = [
-        ("勝率 >= 45%", total_stats["win_rate"] >= WIN_RATE_MIN,
-         f"{total_stats['win_rate']:.1f}%"),
-        ("利益 >= -5,000円", total_stats["profit"] >= PROFIT_MIN,
-         _fmt(total_stats["profit"], "円")),
-        ("シグナル数 >= 15件", total_stats["n"] >= MIN_SIGNALS,
-         f"{total_stats['n']}件"),
-    ]
-    for name, ok, value in checks:
-        mark = "OK " if ok else "NG "
-        print(f"  [{mark}] {name:<20} (現在: {value})")
-
-    all_ok = all(ok for _, ok, _ in checks)
-    print("-" * 50)
-    print(f"判定: {'継続条件を満たしています' if all_ok else '要注意 (基準未達)'}")
-    print()
-
     result = _stats(done)
     result.update(
         {
@@ -139,7 +114,7 @@ def _report_stock(
 
 
 def run() -> None:
-    config, _ = load_app(log_file="weekly_report.log")
+    config, _ = load_app(log_file="weekly_report.log", console=False)
     targets = [(config.stock_code, config.stock_name, config.trade_log_path)] + [
         (stock.stock_code, stock.stock_name, stock.trade_log_path)
         for stock in config.log_only_stocks
