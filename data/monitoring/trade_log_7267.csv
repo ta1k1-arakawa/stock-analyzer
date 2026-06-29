@@ -1,4 +1,4 @@
 signal_date,stock_code,stock_name,prob,threshold,future_days,stop_loss_percent,entry_slippage_percent,exit_slippage_percent,stop_slippage_percent,commission_percent,status,planned_buy_price,actual_buy_price,planned_sell_price,actual_sell_price,buy_price,sell_price,profit,profit_rate,commission,exit_reason
 2026-06-24,7267,本田技研工業,0.1879117646997914,0.15,2,5.0,0.03,0.03,0.1,0.0,DONE,1398.0,1398.42,1449.5,1449.07,1398.42,1449.07,10838,3.62,0.0,TIME
-2026-06-25,7267,本田技研工業,0.1782807116856911,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,
-2026-06-26,7267,本田技研工業,0.18895983835288274,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
+2026-06-25,7267,本田技研工業,0.1782807116856911,0.15,2,5.0,0.03,0.03,0.1,0.0,DONE,1421.5,1421.93,1476.0,1475.56,1421.93,1475.56,11262,3.77,0.0,TIME
+2026-06-26,7267,本田技研工業,0.1889598383528827,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,
