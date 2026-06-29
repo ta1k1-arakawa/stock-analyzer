@@ -3,7 +3,8 @@ pandas-ta
 lightgbm
 scikit-learn
 joblib
-yfinance
+yfinance==1.4.1
+curl_cffi==0.15.0
 PyYAML
 requests
 python-dotenv

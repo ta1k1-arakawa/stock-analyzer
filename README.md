@@ -51,7 +51,7 @@ Python 3.12 を想定しています。
 python -m venv .venv
 .venv\Scripts\activate
 python -m pip install --upgrade pip
-pip install pandas lightgbm yfinance pandas-ta joblib scikit-learn pyyaml requests python-dotenv
+pip install -r requirement.txt
 ```
 
 Slack 通知を使う場合は、プロジェクトルートに `.env` を作り、Incoming Webhook URL を設定します。
