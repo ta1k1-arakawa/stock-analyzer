@@ -34,6 +34,10 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirement.txt
 
+    - name: Show dependency versions
+      run: |
+        python -c "import pandas, requests; print('pandas', pandas.__version__); print('requests', requests.__version__)"
+
     # 4. AIの学習
     - name: Train Model
       run: python train.py
