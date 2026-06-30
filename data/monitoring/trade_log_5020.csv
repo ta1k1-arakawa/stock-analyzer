@@ -1,3 +1,4 @@
 signal_date,stock_code,stock_name,prob,threshold,future_days,stop_loss_percent,entry_slippage_percent,exit_slippage_percent,stop_slippage_percent,commission_percent,status,planned_buy_price,actual_buy_price,planned_sell_price,actual_sell_price,buy_price,sell_price,profit,profit_rate,commission,exit_reason
-2026-06-26,5020,ENEOS,0.5785535349386215,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
-2026-06-29,5020,ENEOS,0.7496615980423343,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
+2026-06-26,5020,ENEOS,0.5785535349386215,0.15,2,5.0,0.03,0.03,0.1,0.0,DONE,1211.0,1211.36,1197.0,1196.64,1211.36,1196.64,-3636,-1.22,0.0,TIME
+2026-06-29,5020,ENEOS,0.7496615980423343,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0.0,0.0,0.0,0.0,0.0,0.0,0,0.0,0.0,
+2026-06-30,5020,ENEOS,0.2604071374093711,0.15,2,5.0,0.03,0.03,0.1,0.0,PENDING,0,0,0,0,0,0,0,0,0,
