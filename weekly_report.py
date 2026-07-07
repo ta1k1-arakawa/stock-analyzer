@@ -11,6 +11,10 @@ from src.config import load_app
 
 
 
+def _empty_stats() -> dict:
+    return {"n": 0, "wins": 0, "win_rate": 0.0, "profit": 0, "avg_profit": 0}
+
+
 def _fmt(value: float, suffix: str = "") -> str:
     return f"{value:+,.0f}{suffix}" if isinstance(value, (int, float)) else str(value)
 
@@ -18,7 +22,7 @@ def _fmt(value: float, suffix: str = "") -> str:
 def _stats(df: pd.DataFrame) -> dict:
     n = len(df)
     if n == 0:
-        return {"n": 0, "wins": 0, "win_rate": 0.0, "profit": 0, "avg_profit": 0}
+        return _empty_stats()
     wins = int((df["profit"] > 0).sum())
     profit = int(df["profit"].sum())
     return {
@@ -40,6 +44,33 @@ def _print_block(title: str, s: dict) -> None:
     print(f"  損益: {_fmt(s['profit'], '円')} (平均 {_fmt(s['avg_profit'], '円/件')})")
 
 
+def _count_pending(
+    pending: pd.DataFrame,
+    one_week_ago: date,
+    one_month_ago: date,
+) -> dict:
+    if pending.empty:
+        return {"week": 0, "month": 0, "all": 0}
+
+    signal_dates = pd.to_datetime(pending["signal_date"], errors="coerce").dt.date
+    return {
+        "week": int((signal_dates >= one_week_ago).sum()),
+        "month": int((signal_dates >= one_month_ago).sum()),
+        "all": len(pending),
+    }
+
+
+def _empty_stock_summary(code: str, name: str, pending: dict | None = None) -> dict:
+    return {
+        "code": code,
+        "name": name,
+        "pending": pending or {"week": 0, "month": 0, "all": 0},
+        "week": _empty_stats(),
+        "month": _empty_stats(),
+        "all": _empty_stats(),
+    }
+
+
 def _report_stock(
     code: str,
     name: str,
@@ -58,59 +89,63 @@ def _report_stock(
     df = pd.read_csv(log_path, encoding="utf-8", dtype={"stock_code": str})
     if df.empty:
         print("ログが空です。\n")
-        return {
-            "code": code,
-            "name": name,
-            "n": 0,
-            "wins": 0,
-            "win_rate": 0.0,
-            "profit": 0,
-            "avg_profit": 0,
-            "pending": 0,
-        }
+        return _empty_stock_summary(code, name)
 
     done = df[df["status"] == "DONE"].copy()
     pending = df[df["status"] == "PENDING"].copy()
+    one_week_ago = today - timedelta(days=7)
+    one_month_ago = today - timedelta(days=30)
+    pending_counts = _count_pending(pending, one_week_ago, one_month_ago)
 
     if done.empty:
         print("答え合わせ済みのトレードはまだありません。")
         if not pending.empty:
             print(f"PENDING: {len(pending)}件")
         print()
-        return {
-            "code": code,
-            "name": name,
-            "n": 0,
-            "wins": 0,
-            "win_rate": 0.0,
-            "profit": 0,
-            "avg_profit": 0,
-            "pending": len(pending),
-        }
+        return _empty_stock_summary(code, name, pending=pending_counts)
 
     done["signal_date"] = pd.to_datetime(done["signal_date"])
     done["profit"] = pd.to_numeric(done["profit"], errors="coerce").fillna(0)
-    one_week_ago = today - timedelta(days=7)
 
     week = done[done["signal_date"].dt.date >= one_week_ago]
+    month = done[done["signal_date"].dt.date >= one_month_ago]
 
     print(f"週次レポート ({today})")
     _print_block("直近7日", _stats(week))
+    print()
+    _print_block("直近1か月（30日）", _stats(month))
     print()
     _print_block("通算", _stats(done))
 
     if len(pending) > 0:
         print(f"\n  (PENDING: {len(pending)}件 答え合わせ待ち)")
 
-    result = _stats(done)
-    result.update(
-        {
-            "code": code,
-            "name": name,
-            "pending": len(pending),
-        }
-    )
-    return result
+    return {
+        "code": code,
+        "name": name,
+        "pending": pending_counts,
+        "week": _stats(week),
+        "month": _stats(month),
+        "all": _stats(done),
+    }
+
+
+def _print_ranking(title: str, summaries: list[dict], stats_key: str) -> None:
+    print("=" * 60)
+    print(title)
+    print("=" * 60)
+    for summary in sorted(
+        summaries,
+        key=lambda item: item[stats_key]["profit"],
+        reverse=True,
+    ):
+        stats = summary[stats_key]
+        pending = summary["pending"][stats_key]
+        print(
+            f"{summary['code']} {summary['name']}: "
+            f"{stats['n']}戦 / 勝率 {stats['win_rate']:.1f}% / "
+            f"損益 {stats['profit']:+,.0f}円 / PENDING {pending}件"
+        )
 
 
 def run() -> None:
@@ -130,15 +165,9 @@ def run() -> None:
         print("集計できるログがまだありません。")
         return
 
-    print("=" * 60)
-    print("銘柄別 通算成績（損益順）")
-    print("=" * 60)
-    for summary in sorted(summaries, key=lambda item: item["profit"], reverse=True):
-        print(
-            f"{summary['code']} {summary['name']}: "
-            f"{summary['n']}戦 / 勝率 {summary['win_rate']:.1f}% / "
-            f"損益 {summary['profit']:+,.0f}円 / PENDING {summary['pending']}件"
-        )
+    _print_ranking("銘柄別 通算成績（損益順）", summaries, "all")
+    _print_ranking("銘柄別 直近7日成績（損益順）", summaries, "week")
+    _print_ranking("銘柄別 直近1か月成績（30日・損益順）", summaries, "month")
 
 
 if __name__ == "__main__":
