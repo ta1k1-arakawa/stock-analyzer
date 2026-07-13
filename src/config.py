@@ -46,6 +46,7 @@ class LogOnlyStock:
     ai_params: AIParams
     model_path: Path
     trade_log_path: Path
+    notify_slack: bool = False
 
 
 @dataclass
@@ -62,6 +63,7 @@ class AppConfig:
     log_only_stocks: list[LogOnlyStock] = field(default_factory=list)
     model_path: Path = Path("models/stock_ai_model.pkl")
     trade_log_path: Path = Path("data/trade_log.csv")
+    notify_slack: bool = True
 
     # 元の生 YAML 辞書（後方互換用）
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -76,6 +78,7 @@ class AppConfig:
             ai_params=stock.ai_params,
             model_path=stock.model_path,
             trade_log_path=stock.trade_log_path,
+            notify_slack=stock.notify_slack,
             log_only_stocks=[],
         )
 
@@ -184,6 +187,22 @@ def _build_ai_params(raw: dict[str, Any], base: AIParams | None = None) -> AIPar
     )
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _stock_trade_log_path(code: str, value: Any = None) -> Path:
+    if value in (None, "", "auto"):
+        return Path(f"data/monitoring/trade_log_{code}.csv")
+    return Path(str(value))
+
+
 def load_app(
     log_file: str = "app.log",
     config_path: str = "config.yaml",
@@ -241,6 +260,8 @@ def load_app(
 
     primary_code = str(ts.get("code", "")).strip()
     primary_ai_params = _build_ai_params(ai_raw)
+    primary_trade_log_path = _stock_trade_log_path(primary_code, ts.get("trade_log_path"))
+    primary_notify_slack = _as_bool(ts.get("notify_slack"), True)
     log_only_stocks: list[LogOnlyStock] = []
     seen_codes = {primary_code}
 
@@ -267,9 +288,8 @@ def load_app(
                 model_path=Path(
                     item.get("model_save_path", f"models/monitoring/stock_ai_model_{code}.pkl")
                 ),
-                trade_log_path=Path(
-                    item.get("trade_log_path", f"data/monitoring/trade_log_{code}.csv")
-                ),
+                trade_log_path=_stock_trade_log_path(code, item.get("trade_log_path")),
+                notify_slack=_as_bool(item.get("notify_slack"), False),
             )
         )
         seen_codes.add(code)
@@ -284,7 +304,8 @@ def load_app(
         backtest_candidates=raw.get("backtest_candidates", []),
         log_only_stocks=log_only_stocks,
         model_path=Path(training.get("model_save_path", "models/stock_ai_model.pkl")),
-        trade_log_path=Path("data/trade_log.csv"),
+        trade_log_path=primary_trade_log_path,
+        notify_slack=primary_notify_slack,
         raw=raw,
     )
 

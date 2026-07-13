@@ -16,6 +16,8 @@ api_credentials:
 target_stock:
   code: "8306"
   name: "三菱UFJ"
+  notify_slack: true
+  trade_log_path: "auto"
 
   # AIの判断基準
   ai_params:
@@ -51,18 +53,25 @@ target_stock:
 log_only_stocks:
   - code: "1570"
     name: "日経レバ"
+    notify_slack: false
   - code: "7211"
     name: "三菱自動車"
+    notify_slack: true
   - code: "4689"
     name: "LINEヤフー"
+    notify_slack: false
   - code: "5020"
     name: "ENEOS"
+    notify_slack: false
   - code: "9432"
     name: "NTT"
+    notify_slack: false
   - code: "4188"
     name: "三菱ケミカルグループ"
+    notify_slack: false
   - code: "7267"
     name: "本田技研工業"
+    notify_slack: false
 
 # =============================================================================
 # テクニカル指標計算パラメータ

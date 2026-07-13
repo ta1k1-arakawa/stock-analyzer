@@ -20,7 +20,7 @@ from src.tracker import TradeTracker
 logger = logging.getLogger(LOGGER_NAME)
 
 
-def run_prediction(config: AppConfig, notification_enabled: bool = True) -> None:
+def run_prediction(config: AppConfig, notification_enabled: bool | None = None) -> None:
     """1銘柄を予測し、必要なら通知しつつ売買ログを更新する。"""
 
     logger.info("=== 株価分析・通知システム (AI本番運用版) 起動 ===")
@@ -28,6 +28,9 @@ def run_prediction(config: AppConfig, notification_enabled: bool = True) -> None
     if not config.stock_code:
         logger.critical("config.yaml に監視対象銘柄 (target_stock.code) が設定されていません。")
         return
+
+    if notification_enabled is None:
+        notification_enabled = config.notify_slack
 
     # --- データ取得 ---
     fetcher = YFinanceFetcher()
@@ -185,10 +188,12 @@ def run_prediction(config: AppConfig, notification_enabled: bool = True) -> None
 
 
 def run_all_predictions(config: AppConfig) -> None:
-    """8306は通知あり、追加銘柄は通知なしで独立して処理する。"""
+    """銘柄ごとの設定に従って、通知とログ更新を独立して処理する。"""
 
-    targets = [(config, True)] + [
-        (config.for_log_only_stock(stock), False) for stock in config.log_only_stocks
+    targets = [(config, config.notify_slack)] + [
+        (stock_config, stock_config.notify_slack)
+        for stock in config.log_only_stocks
+        for stock_config in [config.for_log_only_stock(stock)]
     ]
     for stock_config, notification_enabled in targets:
         try:
