@@ -108,6 +108,8 @@ def train_all_models(config: AppConfig) -> bool:
     logger = logging.getLogger(LOGGER_NAME)
     failed_stocks: list[str] = []
     for stock in config.stocks:
+        if not stock.paper_trade:
+            continue
         stock_config = config.for_stock(stock)
         try:
             if not train_ai_model(stock_config):
@@ -129,7 +131,7 @@ def train_all_models(config: AppConfig) -> bool:
     failed_notification_stocks = [
         stock.stock_code
         for stock in config.stocks
-        if stock.notify_slack and stock.stock_code in failed_stocks
+        if stock.paper_trade and stock.notify_slack and stock.stock_code in failed_stocks
     ]
     if failed_notification_stocks:
         logger.critical(

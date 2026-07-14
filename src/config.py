@@ -46,6 +46,7 @@ class StockConfig:
     ai_params: AIParams
     model_path: Path
     trade_log_path: Path
+    paper_trade: bool = True
     notify_slack: bool = False
 
 
@@ -313,6 +314,7 @@ def load_app(
                 ai_params=stock_ai_params,
                 model_path=_stock_model_path(code),
                 trade_log_path=_stock_trade_log_path(code),
+                paper_trade=_as_bool(item.get("paper_trade"), True),
                 notify_slack=_as_bool(item.get("notify_slack"), False),
             )
         )

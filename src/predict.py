@@ -187,13 +187,14 @@ def run_prediction(config: AppConfig, notification_enabled: bool = False) -> Non
 def run_all_predictions(config: AppConfig) -> None:
     """全銘柄のログを更新し、設定で選んだ銘柄だけ通知する。"""
 
-    notification_codes = [stock.stock_code for stock in config.stocks if stock.notify_slack]
+    active_stocks = [stock for stock in config.stocks if stock.paper_trade]
+    notification_codes = [stock.stock_code for stock in active_stocks if stock.notify_slack]
     if notification_codes:
         logger.info("Slack通知対象: %s", ", ".join(notification_codes))
     else:
         logger.warning("config.yaml で notify_slack: true の銘柄がありません。")
 
-    for stock in config.stocks:
+    for stock in active_stocks:
         stock_config = config.for_stock(stock)
         notification_enabled = stock.notify_slack
         try:

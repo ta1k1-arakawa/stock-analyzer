@@ -153,6 +153,7 @@ def run() -> None:
     targets = [
         (stock.stock_code, stock.stock_name, stock.trade_log_path)
         for stock in config.stocks
+        if stock.paper_trade
     ]
     today = datetime.now().date()
     summaries = [

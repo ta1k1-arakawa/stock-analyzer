@@ -17,27 +17,35 @@ api_credentials:
 stocks:
   - code: "1570"
     name: "日経レバ"
+    paper_trade: false
     notify_slack: false
   - code: "7211"
     name: "三菱自動車"
+    paper_trade: true
     notify_slack: true
   - code: "4689"
     name: "LINEヤフー"
+    paper_trade: false
     notify_slack: false
   - code: "8306"
     name: "三菱UFJ"
+    paper_trade: true
     notify_slack: true
   - code: "5020"
     name: "ENEOS"
+    paper_trade: true
     notify_slack: false
   - code: "9432"
     name: "NTT"
+    paper_trade: false
     notify_slack: false
   - code: "4188"
     name: "三菱ケミカルグループ"
+    paper_trade: false
     notify_slack: false
   - code: "7267"
     name: "本田技研工業"
+    paper_trade: false
     notify_slack: false
 
 # =============================================================================
