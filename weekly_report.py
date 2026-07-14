@@ -1,4 +1,4 @@
-# weekly_report.py — trade_log.csv の週次サマリーレポート
+# weekly_report.py — 銘柄別 trade_log_<code>.csv の週次サマリーレポート
 
 from __future__ import annotations
 

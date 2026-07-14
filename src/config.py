@@ -62,7 +62,7 @@ class AppConfig:
     backtest_candidates: list[str] = field(default_factory=list)
     log_only_stocks: list[LogOnlyStock] = field(default_factory=list)
     model_path: Path = Path("models/stock_ai_model.pkl")
-    trade_log_path: Path = Path("data/trade_log.csv")
+    trade_log_path: Path = Path("data/trade_log_8306.csv")
     notify_slack: bool = True
 
     # 元の生 YAML 辞書（後方互換用）
@@ -199,7 +199,7 @@ def _as_bool(value: Any, default: bool = False) -> bool:
 
 def _stock_trade_log_path(code: str, value: Any = None) -> Path:
     if value in (None, "", "auto"):
-        return Path(f"data/monitoring/trade_log_{code}.csv")
+        return Path(f"data/trade_log_{code}.csv")
     return Path(str(value))
 
 

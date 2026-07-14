@@ -45,7 +45,7 @@ class TradeTracker:
     def __init__(
         self,
         budget: int,
-        filepath: str | Path = "data/trade_log.csv",
+        filepath: str | Path = "data/trade_log_8306.csv",
         stop_loss_percent: float = 0.0,
         entry_slippage_percent: float = 0.0,
         exit_slippage_percent: float = 0.0,
