@@ -61,7 +61,7 @@ class AppConfig:
     training_settings: dict[str, Any] = field(default_factory=dict)
     backtest_candidates: list[str] = field(default_factory=list)
     log_only_stocks: list[LogOnlyStock] = field(default_factory=list)
-    model_path: Path = Path("models/stock_ai_model.pkl")
+    model_path: Path = Path("models/stock_ai_model_8306.pkl")
     trade_log_path: Path = Path("data/trade_log_8306.csv")
     notify_slack: bool = True
 
@@ -286,7 +286,7 @@ def load_app(
                 stock_name=str(item.get("name", code)),
                 ai_params=_build_ai_params(item_ai_raw, primary_ai_params),
                 model_path=Path(
-                    item.get("model_save_path", f"models/monitoring/stock_ai_model_{code}.pkl")
+                    item.get("model_save_path", f"models/stock_ai_model_{code}.pkl")
                 ),
                 trade_log_path=_stock_trade_log_path(code, item.get("trade_log_path")),
                 notify_slack=_as_bool(item.get("notify_slack"), False),
@@ -303,7 +303,7 @@ def load_app(
         training_settings=training,
         backtest_candidates=raw.get("backtest_candidates", []),
         log_only_stocks=log_only_stocks,
-        model_path=Path(training.get("model_save_path", "models/stock_ai_model.pkl")),
+        model_path=Path(training.get("model_save_path", "models/stock_ai_model_8306.pkl")),
         trade_log_path=primary_trade_log_path,
         notify_slack=primary_notify_slack,
         raw=raw,

@@ -87,7 +87,7 @@ technical_analysis_params:
 training_settings:
   data_from: "2020-01-01"
   data_to: "auto"
-  model_save_path: "models/stock_ai_model.pkl"
+  model_save_path: "models/stock_ai_model_8306.pkl"
 
 # =============================================================================
 # Backtest research 
