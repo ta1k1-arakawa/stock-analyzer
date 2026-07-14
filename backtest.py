@@ -187,7 +187,6 @@ def _simulate_trades(
     commission_pct: float,
     starting_budget: int,
 ) -> pd.DataFrame:
-    budget = float(starting_budget)
     trades: list[dict[str, Any]] = []
 
     for i in range(len(df) - 1):
@@ -195,11 +194,12 @@ def _simulate_trades(
         if prob < threshold:
             continue
 
-        trade, budget = _simulate_one_signal(
+        # ペーパーログと同じく、過去の損益を複利運用せず毎回固定予算で売買する。
+        trade, _ = _simulate_one_signal(
             df,
             i,
             prob,
-            budget,
+            float(starting_budget),
             future_days,
             stop_loss_pct,
             entry_slippage_pct,
@@ -481,7 +481,6 @@ def _final_evaluation_rolling(
 
     final_start = pd.Timestamp(settings.final_from)
     final_end = pd.Timestamp(settings.final_to)
-    budget = float(settings.budget)
     trades: list[dict[str, Any]] = []
     predictions: list[dict[str, Any]] = []
 
@@ -513,11 +512,12 @@ def _final_evaluation_rolling(
         if not is_signal:
             continue
 
-        trade, budget = _simulate_one_signal(
+        # 日次ウォークフォワードでも各シグナルの予算は固定する。
+        trade, _ = _simulate_one_signal(
             df_ta,
             signal_pos,
             prob,
-            budget,
+            float(settings.budget),
             ai.future_days,
             rule.stop_loss_percent,
             ai.entry_slippage_percent,
