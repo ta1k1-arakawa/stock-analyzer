@@ -11,46 +11,10 @@ api_credentials:
     webhook_url_env_var: "SLACK_WEBHOOK_URL"
 
 # =============================================================================
-# 運用・学習 共通設定
+# バックテスト・学習・予測の対象銘柄
+# このリストが銘柄情報の唯一の設定元です。
 # =============================================================================
-target_stock:
-  code: "8306"
-  name: "三菱UFJ"
-  notify_slack: true
-  trade_log_path: "auto"
-
-  # AIの判断基準
-  ai_params:
-    budget: 300000
-    future_days: 2
-    target_percent: 1.0
-    threshold: 0.15
-    stop_loss_percent: 5.0
-    commission_percent: 0.0       # SBI現物のゼロ革命を想定
-    entry_slippage_percent: 0.03  # 翌営業日 寄成買いの約定ズレ見込み
-    exit_slippage_percent: 0.03   # 指定日 引成売りの約定ズレ見込み
-    stop_slippage_percent: 0.10   # 損切り時は逆指値後の約定悪化を厚めに見る
-
-  # 使用する特徴量 
-  feature_columns:
-    - 'SMA_5_Rate'
-    - 'SMA_25_Rate'
-    - 'RSI_14'
-    - 'MACD_Rate'
-    - 'BB_Position'      
-    - 'ATR_Rate'         
-    - 'ADX_14'           
-    - 'Change_Rate_1'
-    - 'Change_Rate_3'
-    - 'Change_Rate_5'    
-    - 'Volume_Change_1'
-
-# =============================================================================
-# ログ専用の監視銘柄
-# =============================================================================
-# Slack通知は行わず、銘柄ごとのモデルとCSVを使って仮想売買の成績を記録します。
-# ai_params を省略した銘柄は target_stock と同じ売買条件で比較します。
-log_only_stocks:
+stocks:
   - code: "1570"
     name: "日経レバ"
     notify_slack: false
@@ -60,6 +24,9 @@ log_only_stocks:
   - code: "4689"
     name: "LINEヤフー"
     notify_slack: false
+  - code: "8306"
+    name: "三菱UFJ"
+    notify_slack: true
   - code: "5020"
     name: "ENEOS"
     notify_slack: false
@@ -74,23 +41,54 @@ log_only_stocks:
     notify_slack: false
 
 # =============================================================================
-# テクニカル指標計算パラメータ
+# 全銘柄の共通売買条件
+# バックテストでPASSまたはREVIEWになった銘柄別ルールは result_path から自動適用されます。
 # =============================================================================
-technical_analysis_params:
-  sma: { short_period: 5, long_period: 25 }
-  rsi: { period: 14 }
-  macd: { fast_period: 12, slow_period: 26, signal_period: 9 }
+ai_params:
+  budget: 300000
+  future_days: 2
+  target_percent: 1.0
+  threshold: 0.15
+  stop_loss_percent: 5.0
+  commission_percent: 0.0
+  entry_slippage_percent: 0.03
+  exit_slippage_percent: 0.03
+  stop_slippage_percent: 0.10
+
+# AIモデルに使用する特徴量
+feature_columns:
+  - "SMA_5_Rate"
+  - "SMA_25_Rate"
+  - "RSI_14"
+  - "MACD_Rate"
+  - "BB_Position"
+  - "ATR_Rate"
+  - "ADX_14"
+  - "Change_Rate_1"
+  - "Change_Rate_3"
+  - "Change_Rate_5"
+  - "Volume_Change_1"
 
 # =============================================================================
-# 学習用設定
+# テクニカル指標
+# =============================================================================
+technical_analysis_params:
+  sma: {short_period: 5, long_period: 25}
+  rsi: {period: 14}
+  macd: {fast_period: 12, slow_period: 26, signal_period: 9}
+
+# =============================================================================
+# 学習設定
+# モデルは models/stock_ai_model_<code>.pkl へ自動保存されます。
 # =============================================================================
 training_settings:
   data_from: "2020-01-01"
   data_to: "auto"
-  model_save_path: "models/stock_ai_model_8306.pkl"
 
 # =============================================================================
-# Backtest research 
+# バックテスト設定
+# 合格銘柄のうち研究スコアが最高の銘柄を推奨として出力します。
+# Slack通知対象は stocks[].notify_slack で手動設定します。
 # =============================================================================
 backtest_settings:
   research_from: "2020-01-01"
@@ -99,20 +97,8 @@ backtest_settings:
   final_to: "2026-05-20"
   budget: 300000
   min_research_trades: 10
-  min_final_trades: 10
+  min_final_trades: 30
   max_drawdown_percent: 15.0
   min_month_win_rate: 50.0
   max_single_month_profit_share: 70.0
-
-# =============================================================================
-# バックテスト用 候補銘柄リスト
-# =============================================================================
-backtest_candidates:
-  - "1570" # 日経レバ (王者)
-  - "7211" # 三菱自動車 (新候補: 4万)
-  - "4689" # LINEヤフー (新候補: 4万)
-  - "8306" # 三菱UFJ (※予算15万ですが、動きが素直なので比較用に)
-  - "5020" # ENEOS (※予算8万ですが、エネルギー株の代表として)
-  - "9432"
-  - "4188"
-  - "7267"
+  result_path: "data/backtest_selection.yaml"

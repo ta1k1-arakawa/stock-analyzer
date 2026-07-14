@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import lightgbm as lgb
 import pandas as pd
+import yaml
 
 from src.analysis import calculate_indicators, create_target_variable, sanitize_ohlcv
 from src.config import AppConfig, load_app
@@ -36,6 +38,7 @@ class BacktestSettings:
     max_drawdown_percent: float
     min_month_win_rate: float
     max_single_month_profit_share: float
+    result_path: Path
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,7 @@ def _load_backtest_settings(config: AppConfig) -> BacktestSettings:
         max_drawdown_percent=float(raw.get("max_drawdown_percent", 15.0)),
         min_month_win_rate=float(raw.get("min_month_win_rate", 50.0)),
         max_single_month_profit_share=float(raw.get("max_single_month_profit_share", 70.0)),
+        result_path=Path(raw.get("result_path", "data/backtest_selection.yaml")),
     )
 
 
@@ -555,11 +559,80 @@ def _print_header(title: str) -> None:
     print("=" * 100)
 
 
+def _fixed_rule_from_row(row: pd.Series) -> FixedRule:
+    return FixedRule(
+        code=str(row["Code"]),
+        target_percent=float(row["TargetPercent"]),
+        stop_loss_percent=float(row["StopLossPercent"]),
+        threshold=float(row["Threshold"]),
+    )
+
+
+def _print_final_result(
+    rule: FixedRule,
+    summary: dict[str, Any],
+    trades: pd.DataFrame,
+    predictions: pd.DataFrame,
+    status: str,
+    failed_checks: list[str],
+) -> None:
+    _print_header(f"Final evaluation: {rule.code}")
+    print(f"Locked rule           : target={rule.target_percent}, stop={rule.stop_loss_percent}, threshold={rule.threshold}")
+    print(f"Adoption status       : {status}")
+    if failed_checks:
+        print(f"Failed checks         : {', '.join(failed_checks)}")
+    print(f"Predicted days        : {len(predictions)}")
+    print(f"Signals / trades      : {summary['Trades']}")
+    print(f"Profit                : {summary['Profit']:+,d}")
+    print(f"Max drawdown          : {summary['MaxDD']:+,d} ({summary['MaxDDPct']}%)")
+    print(f"Win rate              : {summary['WinRate']}%")
+    print(f"Monthly win rate      : {summary['MonthWinRate']}% ({summary['Months']} months)")
+    print(f"Worst month           : {summary['WorstMonth']:+,d}")
+    print(f"Best month            : {summary['BestMonth']:+,d}")
+    print(f"Max losing streak     : {summary['LosingStreak']}")
+    print(f"Best-month dependency : {summary['SingleMonthShare']}% of total profit")
+    print("\nMonthly result")
+    print(_monthly_profit_table(trades).to_string(index=False))
+
+
+def _save_selection_result(
+    final_results: pd.DataFrame,
+    settings: BacktestSettings,
+) -> str | None:
+    passed = final_results[final_results["Status"] == "PASS"].copy()
+    passed = passed.sort_values("ResearchScore", ascending=False)
+    recommended_code = str(passed.iloc[0]["Code"]) if not passed.empty else None
+
+    paper_test_rules = final_results[
+        final_results["Status"].isin(["PASS", "REVIEW"])
+    ].copy()
+    rules = {
+        str(row["Code"]): {
+            "target_percent": float(row["TargetPercent"]),
+            "stop_loss_percent": float(row["StopLossPercent"]),
+            "threshold": float(row["Threshold"]),
+        }
+        for _, row in paper_test_rules.iterrows()
+    }
+    result = {
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "recommended_stock_code": recommended_code,
+        "selection_method": "highest_research_score_among_final_pass",
+        "rules": rules,
+    }
+
+    settings.result_path.parent.mkdir(parents=True, exist_ok=True)
+    with settings.result_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(result, f, allow_unicode=True, sort_keys=False)
+    return recommended_code
+
+
 def run_backtest() -> None:
     config, _ = load_app(log_file="backtest.log")
     ai = config.ai_params
     settings = _load_backtest_settings(config)
-    candidates = [str(c) for c in (config.backtest_candidates or [config.stock_code])]
+    stock_configs = {stock.stock_code: config.for_stock(stock) for stock in config.stocks}
+    candidates = list(stock_configs)
 
     _print_header("Backtest: research selection + locked final evaluation")
     print(f"Research period : {settings.research_from} to {settings.research_to}")
@@ -578,6 +651,13 @@ def run_backtest() -> None:
     print(
         "Grid            : "
         f"target={TARGET_GRID}, stop={STOP_GRID}, threshold={THRESHOLD_GRID}"
+    )
+    print(
+        "Adoption checks : "
+        f"profit>0, trades>={settings.min_final_trades}, "
+        f"max_dd<={settings.max_drawdown_percent:.1f}%, "
+        f"month_win_rate>={settings.min_month_win_rate:.1f}%, "
+        f"best_month_share<={settings.max_single_month_profit_share:.1f}%"
     )
 
     fetcher = YFinanceFetcher()
@@ -603,7 +683,12 @@ def run_backtest() -> None:
         df_prices = sanitize_ohlcv(_normalize_index(df_prices))
         price_cache[code] = df_prices
 
-        selected, _ = _evaluate_research_stock(code, df_prices, config, settings)
+        selected, _ = _evaluate_research_stock(
+            code,
+            df_prices,
+            stock_configs[code],
+            settings,
+        )
         if selected is None:
             print("  skipped: not enough valid research data")
             continue
@@ -632,62 +717,109 @@ def run_backtest() -> None:
     _print_header("Research summary")
     print(df_research.to_string(index=False))
 
-    best = df_research.iloc[0]
-    rule = FixedRule(
-        code=str(best["Code"]),
-        target_percent=float(best["TargetPercent"]),
-        stop_loss_percent=float(best["StopLossPercent"]),
-        threshold=float(best["Threshold"]),
-    )
+    df_final_candidates = df_research.copy()
 
-    _print_header("2) Locked rule for final evaluation")
-    print(f"Code              : {rule.code}")
-    print(f"target_percent    : {rule.target_percent}")
-    print(f"stop_loss_percent : {rule.stop_loss_percent}")
-    print(f"threshold         : {rule.threshold}")
+    _print_header("2) Locked rules for per-stock final evaluation")
+    print(
+        df_final_candidates[
+            ["Code", "TargetPercent", "StopLossPercent", "Threshold"]
+        ].to_string(index=False)
+    )
     print("Final evaluation will not search or adjust these values.")
 
-    if rule.code not in price_cache:
-        df_prices = fetcher.get_daily_stock_prices(rule.code, fetch_from, fetch_to)
-        if df_prices is None or df_prices.empty:
-            print("No final data.")
-            return
-        price_cache[rule.code] = sanitize_ohlcv(_normalize_index(df_prices))
+    final_rows: list[dict[str, Any]] = []
+    for _, selected in df_final_candidates.iterrows():
+        rule = _fixed_rule_from_row(selected)
+        if rule.code not in price_cache:
+            df_prices = fetcher.get_daily_stock_prices(rule.code, fetch_from, fetch_to)
+            if df_prices is None or df_prices.empty:
+                final_rows.append(
+                    {
+                        "Code": rule.code,
+                        "TargetPercent": rule.target_percent,
+                        "StopLossPercent": rule.stop_loss_percent,
+                        "Threshold": rule.threshold,
+                        "ResearchScore": int(selected["ResearchScore"]),
+                        "Status": "ERROR",
+                        "FailedChecks": "no_final_data",
+                    }
+                )
+                continue
+            price_cache[rule.code] = sanitize_ohlcv(_normalize_index(df_prices))
 
-    _print_header("3) Final evaluation: locked params, daily retrain simulation")
-    final_summary, final_trades, final_predictions = _final_evaluation_rolling(
-        price_cache[rule.code],
-        rule,
-        config,
-        settings,
-    )
-    status, failed_checks = _adoption_checks(final_summary, settings)
+        try:
+            final_summary, final_trades, final_predictions = _final_evaluation_rolling(
+                price_cache[rule.code],
+                rule,
+                stock_configs[rule.code],
+                settings,
+            )
+        except Exception as exc:
+            print(f"  final evaluation error for {rule.code}: {exc}")
+            final_rows.append(
+                {
+                    "Code": rule.code,
+                    "TargetPercent": rule.target_percent,
+                    "StopLossPercent": rule.stop_loss_percent,
+                    "Threshold": rule.threshold,
+                    "ResearchScore": int(selected["ResearchScore"]),
+                    "Status": "ERROR",
+                    "FailedChecks": "final_evaluation_error",
+                }
+            )
+            continue
+        status, failed_checks = _adoption_checks(final_summary, settings)
+        _print_final_result(
+            rule,
+            final_summary,
+            final_trades,
+            final_predictions,
+            status,
+            failed_checks,
+        )
+        final_rows.append(
+            {
+                "Code": rule.code,
+                "TargetPercent": rule.target_percent,
+                "StopLossPercent": rule.stop_loss_percent,
+                "Threshold": rule.threshold,
+                "ResearchScore": int(selected["ResearchScore"]),
+                "Status": status,
+                "Profit": final_summary["Profit"],
+                "Trades": final_summary["Trades"],
+                "WinRate": final_summary["WinRate"],
+                "MaxDDPct": final_summary["MaxDDPct"],
+                "MonthWinRate": final_summary["MonthWinRate"],
+                "SingleMonthShare": final_summary["SingleMonthShare"],
+                "FailedChecks": ",".join(failed_checks),
+            }
+        )
 
-    print(f"Adoption status       : {status}")
-    if failed_checks:
-        print(f"Failed checks         : {', '.join(failed_checks)}")
-    print(f"Predicted days        : {len(final_predictions)}")
-    print(f"Signals / trades      : {final_summary['Trades']}")
-    print(f"Profit                : {final_summary['Profit']:+,d}")
-    print(f"Max drawdown          : {final_summary['MaxDD']:+,d} ({final_summary['MaxDDPct']}%)")
-    print(f"Win rate              : {final_summary['WinRate']}%")
-    print(f"Monthly win rate      : {final_summary['MonthWinRate']}% ({final_summary['Months']} months)")
-    print(f"Worst month           : {final_summary['WorstMonth']:+,d}")
-    print(f"Best month            : {final_summary['BestMonth']:+,d}")
-    print(f"Max losing streak     : {final_summary['LosingStreak']}")
-    print(f"Best-month dependency : {final_summary['SingleMonthShare']}% of total profit")
+    df_final = pd.DataFrame(final_rows)
+    _print_header("3) Per-stock final evaluation summary")
+    print(df_final.to_string(index=False))
 
-    _print_header("Monthly final result")
-    monthly = _monthly_profit_table(final_trades)
-    print(monthly.to_string(index=False))
+    paper_test_rules = df_final[df_final["Status"].isin(["PASS", "REVIEW"])]
+    _print_header("Paper-test rules (PASS and REVIEW)")
+    if paper_test_rules.empty:
+        print("No stock qualified for a paper-test rule.")
+    else:
+        for _, row in paper_test_rules.iterrows():
+            print(f"- code: \"{row['Code']}\"  # {row['Status']}")
+            print("  ai_params:")
+            print(f"    target_percent: {row['TargetPercent']}")
+            print(f"    threshold: {row['Threshold']}")
+            print(f"    stop_loss_percent: {row['StopLossPercent']}")
 
-    _print_header("Config values to lock if accepted")
-    print("target_stock:")
-    print(f"  code: \"{rule.code}\"")
-    print("  ai_params:")
-    print(f"    target_percent: {rule.target_percent}")
-    print(f"    threshold: {rule.threshold}")
-    print(f"    stop_loss_percent: {rule.stop_loss_percent}")
+    recommended_code = _save_selection_result(df_final, settings)
+    _print_header("Recommended stock")
+    if recommended_code:
+        print(f"Recommended: {recommended_code}")
+        print("Method  : highest research score among stocks that passed final checks")
+    else:
+        print("No stock passed all final checks.")
+    print("Slack notification targets are controlled by notify_slack in config.yaml.")
+    print(f"Saved   : {settings.result_path}")
 
 
 if __name__ == "__main__":

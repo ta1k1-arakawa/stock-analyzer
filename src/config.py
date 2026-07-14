@@ -38,8 +38,8 @@ class AIParams:
 
 
 @dataclass
-class LogOnlyStock:
-    """通知せず、銘柄別のモデルと売買ログだけを運用する銘柄。"""
+class StockConfig:
+    """学習・バックテスト・予測で共通して扱う銘柄設定。"""
 
     stock_code: str
     stock_name: str
@@ -59,17 +59,16 @@ class AppConfig:
     ai_params: AIParams = field(default_factory=AIParams)
     tech_params: dict[str, Any] = field(default_factory=dict)
     training_settings: dict[str, Any] = field(default_factory=dict)
-    backtest_candidates: list[str] = field(default_factory=list)
-    log_only_stocks: list[LogOnlyStock] = field(default_factory=list)
-    model_path: Path = Path("models/stock_ai_model_8306.pkl")
-    trade_log_path: Path = Path("data/trade_log_8306.csv")
-    notify_slack: bool = True
+    stocks: list[StockConfig] = field(default_factory=list)
+    model_path: Path = Path()
+    trade_log_path: Path = Path()
+    selection_path: Path = Path("data/backtest_selection.yaml")
 
     # 元の生 YAML 辞書（後方互換用）
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
-    def for_log_only_stock(self, stock: LogOnlyStock) -> "AppConfig":
-        """既存の学習・予測処理をログ専用銘柄向けに再利用する。"""
+    def for_stock(self, stock: StockConfig) -> "AppConfig":
+        """共通設定へ1銘柄の実行時設定を重ねる。"""
 
         return replace(
             self,
@@ -78,8 +77,7 @@ class AppConfig:
             ai_params=stock.ai_params,
             model_path=stock.model_path,
             trade_log_path=stock.trade_log_path,
-            notify_slack=stock.notify_slack,
-            log_only_stocks=[],
+            stocks=[],
         )
 
 
@@ -187,6 +185,14 @@ def _build_ai_params(raw: dict[str, Any], base: AIParams | None = None) -> AIPar
     )
 
 
+def _stock_model_path(code: str) -> Path:
+    return Path(f"models/stock_ai_model_{code}.pkl")
+
+
+def _stock_trade_log_path(code: str) -> Path:
+    return Path(f"data/trade_log_{code}.csv")
+
+
 def _as_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -197,10 +203,25 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return bool(value)
 
 
-def _stock_trade_log_path(code: str, value: Any = None) -> Path:
-    if value in (None, "", "auto"):
-        return Path(f"data/trade_log_{code}.csv")
-    return Path(str(value))
+def _load_selection_result(path: Path, logger: logging.Logger) -> dict[str, Any]:
+    if not path.exists():
+        logger.warning(
+            "バックテスト結果 %s がありません。銘柄別ルールには共通設定を使います。",
+            path,
+        )
+        return {}
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            result = yaml.safe_load(f) or {}
+    except Exception:
+        logger.exception("バックテスト結果 %s を読み込めませんでした。", path)
+        return {}
+
+    if not isinstance(result, dict):
+        logger.warning("バックテスト結果 %s の形式が不正です。", path)
+        return {}
+    return result
 
 
 def load_app(
@@ -253,59 +274,60 @@ def load_app(
             console=console,
         )
 
-    # AppConfig 構築
-    ts = raw.get("target_stock", {})
-    ai_raw = ts.get("ai_params", {})
+    # AppConfig 構築: 銘柄は stocks の1か所だけを情報源にする。
+    common_ai_params = _build_ai_params(raw.get("ai_params", {}))
     training = raw.get("training_settings", {})
+    backtest_raw = raw.get("backtest_settings", {})
+    selection_path = Path(backtest_raw.get("result_path", "data/backtest_selection.yaml"))
+    selection = _load_selection_result(selection_path, logger)
+    accepted_rules = selection.get("rules", {})
+    if not isinstance(accepted_rules, dict):
+        accepted_rules = {}
 
-    primary_code = str(ts.get("code", "")).strip()
-    primary_ai_params = _build_ai_params(ai_raw)
-    primary_trade_log_path = _stock_trade_log_path(primary_code, ts.get("trade_log_path"))
-    primary_notify_slack = _as_bool(ts.get("notify_slack"), True)
-    log_only_stocks: list[LogOnlyStock] = []
-    seen_codes = {primary_code}
-
-    for item in raw.get("log_only_stocks", []):
+    stocks: list[StockConfig] = []
+    seen_codes: set[str] = set()
+    for item in raw.get("stocks", []):
         if not isinstance(item, dict):
-            logger.warning("log_only_stocks の不正な設定をスキップします: %r", item)
+            logger.warning("stocks の不正な設定をスキップします: %r", item)
             continue
 
         code = str(item.get("code", "")).strip()
         if not code or code in seen_codes:
-            logger.warning("log_only_stocks の空または重複した銘柄をスキップします: %r", code)
+            logger.warning("stocks の空または重複した銘柄をスキップします: %r", code)
             continue
 
         item_ai_raw = item.get("ai_params", {})
         if not isinstance(item_ai_raw, dict):
-            logger.warning("%s の ai_params が不正なため主銘柄の設定を使用します。", code)
+            logger.warning("%s の ai_params が不正なため共通設定を使用します。", code)
             item_ai_raw = {}
+        stock_ai_params = _build_ai_params(item_ai_raw, common_ai_params)
 
-        log_only_stocks.append(
-            LogOnlyStock(
+        rule = accepted_rules.get(code, {})
+        if isinstance(rule, dict):
+            stock_ai_params = _build_ai_params(rule, stock_ai_params)
+
+        stocks.append(
+            StockConfig(
                 stock_code=code,
                 stock_name=str(item.get("name", code)),
-                ai_params=_build_ai_params(item_ai_raw, primary_ai_params),
-                model_path=Path(
-                    item.get("model_save_path", f"models/stock_ai_model_{code}.pkl")
-                ),
-                trade_log_path=_stock_trade_log_path(code, item.get("trade_log_path")),
+                ai_params=stock_ai_params,
+                model_path=_stock_model_path(code),
+                trade_log_path=_stock_trade_log_path(code),
                 notify_slack=_as_bool(item.get("notify_slack"), False),
             )
         )
         seen_codes.add(code)
 
+    if not stocks:
+        logger.critical("config.yaml の stocks に有効な銘柄がありません。")
+
     config = AppConfig(
-        stock_code=primary_code,
-        stock_name=ts.get("name", ts.get("code", "")),
-        feature_columns=ts.get("feature_columns", []),
-        ai_params=primary_ai_params,
+        feature_columns=raw.get("feature_columns", []),
+        ai_params=common_ai_params,
         tech_params=raw.get("technical_analysis_params", {}),
         training_settings=training,
-        backtest_candidates=raw.get("backtest_candidates", []),
-        log_only_stocks=log_only_stocks,
-        model_path=Path(training.get("model_save_path", "models/stock_ai_model_8306.pkl")),
-        trade_log_path=primary_trade_log_path,
-        notify_slack=primary_notify_slack,
+        stocks=stocks,
+        selection_path=selection_path,
         raw=raw,
     )
 

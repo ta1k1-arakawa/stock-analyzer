@@ -20,17 +20,14 @@ from src.tracker import TradeTracker
 logger = logging.getLogger(LOGGER_NAME)
 
 
-def run_prediction(config: AppConfig, notification_enabled: bool | None = None) -> None:
+def run_prediction(config: AppConfig, notification_enabled: bool = False) -> None:
     """1銘柄を予測し、必要なら通知しつつ売買ログを更新する。"""
 
     logger.info("=== 株価分析・通知システム (AI本番運用版) 起動 ===")
 
     if not config.stock_code:
-        logger.critical("config.yaml に監視対象銘柄 (target_stock.code) が設定されていません。")
+        logger.critical("実行対象の銘柄コードが設定されていません。")
         return
-
-    if notification_enabled is None:
-        notification_enabled = config.notify_slack
 
     # --- データ取得 ---
     fetcher = YFinanceFetcher()
@@ -59,7 +56,7 @@ def run_prediction(config: AppConfig, notification_enabled: bool | None = None) 
     elif notification_enabled:
         logger.warning("SLACK_WEBHOOK_URL が設定されていないため、Slack 通知は行われません。")
     else:
-        logger.info("ログ専用銘柄のため、Slack 通知は行いません。")
+        logger.info("config.yaml で通知対象外のため、Slack通知は行いません。")
 
     # --- AI モデルの読み込み ---
     model_path = config.model_path
@@ -179,7 +176,7 @@ def run_prediction(config: AppConfig, notification_enabled: bool | None = None) 
         elif notification_enabled:
             logger.info("Slack 設定がないため通知はスキップしました。")
         else:
-            logger.info("ログ専用銘柄の予測・ログ更新が完了しました。")
+            logger.info("通知対象外銘柄の予測・ログ更新が完了しました。")
 
     except Exception as e:
         logger.error("予測プロセス中にエラーが発生: %s", e)
@@ -188,14 +185,17 @@ def run_prediction(config: AppConfig, notification_enabled: bool | None = None) 
 
 
 def run_all_predictions(config: AppConfig) -> None:
-    """銘柄ごとの設定に従って、通知とログ更新を独立して処理する。"""
+    """全銘柄のログを更新し、設定で選んだ銘柄だけ通知する。"""
 
-    targets = [(config, config.notify_slack)] + [
-        (stock_config, stock_config.notify_slack)
-        for stock in config.log_only_stocks
-        for stock_config in [config.for_log_only_stock(stock)]
-    ]
-    for stock_config, notification_enabled in targets:
+    notification_codes = [stock.stock_code for stock in config.stocks if stock.notify_slack]
+    if notification_codes:
+        logger.info("Slack通知対象: %s", ", ".join(notification_codes))
+    else:
+        logger.warning("config.yaml で notify_slack: true の銘柄がありません。")
+
+    for stock in config.stocks:
+        stock_config = config.for_stock(stock)
+        notification_enabled = stock.notify_slack
         try:
             run_prediction(stock_config, notification_enabled=notification_enabled)
         except Exception:

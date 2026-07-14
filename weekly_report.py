@@ -150,9 +150,9 @@ def _print_ranking(title: str, summaries: list[dict], stats_key: str) -> None:
 
 def run() -> None:
     config, _ = load_app(log_file="weekly_report.log", console=False)
-    targets = [(config.stock_code, config.stock_name, config.trade_log_path)] + [
+    targets = [
         (stock.stock_code, stock.stock_name, stock.trade_log_path)
-        for stock in config.log_only_stocks
+        for stock in config.stocks
     ]
     today = datetime.now().date()
     summaries = [

@@ -103,33 +103,12 @@ def train_ai_model(config: AppConfig) -> bool:
 
 
 def train_all_models(config: AppConfig) -> bool:
-    """主銘柄が学習できた場合だけ予測処理の続行を許可する。"""
+    """設定された全銘柄を同じ扱いで学習する。"""
 
     logger = logging.getLogger(LOGGER_NAME)
-
-    try:
-        primary_succeeded = train_ai_model(config)
-    except Exception:
-        logger.exception(
-            "主銘柄 %s (%s) の学習中に予期しないエラーが発生しました。",
-            config.stock_name,
-            config.stock_code,
-        )
-        primary_succeeded = False
-
-    if not primary_succeeded:
-        logger.critical(
-            "主銘柄 %s (%s) の学習に失敗したため、予測・通知を停止します。",
-            config.stock_name,
-            config.stock_code,
-        )
-        return False
-
-    log_only_targets = [
-        config.for_log_only_stock(stock) for stock in config.log_only_stocks
-    ]
     failed_stocks: list[str] = []
-    for stock_config in log_only_targets:
+    for stock in config.stocks:
+        stock_config = config.for_stock(stock)
         try:
             if not train_ai_model(stock_config):
                 failed_stocks.append(stock_config.stock_code)
@@ -143,10 +122,21 @@ def train_all_models(config: AppConfig) -> bool:
 
     if failed_stocks:
         logger.warning(
-            "ログ専用銘柄の学習に失敗しました。該当銘柄だけ予測をスキップします: %s",
+            "学習に失敗した銘柄があります: %s",
             ", ".join(failed_stocks),
         )
 
+    failed_notification_stocks = [
+        stock.stock_code
+        for stock in config.stocks
+        if stock.notify_slack and stock.stock_code in failed_stocks
+    ]
+    if failed_notification_stocks:
+        logger.critical(
+            "通知対象銘柄の学習に失敗したため通知処理を停止します: %s",
+            ", ".join(failed_notification_stocks),
+        )
+        return False
     return True
 
 
