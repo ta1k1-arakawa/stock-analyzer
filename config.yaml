@@ -34,7 +34,7 @@ stocks:
   - code: "5020"
     name: "ENEOS"
     paper_trade: true
-    notify_slack: false
+    notify_slack: true
   - code: "9432"
     name: "NTT"
     paper_trade: false
