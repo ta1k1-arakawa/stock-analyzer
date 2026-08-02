@@ -143,6 +143,17 @@ GitHub Actions で Slack 通知を使う場合は、リポジトリの Secrets �
 
 ## 開発メモ
 
+### 固定OHLCVベンチマーク
+
+評価用価格は `data/benchmark/ohlcv/<銘柄コード>.csv` に固定し、`manifest.json` のSHA-256で検証します。通常は再生成しません。明示的に更新するときだけ外部通信を許可して次を実行します。
+
+```bash
+python scripts/generate_benchmark.py
+python scripts/validate_benchmark.py
+```
+
+固定データの利用側は `FixedOHLCVLoader` を使用します。CSV不足、期間・列・日付・ハッシュの不整合は即時エラーになり、Yahoo Financeへフォールバックしません。
+
 - データ取得は Yahoo Finance の chart API を使っています。
 - 日本株コードは `8306` のように指定し、内部で `8306.T` に変換されます。
 - AIモデルは `lightgbm.LGBMClassifier` です。
