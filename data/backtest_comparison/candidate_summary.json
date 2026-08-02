@@ -1,6 +1,34 @@
 {
   "baseline_commit": "2975e3375c615052bd3a1ab2e5a24e723e94c46b",
   "candidate_commit": "94b016575d49436bd4017a21a1de252ab0d95834",
+  "comparison_reference_metrics": {
+    "duplicate_capital_trade_count": 0,
+    "gap_down_stop_count": 26,
+    "max_capital_overlap": 0.0,
+    "max_drawdown": -123801.98571775,
+    "max_drawdown_percent": -41.26732857,
+    "max_simultaneous_locked_capital": 298471.4244646,
+    "max_simultaneous_positions": 1,
+    "monthly_win_rate": 35.71428571,
+    "normal_stop_count": 1,
+    "profit": -110765.79826181,
+    "profit_by_stock": {
+      "1570": -22167.0653516,
+      "4188": 5693.6772882,
+      "4689": 2374.12786016,
+      "5020": 5194.84053178,
+      "7211": -43389.29000366,
+      "7267": 3515.02384153,
+      "8306": -56506.22508081,
+      "9432": -5480.88734741
+    },
+    "skip_counts": {
+      "SKIPPED_MAX_OPEN_POSITIONS": 486,
+      "SKIPPED_NO_FUTURE_DATA": 1
+    },
+    "trades": 140,
+    "win_rate": 42.14285714
+  },
   "config_hash": "4ae7585cf39d362f61758a9aca3ff198089bed4de2d6545e4978d6d44811ef90",
   "coordinate_evaluations": 1800,
   "coordinate_passes": 3,
@@ -30,6 +58,7 @@
     "9432": -5480.88734741
   },
   "seed": 42,
+  "selected_rules_sha256": "26b660e7a3625005c2c2be7b3f9db332370c09a8c7564f6844015c4cf09aa646",
   "selection_status": "PASS",
   "skipped_by_reason": {
     "SKIPPED_MAX_OPEN_POSITIONS": 486,

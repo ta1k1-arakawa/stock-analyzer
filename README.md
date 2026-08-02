@@ -154,6 +154,16 @@ python scripts/validate_benchmark.py
 
 固定データの利用側は `FixedOHLCVLoader` を使用します。CSV不足、期間・列・日付・ハッシュの不整合は即時エラーになり、Yahoo Financeへフォールバックしません。
 
+### 固定baseline比較
+
+detached HEADかつcleanなbaseline worktreeを、固定OHLCVだけで比較します。baselineのファイルは変更せず、外部通信が発生した場合は失敗します。
+
+```bash
+python compare_evaluators.py --baseline-worktree ../stock-analyzer-baseline
+```
+
+結果は `data/backtest_comparison/` に保存されます。`run_metadata.json` だけが実行日時を含み、それ以外は同一入力に対して決定的です。この比較は診断専用であり、参考期間の結果をルール選択へ戻してはいけません。
+
 - データ取得は Yahoo Finance の chart API を使っています。
 - 日本株コードは `8306` のように指定し、内部で `8306.T` に変換されます。
 - AIモデルは `lightgbm.LGBMClassifier` です。
