@@ -6,3 +6,4 @@ joblib
 PyYAML
 requests
 python-dotenv
+pytest

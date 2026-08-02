@@ -1,0 +1,2 @@
+iteration_id,changed_at,change_summary,baseline_metrics,candidate_metrics,baseline_commit,candidate_commit,decision,reason,data_snapshot_id,test_data_invalidated
+000,2026-08-02,baseline frozen,,,,2975e3375c615052bd3a1ab2e5a24e723e94c46b,,PENDING,awaiting fixed snapshot,,false
