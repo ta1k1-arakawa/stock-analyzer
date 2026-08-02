@@ -1,10 +1,12 @@
 {
   "baseline_commit": "2975e3375c615052bd3a1ab2e5a24e723e94c46b",
-  "candidate_commit": "f1f4346de17465a8ebb958c3ccaf9186e7488a43",
-  "config_hash": "14fa41ddfd85b9585a72f1b8b2a9c8de5f121223228e2aeb734e9ec3213d4928",
-  "max_drawdown": -66277.34830537,
-  "max_drawdown_percent": -22.09244944,
-  "monthly_win_rate": 57.14285714,
+  "candidate_commit": "2b181a373ab8a2623c29a1cdb9832a908c0d7bab",
+  "config_hash": "4ae7585cf39d362f61758a9aca3ff198089bed4de2d6545e4978d6d44811ef90",
+  "coordinate_evaluations": 1800,
+  "coordinate_passes": 3,
+  "max_drawdown": -123801.98571775,
+  "max_drawdown_percent": -41.26732857,
+  "monthly_win_rate": 35.71428571,
   "periods": {
     "reference_from": "2025-04-01",
     "reference_to": "2026-05-20",
@@ -16,26 +18,40 @@
     "max_open_positions": 1,
     "max_position_percent": 100.0
   },
-  "profit": -22336.74624194,
+  "profit": -110765.79826181,
   "profit_by_stock": {
-    "1570": 7827.4724856,
-    "4188": 43876.5067686,
-    "4689": 2223.66961746,
-    "5020": 5688.87709952,
-    "7211": -44825.71591748,
-    "7267": 8804.73730557,
-    "8306": -47758.35850184,
-    "9432": 1826.06490063
+    "1570": -22167.0653516,
+    "4188": 5693.6772882,
+    "4689": 2374.12786016,
+    "5020": 5194.84053178,
+    "7211": -43389.29000366,
+    "7267": 3515.02384153,
+    "8306": -56506.22508081,
+    "9432": -5480.88734741
   },
   "seed": 42,
+  "selection_status": "PASS",
   "skipped_by_reason": {
-    "SKIPPED_MAX_OPEN_POSITIONS": 660,
-    "SKIPPED_NO_FUTURE_DATA": 4
+    "SKIPPED_MAX_OPEN_POSITIONS": 486,
+    "SKIPPED_NO_FUTURE_DATA": 1
   },
   "snapshot_hash": "788f37b6724d34f236977815ec6283af638e71fbafefa3dd9bc0f20d83764c2c",
   "snapshot_id": "yahoo-jp-adjusted-2020-01-01-2026-05-20-788f37b6724d",
-  "trades": 139,
-  "win_rate": 46.76258993,
-  "working_tree_diff_hash": "8efd34910c28ee1c72190cbd1c0d9944cf635a6d552091d98626a2d9b612d2f4",
+  "trades": 140,
+  "validation_failed_check_count": 0,
+  "validation_failed_checks": [],
+  "validation_max_stock_profit_share": 22.88501636,
+  "validation_min_fold_profit": 71912.41577929,
+  "validation_month_win_rate": 94.73684211,
+  "validation_positive_folds": 3,
+  "validation_skip_counts": {
+    "SKIPPED_MAX_OPEN_POSITIONS": 541,
+    "SKIPPED_NO_FUTURE_DATA": 12
+  },
+  "validation_total_profit": 295772.95163845,
+  "validation_trade_count": 178,
+  "validation_worst_max_drawdown_percent": 14.24665152,
+  "win_rate": 42.14285714,
+  "working_tree_diff_hash": "101751d205cea4a84d07ab5ceb30ac167eb08b7ac195e6e7ac4404a9c3223d31",
   "working_tree_dirty": true
 }

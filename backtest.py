@@ -41,6 +41,37 @@ class Rule:
     validation_score: float
 
 
+@dataclass(frozen=True)
+class PredictionCacheKey:
+    stock_code: str
+    fold: int
+    target_percent: float
+    stop_loss_percent: float
+    feature_columns: tuple[str, ...]
+    seed: int
+    training_cutoff: str
+
+
+@dataclass
+class CachedValidationPrediction:
+    key: PredictionCacheKey
+    validation_from: str
+    validation_to: str
+    validation_dates: list[str]
+    orders: list[dict[str, Any]]
+    training_row_count: int
+    training_last_feature_date: str
+    training_last_label_confirmed_date: str
+
+
+@dataclass(frozen=True)
+class SelectionConstraints:
+    min_trades: int
+    max_drawdown_percent: float
+    min_month_win_rate: float
+    max_stock_profit_share: float
+
+
 def _build_model() -> lgb.LGBMClassifier:
     return lgb.LGBMClassifier(
         random_state=MODEL_SEED,
@@ -100,31 +131,20 @@ def eligible_training_rows(
     return ready[(ready.index < cutoff) & (ready["LabelConfirmedDate"] < cutoff)]
 
 
-def _trade_metrics(
-    df_ta: pd.DataFrame,
-    dates: pd.Index,
-    probabilities: Any,
-    threshold: float,
-    ai: AIParams,
-    stop: float,
-    budget: int,
+def _independent_metrics(
+    orders: list[dict[str, Any]], threshold: float, budget: int,
 ) -> dict[str, float | int]:
     profits: list[float] = []
-    for date, probability in zip(dates, probabilities):
-        if float(probability) < threshold:
+    for order in orders:
+        if float(order["prob"]) < threshold or order.get("skip_reason"):
             continue
-        position = int(df_ta.index.get_loc(date))
-        execution = simulate_execution(
-            df_ta, position, ai.future_days, stop,
-            ai.entry_slippage_percent, ai.exit_slippage_percent,
-            ai.stop_slippage_percent, ai.commission_percent,
-        )
-        if execution is None or execution.entry_price <= 0:
+        entry_price = float(order["entry_price"])
+        if entry_price <= 0:
             continue
-        quantity = int(budget / execution.entry_price)
+        quantity = int(budget / entry_price)
         if quantity <= 0:
             continue
-        profits.append(execution.return_percent / 100 * execution.entry_price * quantity)
+        profits.append(float(order["return_percent"]) / 100 * entry_price * quantity)
     return {
         "profit": round(sum(profits), 8),
         "trades": len(profits),
@@ -132,30 +152,69 @@ def _trade_metrics(
     }
 
 
-def research_candidate_rows(
+def _validation_order(
+    code: str,
+    df_until_validation_end: pd.DataFrame,
+    signal_date: pd.Timestamp,
+    probability: float,
+    ai: AIParams,
+    stop: float,
+) -> dict[str, Any]:
+    signal_position = int(df_until_validation_end.index.get_loc(signal_date))
+    entry_position = signal_position + 1
+    planned_entry = (
+        df_until_validation_end.index[entry_position]
+        if entry_position < len(df_until_validation_end) else signal_date
+    )
+    base = {
+        "code": code,
+        "signal_date": signal_date.strftime("%Y-%m-%d"),
+        "planned_entry_date": planned_entry.strftime("%Y-%m-%d"),
+        "order_date": planned_entry.strftime("%Y-%m-%d"),
+        "prob": round(float(probability), 8),
+        "commission_percent": ai.commission_percent,
+    }
+    execution = simulate_execution(
+        df_until_validation_end, signal_position, ai.future_days, stop,
+        ai.entry_slippage_percent, ai.exit_slippage_percent,
+        ai.stop_slippage_percent, ai.commission_percent,
+    )
+    if execution is None:
+        return {**base, "skip_reason": "SKIPPED_NO_FUTURE_DATA"}
+    return {
+        **base,
+        "entry_date": df_until_validation_end.index[execution.entry_index].strftime("%Y-%m-%d"),
+        "exit_date": df_until_validation_end.index[execution.exit_index].strftime("%Y-%m-%d"),
+        "entry_price": round(execution.entry_price, 8),
+        "exit_price": round(execution.exit_price, 8),
+        "exit_reason": execution.exit_reason,
+        "return_percent": round(execution.return_percent, 8),
+    }
+
+
+def research_candidate_cache(
     code: str,
     prices: pd.DataFrame,
     config: AppConfig,
     budget: int,
-) -> pd.DataFrame:
-    """Evaluate candidates; test metrics are diagnostic and never selection inputs."""
+) -> tuple[pd.DataFrame, dict[PredictionCacheKey, CachedValidationPrediction]]:
+    """Train once per target/stop/fold and cache validation probabilities."""
     ai = config.ai_params
     features = config.feature_columns
     research = prices[(prices.index >= RESEARCH_FROM) & (prices.index <= RESEARCH_TO)]
     df_ta = calculate_indicators(research, config.tech_params)
     rows: list[dict[str, Any]] = []
+    cache: dict[PredictionCacheKey, CachedValidationPrediction] = {}
     for target in TARGET_GRID:
         for stop in STOP_GRID:
             labelled = _labelled(df_ta, ai, target, stop)
             usable = labelled.dropna(subset=features + ["Target", "LabelConfirmedDate"])
-            for fold, (train_ratio, validation_ratio, test_ratio) in enumerate(FOLDS, 1):
+            for fold, (train_ratio, validation_ratio, _test_ratio) in enumerate(FOLDS, 1):
                 count = len(usable)
                 train_end = int(count * train_ratio)
                 validation_end = int(count * validation_ratio)
-                test_end = int(count * test_ratio)
                 validation = usable.iloc[train_end:validation_end]
-                test = usable.iloc[validation_end:test_end]
-                if len(validation) < 10 or len(test) < 10:
+                if len(validation) < 10:
                     continue
                 train = eligible_training_rows(usable.iloc[:train_end], validation.index[0], features)
                 if len(train) < 100 or train["Target"].nunique() < 2:
@@ -163,16 +222,37 @@ def research_candidate_rows(
                 model = _build_model()
                 model.fit(train[features], train["Target"].astype(int))
                 validation_probabilities = model.predict_proba(validation[features])[:, 1]
-                test_probabilities = model.predict_proba(test[features])[:, 1]
+                training_cutoff = validation.index[0].strftime("%Y-%m-%d")
+                key = PredictionCacheKey(
+                    stock_code=code,
+                    fold=fold,
+                    target_percent=target,
+                    stop_loss_percent=stop,
+                    feature_columns=tuple(features),
+                    seed=MODEL_SEED,
+                    training_cutoff=training_cutoff,
+                )
+                validation_only_prices = df_ta[df_ta.index <= validation.index.max()]
+                orders = [
+                    _validation_order(
+                        code, validation_only_prices, signal_date, probability, ai, stop
+                    )
+                    for signal_date, probability in zip(validation.index, validation_probabilities)
+                ]
+                cache[key] = CachedValidationPrediction(
+                    key=key,
+                    validation_from=validation.index.min().strftime("%Y-%m-%d"),
+                    validation_to=validation.index.max().strftime("%Y-%m-%d"),
+                    validation_dates=[date.strftime("%Y-%m-%d") for date in validation.index],
+                    orders=orders,
+                    training_row_count=len(train),
+                    training_last_feature_date=train.index.max().strftime("%Y-%m-%d"),
+                    training_last_label_confirmed_date=pd.Timestamp(
+                        train["LabelConfirmedDate"].max()
+                    ).strftime("%Y-%m-%d"),
+                )
                 for threshold in THRESHOLD_GRID:
-                    validation_metrics = _trade_metrics(
-                        df_ta, validation.index, validation_probabilities,
-                        threshold, ai, stop, budget,
-                    )
-                    test_metrics = _trade_metrics(
-                        df_ta, test.index, test_probabilities,
-                        threshold, ai, stop, budget,
-                    )
+                    validation_metrics = _independent_metrics(orders, threshold, budget)
                     rows.append(
                         {
                             "Code": code,
@@ -183,17 +263,21 @@ def research_candidate_rows(
                             "ValidationProfit": validation_metrics["profit"],
                             "ValidationTrades": validation_metrics["trades"],
                             "ValidationWins": validation_metrics["wins"],
-                            "TestProfitDiagnosticOnly": test_metrics["profit"],
-                            "TestTradesDiagnosticOnly": test_metrics["trades"],
                             "TrainLastFeatureDate": train.index.max().strftime("%Y-%m-%d"),
                             "TrainLastLabelConfirmedDate": pd.Timestamp(train["LabelConfirmedDate"].max()).strftime("%Y-%m-%d"),
                             "ValidationFrom": validation.index.min().strftime("%Y-%m-%d"),
                             "ValidationTo": validation.index.max().strftime("%Y-%m-%d"),
-                            "TestFromDiagnosticOnly": test.index.min().strftime("%Y-%m-%d"),
-                            "TestToDiagnosticOnly": test.index.max().strftime("%Y-%m-%d"),
                         }
                     )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), cache
+
+
+def research_candidate_rows(
+    code: str, prices: pd.DataFrame, config: AppConfig, budget: int,
+) -> pd.DataFrame:
+    """Compatibility wrapper returning independent validation diagnostics."""
+    rows, _ = research_candidate_cache(code, prices, config, budget)
+    return rows
 
 
 def select_rule_from_diagnostics(code: str, diagnostics: pd.DataFrame, min_trades: int) -> Rule:
@@ -220,6 +304,306 @@ def select_rule_from_diagnostics(code: str, diagnostics: pd.DataFrame, min_trade
         threshold=float(selected["Threshold"]),
         validation_score=float(selected["ValidationScore"]),
     )
+
+
+def _rule_signature(rules: dict[str, Rule]) -> tuple[tuple[str, float, float, float], ...]:
+    return tuple(
+        (code, rules[code].target_percent, rules[code].stop_loss_percent, rules[code].threshold)
+        for code in sorted(rules)
+    )
+
+
+def _cache_entry(
+    cache: dict[PredictionCacheKey, CachedValidationPrediction], code: str,
+    fold: int, rule: Rule,
+) -> CachedValidationPrediction:
+    matches = [
+        value for key, value in cache.items()
+        if key.stock_code == code and key.fold == fold
+        and key.target_percent == rule.target_percent
+        and key.stop_loss_percent == rule.stop_loss_percent
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(f"validation cache lookup failed: {code} fold={fold} rule={rule}")
+    return matches[0]
+
+
+def assert_validation_folds_non_overlapping(
+    cache: dict[PredictionCacheKey, CachedValidationPrediction],
+) -> None:
+    fold_dates: dict[int, set[pd.Timestamp]] = {}
+    for entry in cache.values():
+        fold_dates.setdefault(entry.key.fold, set()).update(
+            pd.Timestamp(value) for value in entry.validation_dates
+        )
+    folds = sorted(fold_dates)
+    for index, left in enumerate(folds):
+        for right in folds[index + 1:]:
+            overlap = fold_dates[left] & fold_dates[right]
+            if overlap:
+                raise ValueError(
+                    f"validation folds overlap: {left} and {right} at {min(overlap).date()}"
+                )
+
+
+def _portfolio_fold_metrics(
+    fold: int,
+    results: list[dict[str, Any]],
+    ledger: list[dict[str, Any]],
+    budget: int,
+) -> dict[str, Any]:
+    trades = [row for row in results if row["status"] == "FILLED"]
+    skipped = [row for row in results if row["status"] != "FILLED"]
+    profits = pd.Series([float(row.get("profit", 0.0)) for row in trades], dtype=float)
+    equity = pd.Series(
+        [float(budget)] + [float(row["equity"]) for row in ledger], dtype=float
+    )
+    drawdown_percent = (equity / equity.cummax() - 1) * 100
+    return {
+        "fold": fold,
+        "profit": round(float(profits.sum()), 8),
+        "trades": len(trades),
+        "wins": int((profits > 0).sum()),
+        "max_drawdown_percent": round(abs(float(drawdown_percent.min())), 8),
+        "skip_counts": {
+            str(reason): int(count)
+            for reason, count in pd.Series(
+                [row["status"] for row in skipped], dtype="object"
+            ).value_counts().sort_index().items()
+        },
+    }
+
+
+def classify_validation_metrics(
+    metrics: dict[str, Any], constraints: SelectionConstraints,
+) -> dict[str, Any]:
+    checks = {
+        "total_profit_positive": metrics["total_profit"] > 0,
+        "positive_folds": metrics["positive_folds"] >= 2,
+        "enough_trades": metrics["trade_count"] >= constraints.min_trades,
+        "drawdown_ok": metrics["worst_max_drawdown_percent"] <= constraints.max_drawdown_percent,
+        "monthly_stability_ok": metrics["month_win_rate"] >= constraints.min_month_win_rate,
+        "stock_dependency_ok": metrics["max_stock_profit_share"] <= constraints.max_stock_profit_share,
+    }
+    failed = [name for name, passed in checks.items() if not passed]
+    return {**metrics, "selection_status": "PASS" if not failed else "REVIEW", "failed_checks": failed, "failed_check_count": len(failed)}
+
+
+def evaluate_validation_portfolio(
+    rules: dict[str, Rule],
+    cache: dict[PredictionCacheKey, CachedValidationPrediction],
+    budget: int,
+    portfolio_settings: PortfolioSettings,
+    constraints: SelectionConstraints,
+) -> dict[str, Any]:
+    """Evaluate only cached validation predictions, resetting cash each fold."""
+    assert_validation_folds_non_overlapping(cache)
+    by_fold: list[dict[str, Any]] = []
+    all_trades: list[dict[str, Any]] = []
+    all_skipped: list[dict[str, Any]] = []
+    for fold in sorted({key.fold for key in cache}):
+        orders: list[dict[str, Any]] = []
+        calendar: set[pd.Timestamp] = set()
+        for code in sorted(rules):
+            rule = rules[code]
+            entry = _cache_entry(cache, code, fold, rule)
+            calendar.update(pd.Timestamp(value) for value in entry.validation_dates)
+            orders.extend(
+                {**order, "validation_fold": fold}
+                for order in entry.orders if float(order["prob"]) >= rule.threshold
+            )
+        orders.sort(key=lambda row: (row["order_date"], -float(row["prob"]), row["code"]))
+        results, ledger = simulate_portfolio(
+            orders, budget, portfolio_settings, sorted(calendar)
+        )
+        fold_metrics = _portfolio_fold_metrics(fold, results, ledger, budget)
+        by_fold.append(fold_metrics)
+        all_trades.extend({**row, "validation_fold": fold} for row in results if row["status"] == "FILLED")
+        all_skipped.extend({**row, "validation_fold": fold} for row in results if row["status"] != "FILLED")
+
+    trade_frame = pd.DataFrame(all_trades)
+    profits = pd.to_numeric(trade_frame.get("profit", pd.Series(dtype=float)), errors="coerce").fillna(0)
+    exit_dates = pd.to_datetime(trade_frame.get("exit_date", pd.Series(dtype=str)))
+    monthly = profits.groupby(exit_dates.dt.to_period("M")).sum() if len(profits) else pd.Series(dtype=float)
+    stock_profit = (
+        trade_frame.assign(profit=profits).groupby("code", sort=True)["profit"].sum()
+        if len(trade_frame) else pd.Series(dtype=float)
+    )
+    positive_stock_profit = stock_profit[stock_profit > 0]
+    positive_total = float(positive_stock_profit.sum())
+    dependency = (
+        float(positive_stock_profit.max()) / positive_total * 100
+        if positive_total > 0 else 0.0
+    )
+    skip_counts = {
+        str(reason): int(count)
+        for reason, count in pd.Series(
+            [row["status"] for row in all_skipped], dtype="object"
+        ).value_counts().sort_index().items()
+    }
+    metrics = {
+        "total_profit": round(sum(row["profit"] for row in by_fold), 8),
+        "positive_folds": sum(row["profit"] > 0 for row in by_fold),
+        "min_fold_profit": round(min(row["profit"] for row in by_fold), 8),
+        "worst_max_drawdown_percent": round(max(row["max_drawdown_percent"] for row in by_fold), 8),
+        "month_win_rate": round(float((monthly > 0).mean() * 100), 8) if len(monthly) else 0.0,
+        "max_stock_profit_share": round(dependency, 8),
+        "trade_count": len(all_trades),
+        "skip_counts": skip_counts,
+        "profit_by_stock": {str(code): round(float(value), 8) for code, value in stock_profit.items()},
+        "by_fold": by_fold,
+        "trades": all_trades,
+        "skipped": all_skipped,
+    }
+    return classify_validation_metrics(metrics, constraints)
+
+
+def _selection_key(
+    metrics: dict[str, Any], rules: dict[str, Rule],
+) -> tuple[Any, ...]:
+    return (
+        0 if metrics["selection_status"] == "PASS" else 1,
+        0 if metrics["selection_status"] == "PASS" else metrics["failed_check_count"],
+        -metrics["total_profit"],
+        -metrics["min_fold_profit"],
+        metrics["worst_max_drawdown_percent"],
+        -metrics["month_win_rate"],
+        metrics["max_stock_profit_share"],
+        -metrics["trade_count"],
+        _rule_signature(rules),
+    )
+
+
+def candidate_rules_from_diagnostics(
+    code: str, diagnostics: pd.DataFrame,
+) -> list[Rule]:
+    grouped = diagnostics.groupby(
+        ["TargetPercent", "StopLossPercent", "Threshold"], as_index=False
+    )["ValidationProfit"].sum()
+    return [
+        Rule(code, float(row.TargetPercent), float(row.StopLossPercent),
+             float(row.Threshold), float(row.ValidationProfit))
+        for row in grouped.sort_values(
+            ["TargetPercent", "StopLossPercent", "Threshold"], kind="mergesort"
+        ).itertuples(index=False)
+    ]
+
+
+def coordinate_select_rules(
+    initial_rules: dict[str, Rule],
+    candidates: dict[str, list[Rule]],
+    cache: dict[PredictionCacheKey, CachedValidationPrediction],
+    budget: int,
+    portfolio_settings: PortfolioSettings,
+    constraints: SelectionConstraints,
+    max_passes: int = 3,
+) -> tuple[dict[str, Rule], dict[str, Any], list[dict[str, Any]], int, int]:
+    rules = dict(initial_rules)
+    trace: list[dict[str, Any]] = []
+    evaluations = 0
+    completed_passes = 0
+    for pass_number in range(1, max_passes + 1):
+        changed = False
+        completed_passes = pass_number
+        for code in sorted(rules):
+            previous = rules[code]
+            evaluated: list[tuple[tuple[Any, ...], Rule, dict[str, Any], dict[str, Rule]]] = []
+            for candidate in candidates[code]:
+                candidate_set = dict(rules)
+                candidate_set[code] = candidate
+                metrics = evaluate_validation_portfolio(
+                    candidate_set, cache, budget, portfolio_settings, constraints
+                )
+                evaluations += 1
+                evaluated.append((_selection_key(metrics, candidate_set), candidate, metrics, candidate_set))
+            evaluated.sort(key=lambda item: item[0])
+            _, best_rule, best_metrics, _ = evaluated[0]
+            accepted_change = (
+                best_rule.target_percent,
+                best_rule.stop_loss_percent,
+                best_rule.threshold,
+            ) != (
+                previous.target_percent,
+                previous.stop_loss_percent,
+                previous.threshold,
+            )
+            if accepted_change:
+                rules[code] = best_rule
+                changed = True
+            for _, candidate, metrics, _ in evaluated:
+                trace.append(
+                    {
+                        "pass_number": pass_number,
+                        "stock_code": code,
+                        "previous_rule": json.dumps(asdict(previous), sort_keys=True),
+                        "candidate_rule": json.dumps(asdict(candidate), sort_keys=True),
+                        "candidate_metrics": json.dumps(
+                            {key: value for key, value in metrics.items() if key not in {"trades", "skipped"}},
+                            sort_keys=True,
+                        ),
+                        "accepted": bool(accepted_change and candidate == best_rule),
+                        "reason": (
+                            "ACCEPTED_BEST_PORTFOLIO"
+                            if accepted_change and candidate == best_rule
+                            else "RETAINED_CURRENT_RULE"
+                            if not accepted_change and candidate == best_rule
+                            else "NOT_BEST_PORTFOLIO"
+                        ),
+                    }
+                )
+        if not changed:
+            break
+    final_metrics = evaluate_validation_portfolio(
+        rules, cache, budget, portfolio_settings, constraints
+    )
+    return rules, final_metrics, trace, completed_passes, evaluations
+
+
+def research_test_diagnostics_after_selection(
+    code: str,
+    prices: pd.DataFrame,
+    config: AppConfig,
+    rule: Rule,
+    budget: int,
+) -> pd.DataFrame:
+    """Read the research test slices only after portfolio rule selection ends."""
+    ai = config.ai_params
+    features = config.feature_columns
+    research = prices[(prices.index >= RESEARCH_FROM) & (prices.index <= RESEARCH_TO)]
+    df_ta = calculate_indicators(research, config.tech_params)
+    labelled = _labelled(df_ta, ai, rule.target_percent, rule.stop_loss_percent)
+    usable = labelled.dropna(subset=features + ["Target", "LabelConfirmedDate"])
+    rows: list[dict[str, Any]] = []
+    for fold, (train_ratio, validation_ratio, test_ratio) in enumerate(FOLDS, 1):
+        count = len(usable)
+        train_end = int(count * train_ratio)
+        validation_end = int(count * validation_ratio)
+        test_end = int(count * test_ratio)
+        validation = usable.iloc[train_end:validation_end]
+        test = usable.iloc[validation_end:test_end]
+        train = eligible_training_rows(usable.iloc[:train_end], validation.index[0], features)
+        if len(train) < 100 or len(test) < 10 or train["Target"].nunique() < 2:
+            continue
+        model = _build_model()
+        model.fit(train[features], train["Target"].astype(int))
+        probabilities = model.predict_proba(test[features])[:, 1]
+        test_only_prices = df_ta[df_ta.index <= test.index.max()]
+        orders = [
+            _validation_order(code, test_only_prices, date, probability, ai, rule.stop_loss_percent)
+            for date, probability in zip(test.index, probabilities)
+        ]
+        metrics = _independent_metrics(orders, rule.threshold, budget)
+        rows.append(
+            {
+                "Code": code,
+                "Fold": fold,
+                "TestProfitDiagnosticOnly": metrics["profit"],
+                "TestTradesDiagnosticOnly": metrics["trades"],
+                "TestFromDiagnosticOnly": test.index.min().strftime("%Y-%m-%d"),
+                "TestToDiagnosticOnly": test.index.max().strftime("%Y-%m-%d"),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _reference_predictions(
@@ -318,6 +702,9 @@ def _summary(
     manifest: dict[str, Any],
     config_hash: str,
     settings: PortfolioSettings,
+    validation: dict[str, Any],
+    coordinate_passes: int,
+    coordinate_evaluations: int,
 ) -> dict[str, Any]:
     trades = results[results["status"] == "FILLED"].copy() if not results.empty else results
     profits = pd.to_numeric(trades.get("profit", pd.Series(dtype=float)), errors="coerce").fillna(0)
@@ -358,6 +745,19 @@ def _summary(
             str(reason): int(count)
             for reason, count in skipped["status"].value_counts().sort_index().items()
         } if len(skipped) else {},
+        "selection_status": validation["selection_status"],
+        "validation_total_profit": validation["total_profit"],
+        "validation_positive_folds": validation["positive_folds"],
+        "validation_min_fold_profit": validation["min_fold_profit"],
+        "validation_worst_max_drawdown_percent": validation["worst_max_drawdown_percent"],
+        "validation_month_win_rate": validation["month_win_rate"],
+        "validation_max_stock_profit_share": validation["max_stock_profit_share"],
+        "validation_trade_count": validation["trade_count"],
+        "validation_skip_counts": validation["skip_counts"],
+        "validation_failed_check_count": validation["failed_check_count"],
+        "validation_failed_checks": validation["failed_checks"],
+        "coordinate_passes": coordinate_passes,
+        "coordinate_evaluations": coordinate_evaluations,
     }
 
 
@@ -385,33 +785,80 @@ def run_backtest() -> dict[str, Any]:
     configured_codes = [stock.stock_code for stock in config.stocks]
     if configured_codes != manifest.get("stock_codes"):
         raise ValueError("configured stocks differ from benchmark manifest")
-    prices = {
-        code: _normalize(loader.get_daily_stock_prices(code, RESEARCH_FROM, REFERENCE_TO))
+    research_prices = {
+        code: _normalize(loader.get_daily_stock_prices(code, RESEARCH_FROM, RESEARCH_TO))
         for code in configured_codes
     }
     budget = int(raw.get("budget", config.ai_params.budget))
-    min_trades = int(raw.get("min_research_trades", 10))
-    all_diagnostics: list[pd.DataFrame] = []
-    selected_rules: list[Rule] = []
+    constraints = SelectionConstraints(
+        min_trades=int(raw.get("min_research_trades", 10)),
+        max_drawdown_percent=float(raw.get("max_drawdown_percent", 15.0)),
+        min_month_win_rate=float(raw.get("min_month_win_rate", 50.0)),
+        max_stock_profit_share=float(raw.get("max_stock_profit_share", 70.0)),
+    )
+    diagnostics_by_code: dict[str, pd.DataFrame] = {}
+    prediction_cache: dict[PredictionCacheKey, CachedValidationPrediction] = {}
+    initial_rules: dict[str, Rule] = {}
+    candidates_by_code: dict[str, list[Rule]] = {}
     for stock in config.stocks:
         stock_config = config.for_stock(stock)
-        diagnostics = research_candidate_rows(stock.stock_code, prices[stock.stock_code], stock_config, budget)
+        diagnostics, stock_cache = research_candidate_cache(
+            stock.stock_code, research_prices[stock.stock_code], stock_config, budget
+        )
         if diagnostics.empty:
             raise RuntimeError(f"no research diagnostics for {stock.stock_code}")
-        rule = select_rule_from_diagnostics(stock.stock_code, diagnostics, min_trades)
-        selected_rules.append(rule)
+        diagnostics_by_code[stock.stock_code] = diagnostics
+        prediction_cache.update(stock_cache)
+        initial_rules[stock.stock_code] = select_rule_from_diagnostics(
+            stock.stock_code, diagnostics, constraints.min_trades
+        )
+        candidates_by_code[stock.stock_code] = candidate_rules_from_diagnostics(
+            stock.stock_code, diagnostics
+        )
+
+    assert_validation_folds_non_overlapping(prediction_cache)
+    selected_rule_map, validation_metrics, selection_trace, coordinate_passes, coordinate_evaluations = coordinate_select_rules(
+        initial_rules,
+        candidates_by_code,
+        prediction_cache,
+        budget,
+        portfolio_settings,
+        constraints,
+        max_passes=3,
+    )
+    selected_rules = [selected_rule_map[code] for code in sorted(selected_rule_map)]
+    all_diagnostics: list[pd.DataFrame] = []
+    stock_map = {stock.stock_code: stock for stock in config.stocks}
+    for rule in selected_rules:
+        diagnostics = diagnostics_by_code[rule.code]
         selected_only = diagnostics[
             (diagnostics["TargetPercent"] == rule.target_percent)
             & (diagnostics["StopLossPercent"] == rule.stop_loss_percent)
             & (diagnostics["Threshold"] == rule.threshold)
         ].copy()
-        selected_only["SelectionBasis"] = "VALIDATION_ONLY"
+        selected_only["SelectionBasis"] = "VALIDATION_PORTFOLIO_COORDINATE_SEARCH"
+        test_diagnostics = research_test_diagnostics_after_selection(
+            rule.code,
+            research_prices[rule.code],
+            config.for_stock(stock_map[rule.code]),
+            rule,
+            budget,
+        )
+        selected_only = selected_only.merge(
+            test_diagnostics, on=["Code", "Fold"], how="left", validate="one_to_one"
+        )
         all_diagnostics.append(selected_only)
+
+    # Reference rows are exposed only after validation selection and research-test
+    # diagnostics have fully completed.
+    prices = {
+        code: _normalize(loader.get_daily_stock_prices(code, RESEARCH_FROM, REFERENCE_TO))
+        for code in configured_codes
+    }
 
     predictions: list[dict[str, Any]] = []
     cutoffs: list[dict[str, Any]] = []
     orders: list[dict[str, Any]] = []
-    stock_map = {stock.stock_code: stock for stock in config.stocks}
     for rule in selected_rules:
         stock_config = config.for_stock(stock_map[rule.code])
         stock_predictions, stock_cutoffs, stock_orders = _reference_predictions(
@@ -439,6 +886,10 @@ def run_backtest() -> dict[str, Any]:
     predictions_frame = pd.DataFrame(predictions)
     cutoffs_frame = pd.DataFrame(cutoffs)
     results_frame = pd.DataFrame(result_rows)
+    validation_by_fold = pd.DataFrame(validation_metrics["by_fold"]).sort_values("fold")
+    validation_trades = pd.DataFrame(validation_metrics["trades"])
+    validation_skipped = pd.DataFrame(validation_metrics["skipped"])
+    trace_frame = pd.DataFrame(selection_trace)
 
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
     _write_csv(rules_frame, RESULT_DIR / "selected_rules.csv", ["code", "target_percent", "stop_loss_percent", "threshold", "validation_score"])
@@ -452,8 +903,41 @@ def run_backtest() -> dict[str, Any]:
     _write_csv(ledger, RESULT_DIR / "daily_ledger.csv", ["date", "available_cash", "pending_cash", "locked_capital", "open_positions", "equity"])
     cutoff_columns = ["code", "signal_date", "training_data_last_feature_date", "training_data_last_label_confirmed_date", "training_row_count", "model_seed", "target_percent", "stop_loss_percent", "threshold"]
     _write_csv(cutoffs_frame, RESULT_DIR / "training_cutoffs.csv", cutoff_columns)
+    _write_csv(
+        trace_frame,
+        RESULT_DIR / "portfolio_selection_trace.csv",
+        ["pass_number", "stock_code", "previous_rule", "candidate_rule", "candidate_metrics", "accepted", "reason"],
+    )
+    _write_csv(
+        validation_by_fold,
+        RESULT_DIR / "validation_portfolio_by_fold.csv",
+        ["fold", "profit", "trades", "wins", "max_drawdown_percent", "skip_counts"],
+    )
+    validation_trade_columns = ["validation_fold", "code", "signal_date", "planned_entry_date", "entry_date", "exit_date", "prob", "entry_price", "exit_price", "exit_reason", "available_cash", "qty", "entry_commission", "exit_commission", "profit", "status"]
+    _write_csv(validation_trades, RESULT_DIR / "validation_portfolio_trades.csv", validation_trade_columns)
+    validation_skip_columns = ["validation_fold", "code", "signal_date", "planned_entry_date", "prob", "status", "available_cash"]
+    _write_csv(validation_skipped, RESULT_DIR / "validation_portfolio_skipped_orders.csv", validation_skip_columns)
+    selection_summary = {
+        key: value for key, value in validation_metrics.items()
+        if key not in {"trades", "skipped"}
+    }
+    selection_summary.update(
+        {
+            "coordinate_passes": coordinate_passes,
+            "coordinate_evaluations": coordinate_evaluations,
+            "initial_rules": {code: asdict(initial_rules[code]) for code in sorted(initial_rules)},
+            "selected_rules": {code: asdict(selected_rule_map[code]) for code in sorted(selected_rule_map)},
+        }
+    )
+    (RESULT_DIR / "portfolio_selection_summary.json").write_text(
+        json.dumps(selection_summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     config_hash = sha256_file(Path("config.yaml"))
-    summary = _summary(results_frame, ledger, manifest, config_hash, portfolio_settings)
+    summary = _summary(
+        results_frame, ledger, manifest, config_hash, portfolio_settings,
+        validation_metrics, coordinate_passes, coordinate_evaluations,
+    )
     (RESULT_DIR / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
