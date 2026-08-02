@@ -1,0 +1,25 @@
+{
+  "fold_profits": [
+    {
+      "fold": 1,
+      "profit": 136749.10260609
+    },
+    {
+      "fold": 2,
+      "profit": 71912.41577929
+    },
+    {
+      "fold": 3,
+      "profit": 87111.43325307
+    }
+  ],
+  "max_drawdown_percent": 14.24665152,
+  "max_stock_profit_share": 22.88501636,
+  "monthly_win_rate": 94.73684211,
+  "profit": 295772.95163845,
+  "skip_counts": {
+    "SKIPPED_MAX_OPEN_POSITIONS": 541,
+    "SKIPPED_NO_FUTURE_DATA": 12
+  },
+  "trade_count": 178
+}

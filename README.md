@@ -71,6 +71,14 @@ Slack 通知が不要な場合、`.env` がなくても予測処理自体は実�
 python backtest.py
 ```
 
+利益改善の反復中は、研究検証だけを表示するブラインドモードを使用します。
+
+```bash
+python backtest.py --mode loop-validation
+```
+
+このモードは価格アクセスを2020-01-01〜2025-03-31に制限し、研究内テスト診断と参考期間評価を実行しません。出力は `data/loop_validation_results/summary.json` の検証ポートフォリオ指標だけです。通常の `python backtest.py` は従来どおりfull診断を行います。
+
 AIモデルを学習します。
 
 ```bash

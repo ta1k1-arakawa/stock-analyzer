@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import argparse
+import csv
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import hashlib
@@ -14,7 +16,9 @@ import lightgbm as lgb
 import pandas as pd
 
 from src.analysis import calculate_indicators, create_target_variable, sanitize_ohlcv
-from src.benchmark import FixedOHLCVLoader, sha256_file
+from src.benchmark import (
+    REQUIRED_COLUMNS, FixedOHLCVLoader, sha256_file, snapshot_hash,
+)
 from src.config import AIParams, AppConfig, load_app
 from src.trade_simulator import PortfolioSettings, simulate_execution, simulate_portfolio
 
@@ -30,6 +34,82 @@ RESEARCH_TO = "2025-03-31"
 REFERENCE_FROM = "2025-04-01"
 REFERENCE_TO = "2026-05-20"
 RESULT_DIR = Path("data/backtest_results")
+LOOP_RESULT_DIR = Path("data/loop_validation_results")
+
+
+class BlindValidationViolation(RuntimeError):
+    """Raised when blind validation attempts to cross an allowed-data boundary."""
+
+
+class LoopValidationPriceSource:
+    """Validate the snapshot but parse OHLCV rows only through research end."""
+
+    def __init__(self, source: str | Path | Any) -> None:
+        self._delegate = source if hasattr(source, "get_daily_stock_prices") else None
+        if self._delegate is not None:
+            self.root = None
+            self.manifest = source.manifest
+            return
+        self.root = Path(source)
+        manifest_path = self.root / "manifest.json"
+        self.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        files = self.manifest.get("files", {})
+        if self.manifest.get("columns") != REQUIRED_COLUMNS or not files:
+            raise BlindValidationViolation("invalid fixed benchmark manifest")
+        for code, metadata in files.items():
+            path = self.root / "ohlcv" / f"{code}.csv"
+            if not path.is_file() or sha256_file(path) != metadata.get("sha256"):
+                raise BlindValidationViolation(f"fixed benchmark mismatch for {code}")
+        if snapshot_hash(files) != self.manifest.get("snapshot_hash"):
+            raise BlindValidationViolation("fixed benchmark snapshot hash mismatch")
+
+    def get_daily_stock_prices(
+        self, stock_code: str, date_from_str: str, date_to_str: str,
+    ) -> pd.DataFrame:
+        requested_from = pd.Timestamp(date_from_str)
+        requested_to = pd.Timestamp(date_to_str)
+        if requested_from < pd.Timestamp(RESEARCH_FROM) or requested_to > pd.Timestamp(RESEARCH_TO):
+            raise BlindValidationViolation(
+                "loop-validation price access is limited to "
+                f"{RESEARCH_FROM}..{RESEARCH_TO}: requested "
+                f"{requested_from.date()}..{requested_to.date()}"
+            )
+        if self._delegate is not None:
+            frame = self._delegate.get_daily_stock_prices(
+                stock_code, date_from_str, date_to_str
+            )
+        else:
+            code = str(stock_code).removesuffix(".T")
+            if code not in self.manifest["files"]:
+                raise BlindValidationViolation(f"stock is not in fixed benchmark: {code}")
+            rows: list[dict[str, Any]] = []
+            previous_date: pd.Timestamp | None = None
+            with (self.root / "ohlcv" / f"{code}.csv").open(
+                "r", encoding="utf-8", newline=""
+            ) as stream:
+                reader = csv.DictReader(stream)
+                if reader.fieldnames != REQUIRED_COLUMNS:
+                    raise BlindValidationViolation(f"invalid fixed CSV columns for {code}")
+                for raw_row in reader:
+                    row_date = pd.Timestamp(raw_row["Date"])
+                    if row_date > pd.Timestamp(RESEARCH_TO):
+                        break
+                    if previous_date is not None and row_date <= previous_date:
+                        raise BlindValidationViolation(f"invalid date ordering for {code}")
+                    previous_date = row_date
+                    if row_date < requested_from or row_date > requested_to:
+                        continue
+                    rows.append({
+                        "Date": row_date,
+                        **{
+                            column: pd.to_numeric(raw_row[column], errors="raise")
+                            for column in REQUIRED_COLUMNS[1:]
+                        },
+                    })
+            frame = pd.DataFrame(rows, columns=REQUIRED_COLUMNS).set_index("Date")
+        if not frame.empty and pd.Timestamp(frame.index.max()) > pd.Timestamp(RESEARCH_TO):
+            raise BlindValidationViolation("loader returned a row on or after 2025-04-01")
+        return frame
 
 
 @dataclass(frozen=True)
@@ -696,6 +776,41 @@ def _write_csv(frame: pd.DataFrame, path: Path, columns: list[str]) -> None:
     output.to_csv(path, index=False, encoding="utf-8", lineterminator="\n", float_format="%.8f")
 
 
+def loop_validation_summary(validation: dict[str, Any]) -> dict[str, Any]:
+    """Expose validation-portfolio metrics only; ignore every diagnostic field."""
+    return {
+        "fold_profits": [
+            {"fold": int(row["fold"]), "profit": round(float(row["profit"]), 8)}
+            for row in sorted(validation["by_fold"], key=lambda row: int(row["fold"]))
+        ],
+        "max_drawdown_percent": round(float(validation["worst_max_drawdown_percent"]), 8),
+        "max_stock_profit_share": round(float(validation["max_stock_profit_share"]), 8),
+        "monthly_win_rate": round(float(validation["month_win_rate"]), 8),
+        "profit": round(float(validation["total_profit"]), 8),
+        "skip_counts": {
+            str(reason): int(count)
+            for reason, count in sorted(validation["skip_counts"].items())
+        },
+        "trade_count": int(validation["trade_count"]),
+    }
+
+
+def _write_loop_validation(summary: dict[str, Any]) -> None:
+    LOOP_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    unexpected = sorted(
+        path.name for path in LOOP_RESULT_DIR.iterdir()
+        if path.name != "summary.json"
+    )
+    if unexpected:
+        raise BlindValidationViolation(
+            f"unexpected files in blind output directory: {unexpected}"
+        )
+    (LOOP_RESULT_DIR / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _summary(
     results: pd.DataFrame,
     ledger: pd.DataFrame,
@@ -761,7 +876,9 @@ def _summary(
     }
 
 
-def run_backtest() -> dict[str, Any]:
+def run_backtest(mode: str = "full") -> dict[str, Any]:
+    if mode not in {"full", "loop-validation"}:
+        raise ValueError(f"unsupported backtest mode: {mode}")
     config, _ = load_app(log_file="backtest.log")
     raw = config.raw.get("backtest_settings", {})
     if any(
@@ -780,7 +897,10 @@ def run_backtest() -> dict[str, Any]:
         max_position_percent=float(portfolio_raw.get("max_position_percent", 100.0)),
         max_open_positions=int(portfolio_raw.get("max_open_positions", 1)),
     )
-    loader = FixedOHLCVLoader("data/benchmark")
+    loader = (
+        LoopValidationPriceSource("data/benchmark")
+        if mode == "loop-validation" else FixedOHLCVLoader("data/benchmark")
+    )
     manifest = loader.manifest
     configured_codes = [stock.stock_code for stock in config.stocks]
     if configured_codes != manifest.get("stock_codes"):
@@ -827,6 +947,12 @@ def run_backtest() -> dict[str, Any]:
         max_passes=3,
     )
     selected_rules = [selected_rule_map[code] for code in sorted(selected_rule_map)]
+    if mode == "loop-validation":
+        summary = loop_validation_summary(validation_metrics)
+        _write_loop_validation(summary)
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+        return summary
+
     all_diagnostics: list[pd.DataFrame] = []
     stock_map = {stock.stock_code: stock for stock in config.stocks}
     for rule in selected_rules:
@@ -949,5 +1075,15 @@ def run_backtest() -> dict[str, Any]:
     return summary
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode", choices=["full", "loop-validation"], default="full",
+        help="full diagnostics or blind research-validation-only evaluation",
+    )
+    args = parser.parse_args()
+    run_backtest(args.mode)
+
+
 if __name__ == "__main__":
-    run_backtest()
+    main()
