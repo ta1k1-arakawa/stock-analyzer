@@ -20,6 +20,7 @@ from src.benchmark import (
     REQUIRED_COLUMNS, FixedOHLCVLoader, sha256_file, snapshot_hash,
 )
 from src.config import AIParams, AppConfig, load_app
+from src.reproducibility import CONFIG_HASH_METHOD, config_hash
 from src.trade_simulator import PortfolioSettings, simulate_execution, simulate_portfolio
 
 
@@ -776,9 +777,23 @@ def _write_csv(frame: pd.DataFrame, path: Path, columns: list[str]) -> None:
     output.to_csv(path, index=False, encoding="utf-8", lineterminator="\n", float_format="%.8f")
 
 
-def loop_validation_summary(validation: dict[str, Any]) -> dict[str, Any]:
+def sort_skipped_orders(frame: pd.DataFrame) -> pd.DataFrame:
+    """Apply the shared deterministic ordering for skipped-order artifacts."""
+    if frame.empty:
+        return frame.reset_index(drop=True)
+    return frame.sort_values(
+        ["signal_date", "planned_entry_date", "prob", "code", "status"],
+        ascending=[True, True, False, True, True],
+        kind="mergesort",
+        na_position="last",
+    ).reset_index(drop=True)
+
+
+def loop_validation_summary(
+    validation: dict[str, Any], normalized_config_hash: str | None = None,
+) -> dict[str, Any]:
     """Expose validation-portfolio metrics only; ignore every diagnostic field."""
-    return {
+    summary = {
         "fold_profits": [
             {"fold": int(row["fold"]), "profit": round(float(row["profit"]), 8)}
             for row in sorted(validation["by_fold"], key=lambda row: int(row["fold"]))
@@ -793,6 +808,12 @@ def loop_validation_summary(validation: dict[str, Any]) -> dict[str, Any]:
         },
         "trade_count": int(validation["trade_count"]),
     }
+    if normalized_config_hash is not None:
+        summary.update(
+            config_hash=normalized_config_hash,
+            config_hash_method=CONFIG_HASH_METHOD,
+        )
+    return summary
 
 
 def _write_loop_validation(summary: dict[str, Any]) -> None:
@@ -838,6 +859,7 @@ def _summary(
         "snapshot_id": manifest["snapshot_id"],
         "snapshot_hash": manifest["snapshot_hash"],
         "config_hash": config_hash,
+        "config_hash_method": CONFIG_HASH_METHOD,
         "seed": MODEL_SEED,
         "periods": {
             "research_from": RESEARCH_FROM,
@@ -948,7 +970,7 @@ def run_backtest(mode: str = "full") -> dict[str, Any]:
     )
     selected_rules = [selected_rule_map[code] for code in sorted(selected_rule_map)]
     if mode == "loop-validation":
-        summary = loop_validation_summary(validation_metrics)
+        summary = loop_validation_summary(validation_metrics, config_hash(Path("config.yaml")))
         _write_loop_validation(summary)
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
         return summary
@@ -1005,7 +1027,9 @@ def run_backtest(mode: str = "full") -> dict[str, Any]:
     result_rows, ledger_rows = simulate_portfolio(orders, budget, portfolio_settings, calendar)
     result_rows.sort(key=lambda row: (row.get("order_date", ""), -float(row["prob"]), row["code"]))
     trades = pd.DataFrame([row for row in result_rows if row["status"] == "FILLED"])
-    skipped = pd.DataFrame([row for row in result_rows if row["status"] != "FILLED"])
+    skipped = sort_skipped_orders(
+        pd.DataFrame([row for row in result_rows if row["status"] != "FILLED"])
+    )
     ledger = pd.DataFrame(ledger_rows)
     rules_frame = pd.DataFrame([asdict(rule) for rule in selected_rules]).sort_values("code")
     diagnostics_frame = pd.concat(all_diagnostics, ignore_index=True).sort_values(["Code", "Fold"])
@@ -1014,7 +1038,7 @@ def run_backtest(mode: str = "full") -> dict[str, Any]:
     results_frame = pd.DataFrame(result_rows)
     validation_by_fold = pd.DataFrame(validation_metrics["by_fold"]).sort_values("fold")
     validation_trades = pd.DataFrame(validation_metrics["trades"])
-    validation_skipped = pd.DataFrame(validation_metrics["skipped"])
+    validation_skipped = sort_skipped_orders(pd.DataFrame(validation_metrics["skipped"]))
     trace_frame = pd.DataFrame(selection_trace)
 
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1059,9 +1083,9 @@ def run_backtest(mode: str = "full") -> dict[str, Any]:
         json.dumps(selection_summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    config_hash = sha256_file(Path("config.yaml"))
+    normalized_config_hash = config_hash(Path("config.yaml"))
     summary = _summary(
-        results_frame, ledger, manifest, config_hash, portfolio_settings,
+        results_frame, ledger, manifest, normalized_config_hash, portfolio_settings,
         validation_metrics, coordinate_passes, coordinate_evaluations,
     )
     (RESULT_DIR / "summary.json").write_text(
@@ -1076,12 +1100,22 @@ def run_backtest(mode: str = "full") -> dict[str, Any]:
 
 
 def main() -> None:
+    global RESULT_DIR, LOOP_RESULT_DIR
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode", choices=["full", "loop-validation"], default="full",
         help="full diagnostics or blind research-validation-only evaluation",
     )
+    parser.add_argument(
+        "--output-dir",
+        help="write artifacts outside tracked result directories (recommended for verification)",
+    )
     args = parser.parse_args()
+    if args.output_dir:
+        if args.mode == "loop-validation":
+            LOOP_RESULT_DIR = Path(args.output_dir)
+        else:
+            RESULT_DIR = Path(args.output_dir)
     run_backtest(args.mode)
 
 

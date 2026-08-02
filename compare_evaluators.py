@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,10 +24,10 @@ from src.comparison import (
     run_v2_portfolio, scenario_metrics, verify_baseline,
 )
 from src.trade_simulator import PortfolioSettings
+from src.reproducibility import CONFIG_HASH_METHOD, config_hash
 
 
 BASELINE_COMMIT = "2975e3375c615052bd3a1ab2e5a24e723e94c46b"
-CANDIDATE_COMMIT = "94b016575d49436bd4017a21a1de252ab0d95834"
 OUTPUT_NAMES = [
     "comparison_manifest.json", "legacy_summary.json", "candidate_summary.json",
     "scenario_comparison.csv", "comparison_by_stock.csv", "trade_alignment.csv",
@@ -71,6 +70,27 @@ def _write_csv(path: Path, frame: pd.DataFrame, columns: list[str] | None = None
     if columns is not None:
         output = output.reindex(columns=columns)
     output.to_csv(path, index=False, encoding="utf-8", lineterminator="\n", float_format="%.8f")
+
+
+def candidate_head(repo: Path) -> str:
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+    ).strip()
+    status = subprocess.check_output(
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+        text=True,
+    )
+    if status.strip():
+        raise ComparisonError(f"candidate worktree must be clean:\n{status}")
+    return head
+
+
+def validate_candidate_artifact(summary: dict[str, Any], current_head: str) -> None:
+    recorded = summary.get("candidate_commit")
+    if recorded != current_head:
+        raise ComparisonError(
+            f"candidate backtest output commit mismatch: {recorded} != {current_head}"
+        )
 
 
 def _legacy_child(
@@ -255,7 +275,9 @@ def _trade_alignment(
     return aligned.reindex(columns=columns).sort_values(["signal_date", "code"], kind="mergesort")
 
 
-def _report(scenarios: dict[str, dict[str, Any]], alignment: pd.DataFrame) -> str:
+def _report(
+    scenarios: dict[str, dict[str, Any]], alignment: pd.DataFrame, candidate_commit: str,
+) -> str:
     a = scenarios["legacy_as_is"]["metrics"]
     d = scenarios["v2_full"]["metrics"]
     counts = alignment["difference_category"].value_counts().sort_index().to_dict()
@@ -263,7 +285,7 @@ def _report(scenarios: dict[str, dict[str, Any]], alignment: pd.DataFrame) -> st
 
 ## Scope and fairness
 
-Both evaluators used the same immutable adjusted-OHLCV snapshot. The baseline code ran as-is at detached commit `{BASELINE_COMMIT}` with only its data fetch method temporarily replaced in-process. Network access was forbidden. evaluator-v2 outputs were read without changing selected rules.
+Both evaluators used the same immutable adjusted-OHLCV snapshot. The baseline code ran as-is at detached commit `{BASELINE_COMMIT}` with only its data fetch method temporarily replaced in-process. Network access was forbidden. evaluator-v2 commit `{candidate_commit}` outputs were read without changing selected rules.
 
 The legacy research score uses validation profit *and research-internal test profit*, and its saved adoption result also inspects the reference period. Therefore `legacy_selection_uses_non_validation_data` is true. Its reference result is not a fair estimate of unknown-data performance. The v2 reference interval is also previously observed and is diagnostic only.
 
@@ -294,20 +316,29 @@ The current v2 result establishes a feasible shared-cash execution path with det
 """
 
 
-def run_comparison(repo: Path, baseline: Path, output: Path) -> dict[str, str]:
+def run_comparison(
+    repo: Path, baseline: Path, output: Path,
+    candidate_results: Path | None = None,
+) -> dict[str, str]:
+    current_candidate_commit = candidate_head(repo)
     before = verify_baseline(baseline, BASELINE_COMMIT)
-    results_dir = repo / "data" / "backtest_results"
+    results_dir = (
+        candidate_results.resolve()
+        if candidate_results is not None else repo / "data" / "backtest_results"
+    )
     benchmark_dir = repo / "data" / "benchmark"
     selected_path = results_dir / "selected_rules.csv"
     selected_hash = sha256_file(selected_path)
     recorded_candidate_summary = json.loads(
         (results_dir / "summary.json").read_text(encoding="utf-8")
     )
-    if recorded_candidate_summary.get("candidate_commit") != CANDIDATE_COMMIT:
-        raise ComparisonError(
-            "candidate backtest output commit mismatch: "
-            f"{recorded_candidate_summary.get('candidate_commit')} != {CANDIDATE_COMMIT}"
-        )
+    validate_candidate_artifact(recorded_candidate_summary, current_candidate_commit)
+    expected_config_hash = config_hash(repo / "config.yaml")
+    if (
+        recorded_candidate_summary.get("config_hash") != expected_config_hash
+        or recorded_candidate_summary.get("config_hash_method") != CONFIG_HASH_METHOD
+    ):
+        raise ComparisonError("candidate backtest config hash or method mismatch")
     loader = FixedOHLCVLoader(benchmark_dir)
     manifest = loader.manifest
     config_bytes = (repo / "config.yaml").read_bytes()
@@ -360,9 +391,12 @@ def run_comparison(repo: Path, baseline: Path, output: Path) -> dict[str, str]:
 
     settings = config["backtest_settings"]
     comparison_manifest = {
-        "baseline_commit": BASELINE_COMMIT, "candidate_commit": CANDIDATE_COMMIT,
+        "baseline_commit": BASELINE_COMMIT,
+        "candidate_commit": current_candidate_commit,
         "snapshot_id": manifest["snapshot_id"], "snapshot_hash": manifest["snapshot_hash"],
-        "config_hash": hashlib.sha256(config_bytes).hexdigest(), "seed": 42,
+        "config_hash": expected_config_hash,
+        "config_hash_method": CONFIG_HASH_METHOD,
+        "seed": 42,
         "stock_codes": stocks,
         "research_period": {"from": settings["research_from"], "to": settings["research_to"]},
         "reference_period": {"from": settings["final_from"], "to": settings["final_to"]},
@@ -412,10 +446,15 @@ def run_comparison(repo: Path, baseline: Path, output: Path) -> dict[str, str]:
     _write_csv(output / "capital_overlap.csv", a_overlap)
     _write_csv(output / "legacy_predictions.csv", legacy_predictions)
     _write_csv(output / "legacy_trades.csv", legacy_trades)
-    (output / "difference_report.md").write_text(_report(scenarios, alignment), encoding="utf-8", newline="\n")
+    (output / "difference_report.md").write_text(
+        _report(scenarios, alignment, current_candidate_commit),
+        encoding="utf-8", newline="\n",
+    )
     if sha256_file(selected_path) != selected_hash:
         raise ComparisonError("selected_rules.csv changed during comparison")
     assert_baseline_unchanged(baseline, BASELINE_COMMIT, before)
+    if candidate_head(repo) != current_candidate_commit:
+        raise ComparisonError("candidate HEAD changed during comparison")
     _write_json(output / "run_metadata.json", {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "baseline_files_unchanged": True, "external_network_attempts": 0,
@@ -430,9 +469,21 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--baseline-worktree", default=r"C:\taiki\hobbies\stock-analyzer-baseline")
     parser.add_argument("--output", default="data/backtest_comparison")
+    parser.add_argument(
+        "--candidate-results", default="data/backtest_results",
+        help="full evaluator artifacts generated by the current clean HEAD",
+    )
     args = parser.parse_args()
     repo = Path(__file__).resolve().parent
-    hashes = run_comparison(repo, Path(args.baseline_worktree), repo / args.output)
+    output = Path(args.output)
+    if not output.is_absolute():
+        output = repo / output
+    candidate_results = Path(args.candidate_results)
+    if not candidate_results.is_absolute():
+        candidate_results = repo / candidate_results
+    hashes = run_comparison(
+        repo, Path(args.baseline_worktree), output, candidate_results,
+    )
     print(json.dumps(hashes, indent=2, sort_keys=True))
 
 

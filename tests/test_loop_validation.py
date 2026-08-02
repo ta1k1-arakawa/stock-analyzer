@@ -184,6 +184,7 @@ def test_loop_output_contains_validation_metrics_only(monkeypatch, tmp_path) -> 
     assert set(result) == {
         "profit", "max_drawdown_percent", "fold_profits", "monthly_win_rate",
         "max_stock_profit_share", "trade_count", "skip_counts",
+        "config_hash", "config_hash_method",
     }
     output_dir = tmp_path / "loop-results"
     assert [path.name for path in output_dir.iterdir()] == ["summary.json"]

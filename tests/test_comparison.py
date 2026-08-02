@@ -8,7 +8,7 @@ import subprocess
 import pandas as pd
 import pytest
 
-from compare_evaluators import _data_audit
+from compare_evaluators import _data_audit, candidate_head, validate_candidate_artifact
 from src.comparison import (
     ComparisonError, assert_baseline_unchanged, assert_file_unchanged,
     build_execution_orders, deterministic_hashes, forbid_network,
@@ -139,10 +139,22 @@ def test_reference_diagnostics_do_not_feed_back_into_rules() -> None:
     assert json.dumps(rules, sort_keys=True) == before
 
 
-def test_comparison_uses_recorded_candidate_not_runner_head() -> None:
-    source = Path(__file__).parents[1].joinpath("compare_evaluators.py").read_text(encoding="utf-8")
-    assert 'recorded_candidate_summary.get("candidate_commit")' in source
-    assert "candidate HEAD must be" not in source
+def test_comparison_uses_current_clean_candidate_head(tmp_path: Path) -> None:
+    repo, head = _detached_repo(tmp_path)
+    assert candidate_head(repo) == head
+    validate_candidate_artifact({"candidate_commit": head}, head)
+
+
+def test_comparison_rejects_dirty_candidate_worktree(tmp_path: Path) -> None:
+    repo, _ = _detached_repo(tmp_path)
+    (repo / "untracked.txt").write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(ComparisonError, match="candidate worktree must be clean"):
+        candidate_head(repo)
+
+
+def test_comparison_rejects_artifacts_from_another_commit() -> None:
+    with pytest.raises(ComparisonError, match="output commit mismatch"):
+        validate_candidate_artifact({"candidate_commit": "a" * 40}, "b" * 40)
 
 
 def test_deterministic_hashes_exclude_run_metadata(tmp_path: Path) -> None:

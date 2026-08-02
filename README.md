@@ -79,6 +79,16 @@ python backtest.py --mode loop-validation
 
 このモードは価格アクセスを2020-01-01〜2025-03-31に制限し、研究内テスト診断と参考期間評価を実行しません。出力は `data/loop_validation_results/summary.json` の検証ポートフォリオ指標だけです。通常の `python backtest.py` は従来どおりfull診断を行います。
 
+検収時は追跡済み成果物を上書きせず、一時ディレクトリを指定できます。
+
+```bash
+python backtest.py --mode loop-validation --output-dir <temporary-loop-output>
+python backtest.py --mode full --output-dir <temporary-full-output>
+python compare_evaluators.py --candidate-results <temporary-full-output> --output <temporary-comparison-output>
+```
+
+`config_hash`はBOMを除去し、CRLFとCRをLFへ正規化したUTF-8内容をSHA-256化する`utf8-normalized-lf-v1`方式です。比較ランナーはcleanな現在のHEADとfull成果物の`candidate_commit`が一致しない場合に停止します。
+
 AIモデルを学習します。
 
 ```bash
