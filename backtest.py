@@ -1,107 +1,49 @@
+"""Deterministic research selection and shared-cash reference backtest."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import asdict, dataclass
+from datetime import datetime
+import hashlib
+import json
 from pathlib import Path
+import subprocess
 from typing import Any
 
 import lightgbm as lgb
 import pandas as pd
-import yaml
 
 from src.analysis import calculate_indicators, create_target_variable, sanitize_ohlcv
-from src.config import AppConfig, load_app
-from src.fetchers.yfinance import YFinanceFetcher
+from src.benchmark import FixedOHLCVLoader, sha256_file
+from src.config import AIParams, AppConfig, load_app
+from src.trade_simulator import PortfolioSettings, simulate_execution, simulate_portfolio
 
 
 TARGET_GRID = [1.0, 1.5, 2.0, 2.5, 3.0]
 STOP_GRID = [2.0, 3.0, 5.0]
 THRESHOLD_GRID = [0.15, 0.20, 0.30, 0.40, 0.50]
-
-# Fold ratios are applied only inside the research period.
-FOLDS = [
-    (0.60, 0.70, 0.80),
-    (0.70, 0.80, 0.90),
-    (0.80, 0.90, 1.00),
-]
-
-
-@dataclass(frozen=True)
-class BacktestSettings:
-    research_from: str
-    research_to: str
-    final_from: str
-    final_to: str
-    budget: int
-    min_research_trades: int
-    min_final_trades: int
-    max_drawdown_percent: float
-    min_month_win_rate: float
-    max_single_month_profit_share: float
-    result_path: Path
+FOLDS = [(0.60, 0.70, 0.80), (0.70, 0.80, 0.90), (0.80, 0.90, 1.00)]
+MODEL_SEED = 42
+BASELINE_COMMIT = "2975e3375c615052bd3a1ab2e5a24e723e94c46b"
+RESEARCH_FROM = "2020-01-01"
+RESEARCH_TO = "2025-03-31"
+REFERENCE_FROM = "2025-04-01"
+REFERENCE_TO = "2026-05-20"
+RESULT_DIR = Path("data/backtest_results")
 
 
 @dataclass(frozen=True)
-class FixedRule:
+class Rule:
     code: str
     target_percent: float
     stop_loss_percent: float
     threshold: float
-
-
-def _date_after(date_str: str, days: int = 1) -> str:
-    return (pd.Timestamp(date_str) + pd.Timedelta(days=days)).strftime("%Y-%m-%d")
-
-
-def _resolve_auto_date(value: str | None) -> str | None:
-    if value == "auto":
-        return (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-    return value
-
-
-def _load_backtest_settings(config: AppConfig) -> BacktestSettings:
-    raw = config.raw.get("backtest_settings", {})
-    training = config.training_settings
-
-    research_from = raw.get("research_from") or training.get("data_from") or "2020-01-01"
-    research_to = raw.get("research_to") or "2025-03-31"
-    final_from = raw.get("final_from") or _date_after(research_to)
-    final_to = raw.get("final_to") or _resolve_auto_date(training.get("data_to")) or "2026-05-20"
-
-    return BacktestSettings(
-        research_from=str(research_from),
-        research_to=str(research_to),
-        final_from=str(final_from),
-        final_to=str(final_to),
-        budget=int(raw.get("budget", config.ai_params.budget)),
-        min_research_trades=int(raw.get("min_research_trades", 10)),
-        min_final_trades=int(raw.get("min_final_trades", 10)),
-        max_drawdown_percent=float(raw.get("max_drawdown_percent", 15.0)),
-        min_month_win_rate=float(raw.get("min_month_win_rate", 50.0)),
-        max_single_month_profit_share=float(raw.get("max_single_month_profit_share", 70.0)),
-        result_path=Path(raw.get("result_path", "data/backtest_selection.yaml")),
-    )
-
-
-def _normalize_index(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    idx = pd.to_datetime(df.index)
-    if getattr(idx, "tz", None) is not None:
-        idx = idx.tz_convert(None)
-    df.index = idx
-    return df.sort_index()
-
-
-def _slice_dates(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    df = _normalize_index(df)
-    start_ts = pd.Timestamp(start)
-    end_ts = pd.Timestamp(end)
-    return df[(df.index >= start_ts) & (df.index <= end_ts)]
+    validation_score: float
 
 
 def _build_model() -> lgb.LGBMClassifier:
     return lgb.LGBMClassifier(
-        random_state=42,
+        random_state=MODEL_SEED,
         verbose=-1,
         force_col_wise=True,
         deterministic=True,
@@ -109,717 +51,418 @@ def _build_model() -> lgb.LGBMClassifier:
     )
 
 
-def _simulate_one_signal(
-    df: pd.DataFrame,
-    signal_pos: int,
-    prob: float,
-    budget: float,
-    future_days: int,
-    stop_loss_pct: float,
-    entry_slippage_pct: float,
-    exit_slippage_pct: float,
-    stop_slippage_pct: float,
-    commission_pct: float,
-) -> tuple[dict[str, Any] | None, float]:
-    entry_idx = signal_pos + 1
-    if entry_idx >= len(df):
-        return None, budget
-
-    exit_idx = entry_idx + future_days - 1
-    if exit_idx >= len(df):
-        return None, budget
-
-    entry_price = float(df.iloc[entry_idx]["Open"]) * (1 + entry_slippage_pct / 100)
-    if entry_price <= 0:
-        return None, budget
-
-    stop_price = entry_price * (1 - stop_loss_pct / 100)
-    exit_price = None
-    exit_reason = "TIME"
-    actual_exit_idx = exit_idx
-
-    for j in range(entry_idx, exit_idx + 1):
-        if float(df.iloc[j]["Low"]) <= stop_price:
-            exit_price = stop_price * (1 - stop_slippage_pct / 100)
-            exit_reason = "STOP"
-            actual_exit_idx = j
-            break
-
-    if exit_price is None:
-        exit_price = float(df.iloc[exit_idx]["Close"]) * (1 - exit_slippage_pct / 100)
-
-    qty = int(budget / entry_price)
-    if qty <= 0:
-        return None, budget
-
-    gross_profit = (exit_price - entry_price) * qty
-    commission = (entry_price + exit_price) * qty * commission_pct / 100
-    profit = gross_profit - commission
-    next_budget = budget + profit
-
-    return (
-        {
-            "signal_date": df.index[signal_pos],
-            "entry_date": df.index[entry_idx],
-            "exit_date": df.index[actual_exit_idx],
-            "prob": float(prob),
-            "entry_price": round(entry_price, 4),
-            "exit_price": round(float(exit_price), 4),
-            "qty": qty,
-            "profit": int(profit),
-            "equity": int(next_budget),
-            "win": profit > 0,
-            "exit_reason": exit_reason,
-        },
-        next_budget,
-    )
+def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+    result = sanitize_ohlcv(df.copy())
+    index = pd.to_datetime(result.index)
+    if getattr(index, "tz", None) is not None:
+        index = index.tz_convert(None)
+    result.index = index
+    return result.sort_index()
 
 
-def _simulate_trades(
-    df: pd.DataFrame,
-    probs,
-    threshold: float,
-    future_days: int,
-    stop_loss_pct: float,
-    entry_slippage_pct: float,
-    exit_slippage_pct: float,
-    stop_slippage_pct: float,
-    commission_pct: float,
-    starting_budget: int,
+def _labelled(
+    df_ta: pd.DataFrame, ai: AIParams, target: float, stop: float,
 ) -> pd.DataFrame:
-    trades: list[dict[str, Any]] = []
-
-    for i in range(len(df) - 1):
-        prob = float(probs[i])
-        if prob < threshold:
-            continue
-
-        # ペーパーログと同じく、過去の損益を複利運用せず毎回固定予算で売買する。
-        trade, _ = _simulate_one_signal(
-            df,
-            i,
-            prob,
-            float(starting_budget),
-            future_days,
-            stop_loss_pct,
-            entry_slippage_pct,
-            exit_slippage_pct,
-            stop_slippage_pct,
-            commission_pct,
-        )
-        if trade is not None:
-            trades.append(trade)
-
-    return pd.DataFrame(trades)
-
-
-def _max_losing_streak(profits: pd.Series) -> int:
-    worst = 0
-    current = 0
-    for profit in profits:
-        if profit <= 0:
-            current += 1
-            worst = max(worst, current)
-        else:
-            current = 0
-    return worst
-
-
-def _summarize_trades(trades: pd.DataFrame, starting_budget: int) -> dict[str, Any]:
-    if trades.empty:
-        return {
-            "Profit": 0,
-            "Trades": 0,
-            "Wins": 0,
-            "WinRate": 0.0,
-            "MaxDD": 0,
-            "MaxDDPct": 0.0,
-            "WorstMonth": 0,
-            "BestMonth": 0,
-            "MonthWinRate": 0.0,
-            "Months": 0,
-            "LosingStreak": 0,
-            "SingleMonthShare": 0.0,
-        }
-
-    profits = trades["profit"].astype(float)
-    equity = starting_budget + profits.cumsum()
-    peak = equity.cummax()
-    drawdown = equity - peak
-    drawdown_pct = (equity / peak - 1) * 100
-
-    exit_dates = pd.to_datetime(trades["exit_date"])
-    monthly = profits.groupby(exit_dates.dt.to_period("M")).sum()
-    best_month = int(monthly.max()) if not monthly.empty else 0
-    worst_month = int(monthly.min()) if not monthly.empty else 0
-    positive_months = int((monthly > 0).sum()) if not monthly.empty else 0
-    month_win_rate = round(positive_months / len(monthly) * 100, 1) if len(monthly) else 0.0
-    total_profit = int(profits.sum())
-    single_month_share = round(best_month / total_profit * 100, 1) if total_profit > 0 and best_month > 0 else 0.0
-
-    return {
-        "Profit": total_profit,
-        "Trades": int(len(trades)),
-        "Wins": int((profits > 0).sum()),
-        "WinRate": float(round((profits > 0).mean() * 100, 1)),
-        "MaxDD": int(drawdown.min()),
-        "MaxDDPct": round(float(drawdown_pct.min()), 1),
-        "WorstMonth": worst_month,
-        "BestMonth": best_month,
-        "MonthWinRate": month_win_rate,
-        "Months": int(len(monthly)),
-        "LosingStreak": _max_losing_streak(profits),
-        "SingleMonthShare": single_month_share,
-    }
-
-
-def _monthly_profit_table(trades: pd.DataFrame) -> pd.DataFrame:
-    if trades.empty:
-        return pd.DataFrame(columns=["Month", "Profit", "Trades", "Wins", "WinRate"])
-
-    df = trades.copy()
-    df["Month"] = pd.to_datetime(df["exit_date"]).dt.to_period("M").astype(str)
-    monthly = (
-        df.groupby("Month")
-        .agg(
-            Profit=("profit", "sum"),
-            Trades=("profit", "count"),
-            Wins=("win", "sum"),
-        )
-        .reset_index()
-    )
-    monthly["WinRate"] = (monthly["Wins"] / monthly["Trades"] * 100).round(1)
-    return monthly
-
-
-def _research_combo_rows(
-    labeled_by_tp: dict[float, pd.DataFrame],
-    feature_cols: list[str],
-    config: AppConfig,
-    settings: BacktestSettings,
-) -> pd.DataFrame:
-    ai = config.ai_params
-    rows: list[dict[str, Any]] = []
-
-    for tp, df_labeled in labeled_by_tp.items():
-        for fold_no, ratios in enumerate(FOLDS, 1):
-            tr_ratio, val_ratio, te_ratio = ratios
-            m = len(df_labeled)
-            tr_end = int(m * tr_ratio)
-            val_end = int(m * val_ratio)
-            te_end = int(m * te_ratio)
-
-            train_label_end = max(tr_end - ai.future_days, 0)
-            train_df = df_labeled.iloc[:train_label_end]
-            val_df = df_labeled.iloc[tr_end:val_end]
-            test_df = df_labeled.iloc[val_end:te_end]
-
-            if len(train_df["Target"].unique()) < 2 or len(val_df) < 10 or len(test_df) < 10:
-                continue
-
-            model = _build_model()
-            model.fit(train_df[feature_cols], train_df["Target"])
-            val_probs = model.predict_proba(val_df[feature_cols])[:, 1]
-            test_probs = model.predict_proba(test_df[feature_cols])[:, 1]
-
-            for stop in STOP_GRID:
-                for threshold in THRESHOLD_GRID:
-                    val_trades = _simulate_trades(
-                        val_df,
-                        val_probs,
-                        threshold,
-                        ai.future_days,
-                        stop,
-                        ai.entry_slippage_percent,
-                        ai.exit_slippage_percent,
-                        ai.stop_slippage_percent,
-                        ai.commission_percent,
-                        settings.budget,
-                    )
-                    test_trades = _simulate_trades(
-                        test_df,
-                        test_probs,
-                        threshold,
-                        ai.future_days,
-                        stop,
-                        ai.entry_slippage_percent,
-                        ai.exit_slippage_percent,
-                        ai.stop_slippage_percent,
-                        ai.commission_percent,
-                        settings.budget,
-                    )
-                    val = _summarize_trades(val_trades, settings.budget)
-                    test = _summarize_trades(test_trades, settings.budget)
-                    rows.append(
-                        {
-                            "fold": fold_no,
-                            "tp": tp,
-                            "stop": stop,
-                            "thr": threshold,
-                            "val_profit": val["Profit"],
-                            "val_trades": val["Trades"],
-                            "test_profit": test["Profit"],
-                            "test_trades": test["Trades"],
-                            "test_wins": test["Wins"],
-                            "test_win_rate": test["WinRate"],
-                            "test_max_dd": test["MaxDD"],
-                            "test_max_dd_pct": test["MaxDDPct"],
-                        }
-                    )
-
-    return pd.DataFrame(rows)
-
-
-def _select_research_rule(code: str, combo_rows: pd.DataFrame, settings: BacktestSettings) -> dict[str, Any] | None:
-    if combo_rows.empty:
-        return None
-
-    agg = (
-        combo_rows.groupby(["tp", "stop", "thr"])
-        .agg(
-            ValProfit=("val_profit", "sum"),
-            ValTrades=("val_trades", "sum"),
-            TestProfit=("test_profit", "sum"),
-            MinFold=("test_profit", "min"),
-            Folds=("fold", "nunique"),
-            Trades=("test_trades", "sum"),
-            Wins=("test_wins", "sum"),
-        )
-        .reset_index()
-    )
-    folds_pos = (
-        combo_rows.groupby(["tp", "stop", "thr"])["test_profit"]
-        .apply(lambda s: int((s > 0).sum()))
-        .rename("FoldsPosCount")
-        .reset_index()
-    )
-    agg = agg.merge(folds_pos, on=["tp", "stop", "thr"], how="left")
-    agg["WinRate"] = (agg["Wins"] / agg["Trades"] * 100).fillna(0).round(1)
-    agg["ResearchScore"] = (
-        agg["ValProfit"]
-        + agg["TestProfit"]
-        + agg["MinFold"].clip(upper=0) * 2
-        - (agg["Trades"] < settings.min_research_trades).astype(int) * 50_000
-    )
-
-    selected = agg.sort_values(
-        ["ResearchScore", "FoldsPosCount", "MinFold", "ValProfit", "Trades"],
-        ascending=[False, False, False, False, False],
-    ).iloc[0]
-
-    return {
-        "Code": code,
-        "TargetPercent": float(selected["tp"]),
-        "StopLossPercent": float(selected["stop"]),
-        "Threshold": float(selected["thr"]),
-        "ResearchScore": int(selected["ResearchScore"]),
-        "ValProfit": int(selected["ValProfit"]),
-        "TestProfit": int(selected["TestProfit"]),
-        "MinFold": int(selected["MinFold"]),
-        "FoldsPosCount": int(selected["FoldsPosCount"]),
-        "FoldsPos": f"{int(selected['FoldsPosCount'])}/{int(selected['Folds'])}",
-        "Trades": int(selected["Trades"]),
-        "WinRate": float(selected["WinRate"]),
-    }
-
-
-def _evaluate_research_stock(
-    code: str,
-    df_prices: pd.DataFrame,
-    config: AppConfig,
-    settings: BacktestSettings,
-) -> tuple[dict[str, Any] | None, pd.DataFrame]:
-    ai = config.ai_params
-    feature_cols = config.feature_columns
-    df_research = _slice_dates(df_prices, settings.research_from, settings.research_to)
-
-    if df_research.empty:
-        return None, pd.DataFrame()
-
-    df_ta = calculate_indicators(df_research, config.tech_params)
-    labeled_by_tp: dict[float, pd.DataFrame] = {}
-
-    for tp in TARGET_GRID:
-        df_labeled = create_target_variable(
-            df_ta,
-            ai.future_days,
-            tp,
-            ai.entry_slippage_percent,
-            ai.exit_slippage_percent,
-        )
-        df_labeled = df_labeled.dropna(subset=feature_cols + ["Target"])
-        if len(df_labeled) >= 100:
-            labeled_by_tp[tp] = df_labeled
-
-    if not labeled_by_tp:
-        return None, pd.DataFrame()
-
-    combo_rows = _research_combo_rows(labeled_by_tp, feature_cols, config, settings)
-    selected = _select_research_rule(code, combo_rows, settings)
-    return selected, combo_rows
-
-
-def _final_evaluation_rolling(
-    df_prices: pd.DataFrame,
-    rule: FixedRule,
-    config: AppConfig,
-    settings: BacktestSettings,
-) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame]:
-    ai = config.ai_params
-    feature_cols = config.feature_columns
-
-    df_full = _slice_dates(df_prices, settings.research_from, settings.final_to)
-    df_ta = calculate_indicators(df_full, config.tech_params)
-    df_labeled = create_target_variable(
+    result = create_target_variable(
         df_ta,
         ai.future_days,
-        rule.target_percent,
+        target,
         ai.entry_slippage_percent,
         ai.exit_slippage_percent,
+        stop,
+        ai.stop_slippage_percent,
+        ai.commission_percent,
     )
-    df_labeled = df_labeled.dropna(subset=feature_cols + ["Target"])
-
-    final_start = pd.Timestamp(settings.final_from)
-    final_end = pd.Timestamp(settings.final_to)
-    trades: list[dict[str, Any]] = []
-    predictions: list[dict[str, Any]] = []
-
-    df_signal = df_ta.dropna(subset=feature_cols)
-    for signal_date, signal_row in df_signal.iterrows():
-        if signal_date < final_start or signal_date > final_end:
-            continue
-
-        signal_pos = df_ta.index.get_loc(signal_date)
-        exit_pos = signal_pos + ai.future_days
-        if exit_pos >= len(df_ta) or df_ta.index[exit_pos] > final_end:
-            continue
-
-        label_cutoff_pos = signal_pos - ai.future_days
-        if label_cutoff_pos < 0:
-            continue
-        label_cutoff_date = df_ta.index[label_cutoff_pos]
-        train_df = df_labeled[df_labeled.index <= label_cutoff_date]
-
-        if len(train_df) < 100 or len(train_df["Target"].unique()) < 2:
-            continue
-
-        model = _build_model()
-        model.fit(train_df[feature_cols], train_df["Target"])
-        prob = float(model.predict_proba(signal_row[feature_cols].to_frame().T)[:, 1][0])
-        is_signal = prob >= rule.threshold
-        predictions.append({"date": signal_date, "prob": prob, "signal": is_signal})
-
-        if not is_signal:
-            continue
-
-        # 日次ウォークフォワードでも各シグナルの予算は固定する。
-        trade, _ = _simulate_one_signal(
-            df_ta,
-            signal_pos,
-            prob,
-            float(settings.budget),
+    result["LabelConfirmedDate"] = pd.NaT
+    column = result.columns.get_loc("LabelConfirmedDate")
+    for position in range(len(result)):
+        execution = simulate_execution(
+            result,
+            position,
             ai.future_days,
-            rule.stop_loss_percent,
+            stop,
             ai.entry_slippage_percent,
             ai.exit_slippage_percent,
             ai.stop_slippage_percent,
             ai.commission_percent,
         )
-        if trade is not None:
-            trades.append(trade)
-
-    trades_df = pd.DataFrame(trades)
-    predictions_df = pd.DataFrame(predictions)
-    summary = _summarize_trades(trades_df, settings.budget)
-    return summary, trades_df, predictions_df
+        if execution is not None:
+            result.iloc[position, column] = result.index[execution.exit_index]
+    return result
 
 
-def _adoption_checks(summary: dict[str, Any], settings: BacktestSettings) -> tuple[str, list[str]]:
-    checks = [
-        ("profit_positive", summary["Profit"] > 0),
-        ("enough_trades", summary["Trades"] >= settings.min_final_trades),
-        ("drawdown_ok", abs(summary["MaxDDPct"]) <= settings.max_drawdown_percent),
-        ("monthly_stability_ok", summary["MonthWinRate"] >= settings.min_month_win_rate),
-        (
-            "not_one_month_dependent",
-            summary["SingleMonthShare"] <= settings.max_single_month_profit_share or summary["Profit"] <= 0,
-        ),
-    ]
-    failed = [name for name, ok in checks if not ok]
-    if not failed:
-        return "PASS", []
-    if "profit_positive" in failed or "enough_trades" in failed:
-        return "REJECT", failed
-    return "REVIEW", failed
+def eligible_training_rows(
+    labelled: pd.DataFrame, prediction_date: str | pd.Timestamp, feature_columns: list[str],
+) -> pd.DataFrame:
+    """Return rows whose features and label outcome are known before prediction."""
+    cutoff = pd.Timestamp(prediction_date)
+    ready = labelled.dropna(subset=feature_columns + ["Target", "LabelConfirmedDate"])
+    return ready[(ready.index < cutoff) & (ready["LabelConfirmedDate"] < cutoff)]
 
 
-def _print_header(title: str) -> None:
-    print("\n" + "=" * 100)
-    print(title)
-    print("=" * 100)
-
-
-def _fixed_rule_from_row(row: pd.Series) -> FixedRule:
-    return FixedRule(
-        code=str(row["Code"]),
-        target_percent=float(row["TargetPercent"]),
-        stop_loss_percent=float(row["StopLossPercent"]),
-        threshold=float(row["Threshold"]),
-    )
-
-
-def _print_final_result(
-    rule: FixedRule,
-    summary: dict[str, Any],
-    trades: pd.DataFrame,
-    predictions: pd.DataFrame,
-    status: str,
-    failed_checks: list[str],
-) -> None:
-    _print_header(f"Final evaluation: {rule.code}")
-    print(f"Locked rule           : target={rule.target_percent}, stop={rule.stop_loss_percent}, threshold={rule.threshold}")
-    print(f"Adoption status       : {status}")
-    if failed_checks:
-        print(f"Failed checks         : {', '.join(failed_checks)}")
-    print(f"Predicted days        : {len(predictions)}")
-    print(f"Signals / trades      : {summary['Trades']}")
-    print(f"Profit                : {summary['Profit']:+,d}")
-    print(f"Max drawdown          : {summary['MaxDD']:+,d} ({summary['MaxDDPct']}%)")
-    print(f"Win rate              : {summary['WinRate']}%")
-    print(f"Monthly win rate      : {summary['MonthWinRate']}% ({summary['Months']} months)")
-    print(f"Worst month           : {summary['WorstMonth']:+,d}")
-    print(f"Best month            : {summary['BestMonth']:+,d}")
-    print(f"Max losing streak     : {summary['LosingStreak']}")
-    print(f"Best-month dependency : {summary['SingleMonthShare']}% of total profit")
-    print("\nMonthly result")
-    print(_monthly_profit_table(trades).to_string(index=False))
-
-
-def _save_selection_result(
-    final_results: pd.DataFrame,
-    settings: BacktestSettings,
-) -> str | None:
-    passed = final_results[final_results["Status"] == "PASS"].copy()
-    passed = passed.sort_values("ResearchScore", ascending=False)
-    recommended_code = str(passed.iloc[0]["Code"]) if not passed.empty else None
-
-    paper_test_rules = final_results[
-        final_results["Status"].isin(["PASS", "REVIEW"])
-    ].copy()
-    rules = {
-        str(row["Code"]): {
-            "target_percent": float(row["TargetPercent"]),
-            "stop_loss_percent": float(row["StopLossPercent"]),
-            "threshold": float(row["Threshold"]),
-        }
-        for _, row in paper_test_rules.iterrows()
-    }
-    result = {
-        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "recommended_stock_code": recommended_code,
-        "selection_method": "highest_research_score_among_final_pass",
-        "rules": rules,
+def _trade_metrics(
+    df_ta: pd.DataFrame,
+    dates: pd.Index,
+    probabilities: Any,
+    threshold: float,
+    ai: AIParams,
+    stop: float,
+    budget: int,
+) -> dict[str, float | int]:
+    profits: list[float] = []
+    for date, probability in zip(dates, probabilities):
+        if float(probability) < threshold:
+            continue
+        position = int(df_ta.index.get_loc(date))
+        execution = simulate_execution(
+            df_ta, position, ai.future_days, stop,
+            ai.entry_slippage_percent, ai.exit_slippage_percent,
+            ai.stop_slippage_percent, ai.commission_percent,
+        )
+        if execution is None or execution.entry_price <= 0:
+            continue
+        quantity = int(budget / execution.entry_price)
+        if quantity <= 0:
+            continue
+        profits.append(execution.return_percent / 100 * execution.entry_price * quantity)
+    return {
+        "profit": round(sum(profits), 8),
+        "trades": len(profits),
+        "wins": sum(value > 0 for value in profits),
     }
 
-    settings.result_path.parent.mkdir(parents=True, exist_ok=True)
-    with settings.result_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(result, f, allow_unicode=True, sort_keys=False)
-    return recommended_code
 
-
-def run_backtest() -> None:
-    config, _ = load_app(log_file="backtest.log")
+def research_candidate_rows(
+    code: str,
+    prices: pd.DataFrame,
+    config: AppConfig,
+    budget: int,
+) -> pd.DataFrame:
+    """Evaluate candidates; test metrics are diagnostic and never selection inputs."""
     ai = config.ai_params
-    settings = _load_backtest_settings(config)
-    stock_configs = {stock.stock_code: config.for_stock(stock) for stock in config.stocks}
-    candidates = list(stock_configs)
+    features = config.feature_columns
+    research = prices[(prices.index >= RESEARCH_FROM) & (prices.index <= RESEARCH_TO)]
+    df_ta = calculate_indicators(research, config.tech_params)
+    rows: list[dict[str, Any]] = []
+    for target in TARGET_GRID:
+        for stop in STOP_GRID:
+            labelled = _labelled(df_ta, ai, target, stop)
+            usable = labelled.dropna(subset=features + ["Target", "LabelConfirmedDate"])
+            for fold, (train_ratio, validation_ratio, test_ratio) in enumerate(FOLDS, 1):
+                count = len(usable)
+                train_end = int(count * train_ratio)
+                validation_end = int(count * validation_ratio)
+                test_end = int(count * test_ratio)
+                validation = usable.iloc[train_end:validation_end]
+                test = usable.iloc[validation_end:test_end]
+                if len(validation) < 10 or len(test) < 10:
+                    continue
+                train = eligible_training_rows(usable.iloc[:train_end], validation.index[0], features)
+                if len(train) < 100 or train["Target"].nunique() < 2:
+                    continue
+                model = _build_model()
+                model.fit(train[features], train["Target"].astype(int))
+                validation_probabilities = model.predict_proba(validation[features])[:, 1]
+                test_probabilities = model.predict_proba(test[features])[:, 1]
+                for threshold in THRESHOLD_GRID:
+                    validation_metrics = _trade_metrics(
+                        df_ta, validation.index, validation_probabilities,
+                        threshold, ai, stop, budget,
+                    )
+                    test_metrics = _trade_metrics(
+                        df_ta, test.index, test_probabilities,
+                        threshold, ai, stop, budget,
+                    )
+                    rows.append(
+                        {
+                            "Code": code,
+                            "Fold": fold,
+                            "TargetPercent": target,
+                            "StopLossPercent": stop,
+                            "Threshold": threshold,
+                            "ValidationProfit": validation_metrics["profit"],
+                            "ValidationTrades": validation_metrics["trades"],
+                            "ValidationWins": validation_metrics["wins"],
+                            "TestProfitDiagnosticOnly": test_metrics["profit"],
+                            "TestTradesDiagnosticOnly": test_metrics["trades"],
+                            "TrainLastFeatureDate": train.index.max().strftime("%Y-%m-%d"),
+                            "TrainLastLabelConfirmedDate": pd.Timestamp(train["LabelConfirmedDate"].max()).strftime("%Y-%m-%d"),
+                            "ValidationFrom": validation.index.min().strftime("%Y-%m-%d"),
+                            "ValidationTo": validation.index.max().strftime("%Y-%m-%d"),
+                            "TestFromDiagnosticOnly": test.index.min().strftime("%Y-%m-%d"),
+                            "TestToDiagnosticOnly": test.index.max().strftime("%Y-%m-%d"),
+                        }
+                    )
+    return pd.DataFrame(rows)
 
-    _print_header("Backtest: research selection + locked final evaluation")
-    print(f"Research period : {settings.research_from} to {settings.research_to}")
-    print(f"Final period    : {settings.final_from} to {settings.final_to}")
-    print(f"Candidates      : {', '.join(candidates)}")
-    print(f"Future days     : {ai.future_days}")
-    print(f"Budget          : {settings.budget:,}")
-    print(f"Feature columns : {', '.join(config.feature_columns)}")
-    print(
-        "Cost model      : "
-        f"commission={ai.commission_percent:.3f}%, "
-        f"entry_slippage={ai.entry_slippage_percent:.3f}%, "
-        f"exit_slippage={ai.exit_slippage_percent:.3f}%, "
-        f"stop_slippage={ai.stop_slippage_percent:.3f}%"
+
+def select_rule_from_diagnostics(code: str, diagnostics: pd.DataFrame, min_trades: int) -> Rule:
+    """Select solely from validation columns; test/reference columns are ignored."""
+    grouped = diagnostics.groupby(
+        ["TargetPercent", "StopLossPercent", "Threshold"], as_index=False
+    ).agg(
+        ValidationProfit=("ValidationProfit", "sum"),
+        ValidationTrades=("ValidationTrades", "sum"),
     )
-    print(
-        "Grid            : "
-        f"target={TARGET_GRID}, stop={STOP_GRID}, threshold={THRESHOLD_GRID}"
+    grouped["ValidationScore"] = (
+        grouped["ValidationProfit"]
+        - (grouped["ValidationTrades"] < min_trades).astype(int) * 50_000
     )
-    print(
-        "Adoption checks : "
-        f"profit>0, trades>={settings.min_final_trades}, "
-        f"max_dd<={settings.max_drawdown_percent:.1f}%, "
-        f"month_win_rate>={settings.min_month_win_rate:.1f}%, "
-        f"best_month_share<={settings.max_single_month_profit_share:.1f}%"
+    selected = grouped.sort_values(
+        ["ValidationScore", "TargetPercent", "StopLossPercent", "Threshold"],
+        ascending=[False, True, True, True],
+        kind="mergesort",
+    ).iloc[0]
+    return Rule(
+        code=code,
+        target_percent=float(selected["TargetPercent"]),
+        stop_loss_percent=float(selected["StopLossPercent"]),
+        threshold=float(selected["Threshold"]),
+        validation_score=float(selected["ValidationScore"]),
     )
 
-    fetcher = YFinanceFetcher()
-    fetch_from = settings.research_from
-    fetch_to = _date_after(settings.final_to)
 
-    research_rows: list[dict[str, Any]] = []
-    price_cache: dict[str, pd.DataFrame] = {}
-
-    _print_header("1) Research selection")
-    for code in candidates:
-        print(f"-- {code} --")
-        try:
-            df_prices = fetcher.get_daily_stock_prices(code, fetch_from, fetch_to)
-        except Exception as exc:
-            print(f"  error: {exc}")
+def _reference_predictions(
+    code: str, prices: pd.DataFrame, config: AppConfig, rule: Rule,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    ai = config.ai_params
+    features = config.feature_columns
+    df_ta = calculate_indicators(prices, config.tech_params)
+    labelled = _labelled(df_ta, ai, rule.target_percent, rule.stop_loss_percent)
+    signal_frame = df_ta.dropna(subset=features)
+    predictions: list[dict[str, Any]] = []
+    cutoffs: list[dict[str, Any]] = []
+    orders: list[dict[str, Any]] = []
+    for signal_date, signal_row in signal_frame.iterrows():
+        if signal_date < pd.Timestamp(REFERENCE_FROM) or signal_date > pd.Timestamp(REFERENCE_TO):
             continue
-
-        if df_prices is None or df_prices.empty:
-            print("  skipped: no data")
+        train = eligible_training_rows(labelled, signal_date, features)
+        if len(train) < 100 or train["Target"].nunique() < 2:
             continue
-
-        df_prices = sanitize_ohlcv(_normalize_index(df_prices))
-        price_cache[code] = df_prices
-
-        selected, _ = _evaluate_research_stock(
-            code,
-            df_prices,
-            stock_configs[code],
-            settings,
+        last_feature = train.index.max()
+        last_confirmed = pd.Timestamp(train["LabelConfirmedDate"].max())
+        if last_confirmed >= signal_date:
+            raise AssertionError("future label entered training data")
+        model = _build_model()
+        model.fit(train[features], train["Target"].astype(int))
+        probability = float(model.predict_proba(signal_row[features].to_frame().T)[:, 1][0])
+        common = {
+            "code": code,
+            "signal_date": signal_date.strftime("%Y-%m-%d"),
+            "prob": round(probability, 8),
+            "training_data_last_feature_date": last_feature.strftime("%Y-%m-%d"),
+            "training_data_last_label_confirmed_date": last_confirmed.strftime("%Y-%m-%d"),
+            "training_row_count": len(train),
+            "model_seed": MODEL_SEED,
+            "target_percent": rule.target_percent,
+            "stop_loss_percent": rule.stop_loss_percent,
+            "threshold": rule.threshold,
+        }
+        predictions.append({**common, "is_signal": probability >= rule.threshold})
+        cutoffs.append(common)
+        if probability < rule.threshold:
+            continue
+        signal_position = int(df_ta.index.get_loc(signal_date))
+        execution = simulate_execution(
+            df_ta, signal_position, ai.future_days, rule.stop_loss_percent,
+            ai.entry_slippage_percent, ai.exit_slippage_percent,
+            ai.stop_slippage_percent, ai.commission_percent,
         )
-        if selected is None:
-            print("  skipped: not enough valid research data")
+        entry_position = signal_position + 1
+        planned_entry = df_ta.index[entry_position] if entry_position < len(df_ta) else signal_date
+        order = {
+            "code": code,
+            "signal_date": signal_date.strftime("%Y-%m-%d"),
+            "planned_entry_date": planned_entry.strftime("%Y-%m-%d"),
+            "order_date": planned_entry.strftime("%Y-%m-%d"),
+            "prob": round(probability, 8),
+            "commission_percent": ai.commission_percent,
+        }
+        if execution is None or df_ta.index[execution.exit_index] > pd.Timestamp(REFERENCE_TO):
+            orders.append({**order, "skip_reason": "SKIPPED_NO_FUTURE_DATA"})
             continue
-
-        research_rows.append(selected)
-        print(
-            "  selected in research: "
-            f"tp={selected['TargetPercent']} "
-            f"stop={selected['StopLossPercent']} "
-            f"thr={selected['Threshold']} "
-            f"score={selected['ResearchScore']:+,d} "
-            f"research_test={selected['TestProfit']:+,d} "
-            f"trades={selected['Trades']} "
-            f"folds_pos={selected['FoldsPos']}"
-        )
-
-    if not research_rows:
-        print("No research result.")
-        return
-
-    df_research = pd.DataFrame(research_rows).sort_values(
-        ["ResearchScore", "FoldsPosCount", "MinFold", "ValProfit", "Trades"],
-        ascending=[False, False, False, False, False],
-    )
-
-    _print_header("Research summary")
-    print(df_research.to_string(index=False))
-
-    df_final_candidates = df_research.copy()
-
-    _print_header("2) Locked rules for per-stock final evaluation")
-    print(
-        df_final_candidates[
-            ["Code", "TargetPercent", "StopLossPercent", "Threshold"]
-        ].to_string(index=False)
-    )
-    print("Final evaluation will not search or adjust these values.")
-
-    final_rows: list[dict[str, Any]] = []
-    for _, selected in df_final_candidates.iterrows():
-        rule = _fixed_rule_from_row(selected)
-        if rule.code not in price_cache:
-            df_prices = fetcher.get_daily_stock_prices(rule.code, fetch_from, fetch_to)
-            if df_prices is None or df_prices.empty:
-                final_rows.append(
-                    {
-                        "Code": rule.code,
-                        "TargetPercent": rule.target_percent,
-                        "StopLossPercent": rule.stop_loss_percent,
-                        "Threshold": rule.threshold,
-                        "ResearchScore": int(selected["ResearchScore"]),
-                        "Status": "ERROR",
-                        "FailedChecks": "no_final_data",
-                    }
-                )
-                continue
-            price_cache[rule.code] = sanitize_ohlcv(_normalize_index(df_prices))
-
-        try:
-            final_summary, final_trades, final_predictions = _final_evaluation_rolling(
-                price_cache[rule.code],
-                rule,
-                stock_configs[rule.code],
-                settings,
-            )
-        except Exception as exc:
-            print(f"  final evaluation error for {rule.code}: {exc}")
-            final_rows.append(
-                {
-                    "Code": rule.code,
-                    "TargetPercent": rule.target_percent,
-                    "StopLossPercent": rule.stop_loss_percent,
-                    "Threshold": rule.threshold,
-                    "ResearchScore": int(selected["ResearchScore"]),
-                    "Status": "ERROR",
-                    "FailedChecks": "final_evaluation_error",
-                }
-            )
-            continue
-        status, failed_checks = _adoption_checks(final_summary, settings)
-        _print_final_result(
-            rule,
-            final_summary,
-            final_trades,
-            final_predictions,
-            status,
-            failed_checks,
-        )
-        final_rows.append(
+        orders.append(
             {
-                "Code": rule.code,
-                "TargetPercent": rule.target_percent,
-                "StopLossPercent": rule.stop_loss_percent,
-                "Threshold": rule.threshold,
-                "ResearchScore": int(selected["ResearchScore"]),
-                "Status": status,
-                "Profit": final_summary["Profit"],
-                "Trades": final_summary["Trades"],
-                "WinRate": final_summary["WinRate"],
-                "MaxDDPct": final_summary["MaxDDPct"],
-                "MonthWinRate": final_summary["MonthWinRate"],
-                "SingleMonthShare": final_summary["SingleMonthShare"],
-                "FailedChecks": ",".join(failed_checks),
+                **order,
+                "entry_date": df_ta.index[execution.entry_index].strftime("%Y-%m-%d"),
+                "exit_date": df_ta.index[execution.exit_index].strftime("%Y-%m-%d"),
+                "entry_price": round(execution.entry_price, 8),
+                "exit_price": round(execution.exit_price, 8),
+                "exit_reason": execution.exit_reason,
             }
         )
+    return predictions, cutoffs, orders
 
-    df_final = pd.DataFrame(final_rows)
-    _print_header("3) Per-stock final evaluation summary")
-    print(df_final.to_string(index=False))
 
-    paper_test_rules = df_final[df_final["Status"].isin(["PASS", "REVIEW"])]
-    _print_header("Paper-test rules (PASS and REVIEW)")
-    if paper_test_rules.empty:
-        print("No stock qualified for a paper-test rule.")
-    else:
-        for _, row in paper_test_rules.iterrows():
-            print(f"- code: \"{row['Code']}\"  # {row['Status']}")
-            print("  ai_params:")
-            print(f"    target_percent: {row['TargetPercent']}")
-            print(f"    threshold: {row['Threshold']}")
-            print(f"    stop_loss_percent: {row['StopLossPercent']}")
+def _git_state() -> tuple[str, bool, str]:
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    status_lines = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=all"], text=True
+    ).splitlines()
+    relevant = [line for line in status_lines if "data/backtest_results/" not in line.replace("\\", "/")]
+    diff = subprocess.check_output(
+        ["git", "diff", "--binary", "HEAD", "--", ".", ":(exclude)data/backtest_results"],
+    )
+    digest = hashlib.sha256(diff + "\n".join(relevant).encode("utf-8")).hexdigest()
+    return commit, bool(relevant), digest
 
-    recommended_code = _save_selection_result(df_final, settings)
-    _print_header("Recommended stock")
-    if recommended_code:
-        print(f"Recommended: {recommended_code}")
-        print("Method  : highest research score among stocks that passed final checks")
-    else:
-        print("No stock passed all final checks.")
-    print("Slack notification targets are controlled by notify_slack in config.yaml.")
-    print(f"Saved   : {settings.result_path}")
+
+def _write_csv(frame: pd.DataFrame, path: Path, columns: list[str]) -> None:
+    output = frame.reindex(columns=columns)
+    output.to_csv(path, index=False, encoding="utf-8", lineterminator="\n", float_format="%.8f")
+
+
+def _summary(
+    results: pd.DataFrame,
+    ledger: pd.DataFrame,
+    manifest: dict[str, Any],
+    config_hash: str,
+    settings: PortfolioSettings,
+) -> dict[str, Any]:
+    trades = results[results["status"] == "FILLED"].copy() if not results.empty else results
+    profits = pd.to_numeric(trades.get("profit", pd.Series(dtype=float)), errors="coerce").fillna(0)
+    equity = pd.to_numeric(ledger["equity"], errors="coerce")
+    peak = equity.cummax()
+    drawdown = equity - peak
+    exit_dates = pd.to_datetime(trades.get("exit_date", pd.Series(dtype=str)))
+    monthly = profits.groupby(exit_dates.dt.to_period("M")).sum() if len(profits) else pd.Series(dtype=float)
+    commit, dirty, diff_hash = _git_state()
+    skipped = results[results["status"] != "FILLED"] if not results.empty else results
+    return {
+        "baseline_commit": BASELINE_COMMIT,
+        "candidate_commit": commit,
+        "working_tree_dirty": dirty,
+        "working_tree_diff_hash": diff_hash,
+        "snapshot_id": manifest["snapshot_id"],
+        "snapshot_hash": manifest["snapshot_hash"],
+        "config_hash": config_hash,
+        "seed": MODEL_SEED,
+        "periods": {
+            "research_from": RESEARCH_FROM,
+            "research_to": RESEARCH_TO,
+            "reference_from": REFERENCE_FROM,
+            "reference_to": REFERENCE_TO,
+        },
+        "portfolio_settings": asdict(settings),
+        "profit": round(float(profits.sum()), 8),
+        "trades": int(len(trades)),
+        "win_rate": round(float((profits > 0).mean() * 100), 8) if len(profits) else 0.0,
+        "max_drawdown": round(float(drawdown.min()), 8) if len(drawdown) else 0.0,
+        "max_drawdown_percent": round(float((equity / peak - 1).min() * 100), 8) if len(equity) else 0.0,
+        "monthly_win_rate": round(float((monthly > 0).mean() * 100), 8) if len(monthly) else 0.0,
+        "profit_by_stock": {
+            str(code): round(float(group["profit"].sum()), 8)
+            for code, group in trades.groupby("code", sort=True)
+        } if len(trades) else {},
+        "skipped_by_reason": {
+            str(reason): int(count)
+            for reason, count in skipped["status"].value_counts().sort_index().items()
+        } if len(skipped) else {},
+    }
+
+
+def run_backtest() -> dict[str, Any]:
+    config, _ = load_app(log_file="backtest.log")
+    raw = config.raw.get("backtest_settings", {})
+    if any(
+        str(raw.get(key)) != expected
+        for key, expected in {
+            "research_from": RESEARCH_FROM,
+            "research_to": RESEARCH_TO,
+            "final_from": REFERENCE_FROM,
+            "final_to": REFERENCE_TO,
+        }.items()
+    ):
+        raise ValueError("config period boundaries must match the frozen evaluator periods")
+    portfolio_raw = config.raw.get("portfolio_settings", {})
+    portfolio_settings = PortfolioSettings(
+        lot_size=int(portfolio_raw.get("lot_size", 1)),
+        max_position_percent=float(portfolio_raw.get("max_position_percent", 100.0)),
+        max_open_positions=int(portfolio_raw.get("max_open_positions", 1)),
+    )
+    loader = FixedOHLCVLoader("data/benchmark")
+    manifest = loader.manifest
+    configured_codes = [stock.stock_code for stock in config.stocks]
+    if configured_codes != manifest.get("stock_codes"):
+        raise ValueError("configured stocks differ from benchmark manifest")
+    prices = {
+        code: _normalize(loader.get_daily_stock_prices(code, RESEARCH_FROM, REFERENCE_TO))
+        for code in configured_codes
+    }
+    budget = int(raw.get("budget", config.ai_params.budget))
+    min_trades = int(raw.get("min_research_trades", 10))
+    all_diagnostics: list[pd.DataFrame] = []
+    selected_rules: list[Rule] = []
+    for stock in config.stocks:
+        stock_config = config.for_stock(stock)
+        diagnostics = research_candidate_rows(stock.stock_code, prices[stock.stock_code], stock_config, budget)
+        if diagnostics.empty:
+            raise RuntimeError(f"no research diagnostics for {stock.stock_code}")
+        rule = select_rule_from_diagnostics(stock.stock_code, diagnostics, min_trades)
+        selected_rules.append(rule)
+        selected_only = diagnostics[
+            (diagnostics["TargetPercent"] == rule.target_percent)
+            & (diagnostics["StopLossPercent"] == rule.stop_loss_percent)
+            & (diagnostics["Threshold"] == rule.threshold)
+        ].copy()
+        selected_only["SelectionBasis"] = "VALIDATION_ONLY"
+        all_diagnostics.append(selected_only)
+
+    predictions: list[dict[str, Any]] = []
+    cutoffs: list[dict[str, Any]] = []
+    orders: list[dict[str, Any]] = []
+    stock_map = {stock.stock_code: stock for stock in config.stocks}
+    for rule in selected_rules:
+        stock_config = config.for_stock(stock_map[rule.code])
+        stock_predictions, stock_cutoffs, stock_orders = _reference_predictions(
+            rule.code, prices[rule.code], stock_config, rule
+        )
+        predictions.extend(stock_predictions)
+        cutoffs.extend(stock_cutoffs)
+        orders.extend(stock_orders)
+    predictions.sort(key=lambda row: (row["signal_date"], row["code"]))
+    cutoffs.sort(key=lambda row: (row["signal_date"], row["code"]))
+    orders.sort(key=lambda row: (row["order_date"], -row["prob"], row["code"]))
+    calendar = sorted(
+        set().union(*[
+            set(frame[(frame.index >= REFERENCE_FROM) & (frame.index <= REFERENCE_TO)].index)
+            for frame in prices.values()
+        ])
+    )
+    result_rows, ledger_rows = simulate_portfolio(orders, budget, portfolio_settings, calendar)
+    result_rows.sort(key=lambda row: (row.get("order_date", ""), -float(row["prob"]), row["code"]))
+    trades = pd.DataFrame([row for row in result_rows if row["status"] == "FILLED"])
+    skipped = pd.DataFrame([row for row in result_rows if row["status"] != "FILLED"])
+    ledger = pd.DataFrame(ledger_rows)
+    rules_frame = pd.DataFrame([asdict(rule) for rule in selected_rules]).sort_values("code")
+    diagnostics_frame = pd.concat(all_diagnostics, ignore_index=True).sort_values(["Code", "Fold"])
+    predictions_frame = pd.DataFrame(predictions)
+    cutoffs_frame = pd.DataFrame(cutoffs)
+    results_frame = pd.DataFrame(result_rows)
+
+    RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    _write_csv(rules_frame, RESULT_DIR / "selected_rules.csv", ["code", "target_percent", "stop_loss_percent", "threshold", "validation_score"])
+    _write_csv(diagnostics_frame, RESULT_DIR / "research_diagnostics.csv", list(diagnostics_frame.columns))
+    prediction_columns = ["code", "signal_date", "prob", "is_signal", "training_data_last_feature_date", "training_data_last_label_confirmed_date", "training_row_count", "model_seed", "target_percent", "stop_loss_percent", "threshold"]
+    _write_csv(predictions_frame, RESULT_DIR / "reference_predictions.csv", prediction_columns)
+    trade_columns = ["code", "signal_date", "planned_entry_date", "entry_date", "exit_date", "prob", "entry_price", "exit_price", "exit_reason", "available_cash", "qty", "entry_commission", "exit_commission", "profit", "status"]
+    _write_csv(trades, RESULT_DIR / "reference_trades.csv", trade_columns)
+    skipped_columns = ["code", "signal_date", "planned_entry_date", "prob", "status", "available_cash"]
+    _write_csv(skipped, RESULT_DIR / "reference_skipped_orders.csv", skipped_columns)
+    _write_csv(ledger, RESULT_DIR / "daily_ledger.csv", ["date", "available_cash", "pending_cash", "locked_capital", "open_positions", "equity"])
+    cutoff_columns = ["code", "signal_date", "training_data_last_feature_date", "training_data_last_label_confirmed_date", "training_row_count", "model_seed", "target_percent", "stop_loss_percent", "threshold"]
+    _write_csv(cutoffs_frame, RESULT_DIR / "training_cutoffs.csv", cutoff_columns)
+    config_hash = sha256_file(Path("config.yaml"))
+    summary = _summary(results_frame, ledger, manifest, config_hash, portfolio_settings)
+    (RESULT_DIR / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    metadata = {"generated_at": datetime.now().astimezone().isoformat(timespec="seconds")}
+    (RESULT_DIR / "run_metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    return summary
 
 
 if __name__ == "__main__":

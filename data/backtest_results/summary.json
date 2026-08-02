@@ -1,0 +1,41 @@
+{
+  "baseline_commit": "2975e3375c615052bd3a1ab2e5a24e723e94c46b",
+  "candidate_commit": "f1f4346de17465a8ebb958c3ccaf9186e7488a43",
+  "config_hash": "14fa41ddfd85b9585a72f1b8b2a9c8de5f121223228e2aeb734e9ec3213d4928",
+  "max_drawdown": -66277.34830537,
+  "max_drawdown_percent": -22.09244944,
+  "monthly_win_rate": 57.14285714,
+  "periods": {
+    "reference_from": "2025-04-01",
+    "reference_to": "2026-05-20",
+    "research_from": "2020-01-01",
+    "research_to": "2025-03-31"
+  },
+  "portfolio_settings": {
+    "lot_size": 1,
+    "max_open_positions": 1,
+    "max_position_percent": 100.0
+  },
+  "profit": -22336.74624194,
+  "profit_by_stock": {
+    "1570": 7827.4724856,
+    "4188": 43876.5067686,
+    "4689": 2223.66961746,
+    "5020": 5688.87709952,
+    "7211": -44825.71591748,
+    "7267": 8804.73730557,
+    "8306": -47758.35850184,
+    "9432": 1826.06490063
+  },
+  "seed": 42,
+  "skipped_by_reason": {
+    "SKIPPED_MAX_OPEN_POSITIONS": 660,
+    "SKIPPED_NO_FUTURE_DATA": 4
+  },
+  "snapshot_hash": "788f37b6724d34f236977815ec6283af638e71fbafefa3dd9bc0f20d83764c2c",
+  "snapshot_id": "yahoo-jp-adjusted-2020-01-01-2026-05-20-788f37b6724d",
+  "trades": 139,
+  "win_rate": 46.76258993,
+  "working_tree_diff_hash": "8efd34910c28ee1c72190cbd1c0d9944cf635a6d552091d98626a2d9b612d2f4",
+  "working_tree_dirty": true
+}
