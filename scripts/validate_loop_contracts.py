@@ -17,7 +17,20 @@ STATES = frozenset({
     "NEW", "PLANNED", "READY", "IMPLEMENTING", "VERIFYING", "RETRY_ALLOWED",
     "HUMAN_GATE", "ACCEPTED", "REJECTED", "BLOCKED", "CANCELLED", "DONE",
 })
-PHASE_A_NEXT_STATES = ("PLANNED", "CANCELLED", "HUMAN_GATE")
+STATIC_ALLOWED_TRANSITIONS = {
+    "NEW": ("PLANNED", "CANCELLED", "HUMAN_GATE"),
+    "PLANNED": ("READY", "BLOCKED", "CANCELLED", "HUMAN_GATE"),
+    "READY": ("IMPLEMENTING", "BLOCKED", "CANCELLED", "HUMAN_GATE"),
+    "IMPLEMENTING": ("VERIFYING", "BLOCKED", "CANCELLED", "HUMAN_GATE"),
+    "VERIFYING": ("ACCEPTED", "REJECTED", "RETRY_ALLOWED", "BLOCKED", "HUMAN_GATE"),
+    "RETRY_ALLOWED": ("IMPLEMENTING", "BLOCKED", "CANCELLED", "HUMAN_GATE"),
+    "ACCEPTED": ("DONE", "HUMAN_GATE"),
+    "REJECTED": ("HUMAN_GATE",),
+    "BLOCKED": ("HUMAN_GATE",),
+    "CANCELLED": (),
+    "DONE": (),
+}
+PHASE_A_NEXT_STATES = STATIC_ALLOWED_TRANSITIONS["NEW"]
 EMPTY_TASK_HASH = hashlib.sha256(b"").hexdigest()
 REQUIRED_CONTROL_FILES = (
     "LOOP_SPEC.md",
@@ -44,6 +57,15 @@ SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bJQUANTS_API_KEY\s*=\s*[^\s]+"),
 )
+
+
+def allowed_next_states(state: str, return_state: str | None = None) -> tuple[str, ...]:
+    """Return the fixed, deterministic transition order for one current state."""
+    if state == "HUMAN_GATE":
+        if return_state not in STATES or return_state in {"CANCELLED", "BLOCKED"}:
+            raise ValidationFailure("HUMAN_GATE requires a non-terminal return_state")
+        return (return_state, "CANCELLED", "BLOCKED")
+    return STATIC_ALLOWED_TRANSITIONS[state]
 
 
 class ValidationFailure(ValueError):
@@ -176,33 +198,7 @@ def _sha256_normalized_text(path: Path) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def _require_phase_a_semantics(
-    state: dict[str, Any], contract: dict[str, Any], history: list[dict[str, Any]],
-    approvals: list[dict[str, Any],], spec_text: str, root: Path,
-) -> None:
-    if state["current_state"] != "NEW":
-        raise ValidationFailure("Phase A current_state must remain NEW")
-    if tuple(state["allowed_next_states"]) != PHASE_A_NEXT_STATES:
-        raise ValidationFailure("Phase A allowed_next_states are not fixed")
-    if state["current_task"] != "" or state["task_hash"] != EMPTY_TASK_HASH:
-        raise ValidationFailure("Phase A must not register an executable task")
-    if state["attempt"] != 0 or state["max_attempts"] != 0:
-        raise ValidationFailure("Phase A attempts must be zero")
-    if state["human_gate"] != {
-        "required": False, "approval_id": None, "requested_action": None, "return_state": None,
-    }:
-        raise ValidationFailure("Phase A must not request or consume approval")
-    if state["last_verified_commit"] is not None:
-        raise ValidationFailure("Phase A last_verified_commit must be null")
-    if contract["active"] is not False:
-        raise ValidationFailure("Phase A evaluation contract must be inactive")
-    if contract["task_hash"] != state["task_hash"]:
-        raise ValidationFailure("state and contract task_hash differ")
-    for label, budget in (("state", state["budget_remaining"]), ("contract", contract["budget"])):
-        if any(value != 0 for value in budget.values()):
-            raise ValidationFailure(f"Phase A {label} budget must be all zero")
-    if contract["allowed_network_hosts"]:
-        raise ValidationFailure("Phase A allows no network hosts")
+def _require_closed_stock_research(spec_text: str, root: Path) -> None:
     required_closed = (
         "research_status: CLOSED", "deployment_status: NO_CANDIDATE", "shadow_status: DISABLED",
         "paid_data_decision: DO_NOT_PURCHASE", "further_loop_on_same_data: PROHIBITED",
@@ -210,29 +206,205 @@ def _require_phase_a_semantics(
     )
     if any(marker not in spec_text for marker in required_closed):
         raise ValidationFailure("stock research closure status is missing or changed")
-    if len(history) != 1:
-        raise ValidationFailure("Phase A history must contain exactly one initialization event")
-    event = history[0]
-    if event["event_type"] != "INITIALIZED" or event["start_state"] != "NEW" or event["end_state"] != "NEW":
-        raise ValidationFailure("Phase A history is not an initialization event")
-    if event["state_transition"] is not None or event["output_commit"] is not None:
-        raise ValidationFailure("Phase A initialization must not transition state or set output_commit")
-    if event["loop_id"] != state["loop_id"] or event["task_hash"] != state["task_hash"]:
-        raise ValidationFailure("Phase A history does not match state")
-    if event["input_commit"] != state["base_commit"]:
-        raise ValidationFailure("Phase A history input_commit does not match base_commit")
-    if event["network_calls"] != 0 or event["model_fits"] != 0 or event["evaluations"] != 0:
-        raise ValidationFailure("Phase A initialization cannot record execution activity")
-    for approval in approvals:
-        if approval["used"]:
-            raise ValidationFailure("used approval cannot be reused in Phase A")
-        expiry = datetime.fromisoformat(approval["expires_at"].replace("Z", "+00:00"))
-        if expiry <= datetime.now(timezone.utc):
-            raise ValidationFailure("expired approval cannot be used in Phase A")
-        raise ValidationFailure("Phase A must not contain a human approval record")
     for relative in PROHIBITED_PHASE_A_PATHS:
         if (root / relative).exists():
             raise ValidationFailure(f"Phase A runner, scheduler, or lock is present: {relative}")
+
+
+def _as_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _validate_initialization(event: dict[str, Any], state: dict[str, Any]) -> None:
+    if event["event_type"] != "INITIALIZED" or event["start_state"] != "NEW" or event["end_state"] != "NEW":
+        raise ValidationFailure("first history event must be INITIALIZED NEW->NEW")
+    if event["state_transition"] is not None or event["output_commit"] is not None:
+        raise ValidationFailure("initialization must have null state_transition and output_commit")
+    if event["loop_id"] != state["loop_id"] or event["input_commit"] != state["base_commit"]:
+        raise ValidationFailure("initialization does not match loop state")
+    if event["task_hash"] != EMPTY_TASK_HASH:
+        raise ValidationFailure("initialization must use empty task hash")
+
+
+def _validate_bootstrap(
+    state: dict[str, Any], contract: dict[str, Any], history: list[dict[str, Any]],
+    approvals: list[dict[str, Any]],
+) -> None:
+    if state["current_state"] != "NEW" or tuple(state["allowed_next_states"]) != PHASE_A_NEXT_STATES:
+        raise ValidationFailure("bootstrap state must be NEW with fixed allowed_next_states")
+    if state["current_task"] != "" or state["task_hash"] != EMPTY_TASK_HASH:
+        raise ValidationFailure("bootstrap must not register an executable task")
+    if state["attempt"] != 0 or state["max_attempts"] != 0 or state["last_verified_commit"] is not None:
+        raise ValidationFailure("bootstrap attempts and last_verified_commit must be empty")
+    if state["human_gate"] != {"required": False, "approval_id": None, "requested_action": None, "return_state": None}:
+        raise ValidationFailure("bootstrap must not request or consume approval")
+    if contract["active"] is not False or contract["task_hash"] != EMPTY_TASK_HASH:
+        raise ValidationFailure("bootstrap contract task_hash must be empty and inactive")
+    if any(value != 0 for value in state["budget_remaining"].values()) or any(value != 0 for value in contract["budget"].values()):
+        raise ValidationFailure("bootstrap budgets must be all zero")
+    if contract["allowed_network_hosts"]:
+        raise ValidationFailure("bootstrap allows no network hosts")
+    if approvals:
+        for approval in approvals:
+            if approval["used"]:
+                raise ValidationFailure("used approval cannot be reused in bootstrap")
+            if _as_datetime(approval["expires_at"]) <= datetime.now(timezone.utc):
+                raise ValidationFailure("expired approval cannot be used in bootstrap")
+        raise ValidationFailure("bootstrap must not contain a human approval record")
+    if len(history) != 1:
+        raise ValidationFailure("bootstrap requires one initialization event")
+    _validate_initialization(history[0], state)
+
+
+def _validate_approvals(
+    approvals: list[dict[str, Any]], state: dict[str, Any], history: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    usage: dict[str, int] = {}
+    for approval in approvals:
+        approval_id = approval["approval_id"]
+        if approval_id in by_id:
+            raise ValidationFailure("approval_id is duplicated")
+        if approval["loop_id"] != state["loop_id"] or approval["task_hash"] != state["task_hash"]:
+            raise ValidationFailure("approval loop_id or task_hash does not match state")
+        approved_at = _as_datetime(approval["approved_at"])
+        expires_at = _as_datetime(approval["expires_at"])
+        if expires_at <= approved_at:
+            raise ValidationFailure("approval expires_at must be after approved_at")
+        if approval["used"] and approval["used_at"] is None:
+            raise ValidationFailure("used approval requires used_at")
+        if not approval["used"] and approval["used_at"] is not None:
+            raise ValidationFailure("unused approval must have null used_at")
+        if approval["used"] and _as_datetime(approval["used_at"]) < approved_at:
+            raise ValidationFailure("approval used_at precedes approved_at")
+        by_id[approval_id] = approval
+        usage[approval_id] = 0
+    for event in history:
+        approval_id = event["human_approval_id"]
+        if approval_id is not None:
+            if approval_id not in by_id:
+                raise ValidationFailure("history references missing human approval")
+            usage[approval_id] += 1
+    for approval_id, count in usage.items():
+        if count > 1:
+            raise ValidationFailure("human approval is reused by multiple events")
+        if by_id[approval_id]["used"] != (count == 1):
+            raise ValidationFailure("approval used flag does not match history usage")
+    return by_id
+
+
+def _validate_history(
+    state: dict[str, Any], history: list[dict[str, Any]], approvals: dict[str, dict[str, Any]],
+) -> None:
+    if not history:
+        raise ValidationFailure("history cannot be empty")
+    _validate_initialization(history[0], state)
+    run_ids: set[str] = set()
+    previous: dict[str, Any] | None = None
+    previous_time: datetime | None = None
+    for index, event in enumerate(history):
+        if event["run_id"] in run_ids:
+            raise ValidationFailure("run_id is duplicated")
+        run_ids.add(event["run_id"])
+        timestamp = _as_datetime(event["timestamp"])
+        if previous_time is not None and timestamp < previous_time:
+            raise ValidationFailure("history timestamp is decreasing")
+        previous_time = timestamp
+        if event["loop_id"] != state["loop_id"]:
+            raise ValidationFailure("history loop_id does not match state")
+        if any(event[name] < 0 for name in ("network_calls", "model_fits", "evaluations")):
+            raise ValidationFailure("history activity counts must be nonnegative")
+        if event["output_commit"] is not None and re.fullmatch(r"[0-9a-f]{40}", event["output_commit"]) is None:
+            raise ValidationFailure("output_commit must be null or lowercase commit hash")
+        if index == 0:
+            previous = event
+            continue
+        if previous is None:
+            raise AssertionError("unreachable")
+        if previous["end_state"] in {"DONE", "CANCELLED"}:
+            raise ValidationFailure("no event may follow DONE or CANCELLED")
+        if event["start_state"] != previous["end_state"]:
+            raise ValidationFailure("history start_state does not match previous end_state")
+        if event["task_hash"] != state["task_hash"]:
+            raise ValidationFailure("task-registered history event has mismatched task_hash")
+        if event["event_type"] == "EVIDENCE":
+            if event["start_state"] != event["end_state"] or event["state_transition"] is not None:
+                raise ValidationFailure("EVIDENCE event cannot change state")
+        elif event["event_type"] == "STATE_TRANSITION":
+            transition = event["state_transition"]
+            if transition is None:
+                raise ValidationFailure("STATE_TRANSITION requires state_transition")
+            if transition["from"] != event["start_state"] or transition["to"] != event["end_state"]:
+                raise ValidationFailure("state_transition does not match start/end state")
+            if event["end_state"] not in allowed_next_states(event["start_state"], event.get("gate_return_state")):
+                raise ValidationFailure("state transition is not allowed")
+            if event["start_state"] == "HUMAN_GATE":
+                approval_id = event["human_approval_id"]
+                if approval_id is None or approval_id not in approvals:
+                    raise ValidationFailure("HUMAN_GATE transition requires a matching approval")
+                approval = approvals[approval_id]
+                if not approval["used"] or event.get("gate_requested_action") != approval["approved_action"]:
+                    raise ValidationFailure("HUMAN_GATE approval action is not valid")
+                if event.get("gate_return_state") != event["end_state"] or approval["permitted_return_state"] != event["end_state"]:
+                    raise ValidationFailure("HUMAN_GATE approval return_state is not valid")
+                event_time = _as_datetime(event["timestamp"])
+                if not (_as_datetime(approval["approved_at"]) <= event_time <= _as_datetime(approval["expires_at"])):
+                    raise ValidationFailure("HUMAN_GATE approval is outside its validity period")
+        else:
+            raise ValidationFailure("only INITIALIZED, STATE_TRANSITION, and EVIDENCE are allowed")
+        previous = event
+    if history[-1]["end_state"] != state["current_state"]:
+        raise ValidationFailure("last history state does not match loop_state")
+
+
+def _validate_manual(
+    state: dict[str, Any], contract: dict[str, Any], history: list[dict[str, Any]], approvals: list[dict[str, Any]],
+) -> None:
+    if state["current_state"] == "NEW":
+        raise ValidationFailure("task-registered NEW is not allowed")
+    if not state["current_task"] or state["task_hash"] != hashlib.sha256(state["current_task"].encode("utf-8")).hexdigest():
+        raise ValidationFailure("manual task and task_hash must match")
+    if contract["active"] is not True or contract["task_hash"] != state["task_hash"] or contract["contract_version"] < 1:
+        raise ValidationFailure("manual loop requires an active matching contract")
+    for name in ("pass_conditions", "failure_conditions", "allowed_files", "forbidden_files", "required_tests"):
+        if not contract[name]:
+            raise ValidationFailure(f"manual contract {name} cannot be empty")
+    if state["attempt"] > state["max_attempts"]:
+        raise ValidationFailure("attempt exceeds max_attempts")
+    for name, remaining in state["budget_remaining"].items():
+        if remaining > contract["budget"][name]:
+            raise ValidationFailure("budget_remaining exceeds contract budget")
+    gate = state["human_gate"]
+    if state["current_state"] == "HUMAN_GATE":
+        if not gate["required"] or gate["requested_action"] is None or gate["return_state"] is None:
+            raise ValidationFailure("HUMAN_GATE requires requested_action and return_state")
+    elif gate != {"required": False, "approval_id": None, "requested_action": None, "return_state": None}:
+        raise ValidationFailure("non-HUMAN_GATE state must have an empty human_gate")
+    expected_next = allowed_next_states(state["current_state"], gate["return_state"])
+    if tuple(state["allowed_next_states"]) != expected_next:
+        raise ValidationFailure("allowed_next_states do not match fixed transition table")
+    approvals_by_id = _validate_approvals(approvals, state, history)
+    _validate_history(state, history, approvals_by_id)
+    last = history[-1]
+    current = state["current_state"]
+    if current == "PLANNED" and (state["attempt"] != 0 or state["last_verified_commit"] is not None):
+        raise ValidationFailure("PLANNED requires attempt zero and null last_verified_commit")
+    if current == "READY" and not any(event["end_state"] == "PLANNED" for event in history):
+        raise ValidationFailure("READY requires a PLANNED history event")
+    if current == "IMPLEMENTING" and last["start_state"] not in {"READY", "RETRY_ALLOWED"}:
+        raise ValidationFailure("IMPLEMENTING must follow READY or RETRY_ALLOWED")
+    if current == "VERIFYING" and last["start_state"] != "IMPLEMENTING":
+        raise ValidationFailure("VERIFYING must follow IMPLEMENTING")
+    if current == "RETRY_ALLOWED" and (last["start_state"] != "VERIFYING" or state["attempt"] >= state["max_attempts"]):
+        raise ValidationFailure("RETRY_ALLOWED requires VERIFYING predecessor and remaining attempt")
+    if current == "ACCEPTED" and (last["start_state"] != "VERIFYING" or last["verification_result"] != "PASS"):
+        raise ValidationFailure("ACCEPTED requires PASS evidence from VERIFYING")
+    if current == "REJECTED" and (last["start_state"] != "VERIFYING" or last["verification_result"] != "FAIL"):
+        raise ValidationFailure("REJECTED requires FAIL evidence from VERIFYING")
+    if current == "BLOCKED" and last["verification_result"] != "BLOCKED" and not last["failure_reason"]:
+        raise ValidationFailure("BLOCKED requires BLOCKED evidence or failure_reason")
+    if current == "DONE" and last["start_state"] != "ACCEPTED":
+        raise ValidationFailure("DONE must follow ACCEPTED")
 
 
 def _check_secret_patterns(paths: tuple[Path, ...]) -> None:
@@ -269,7 +441,11 @@ def validate(root: Path) -> ValidationResult:
     for index, approval in enumerate(approvals):
         _validate_instance(approval, schemas["approval"], schemas["approval"], f"approval[{index}]")
     spec_path = control / "LOOP_SPEC.md"
-    _require_phase_a_semantics(state, contract, history, approvals, spec_path.read_text(encoding="utf-8"), root)
+    _require_closed_stock_research(spec_path.read_text(encoding="utf-8"), root)
+    if state["current_state"] == "NEW":
+        _validate_bootstrap(state, contract, history, approvals)
+    else:
+        _validate_manual(state, contract, history, approvals)
     checked_paths = files + (root / "scripts/validate_loop_contracts.py",)
     _check_secret_patterns(checked_paths)
     canonical = {

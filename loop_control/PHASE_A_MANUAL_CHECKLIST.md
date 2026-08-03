@@ -24,3 +24,7 @@ Phase A has no runner, automatic state update, lock, CI, scheduler, or external 
 ## Before Phase B
 
 A human must separately choose and approve a small, non-confidential, non-investment pilot task. The pilot must have a new immutable task and evaluation contract. Phase A does not authorize Phase B, stock-analyzer research, paid data, model training, backtesting, shadow activation, or any live order.
+
+## Manual-record constraint before Phase B
+
+Manual Phase A history records may use `output_commit: null`. A Git commit cannot safely contain its own final SHA before that commit exists, and the validator must never infer or fill this value from Git history. No follow-up commit may be created merely to backfill it. Before Phase B adds any `run_once` implementation, a separate human-approved design must choose the commit-evidence format.
