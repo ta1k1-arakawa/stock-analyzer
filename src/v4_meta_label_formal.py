@@ -256,33 +256,149 @@ def feature_definition_hash() -> str:
 def _network_ok(manifest: Mapping[str,Any]) -> bool:
     return all(a.get("scheme")=="https" and a.get("host")==YAHOO_HOST and not a.get("redirect_detected") for a in manifest.get("network_audit",[]))
 
-def evaluate_cache(cache_dir: Path, output_dir: Path, universe: pd.DataFrame, repo: Path, commit: str = "UNKNOWN") -> dict[str, bytes]:
-    """Stage B: cache-only core evaluation, including deterministic canonical artifacts."""
-    _outside_repo(cache_dir,repo); _outside_repo(output_dir,repo)
-    if output_dir.exists() and any(output_dir.iterdir()): raise ValueError("OUTPUT_DIRECTORY_NONEMPTY")
-    manifest = _validate_manifest(cache_dir); prices={}; splits={}; failures=[]
+def validate_formal_inputs(cache_dir: Path, output_dir: Path, universe: pd.DataFrame, repo: Path) -> dict[str,Any]:
+    _outside_repo(cache_dir, repo); _outside_repo(output_dir, repo)
+    if output_dir.exists() and (output_dir.is_file() or any(output_dir.iterdir())): raise ValueError("OUTPUT_DIRECTORY_NONEMPTY_OR_FILE")
+    return _validate_manifest(cache_dir)
+
+def parse_cache_prices(cache: Path, manifest: Mapping[str,Any]) -> tuple[dict[str,pd.DataFrame],dict[str,set[pd.Timestamp]],list[dict[str,Any]]]:
+    prices: dict[str,pd.DataFrame]={}; splits={}; status=[]
     for item in manifest["payloads"]:
-        try: prices[item["ticker"]], splits[item["ticker"]]=parse_v4_yahoo_chart(json.loads((cache_dir/item["relative_path"]).read_bytes()))
-        except Exception: failures.append(item["ticker"])
-    active=universe.loc[universe.ticker.isin(prices)].copy(); features=build_feature_frame(prices,active); labelled=add_execution_labels(features,prices,splits); candidates=select_daily_candidates(labelled); oof=generate_oof_predictions(candidates)
-    baseline, bl, be=run_baseline_portfolio(oof,active,return_events=True); v4, vl, ve=run_v4_portfolio(baseline,return_events=True)
-    baseline_metrics=aggregate_portfolio_metrics(baseline,bl,be); v4_metrics=aggregate_portfolio_metrics(v4,vl,ve); classification=baseline_filled_classification_metrics(baseline); acceptance=baseline_filled_acceptance_evidence(baseline)
-    future={"parsed_raw_price":sum(int((x.index>=pd.Timestamp("2020-01-01")).sum()) for x in prices.values()),"feature_frame":int((features.signal_date>=pd.Timestamp("2020-01-01")).sum()),"labelled_rows":int((labelled.signal_date>=pd.Timestamp("2020-01-01")).sum()),"daily_candidates":int((candidates.signal_date>=pd.Timestamp("2020-01-01")).sum()),"oof_predictions":int((oof.signal_date>=pd.Timestamp("2020-01-01")).sum()),"baseline_orders":int((baseline.signal_date>=pd.Timestamp("2020-01-01")).sum()),"v4_orders":int((v4.signal_date>=pd.Timestamp("2020-01-01")).sum()),"formal_artifact_rows":0}
-    suff={str(f["fold"]):check_fold_data_sufficiency(*__import__("src.v4_meta_label_mvp",fromlist=["make_walk_forward_fold"]).make_walk_forward_fold(candidates,f)) for f in FOLDS}
-    hashes={"universe_csv":"d40b1fcfd824822c7511f0d4f99445640706b7f5dfae08155636624704c41997","ticker_list":"12777a83f259cd885ebb828e0ce895a5bf53be37c27928c1a487f629002ce4f7","payload_hash_list":manifest["payload_hash_list_sha256"],"price_manifest":_sha(_canonical_json(manifest)),"feature_definition":feature_definition_hash(),"candidate":_sha(_csv(candidates.loc[candidates.candidate_status=="CANDIDATE"],tuple(candidates.columns),["signal_date","ticker"])),"baseline_filled":_sha(_csv(baseline.loc[baseline.portfolio_status=="FILLED"],TRADES_COLUMNS,["fold","signal_date","ticker"])),"oof":_sha(_csv(oof,tuple(oof.columns),["fold","signal_date","ticker"])),"model_params":_sha(_canonical_json(MODEL_PARAMS))}
-    evidence={"price_success_tickers":len(prices),"fold_sufficiency":suff,"baseline_closed_trades":{str(f):int(((baseline.fold==f)&(baseline.portfolio_status=="FILLED")).sum()) for f in (1,2,3)},"hashes_fixed":all(isinstance(v,str) and len(v)==64 for v in hashes.values()),"post_2020_rows":sum(future.values()),"network_hosts_allowed":_network_ok(manifest),"deterministic":True,"byte_identical":True,"model_acceptance_rate":acceptance.get("model_acceptance_rate") or 0.0}
-    blocked=evaluate_blocked_conditions(evidence); verdict=evaluate_acceptance_conditions(baseline_metrics,v4_metrics,classification,evidence)
-    baseline_map=baseline.set_index(["fold","signal_date","ticker"])[["portfolio_status","skip_reason"]]; pred=oof.copy(); pred["Baseline portfolio status"]=[baseline_map.loc[(r.fold,r.signal_date,r.ticker),"portfolio_status"] if (r.fold,r.signal_date,r.ticker) in baseline_map.index else "NOT_FILLED" for r in pred.itertuples()]; pred["Baseline skip reason"]=[baseline_map.loc[(r.fold,r.signal_date,r.ticker),"skip_reason"] if (r.fold,r.signal_date,r.ticker) in baseline_map.index else None for r in pred.itertuples()]
-    baseline_for_csv, v4_for_csv = baseline.copy(), v4.copy(); baseline_for_csv.attrs = {}; v4_for_csv.attrs = {}
-    trades=pd.concat([baseline_for_csv,v4_for_csv],ignore_index=True); trades_bytes=_csv(trades,TRADES_COLUMNS,["strategy","fold","EntryDate","signal_date","ticker","portfolio_status"]); pred_bytes=_csv(pred,PREDICTION_COLUMNS,["fold","signal_date","ticker"])
-    hashes.update({"trades_csv":_sha(trades_bytes),"predictions_csv":_sha(pred_bytes)})
-    summary={"schema_version":SCHEMA_VERSION,"evaluation_type":"SURVIVORSHIP_BIASED_RESEARCH_ONLY","formal_backtest":False,"deployment_allowed":False,"repository_commit":commit,"period":{"price_from":"2015-01-01","price_to":"2019-12-31"},"verdict":verdict["status"],"blocked_reasons":blocked["reasons"],"acceptance_conditions":verdict["conditions"],"baseline":baseline_metrics,"v4":v4_metrics,"classification":classification,"acceptance_evidence":acceptance,"fold_sufficiency":suff,"failed_tickers":failures+manifest.get("failed_tickers",[]),"network_audit_summary":{"allowed":_network_ok(manifest),"attempt_count":len(manifest.get("network_audit",[]))},"future_access_audit":future,"cash_safety":{"baseline":cash_safety_audit(be),"v4":cash_safety_audit(ve)},"hashes":hashes,"serializer":{"encoding":"utf-8","line_ending":"LF","float_format":"%.10f"},"cache_manifest_sha256":_sha(_canonical_json(manifest)),"summary_preimage_method":"sha256(canonical JSON excluding hashes.summary_preimage_sha256)"}
-    pre=dict(summary); pre["hashes"]=dict(hashes); summary["hashes"]["summary_preimage_sha256"]=_sha(_canonical_json(pre)); summary_bytes=_canonical_json(summary)
-    return {"summary.json":summary_bytes,"trades.csv":trades_bytes,"predictions.csv":pred_bytes}
+        ticker=item["ticker"]; body=(cache/item["relative_path"]).read_bytes()
+        try: payload=json.loads(body)
+        except Exception: status.append({"ticker":ticker,"status":"JSON_PARSE_FAILURE","reason":"JSON_PARSE_FAILURE","row_count":0}); continue
+        try:
+            if payload.get("chart",{}).get("error") is not None: raise RuntimeError("YAHOO_CHART_ERROR")
+            frame, split=parse_v4_yahoo_chart(payload)
+            if frame.empty: status.append({"ticker":ticker,"status":"PRICE_ROWS_EMPTY","reason":"PRICE_ROWS_EMPTY","row_count":0}); continue
+            prices[ticker]=frame; splits[ticker]=split
+            status.append({"ticker":ticker,"status":"SUCCESS","reason":None,"row_count":len(frame),"first_date":str(frame.index.min().date()),"last_date":str(frame.index.max().date()),"canonical_price_sha256":_sha(_csv(frame.reset_index().rename(columns={"index":"date"}),tuple(frame.reset_index().rename(columns={"index":"date"}).columns),["date"]))})
+        except RuntimeError as exc: status.append({"ticker":ticker,"status":"YAHOO_CHART_ERROR","reason":str(exc),"row_count":0})
+        except Exception: status.append({"ticker":ticker,"status":"OHLCV_VALIDATION_FAILURE","reason":"OHLCV_VALIDATION_FAILURE","row_count":0})
+    return prices,splits,status
+
+def build_parsed_price_manifest(prices: Mapping[str,pd.DataFrame], splits: Mapping[str,Any], ticker_order: list[str]) -> tuple[list[dict[str,Any]],bytes]:
+    rows=[]
+    for ticker in ticker_order:
+        if ticker not in prices: continue
+        frame=prices[ticker].sort_index(); raw=frame.reset_index().rename(columns={"index":"date"})
+        raw_hash=_sha(_csv(raw,tuple(raw.columns),["date"])); adjusted_cols=[c for c in raw.columns if c.startswith("adjusted_") or c=="date"]
+        rows.append({"ticker":ticker,"row_count":len(frame),"first_date":str(frame.index.min().date()),"last_date":str(frame.index.max().date()),"raw_ohlcv_sha256":raw_hash,"adjusted_ohlc_sha256":_sha(_csv(raw,tuple(adjusted_cols),["date"])),"split_event_count":len(splits.get(ticker,[]))})
+    return rows,_canonical_json(rows)
+
+def _empty(columns: tuple[str,...]) -> pd.DataFrame: return pd.DataFrame(columns=columns)
+def _future(frame: pd.DataFrame, dates: list[str]) -> int:
+    return int(sum((pd.to_datetime(frame[col],errors="coerce") >= pd.Timestamp("2020-01-01")).sum() for col in dates if col in frame))
+
+def run_formal_core_once(cache: Path, universe: pd.DataFrame, manifest: Mapping[str,Any]) -> dict[str,Any]:
+    """Pure cache-only core; this function never imports or invokes a transport."""
+    prices,splits,parse_status=parse_cache_prices(cache,manifest); active=universe.loc[universe.ticker.isin(prices)].copy()
+    features=build_feature_frame(prices,active) if prices else pd.DataFrame(); labelled=add_execution_labels(features,prices,splits) if not features.empty else features
+    candidates=select_daily_candidates(labelled) if not labelled.empty else labelled
+    from src.v4_meta_label_mvp import make_walk_forward_fold
+    candidate_ready=not candidates.empty and {"candidate_status","eligible","label","signal_date","ticker","LabelConfirmedDate"}.issubset(candidates.columns)
+    suff={str(f["fold"]):check_fold_data_sufficiency(*make_walk_forward_fold(candidates,f)) for f in FOLDS} if candidate_ready else {str(f["fold"]):{"blocked":True,"reasons":["TRAIN_CANDIDATES_LT_100","TRAIN_LABEL_NOT_TWO_CLASSES","TEST_LABEL_NOT_TWO_CLASSES"],"train_count":0,"test_count":0,"train_positive":0,"train_negative":0} for f in FOLDS}
+    blocked_fit=any(v["blocked"] for v in suff.values()); oof=_empty(("fold","signal_date","ticker","label","probability","decision","realized_net_return_percent","EntryDate","ExitDate","EntryPrice","ExitPrice","ExitReason",*FEATURE_COLUMNS))
+    baseline=v4=_empty(TRADES_COLUMNS); bl=vl=be=ve=pd.DataFrame(); not_computed="NOT_COMPUTED_DUE_TO_UPSTREAM_BLOCKER" if blocked_fit else None
+    if not blocked_fit:
+        oof=generate_oof_predictions(candidates); baseline,bl,be=run_baseline_portfolio(oof,active,return_events=True); v4,vl,ve=run_v4_portfolio(baseline,return_events=True)
+    parsed,parsed_bytes=build_parsed_price_manifest(prices,splits,universe.ticker.astype(str).tolist())
+    future={"parsed_raw_price":sum(int((x.index>=pd.Timestamp("2020-01-01")).sum()) for x in prices.values()),"feature_frame":_future(features,["signal_date"]),"labelled_rows":_future(labelled,["signal_date"]),"daily_candidates":_future(candidates,["signal_date"]),"oof_predictions":_future(oof,["signal_date"]),"baseline_orders":_future(baseline,["signal_date","EntryDate","ExitDate"]),"v4_orders":_future(v4,["signal_date","EntryDate","ExitDate"])}
+    return {"prices":prices,"parse_status":parse_status,"parsed_price_manifest":parsed,"parsed_price_manifest_bytes":parsed_bytes,"features":features,"labelled":labelled,"candidates":candidates,"fold_sufficiency":suff,"oof":oof,"baseline":baseline,"v4":v4,"baseline_ledger":bl,"v4_ledger":vl,"baseline_events":be,"v4_events":ve,"not_computed_reason":not_computed,"future":future}
+
+def _strategy_csv(frame: pd.DataFrame) -> bytes:
+    if frame.empty: return _csv(_empty(TRADES_COLUMNS),TRADES_COLUMNS,["fold"])
+    work=frame.copy(); work["_strategy_rank"]=work["strategy"].map({"BASELINE":0,"V4":1}).fillna(9)
+    work=work.sort_values(["_strategy_rank","fold","EntryDate","signal_date","ticker","portfolio_status"],kind="mergesort").loc[:,TRADES_COLUMNS]
+    for col in work.columns:
+        if pd.api.types.is_datetime64_any_dtype(work[col]): work[col]=work[col].dt.strftime("%Y-%m-%d")
+    return work.to_csv(index=False,lineterminator="\n",float_format="%.10f",na_rep="",encoding="utf-8").encode()
+
+def build_formal_artifacts(core: Mapping[str,Any], manifest: Mapping[str,Any], universe: pd.DataFrame, repository_state: Mapping[str,str], determinism: Mapping[str,Any]) -> dict[str,bytes]:
+    baseline,v4,oof=core["baseline"],core["v4"],core["oof"]
+    if core["not_computed_reason"]: trades=_empty(TRADES_COLUMNS); predictions=_empty(PREDICTION_COLUMNS)
+    else:
+        baseline,v4=baseline.copy(),v4.copy(); baseline.attrs={}; v4.attrs={}; trades=pd.concat([baseline,v4],ignore_index=True); baseline_map=baseline.set_index(["fold","signal_date","ticker"])[["portfolio_status","skip_reason"]]
+        predictions=oof.copy(); predictions["Baseline portfolio status"]=[baseline_map.loc[(r.fold,r.signal_date,r.ticker),"portfolio_status"] for r in predictions.itertuples()]; predictions["Baseline skip reason"]=[baseline_map.loc[(r.fold,r.signal_date,r.ticker),"skip_reason"] for r in predictions.itertuples()]
+    trades_bytes=_strategy_csv(trades); prediction_bytes=_csv(predictions,PREDICTION_COLUMNS,["fold","signal_date","ticker"])
+    future=dict(core["future"]); future["trades_artifact_rows"]=_future(trades,["signal_date","EntryDate","ExitDate"]); future["predictions_artifact_rows"]=_future(predictions,["signal_date","EntryDate","ExitDate"]); future["total"]=sum(future.values())
+    if core["not_computed_reason"]:
+        baseline_metrics=v4_metrics=classification={"status":"NOT_COMPUTED_DUE_TO_UPSTREAM_BLOCKER"}; acceptance={"status":"NOT_COMPUTED_DUE_TO_UPSTREAM_BLOCKER"}; cash={"baseline":"NOT_COMPUTED","v4":"NOT_COMPUTED"}; closed={}
+    else:
+        baseline_metrics=aggregate_portfolio_metrics(baseline,core["baseline_ledger"],core["baseline_events"]); v4_metrics=aggregate_portfolio_metrics(v4,core["v4_ledger"],core["v4_events"]); classification=baseline_filled_classification_metrics(baseline); acceptance=baseline_filled_acceptance_evidence(baseline); cash={"baseline":cash_safety_audit(core["baseline_events"]),"v4":cash_safety_audit(core["v4_events"])}; closed={str(f):int(((baseline.fold==f)&(baseline.portfolio_status=="FILLED")).sum()) for f in (1,2,3)}
+    candidate_columns=("signal_date","ticker","candidate_status","eligible","label","LabelConfirmedDate","EntryDate","ExitDate","EntryPrice","ExitPrice","ExitReason","realized_net_return_percent",*FEATURE_COLUMNS)
+    cand=(core["candidates"].loc[core["candidates"].candidate_status.eq("CANDIDATE")] if "candidate_status" in core["candidates"] else _empty(candidate_columns)).reindex(columns=candidate_columns)
+    hashes={"universe_csv_sha256":_universe_hashes(universe)[0],"ticker_list_sha256":_universe_hashes(universe)[1],"payload_hash_list_sha256":manifest["payload_hash_list_sha256"],"cache_manifest_sha256":_sha(_canonical_json(manifest)),"parsed_price_manifest_sha256":_sha(core["parsed_price_manifest_bytes"]),"feature_definition_sha256":feature_definition_hash(),"candidate_sha256":_sha(_csv(cand,candidate_columns,["signal_date","ticker"])),"baseline_filled_sha256":_sha(_csv(baseline.loc[baseline.portfolio_status.eq("FILLED")] if not baseline.empty else _empty(TRADES_COLUMNS),TRADES_COLUMNS,["fold","signal_date","ticker"])),"oof_predictions_sha256":_sha(_csv(oof,tuple(oof.columns),["fold","signal_date","ticker"])),"model_params_sha256":_sha(_canonical_json(MODEL_PARAMS)),"trades_csv_sha256":_sha(trades_bytes),"predictions_csv_sha256":_sha(prediction_bytes)}
+    network={"attempt_count":len(manifest.get("network_audit",[])),"success_attempt_count":sum(a.get("success") is True for a in manifest.get("network_audit",[])),"transport_exception_count":sum(a.get("status")=="TRANSPORT_EXCEPTION" for a in manifest.get("network_audit",[])),"http_429_count":sum(a.get("status")==429 for a in manifest.get("network_audit",[])),"http_5xx_count":sum(type(a.get("status")) is int and a["status"]>=500 for a in manifest.get("network_audit",[])),"redirect_count":sum(bool(a.get("redirect_detected")) for a in manifest.get("network_audit",[])),"schemes":sorted({a.get("scheme") for a in manifest.get("network_audit",[])}),"hosts":sorted({a.get("host") for a in manifest.get("network_audit",[])}),"query_specification_matches":bool(manifest.get("network_audit")) and all(tuple(map(tuple,a.get("query_specification",[])))==QUERY_SPEC for a in manifest.get("network_audit",[])),"validation_status":"PASS" if bool(manifest.get("network_audit")) and _network_ok(manifest) else "FAIL"}
+    evidence={"price_success_tickers":len(core["prices"]),"fold_sufficiency":core["fold_sufficiency"],"baseline_closed_trades":closed,"hashes_fixed":False,"post_2020_rows":future["total"],"network_hosts_allowed":network["validation_status"]=="PASS","deterministic":determinism["deterministic"],"byte_identical":determinism["byte_identical"],"model_acceptance_rate":acceptance.get("model_acceptance_rate",0) if isinstance(acceptance,dict) else 0}
+    if core["not_computed_reason"]: evidence["baseline_closed_trades"]={str(f):0 for f in (1,2,3)}
+    hashes["summary_preimage_sha256"]=""
+    hashes["hashes_fixed"] = all(isinstance(value,str) and len(value)==64 for key,value in hashes.items() if key not in {"summary_preimage_sha256","hashes_fixed"})
+    evidence["hashes_fixed"]=hashes["hashes_fixed"]
+    blocked=evaluate_blocked_conditions(evidence)
+    if core["not_computed_reason"]: blocked["reasons"].append("BASELINE_NOT_COMPUTED_DUE_TO_UPSTREAM_BLOCKER")
+    verdict={"status":"FREE_META_LABEL_PROTOTYPE_BLOCKED","conditions":[]} if blocked["reasons"] else evaluate_acceptance_conditions(baseline_metrics,v4_metrics,classification,evidence)
+    stock={"history_lt_252":0,"turnover_below_100m":0,"volume_below_50k":0,"required_cash_over_300k":0,"nonfinite_stock_feature":0,"nonfinite_final_feature":0,"entry_unavailable":0,"exit_unavailable":0,"split_span":0,"no_candidate_days":int((core["candidates"].get("candidate_status",pd.Series(dtype=object))=="NO_CANDIDATE").sum())}
+    if not core["labelled"].empty:
+        l=core["labelled"]; numeric=l.reindex(columns=FEATURE_COLUMNS).apply(pd.to_numeric,errors="coerce"); stock.update({"history_lt_252":int((l.get("History_Count",pd.Series(dtype=float))<252).sum()),"turnover_below_100m":int((l.get("Median_Turnover_60",pd.Series(dtype=float))<100000000).sum()),"volume_below_50k":int((l.get("Median_Volume_60",pd.Series(dtype=float))<50000).sum()),"required_cash_over_300k":int((l.get("required_cash_ratio",pd.Series(dtype=float))>1).sum()),"nonfinite_final_feature":int((~np.isfinite(numeric)).any(axis=1).sum())})
+    exclusions={"counting_units":{"ticker":"ticker; overlapping reasons count independently","stock_day":"stock-day; overlapping reasons count independently","portfolio":"order"},"ticker":{"acquisition_failure":len(manifest.get("failed_tickers",[])),"json_parse_failure":sum(x["status"]=="JSON_PARSE_FAILURE" for x in core["parse_status"]),"yahoo_chart_error":sum(x["status"]=="YAHOO_CHART_ERROR" for x in core["parse_status"]),"ohlcv_validation_failure":sum(x["status"]=="OHLCV_VALIDATION_FAILURE" for x in core["parse_status"]),"price_rows_empty":sum(x["status"]=="PRICE_ROWS_EMPTY" for x in core["parse_status"])},"stock_day":stock,"portfolio":{"baseline_skip_reasons":baseline.get("skip_reason",pd.Series(dtype=object)).value_counts(dropna=True).to_dict(),"v4_model_abstain":int((v4.get("portfolio_status",pd.Series(dtype=object))=="ABSTAIN").sum()),"v4_cash_skip_reasons":v4.get("skip_reason",pd.Series(dtype=object)).value_counts(dropna=True).to_dict()}}
+    summary={"schema_version":SCHEMA_VERSION,"evaluation_type":"FORMAL_CACHE_ONLY_SURVIVORSHIP_BIASED_RESEARCH_ONLY","formal_evaluation":True,"deployment_allowed":False,"repository_commit":repository_state["head"],"branch":repository_state["branch"],"period":{"price_from":"2015-01-01","price_to":"2019-12-31"},"universe":{"ticker_count":len(universe),"ticker_order":universe.ticker.astype(str).tolist()},"cache_manifest":{"sha256":hashes["cache_manifest_sha256"]},"verdict":verdict["status"],"blocked_reasons":sorted(set(blocked["reasons"])),"acceptance_conditions":verdict["conditions"],"baseline_metrics":baseline_metrics,"v4_metrics":v4_metrics,"classification_metrics":classification,"acceptance_evidence":acceptance,"fold_sufficiency":core["fold_sufficiency"],"parse_status":core["parse_status"],"parsed_price_manifest":core["parsed_price_manifest"],"exclusion_reason_counts":exclusions,"network_audit":network,"future_access_audit":future,"cash_safety_audit":cash,"determinism_evidence":determinism,"not_computed_reason":core["not_computed_reason"],"hashes":hashes,"serializer":{"encoding":"utf-8","line_ending":"LF","float_format":"%.10f","nan":""},"summary_preimage_method":"sha256(canonical JSON excluding hashes.summary_preimage_sha256)"}
+    pre={**summary,"hashes":{k:v for k,v in hashes.items() if k!="summary_preimage_sha256"}}; hashes["summary_preimage_sha256"]=_sha(_canonical_json(pre)); assert _sha(_canonical_json({**summary,"hashes":{k:v for k,v in hashes.items() if k!="summary_preimage_sha256"}}))==hashes["summary_preimage_sha256"]
+    return {"summary.json":_canonical_json(summary),"trades.csv":trades_bytes,"predictions.csv":prediction_bytes}
+
+def compare_core_runs(first: Mapping[str,Any], second: Mapping[str,Any]) -> dict[str,Any]:
+    keys=("parsed_price_manifest_bytes","fold_sufficiency","parse_status","future")
+    comparison={key:(_sha(first[key]) == _sha(second[key]) if isinstance(first[key],bytes) else _sha(_canonical_json(first[key])) == _sha(_canonical_json(second[key]))) for key in keys}
+    run_hashes={key:{"run_1":_sha(first[key]) if isinstance(first[key],bytes) else _sha(_canonical_json(first[key])),"run_2":_sha(second[key]) if isinstance(second[key],bytes) else _sha(_canonical_json(second[key]))} for key in keys}
+    for key in ("oof","baseline","v4","baseline_ledger","v4_ledger","baseline_events","v4_events"):
+        left,right=first[key],second[key]
+        one,two=_csv(left,tuple(left.columns),list(left.columns[:1])),_csv(right,tuple(right.columns),list(right.columns[:1])); comparison[key]=one == two; run_hashes[key]={"run_1":_sha(one),"run_2":_sha(two)}
+    return {"deterministic":all(comparison.values()),"byte_identical":all(comparison.values()),"comparisons":comparison,"comparison_hashes":run_hashes,"mismatched_targets":[key for key,value in comparison.items() if not value]}
+
+def atomic_write_formal_artifacts(output: Path, artifacts: Mapping[str,bytes], repo: Path, file_writer: Callable[[Path,bytes],None] | None = None) -> None:
+    _outside_repo(output,repo)
+    if set(artifacts)!={"summary.json","trades.csv","predictions.csv"}: raise ValueError("ARTIFACT_SCHEMA_INVALID")
+    if output.exists() and (output.is_file() or any(output.iterdir())): raise ValueError("OUTPUT_DIRECTORY_NONEMPTY_OR_FILE")
+    staging=output.with_name(output.name+".staging")
+    if staging.exists(): shutil.rmtree(staging)
+    try:
+        staging.mkdir(parents=True)
+        for name,body in artifacts.items():
+            path=staging/name
+            if file_writer: file_writer(path,body)
+            else:
+                with open(path,"wb") as handle: handle.write(body); handle.flush(); os.fsync(handle.fileno())
+            if path.read_bytes()!=body: raise ValueError("ARTIFACT_WRITE_VERIFY_FAILED")
+        if {p.name for p in staging.iterdir()} != set(artifacts): raise ValueError("ARTIFACT_SCHEMA_INVALID")
+        if output.exists(): output.rmdir()
+        os.replace(staging,output)
+    except Exception:
+        if output.exists() and output.is_dir() and not any(output.iterdir()): output.rmdir()
+        raise
+    finally:
+        if staging.exists(): shutil.rmtree(staging,ignore_errors=True)
+
+def run_two_pass_formal_evaluation(cache: Path, output: Path, universe: pd.DataFrame, repo: Path, repository_state: Mapping[str,str], core_runner: Callable[[Path,pd.DataFrame,Mapping[str,Any]],dict[str,Any]] = run_formal_core_once) -> dict[str,bytes]:
+    manifest=validate_formal_inputs(cache,output,universe,repo)
+    first=core_runner(cache,universe,manifest); second=core_runner(cache,universe,manifest); determinism=compare_core_runs(first,second)
+    if not determinism["deterministic"]:
+        first=dict(first); first["not_computed_reason"]="DETERMINISM_NOT_CONFIRMED"; first["baseline"]=first["v4"]=_empty(TRADES_COLUMNS); first["oof"]=_empty(("fold","signal_date","ticker","label","probability","decision","realized_net_return_percent","EntryDate","ExitDate","EntryPrice","ExitPrice","ExitReason",*FEATURE_COLUMNS))
+    artifacts=build_formal_artifacts(first,manifest,universe,repository_state,determinism)
+    # Final artifact bytes are explicitly compared on the same core, before writing.
+    other=build_formal_artifacts(second,manifest,universe,repository_state,determinism)
+    if artifacts != other:
+        determinism={**determinism,"deterministic":False,"byte_identical":False,"final_artifacts_identical":False}
+        artifacts=build_formal_artifacts(first,manifest,universe,repository_state,determinism)
+    else: determinism["final_artifacts_identical"]=True
+    atomic_write_formal_artifacts(output,artifacts,repo)
+    return artifacts
+
+def evaluate_cache(cache_dir: Path, output_dir: Path, universe: pd.DataFrame, repo: Path, commit: str = "UNKNOWN") -> dict[str, bytes]:
+    """Backward-compatible cache-only evaluation entrypoint used by synthetic tests."""
+    state={"head":commit if commit != "UNKNOWN" else "SYNTHETIC","branch":"SYNTHETIC"}
+    manifest=validate_formal_inputs(cache_dir,output_dir,universe,repo)
+    core=run_formal_core_once(cache_dir,universe,manifest)
+    return build_formal_artifacts(core,manifest,universe,state,{"deterministic":False,"byte_identical":False,"comparisons":{}})
 
 def write_artifacts(output: Path, artifacts: Mapping[str,bytes], repo: Path) -> None:
-    _outside_repo(output,repo)
-    if output.exists() and any(output.iterdir()): raise ValueError("OUTPUT_DIRECTORY_NONEMPTY")
-    output.mkdir(parents=True,exist_ok=True)
-    if set(artifacts)!={"summary.json","trades.csv","predictions.csv"}: raise ValueError("ARTIFACT_SCHEMA_INVALID")
-    for name, body in artifacts.items(): (output/name).write_bytes(body)
+    atomic_write_formal_artifacts(output,artifacts,repo)

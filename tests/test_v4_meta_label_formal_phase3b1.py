@@ -76,8 +76,9 @@ def test_cli_evaluation_preflight_has_no_network_or_fit(tmp_path,monkeypatch,cap
     monkeypatch.setattr(runner,'get_repository_state',lambda repo: calls.append('state') or {'head':'x'})
     monkeypatch.setattr(runner,'load_fixed_universe',lambda path: calls.append('universe') or mini())
     monkeypatch.setattr(runner,'validate_cache_manifest',lambda *args,**kwargs: calls.append('validate') or {})
+    monkeypatch.setattr(runner,'run_two_pass_formal_evaluation',lambda *args,**kwargs: calls.append('evaluate') or {'summary.json':b'{"verdict":"FREE_META_LABEL_PROTOTYPE_BLOCKED"}','trades.csv':b'','predictions.csv':b''})
     assert runner.main(['--evaluate-cache','--cache-dir',str(tmp_path/'cache'),'--output-dir',str(tmp_path/'output'),'--confirmation','V4_ONE_SHOT_FORMAL_EVALUATION'])==0
-    assert calls==['state','universe','validate'] and capsys.readouterr().out.strip()=='FORMAL_EVALUATION_PREFLIGHT_READY'
+    assert calls==['state','universe','validate','evaluate'] and 'FORMAL_EVALUATION_COMPLETE' in capsys.readouterr().out
 
 @pytest.mark.parametrize('values,expected',[
     ({'--abbrev-ref HEAD':'wrong','HEAD':'a','origin/v4-meta-label-mvp':'a','--porcelain --untracked-files=all':''},'BRANCH_MISMATCH'),
