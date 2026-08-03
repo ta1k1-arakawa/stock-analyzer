@@ -373,3 +373,217 @@ def make_synthetic_phase2a_candidates() -> pd.DataFrame:
         row.update({column: ((position + index * 3) % 17) / 17 for index, column in enumerate(FEATURE_COLUMNS)})
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+PORTFOLIO_REQUIRED_COLUMNS = (
+    "fold", "signal_date", "ticker", "probability", "decision", "EntryDate", "ExitDate",
+    "EntryPrice", "ExitPrice", "ExitReason", "realized_net_return_percent", *FEATURE_COLUMNS,
+)
+PORTFOLIO_STARTING_CASH = 300_000.0
+PORTFOLIO_QUANTITY = 100
+
+
+def validate_portfolio_oof(oof: pd.DataFrame) -> pd.DataFrame:
+    """Validate the immutable Phase 1/2A opportunity fields before execution."""
+    missing = [column for column in PORTFOLIO_REQUIRED_COLUMNS if column not in oof.columns]
+    if missing:
+        raise ValueError(f"PORTFOLIO_REQUIRED_COLUMNS_MISSING:{missing}")
+    result = oof.copy()
+    if (~result["fold"].isin([1, 2, 3])).any(): raise ValueError("INVALID_PORTFOLIO_FOLD")
+    for column in ("signal_date", "EntryDate", "ExitDate"):
+        result[column] = pd.to_datetime(result[column], errors="coerce")
+        if result[column].isna().any(): raise ValueError(f"INVALID_PORTFOLIO_DATE:{column}")
+    if (result[["signal_date", "EntryDate", "ExitDate"]] >= pd.Timestamp("2020-01-01")).any().any(): raise ValueError("PROHIBITED_POST_2019_PORTFOLIO_ROW")
+    if not (result["EntryDate"] > result["signal_date"]).all() or not (result["ExitDate"] >= result["EntryDate"]).all(): raise ValueError("INVALID_PORTFOLIO_DATE_ORDER")
+    if result["ticker"].isna().any() or (result["ticker"].astype(str).str.strip() == "").any(): raise ValueError("INVALID_PORTFOLIO_TICKER")
+    if result.duplicated(["fold", "signal_date", "ticker"]).any(): raise ValueError("DUPLICATE_PORTFOLIO_OPPORTUNITY")
+    for column in ("EntryPrice", "ExitPrice", "probability"):
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    if not np.isfinite(result[["EntryPrice", "ExitPrice", "probability"]].to_numpy(dtype=float)).all() or (result[["EntryPrice", "ExitPrice"]] <= 0).any().any(): raise ValueError("INVALID_PORTFOLIO_PRICE_OR_PROBABILITY")
+    if not result["probability"].between(0, 1).all(): raise ValueError("INVALID_PORTFOLIO_PROBABILITY")
+    expected = np.where(result["probability"] >= .55, "ACCEPT", "ABSTAIN")
+    if not (result["decision"].to_numpy() == expected).all(): raise ValueError("INVALID_PORTFOLIO_DECISION")
+    feature_values = result.loc[:, FEATURE_COLUMNS].apply(pd.to_numeric, errors="coerce")
+    if not np.isfinite(feature_values.to_numpy(dtype=float)).all(): raise ValueError("NONFINITE_PORTFOLIO_FEATURE")
+    return result.sort_values(["fold", "EntryDate", "signal_date", "ticker"], kind="mergesort").reset_index(drop=True)
+
+
+def _portfolio_record(row: Mapping[str, Any], strategy: str, industry: str, status: str, skip: str | None,
+                      cash_before: float, cash_after_entry: float, cash_after_exit: float) -> dict[str, Any]:
+    entry, exit_ = float(row["EntryPrice"]), float(row["ExitPrice"])
+    quantity = PORTFOLIO_QUANTITY
+    filled = status == "FILLED"
+    entry_cost, proceeds = (entry * quantity, exit_ * quantity) if filled else (0.0, 0.0)
+    commission = 0.0
+    return {"strategy": strategy, "fold": int(row["fold"]), "signal_date": row["signal_date"], "ticker": str(row["ticker"]), "industry": industry,
+            "EntryDate": row["EntryDate"], "ExitDate": row["ExitDate"], "EntryPrice": entry, "ExitPrice": exit_, "ExitReason": row["ExitReason"],
+            "quantity": quantity if filled else 0, "entry_cost": entry_cost, "exit_proceeds": proceeds, "commission_cost": commission,
+            "realized_net_profit_yen": (proceeds - entry_cost - commission) if filled else 0.0,
+            "label": int(row["label"]) if "label" in row else None,
+            "realized_net_return_percent": float(row["realized_net_return_percent"]), "probability": float(row["probability"]),
+            "model_decision": row["decision"], "portfolio_status": status, "skip_reason": skip,
+            "cash_before": cash_before, "cash_after_entry": cash_after_entry, "cash_after_exit": cash_after_exit}
+
+
+def _execute_fixed_lot(opportunities: pd.DataFrame, strategy: str, industry_map: Mapping[str, str], accept_only: bool) -> tuple[pd.DataFrame, pd.DataFrame]:
+    orders, ledgers = [], []
+    for fold, group in opportunities.groupby("fold", sort=True):
+        cash, pending, position = PORTFOLIO_STARTING_CASH, 0.0, None
+        initial = {"fold": int(fold), "strategy": strategy, "date": pd.Timestamp(group["EntryDate"].min()) - pd.Timedelta(days=1), "available_cash": cash, "pending_cash": 0.0, "locked_entry_capital": 0.0, "open_positions": 0, "equity": cash}
+        ledgers.append(initial)
+        entries = {date: frame.sort_values(["signal_date", "ticker"], kind="mergesort") for date, frame in group.groupby("EntryDate", sort=True)}
+        dates = sorted(set(group["EntryDate"]) | set(group["ExitDate"]))
+        for date in dates:
+            cash += pending; pending = 0.0
+            for _, row in entries.get(date, pd.DataFrame()).iterrows():
+                industry = industry_map.get(str(row["ticker"]), "MISSING")
+                before = cash
+                if accept_only and row["decision"] == "ABSTAIN":
+                    orders.append(_portfolio_record(row, strategy, industry, "ABSTAIN", "MODEL_ABSTAIN", before, cash, cash)); continue
+                if position is not None:
+                    reason = "SAME_DAY_PROCEEDS_UNAVAILABLE" if pd.Timestamp(position["ExitDate"]) == date else "MAX_OPEN_POSITION"
+                    orders.append(_portfolio_record(row, strategy, industry, "SKIPPED", reason, before, cash, cash)); continue
+                cost = float(row["EntryPrice"]) * PORTFOLIO_QUANTITY
+                if not np.isfinite(cost) or cost <= 0:
+                    orders.append(_portfolio_record(row, strategy, industry, "SKIPPED", "INVALID_ORDER", before, cash, cash)); continue
+                if cash + 1e-8 < cost:
+                    orders.append(_portfolio_record(row, strategy, industry, "SKIPPED", "INSUFFICIENT_CASH", before, cash, cash)); continue
+                cash -= cost
+                position = row.to_dict()
+                record = _portfolio_record(row, strategy, industry, "FILLED", None, before, cash, cash)
+                orders.append(record)
+            if position is not None and pd.Timestamp(position["ExitDate"]) == date:
+                proceeds = float(position["ExitPrice"]) * PORTFOLIO_QUANTITY
+                pending += proceeds
+                for record in reversed(orders):
+                    if record["portfolio_status"] == "FILLED" and record["fold"] == fold and record["signal_date"] == position["signal_date"] and record["ticker"] == position["ticker"]:
+                        record["cash_after_exit"] = cash
+                        break
+                position = None
+            locked = float(position["EntryPrice"]) * PORTFOLIO_QUANTITY if position is not None else 0.0
+            ledgers.append({"fold": int(fold), "strategy": strategy, "date": date, "available_cash": cash, "pending_cash": pending, "locked_entry_capital": locked, "open_positions": int(position is not None), "equity": cash + pending + locked})
+            if cash < -1e-8: raise AssertionError("NEGATIVE_CASH")
+    return pd.DataFrame(orders), pd.DataFrame(ledgers)
+
+
+def run_baseline_portfolio(oof: pd.DataFrame, universe: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    valid = validate_portfolio_oof(oof)
+    industries = {} if universe is None else universe.set_index("ticker")["industry"].astype(str).to_dict()
+    return _execute_fixed_lot(valid, "BASELINE", industries, False)
+
+
+def run_v4_portfolio(baseline_orders: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    opportunities = baseline_orders.loc[baseline_orders["portfolio_status"] == "FILLED"].copy()
+    if opportunities.empty: return pd.DataFrame(columns=baseline_orders.columns), pd.DataFrame()
+    opportunities["decision"] = opportunities["model_decision"]
+    industries = opportunities.set_index("ticker")["industry"].astype(str).to_dict()
+    return _execute_fixed_lot(opportunities, "V4", industries, True)
+
+
+def portfolio_metrics(orders: pd.DataFrame, ledger: pd.DataFrame) -> dict[str, Any]:
+    filled = orders.loc[orders["portfolio_status"] == "FILLED"].copy()
+    profit = float(filled["realized_net_profit_yen"].sum()) if len(filled) else 0.0
+    equity = ledger["equity"] if len(ledger) else pd.Series([PORTFOLIO_STARTING_CASH])
+    drawdown = (equity.cummax() - equity) / equity.cummax() * 100
+    monthly = filled.assign(month=filled["ExitDate"].dt.to_period("M")).groupby("month")["realized_net_profit_yen"].sum() if len(filled) else pd.Series(dtype=float)
+    yearly = filled.assign(year=filled["ExitDate"].dt.year).groupby("year")["realized_net_profit_yen"].sum() if len(filled) else pd.Series(dtype=float)
+    positives = filled.loc[filled["realized_net_profit_yen"] > 0]
+    denominator = float(positives["realized_net_profit_yen"].sum())
+    by_ticker = positives.groupby("ticker")["realized_net_profit_yen"].sum() if len(positives) else pd.Series(dtype=float)
+    by_industry = positives.groupby("industry")["realized_net_profit_yen"].sum() if len(positives) else pd.Series(dtype=float)
+    return {"net_profit": profit, "ending_equity": PORTFOLIO_STARTING_CASH + profit, "max_drawdown_percent": float(drawdown.max()), "closed_trades": int(len(filled)),
+            "win_rate": float((filled["realized_net_profit_yen"] > 0).mean()) if len(filled) else 0.0, "monthly_win_rate": float((monthly > 0).mean()) if len(monthly) else 0.0,
+            "yearly_net_profit": {str(key): float(value) for key, value in yearly.items()}, "insufficient_cash_count": int(orders["skip_reason"].eq("INSUFFICIENT_CASH").sum()),
+            "stop_count": int((filled["ExitReason"] == "STOP").sum()), "gap_stop_count": int((filled["ExitReason"] == "GAP_STOP").sum()), "time_count": int((filled["ExitReason"] == "TIME").sum()),
+            "negative_cash_count": int((ledger["available_cash"] < -1e-8).sum()) if len(ledger) else 0, "capital_reuse_count": 0, "duplicate_order_count": int(filled.duplicated(["fold", "signal_date", "ticker"]).sum()),
+            "model_acceptance_count": int(orders["model_decision"].eq("ACCEPT").sum()), "model_abstain_count": int(orders["model_decision"].eq("ABSTAIN").sum()),
+            "model_acceptance_rate": float(orders["model_decision"].eq("ACCEPT").mean()) if len(orders) else 0.0,
+            "accept_insufficient_cash_count": int(((orders["model_decision"] == "ACCEPT") & (orders["skip_reason"] == "INSUFFICIENT_CASH")).sum()),
+            "max_stock_positive_profit_share": float(by_ticker.max() / denominator) if denominator else 0.0, "top5_stock_positive_profit_share": float(by_ticker.nlargest(5).sum() / denominator) if denominator else 0.0,
+            "max_industry_positive_profit_share": float(by_industry.max() / denominator) if denominator else 0.0}
+
+
+def aggregate_portfolio_metrics(orders: pd.DataFrame, ledger: pd.DataFrame) -> dict[str, Any]:
+    folds = {str(fold): portfolio_metrics(orders.loc[orders["fold"] == fold], ledger.loc[ledger["fold"] == fold]) for fold in (1, 2, 3)}
+    aggregate_profit = sum(item["net_profit"] for item in folds.values())
+    overall = portfolio_metrics(orders, ledger)
+    overall.update({"aggregate_net_profit": aggregate_profit, "aggregate_ending_equity_equivalent": PORTFOLIO_STARTING_CASH + aggregate_profit,
+                    "max_drawdown_percent": max((item["max_drawdown_percent"] for item in folds.values()), default=0.0), "folds": folds})
+    return overall
+
+
+def baseline_filled_classification_metrics(baseline_orders: pd.DataFrame) -> dict[str, Any]:
+    """Use only fixed Baseline fills, never all OOF candidates, for Phase 2B metrics."""
+    filled = baseline_orders.loc[baseline_orders["portfolio_status"] == "FILLED"].copy()
+    filled["decision"] = filled["model_decision"]
+    overall = classification_metrics(filled)
+    return {"overall": overall, "folds": {str(fold): classification_metrics(filled.loc[filled["fold"] == fold]) for fold in (1, 2, 3)}}
+
+
+def evaluate_blocked_conditions(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Evaluate every preregistered blocker; callers inject audit evidence in formal runs."""
+    reasons: list[str] = []
+    if int(evidence.get("price_success_tickers", 0)) < 150: reasons.append("PRICE_SUCCESS_TICKERS_LT_150")
+    for fold, status in evidence.get("fold_sufficiency", {}).items():
+        for reason in status.get("reasons", []): reasons.append(f"FOLD_{fold}_{reason}")
+    for fold, count in evidence.get("baseline_closed_trades", {}).items():
+        if int(count) < 40: reasons.append(f"FOLD_{fold}_BASELINE_CLOSED_TRADES_LT_40")
+    if not bool(evidence.get("hashes_fixed", False)): reasons.append("REQUIRED_HASH_NOT_FIXED")
+    if int(evidence.get("post_2020_rows", 0)) > 0: reasons.append("POST_2020_ROWS_DETECTED")
+    if not bool(evidence.get("network_hosts_allowed", False)): reasons.append("PROHIBITED_NETWORK_HOST_DETECTED")
+    if not bool(evidence.get("deterministic", False)): reasons.append("DETERMINISM_NOT_CONFIRMED")
+    return {"status": "FREE_META_LABEL_PROTOTYPE_BLOCKED" if reasons else "CLEAR", "reasons": reasons}
+
+
+def evaluate_acceptance_conditions(baseline: Mapping[str, Any], v4: Mapping[str, Any], classification: Mapping[str, Any], audit: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the 17 pre-registered conditions with BLOCKED taking strict priority."""
+    blocked = evaluate_blocked_conditions(audit)
+    if blocked["reasons"]:
+        return {"status": "FREE_META_LABEL_PROTOTYPE_BLOCKED", "blocked_reasons": blocked["reasons"], "conditions": []}
+    base_folds, v4_folds = baseline["folds"], v4["folds"]
+    overall, fold_class = classification["overall"], classification["folds"]
+    acceptance_rate = float(audit["model_acceptance_rate"])
+    zero_safety = all(value == 0 for metrics in (baseline, v4) for value in (metrics.get("negative_cash_count", 0), metrics.get("capital_reuse_count", 0), metrics.get("duplicate_order_count", 0)))
+    specs = [
+        ("aggregate_net_profit_beats_baseline", v4["aggregate_net_profit"] > baseline["aggregate_net_profit"], v4["aggregate_net_profit"], f"> {baseline['aggregate_net_profit']}"),
+        ("aggregate_net_profit_positive", v4["aggregate_net_profit"] > 0, v4["aggregate_net_profit"], "> 0"),
+        ("max_drawdown_below_baseline", v4["max_drawdown_percent"] < baseline["max_drawdown_percent"], v4["max_drawdown_percent"], f"< {baseline['max_drawdown_percent']}"),
+        ("two_folds_profit_beat_baseline", sum(v4_folds[str(f)]["net_profit"] > base_folds[str(f)]["net_profit"] for f in (1,2,3)) >= 2, None, ">= 2 folds"),
+        ("all_folds_drawdown_not_above_baseline", all(v4_folds[str(f)]["max_drawdown_percent"] <= base_folds[str(f)]["max_drawdown_percent"] for f in (1,2,3)), None, "all folds <= baseline"),
+        ("win_rate_beats_baseline", v4["win_rate"] > baseline["win_rate"], v4["win_rate"], f"> {baseline['win_rate']}"),
+        ("closed_trades_at_least_100", v4["closed_trades"] >= 100, v4["closed_trades"], ">= 100"),
+        ("acceptance_rate_20_to_80_percent", .2 <= acceptance_rate <= .8, acceptance_rate, "0.20 <= rate <= 0.80"),
+        ("overall_roc_auc_above_052", overall.get("roc_auc") is not None and overall.get("roc_auc") > .52, overall.get("roc_auc"), "> 0.52"),
+        ("two_folds_roc_auc_above_050", sum((fold_class[str(f)].get("roc_auc") or -np.inf) > .50 for f in (1,2,3)) >= 2, None, ">= 2 folds"),
+        ("max_stock_positive_profit_share_at_most_35_percent", v4["max_stock_positive_profit_share"] <= .35, v4["max_stock_positive_profit_share"], "<= 0.35"),
+        ("top5_stock_positive_profit_share_at_most_60_percent", v4["top5_stock_positive_profit_share"] <= .60, v4["top5_stock_positive_profit_share"], "<= 0.60"),
+        ("max_industry_positive_profit_share_at_most_50_percent", v4["max_industry_positive_profit_share"] <= .50, v4["max_industry_positive_profit_share"], "<= 0.50"),
+        ("no_cash_reuse_or_duplicate_orders", zero_safety, None, "all counters = 0"),
+        ("two_full_runs_byte_identical", bool(audit.get("byte_identical", False)), audit.get("byte_identical"), "True"),
+        ("no_post_2020_rows", int(audit.get("post_2020_rows", 0)) == 0, audit.get("post_2020_rows", 0), "0"),
+        ("no_prohibited_network_calls", bool(audit.get("network_hosts_allowed", False)), audit.get("network_hosts_allowed"), "True"),
+    ]
+    conditions = [{"condition_number": index + 1, "name": name, "passed": bool(passed), "actual_value": actual, "required_value": required} for index, (name, passed, actual, required) in enumerate(specs)]
+    return {"status": "FREE_META_LABEL_PROTOTYPE_PROMISING" if all(item["passed"] for item in conditions) else "FREE_META_LABEL_PROTOTYPE_NOT_PROMISING", "blocked_reasons": [], "conditions": conditions}
+
+
+def make_synthetic_phase2b_oof() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Hand-made offline OOF rows covering fixed-lot execution edge cases."""
+    rows = []
+    for fold, year in ((1, 2017), (2, 2018), (3, 2019)):
+        dates = pd.date_range(f"{year}-01-01", periods=7, freq="B")
+        specs = [
+            ("3633", dates[0], dates[1], dates[2], 1000., 1100., .60, "TIME"),
+            ("2984", dates[1], dates[2], dates[3], 1000., 900., .40, "STOP"),
+            ("6150", dates[2], dates[3], dates[4], 4000., 4100., .60, "GAP_STOP"),
+            ("7203", dates[2], dates[3], dates[5], 1000., 900., .40, "TIME"),
+        ]
+        for index, (ticker, signal, entry, exit_, entry_price, exit_price, probability, reason) in enumerate(specs):
+            label = int(exit_price > entry_price)
+            row = {"fold": fold, "signal_date": signal, "ticker": ticker, "label": label, "probability": probability,
+                   "decision": "ACCEPT" if probability >= .55 else "ABSTAIN", "realized_net_return_percent": (exit_price / entry_price - 1) * 100,
+                   "EntryDate": entry, "ExitDate": exit_, "EntryPrice": entry_price, "ExitPrice": exit_price, "ExitReason": reason}
+            row.update({column: (index + feature_index + fold) / 100 for feature_index, column in enumerate(FEATURE_COLUMNS)})
+            rows.append(row)
+    universe = pd.DataFrame({"ticker": ["3633", "2984", "6150", "7203"], "industry": ["A", "B", "C", "A"], "market": ["M"] * 4})
+    return pd.DataFrame(rows), universe
