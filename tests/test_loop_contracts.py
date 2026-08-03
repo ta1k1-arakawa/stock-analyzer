@@ -12,12 +12,159 @@ from scripts import validate_loop_contracts as validator
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+EMPTY_TASK_HASH = hashlib.sha256(b"").hexdigest()
+CANONICAL_BOOTSTRAP_TIMESTAMP = "2026-08-03T00:00:00Z"
+
+
+def _canonical_bootstrap_state() -> dict:
+    return {
+        "project_id": "loop-engineering-framework",
+        "loop_id": "phase-a-bootstrap",
+        "current_state": "NEW",
+        "allowed_next_states": ["PLANNED", "CANCELLED", "HUMAN_GATE"],
+        "base_branch": "loop-engineering-design",
+        "base_commit": validator.BOOTSTRAP_ORIGIN_COMMIT,
+        "work_branch": "loop-engineering-phase-a",
+        "worktree_path": "C:\\taiki\\hobbies\\stock-analyzer-loop-engineering-phase-a",
+        "current_task": "",
+        "task_hash": EMPTY_TASK_HASH,
+        "attempt": 0,
+        "max_attempts": 0,
+        "budget_remaining": {
+            "max_agent_runs": 0,
+            "max_retries": 0,
+            "max_api_calls": 0,
+            "max_download_bytes": 0,
+            "max_changed_files": 0,
+            "max_model_fits": 0,
+            "max_evaluations": 0,
+        },
+        "human_gate": {
+            "required": False,
+            "approval_id": None,
+            "requested_action": None,
+            "return_state": None,
+        },
+        "last_verified_commit": None,
+        "created_at": CANONICAL_BOOTSTRAP_TIMESTAMP,
+        "updated_at": CANONICAL_BOOTSTRAP_TIMESTAMP,
+    }
+
+
+def _canonical_bootstrap_contract() -> dict:
+    return {
+        "contract_version": 1,
+        "active": False,
+        "task_hash": EMPTY_TASK_HASH,
+        "metrics": [],
+        "pass_conditions": [
+            "schema_valid",
+            "cross_file_hashes_consistent",
+            "stock_research_remains_closed",
+            "no_automation_present",
+        ],
+        "failure_conditions": [
+            "unknown_state",
+            "invalid_transition",
+            "task_hash_mismatch",
+            "secret_detected",
+            "stock_research_reopened",
+            "runner_or_scheduler_added",
+            "unexpected_network",
+            "unexpected_git_ref_change",
+        ],
+        "data_boundary": {"data_use": "none"},
+        "prohibited_periods": [],
+        "allowed_network_hosts": [],
+        "allowed_files": [
+            "loop_control/LOOP_SPEC.md",
+            "loop_control/loop_state.json",
+            "loop_control/evaluation_contract.json",
+            "loop_control/loop_history.jsonl",
+            "loop_control/human_approvals.jsonl",
+            "loop_control/PHASE_A_MANUAL_CHECKLIST.md",
+            "loop_control/schemas/loop_state.schema.json",
+            "loop_control/schemas/evaluation_contract.schema.json",
+            "loop_control/schemas/loop_history_event.schema.json",
+            "loop_control/schemas/human_approval.schema.json",
+            "scripts/validate_loop_contracts.py",
+            "tests/test_loop_contracts.py",
+        ],
+        "forbidden_files": [
+            "models/**",
+            "data/**",
+            "raw_data/**",
+            ".github/workflows/**",
+            "existing stock evaluation results",
+            "shadow-related files",
+            "files containing API keys or secrets",
+        ],
+        "required_tests": ["validator", "pytest", "unittest", "git diff --check"],
+        "determinism": {"runs": 2, "summary_hashes_must_match": True},
+        "budget": {
+            "max_agent_runs": 0,
+            "max_retries": 0,
+            "max_api_calls": 0,
+            "max_download_bytes": 0,
+            "max_changed_files": 0,
+            "max_model_fits": 0,
+            "max_evaluations": 0,
+        },
+    }
+
+
+def _canonical_initialization_event() -> dict:
+    return {
+        "run_id": "phase-a-initialization",
+        "loop_id": "phase-a-bootstrap",
+        "event_type": "INITIALIZED",
+        "start_state": "NEW",
+        "end_state": "NEW",
+        "input_commit": validator.BOOTSTRAP_ORIGIN_COMMIT,
+        "output_commit": None,
+        "task_hash": EMPTY_TASK_HASH,
+        "command_summary": "Phase A bootstrap files created; no runner executed.",
+        "changed_files": [
+            "loop_control/LOOP_SPEC.md",
+            "loop_control/loop_state.json",
+            "loop_control/evaluation_contract.json",
+            "loop_control/loop_history.jsonl",
+            "loop_control/human_approvals.jsonl",
+            "loop_control/PHASE_A_MANUAL_CHECKLIST.md",
+            "loop_control/schemas/loop_state.schema.json",
+            "loop_control/schemas/evaluation_contract.schema.json",
+            "loop_control/schemas/loop_history_event.schema.json",
+            "loop_control/schemas/human_approval.schema.json",
+            "scripts/validate_loop_contracts.py",
+            "tests/test_loop_contracts.py",
+        ],
+        "test_results": {},
+        "verification_result": "NOT_RUN",
+        "state_transition": None,
+        "failure_reason": None,
+        "human_approval_id": None,
+        "network_calls": 0,
+        "model_fits": 0,
+        "evaluations": 0,
+        "timestamp": CANONICAL_BOOTSTRAP_TIMESTAMP,
+    }
 
 
 def _bootstrap_copy(tmp_path: Path) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     root = tmp_path / "phase-a"
-    shutil.copytree(PROJECT_ROOT / "loop_control", root / "loop_control")
+    control = root / "loop_control"
+    control.mkdir(parents=True)
+    for name in ("LOOP_SPEC.md", "PHASE_A_MANUAL_CHECKLIST.md"):
+        shutil.copy2(PROJECT_ROOT / "loop_control" / name, control / name)
+    shutil.copytree(PROJECT_ROOT / "loop_control" / "schemas", control / "schemas")
+    _write_json(root, "loop_state.json", _canonical_bootstrap_state())
+    _write_json(root, "evaluation_contract.json", _canonical_bootstrap_contract())
+    (control / "loop_history.jsonl").write_text(
+        json.dumps(_canonical_initialization_event(), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (control / "human_approvals.jsonl").write_text("", encoding="utf-8")
     (root / "scripts").mkdir(parents=True)
     shutil.copy2(
         PROJECT_ROOT / "scripts" / "validate_loop_contracts.py",
@@ -62,6 +209,19 @@ def _tree_hashes(root: Path) -> dict[str, str]:
     return {
         path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in sorted(root.rglob("*")) if path.is_file()
+    }
+
+
+def _repository_control_hashes() -> dict[str, str]:
+    names = (
+        "loop_state.json",
+        "evaluation_contract.json",
+        "loop_history.jsonl",
+        "human_approvals.jsonl",
+    )
+    return {
+        name: hashlib.sha256((PROJECT_ROOT / "loop_control" / name).read_bytes()).hexdigest()
+        for name in names
     }
 
 
@@ -217,11 +377,40 @@ def test_validator_summary_hash_is_deterministic(tmp_path: Path) -> None:
     assert first == second
 
 
-def test_phase_a_state_remains_new() -> None:
-    state = json.loads((PROJECT_ROOT / "loop_control" / "loop_state.json").read_text(encoding="utf-8"))
-    assert state["current_state"] == "NEW"
-    assert state["current_task"] == ""
-    assert state["task_hash"] == validator.EMPTY_TASK_HASH
+def test_repository_control_files_validate() -> None:
+    result = validator.validate(PROJECT_ROOT)
+    assert len(result.summary_hash) == 64
+
+
+def test_repository_validation_is_read_only() -> None:
+    before = _repository_control_hashes()
+    validator.validate(PROJECT_ROOT)
+    assert _repository_control_hashes() == before
+
+
+def test_bootstrap_fixture_is_independent_of_manual_state(tmp_path: Path) -> None:
+    manual = _manual_root(tmp_path / "manual", [("NEW", "PLANNED")])
+    bootstrap = _bootstrap_copy(tmp_path / "bootstrap")
+    assert _read_json(bootstrap, "loop_state.json")["current_state"] == "NEW"
+    assert _read_json(bootstrap, "evaluation_contract.json")["active"] is False
+    assert len((bootstrap / "loop_control" / "loop_history.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+    validator.validate(manual)
+    validator.validate(bootstrap)
+
+
+def test_manual_planned_fixture_validates_without_requiring_repository_bootstrap(tmp_path: Path) -> None:
+    root = _manual_root(tmp_path, [("NEW", "PLANNED")])
+    result = validator.validate(root)
+    assert result.history_count == 2
+
+
+def test_fixture_mutation_does_not_change_repository_control_files(tmp_path: Path) -> None:
+    before = _repository_control_hashes()
+    root = _bootstrap_copy(tmp_path)
+    state = _read_json(root, "loop_state.json")
+    state["current_state"] = "UNKNOWN"
+    _write_json(root, "loop_state.json", state)
+    assert _repository_control_hashes() == before
 
 
 def _transition(
