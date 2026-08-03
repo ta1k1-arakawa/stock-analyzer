@@ -7,6 +7,7 @@ import json
 import math
 import shutil
 import time
+import os
 import subprocess
 from urllib.parse import parse_qsl, urlparse
 from pathlib import Path
@@ -35,6 +36,14 @@ PREDICTION_COLUMNS = ("fold", "signal_date", "ticker", "label", "probability", "
 def _sha(data: bytes) -> str: return hashlib.sha256(data).hexdigest()
 def _canonical_json(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+def _atomic_manifest_write(path: Path, value: Mapping[str,Any]) -> None:
+    body=_canonical_json(value); temporary=path.with_name(path.name+".tmp")
+    try:
+        with open(temporary,"wb") as handle:
+            handle.write(body); handle.flush(); os.fsync(handle.fileno())
+        os.replace(temporary,path)
+    finally:
+        if temporary.exists(): temporary.unlink()
 def _outside_repo(path: Path, repo: Path) -> None:
     try: path.resolve().relative_to(repo.resolve())
     except ValueError: return
@@ -84,36 +93,91 @@ def _validate_manifest(cache: Path) -> dict[str, Any]:
     raw = cache / "raw"
     listed = set()
     for item in manifest.get("payloads", []):
-        file = cache / item["relative_path"]
+        ticker=item.get("ticker"); rel=item.get("relative_path")
+        if not isinstance(rel,str) or rel != f"raw/{ticker}.json" or Path(rel).is_absolute() or ".." in Path(rel).parts: raise ValueError("PAYLOAD_PATH_INVALID")
+        file = (cache / rel).resolve()
+        try: file.relative_to(cache.resolve())
+        except ValueError: raise ValueError("PAYLOAD_PATH_INVALID")
         if not file.exists() or _sha(file.read_bytes()) != item["sha256"]: raise ValueError("PAYLOAD_HASH_MISMATCH")
         listed.add(file.resolve())
     if raw.exists() and {p.resolve() for p in raw.glob("*.json")} != listed: raise ValueError("CACHE_UNREGISTERED_PAYLOAD")
     return manifest
+
+def _canonical_payloads(payloads: list[dict[str, Any]], ticker_order: list[str]) -> list[dict[str, Any]]:
+    """Return payloads in fixed universe order, rejecting duplicate/unknown records."""
+    by_ticker: dict[str, dict[str, Any]] = {}
+    for item in payloads:
+        ticker = item.get("ticker")
+        if ticker not in ticker_order or ticker in by_ticker:
+            raise ValueError("MANIFEST_PAYLOAD_INVALID")
+        by_ticker[ticker] = item
+    return [by_ticker[ticker] for ticker in ticker_order if ticker in by_ticker]
+
+def _payload_hash_list(payloads: list[dict[str, Any]], ticker_order: list[str]) -> str:
+    canonical = _canonical_payloads(payloads, ticker_order)
+    return _sha(("\n".join(str(item["sha256"]) for item in canonical) + "\n").encode())
+
+def _validate_audit_records(audit: list[dict[str, Any]], tickers: list[str], *, require_terminal: bool) -> None:
+    """Validate audit semantics without trusting a caller-provided aggregate boolean."""
+    if not isinstance(audit, list) or not audit:
+        raise ValueError("NETWORK_AUDIT_MISSING")
+    required={"ticker","attempt","scheme","host","path","query_specification","status","error_type","redirect_detected","body_byte_count","payload_sha256","retry","final","success"}
+    by_ticker: dict[str, list[dict[str, Any]]] = {ticker: [] for ticker in tickers}
+    order: list[tuple[int, int]]=[]
+    for item in audit:
+        if not isinstance(item, dict) or not required.issubset(item): raise ValueError("NETWORK_AUDIT_INVALID")
+        ticker=item["ticker"]; attempt=item["attempt"]
+        if ticker not in by_ticker or type(attempt) is not int or not 1 <= attempt <= 3: raise ValueError("NETWORK_AUDIT_INVALID")
+        if item["scheme"] != "https" or item["host"] != YAHOO_HOST or item["path"] != f"{YAHOO_PATH_PREFIX}{ticker}.T" or tuple(map(tuple,item["query_specification"])) != QUERY_SPEC: raise ValueError("NETWORK_AUDIT_INVALID")
+        if not isinstance(item["retry"], bool) or not isinstance(item["final"], bool) or not isinstance(item["success"], bool) or not isinstance(item["redirect_detected"], bool): raise ValueError("NETWORK_AUDIT_INVALID")
+        retryable = item["status"] == "TRANSPORT_EXCEPTION" or (type(item["status"]) is int and (item["status"] == 429 or 500 <= item["status"] <= 599))
+        if item["retry"] != (retryable and attempt < 3): raise ValueError("NETWORK_AUDIT_RETRY_INVALID")
+        if item["success"]:
+            if item["status"] != 200 or item["redirect_detected"] or not isinstance(item["payload_sha256"], str) or len(item["payload_sha256"]) != 64 or not isinstance(item["body_byte_count"], int) or item["body_byte_count"] <= 0 or item["retry"]: raise ValueError("NETWORK_AUDIT_SUCCESS_INVALID")
+        elif item["status"] == 200 and not item["redirect_detected"]:
+            # A 200 failure is only permitted for empty/non-bytes data and never retries.
+            if item["retry"]: raise ValueError("NETWORK_AUDIT_INVALID")
+        elif item["redirect_detected"] or (type(item["status"]) is int and 300 <= item["status"] < 500 and item["status"] != 429):
+            if item["retry"]: raise ValueError("NETWORK_AUDIT_RETRY_INVALID")
+        by_ticker[ticker].append(item); order.append((tickers.index(ticker),attempt))
+    if order != sorted(order): raise ValueError("NETWORK_AUDIT_ORDER_INVALID")
+    for ticker, records in by_ticker.items():
+        if not records: continue
+        attempts=[item["attempt"] for item in records]
+        if attempts != sorted(attempts) or len(attempts) != len(set(attempts)): raise ValueError("NETWORK_AUDIT_ATTEMPT_INVALID")
+        successes=[item for item in records if item["success"]]
+        if len(successes) > 1 or (successes and records[-1] is not successes[0]): raise ValueError("NETWORK_AUDIT_SUCCESS_INVALID")
+        if require_terminal and sum(bool(item["final"]) for item in records) != 1: raise ValueError("NETWORK_AUDIT_FINAL_INVALID")
+        if records[-1]["final"] is not True and require_terminal: raise ValueError("NETWORK_AUDIT_FINAL_INVALID")
+        if any(item["final"] for item in records[:-1]): raise ValueError("NETWORK_AUDIT_FINAL_INVALID")
 
 def validate_cache_manifest(cache: Path, universe: pd.DataFrame, universe_csv_path: Path | None = None) -> dict[str,Any]:
     """Fail-closed production validator; SYNTHETIC manifests are never accepted here."""
     manifest=_validate_manifest(cache)
     required={"schema_version","complete","universe_mode","universe_csv_sha256","ticker_list_sha256","ticker_count","ticker_order","price_from","price_to","query_specification","payloads","network_audit","successful_ticker_count","failed_tickers","payload_hash_list_sha256"}
     if not isinstance(manifest,dict) or not required.issubset(manifest): raise ValueError("MANIFEST_SCHEMA_INVALID")
+    if list(universe.columns) != ["ticker","market","industry"] or len(universe)!=300 or universe["ticker"].duplicated().any(): raise ValueError("PRODUCTION_UNIVERSE_INVALID")
     csv_hash,ticker_hash=_universe_hashes(universe,universe_csv_path); tickers=universe["ticker"].astype(str).tolist()
+    if csv_hash != UNIVERSE_CSV_SHA256 or ticker_hash != TICKER_LIST_SHA256: raise ValueError("PRODUCTION_UNIVERSE_HASH_MISMATCH")
     if manifest["schema_version"]!=SCHEMA_VERSION or manifest["complete"] is not True or manifest["universe_mode"]!="FIXED_V4_300": raise ValueError("MANIFEST_MODE_INVALID")
     if manifest["universe_csv_sha256"]!=csv_hash or manifest["ticker_list_sha256"]!=ticker_hash or manifest["ticker_count"]!=300 or manifest["ticker_order"]!=tickers: raise ValueError("MANIFEST_UNIVERSE_MISMATCH")
     if manifest["price_from"]!="2015-01-01" or manifest["price_to"]!="2019-12-31" or tuple(map(tuple,manifest["query_specification"]))!=QUERY_SPEC: raise ValueError("MANIFEST_SPEC_MISMATCH")
-    seen=set(); hashes=[]; success=set()
+    seen=set(); success=set()
     for item in manifest["payloads"]:
         ticker=item.get("ticker"); rel=item.get("relative_path")
         if ticker not in tickers or ticker in seen or rel!=f"raw/{ticker}.json" or Path(rel).is_absolute() or ".." in Path(rel).parts: raise ValueError("MANIFEST_PAYLOAD_INVALID")
         body=(cache/rel).read_bytes()
         if len(body)!=item.get("byte_count") or _sha(body)!=item.get("sha256"): raise ValueError("PAYLOAD_HASH_MISMATCH")
-        seen.add(ticker); success.add(ticker); hashes.append(item["sha256"])
-    if _sha(("\n".join(hashes)+"\n").encode())!=manifest["payload_hash_list_sha256"] or len(success)!=manifest["successful_ticker_count"]: raise ValueError("PAYLOAD_HASH_LIST_MISMATCH")
+        seen.add(ticker); success.add(ticker)
+    if _payload_hash_list(list(manifest["payloads"]), tickers)!=manifest["payload_hash_list_sha256"] or len(success)!=manifest["successful_ticker_count"]: raise ValueError("PAYLOAD_HASH_LIST_MISMATCH")
     failed=manifest["failed_tickers"]
     if not isinstance(failed,list) or set(failed)&success or set(failed)|success != set(tickers): raise ValueError("MANIFEST_SUCCESS_FAILURE_INVALID")
     audit=manifest["network_audit"]
-    if not isinstance(audit,list) or not audit: raise ValueError("NETWORK_AUDIT_MISSING")
+    _validate_audit_records(audit, tickers, require_terminal=True)
     for ticker in success:
-        if not any(a.get("ticker")==ticker and a.get("success") is True for a in audit): raise ValueError("PAYLOAD_SUCCESS_AUDIT_MISSING")
-    if any(a.get("ticker") not in tickers for a in audit): raise ValueError("NETWORK_AUDIT_TICKER_INVALID")
+        if sum(a.get("ticker")==ticker and a.get("success") is True for a in audit) != 1: raise ValueError("PAYLOAD_SUCCESS_AUDIT_MISSING")
+    for ticker in failed:
+        if not any(a.get("ticker")==ticker for a in audit) or any(a.get("ticker")==ticker and a.get("success") is True for a in audit): raise ValueError("NETWORK_AUDIT_FAILURE_INVALID")
     return manifest
 
 def acquire_cache(cache_dir: Path, universe: pd.DataFrame, transport: Callable[[str, int], tuple[int, bytes, bool]], repo: Path, sleep: Callable[[float], None] = time.sleep, universe_mode: str = "SYNTHETIC", universe_csv_path: Path | None = None) -> dict[str, Any]:
@@ -127,13 +191,43 @@ def acquire_cache(cache_dir: Path, universe: pd.DataFrame, transport: Callable[[
     if existing and existing.get("complete"):
         if universe_mode == "FIXED_V4_300": validate_cache_manifest(cache_dir, universe, universe_csv_path)
         return existing
-    payloads, audit, failures = [], [], []
-    for ticker in universe["ticker"].astype(str):
+    csv_hash,ticker_hash=_universe_hashes(universe,universe_csv_path)
+    ticker_order=universe["ticker"].astype(str).tolist()
+    if existing and not existing.get("complete"):
+        required={"schema_version","complete","universe_mode","universe_csv_sha256","ticker_list_sha256","ticker_count","ticker_order","price_from","price_to","query_specification","payloads","network_audit","successful_ticker_count","failed_tickers","payload_hash_list_sha256"}
+        if (not required.issubset(existing) or existing["schema_version"] != SCHEMA_VERSION or existing["complete"] is not False or existing["universe_mode"]!=universe_mode or existing["universe_csv_sha256"]!=csv_hash or existing["ticker_list_sha256"]!=ticker_hash or existing["ticker_count"] != len(ticker_order) or existing["ticker_order"]!=ticker_order or existing["price_from"]!="2015-01-01" or existing["price_to"]!="2019-12-31" or tuple(map(tuple,existing["query_specification"]))!=QUERY_SPEC): raise ValueError("INCOMPLETE_MANIFEST_INVALID")
+        payloads, audit, failures = _canonical_payloads(list(existing["payloads"]),ticker_order), list(existing["network_audit"]), list(existing["failed_tickers"])
+        if not isinstance(failures,list) or len(failures)!=len(set(failures)) or any(t not in ticker_order for t in failures): raise ValueError("INCOMPLETE_MANIFEST_INVALID")
+        if set(failures) & {item["ticker"] for item in payloads}: raise ValueError("INCOMPLETE_MANIFEST_INVALID")
+        if existing["successful_ticker_count"] != len(payloads) or existing["payload_hash_list_sha256"] != _payload_hash_list(payloads,ticker_order): raise ValueError("INCOMPLETE_MANIFEST_INVALID")
+        # _validate_manifest did path, existence, unknown-raw and SHA checks before this point.
+        _validate_audit_records(audit,ticker_order,require_terminal=False)
+        for item in payloads:
+            if sum(a["ticker"]==item["ticker"] and a["success"] for a in audit) != 1: raise ValueError("INCOMPLETE_MANIFEST_INVALID")
+    else: payloads, audit, failures = [], [], []
+    successful={item["ticker"] for item in payloads}
+    def save_in_progress() -> None:
+        snapshot={"schema_version":SCHEMA_VERSION,"complete":False,"universe_mode":universe_mode,"universe_csv_sha256":csv_hash,"ticker_list_sha256":ticker_hash,"ticker_count":len(universe),"ticker_order":ticker_order,"price_from":"2015-01-01","price_to":"2019-12-31","query_specification":list(QUERY_SPEC),"payloads":_canonical_payloads(payloads,ticker_order),"network_audit":sorted(audit,key=lambda a:(ticker_order.index(a["ticker"]),a["attempt"])),"successful_ticker_count":len(payloads),"failed_tickers":[x for x in ticker_order if x in set(failures) and x not in {p["ticker"] for p in payloads}],"payload_hash_list_sha256":_payload_hash_list(payloads,ticker_order)}
+        _atomic_manifest_write(cache_dir/"cache_manifest.json",snapshot)
+    save_in_progress()
+    for ticker in ticker_order:
+        if ticker in successful: continue
         target = raw / f"{ticker}.json"
         if target.exists():
-            body = target.read_bytes(); payloads.append({"ticker":ticker,"relative_path":f"raw/{ticker}.json","sha256":_sha(body),"byte_count":len(body)}); continue
+            # An unregistered file has already been rejected by _validate_manifest.
+            raise ValueError("CACHE_UNREGISTERED_PAYLOAD")
         final = False
-        for attempt in range(1,4):
+        prior=[a for a in audit if a["ticker"]==ticker]
+        next_attempt=(max((a["attempt"] for a in prior),default=0)+1)
+        if prior:
+            previous=prior[-1]
+            retryable=previous["status"]=="TRANSPORT_EXCEPTION" or (type(previous["status"]) is int and (previous["status"]==429 or 500 <= previous["status"] <= 599))
+            if not retryable or next_attempt > 3:
+                if ticker not in failures: failures.append(ticker)
+                save_in_progress()
+                continue
+            previous["final"]=False
+        for attempt in range(next_attempt,4):
             url=yahoo_url(ticker); _validate_url(url,ticker)
             try: status, body, redirect = transport(url, attempt)
             except Exception: status, body, redirect = "TRANSPORT_EXCEPTION", b"", False
@@ -141,14 +235,18 @@ def acquire_cache(cache_dir: Path, universe: pd.DataFrame, transport: Callable[[
             audit.append({"ticker":ticker,"attempt":attempt,"scheme":"https","host":YAHOO_HOST,"path":f"{YAHOO_PATH_PREFIX}{ticker}.T","query_specification":list(QUERY_SPEC),"status":status,"error_type":"TRANSPORT_EXCEPTION" if status=="TRANSPORT_EXCEPTION" else None,"redirect_detected":bool(redirect),"body_byte_count":len(body) if isinstance(body,bytes) else 0,"payload_sha256":_sha(body) if isinstance(body,bytes) and body else None,"retry":retry,"final":not retry,"success":status==200 and isinstance(body,bytes) and bool(body) and not redirect})
             if status == 200 and isinstance(body, bytes) and body and not redirect:
                 if target.exists(): raise ValueError("PAYLOAD_OVERWRITE_PROHIBITED")
-                target.write_bytes(body); payloads.append({"ticker":ticker,"relative_path":f"raw/{ticker}.json","sha256":_sha(body),"byte_count":len(body)}); final=True; break
+                target.write_bytes(body); payloads.append({"ticker":ticker,"relative_path":f"raw/{ticker}.json","sha256":_sha(body),"byte_count":len(body)}); failures=[x for x in failures if x != ticker]; final=True; break
             if retry: sleep(1)
             else: break
-        if not final: failures.append(ticker)
-    hashes = [item["sha256"] for item in sorted(payloads,key=lambda x:x["ticker"])]
-    csv_hash,ticker_hash=_universe_hashes(universe,universe_csv_path)
-    manifest = {"schema_version":SCHEMA_VERSION,"complete":True,"universe_mode":universe_mode,"universe_csv_sha256":csv_hash,"ticker_list_sha256":ticker_hash,"ticker_count":len(universe),"ticker_order":universe["ticker"].astype(str).tolist(),"price_from":"2015-01-01","price_to":"2019-12-31","query_specification":list(QUERY_SPEC),"payloads":sorted(payloads,key=lambda x:x["ticker"]),"network_audit":audit,"successful_ticker_count":len(payloads),"failed_tickers":failures,"payload_hash_list_sha256":_sha(("\n".join(hashes)+"\n").encode())}
-    (cache_dir / "cache_manifest.json").write_bytes(_canonical_json(manifest)); return manifest
+        if not final and ticker not in failures: failures.append(ticker)
+        save_in_progress()
+    payloads=_canonical_payloads(payloads,ticker_order)
+    audit=sorted(audit,key=lambda a:(ticker_order.index(a["ticker"]),a["attempt"]))
+    failures=[ticker for ticker in ticker_order if ticker in set(failures) and ticker not in successful | {item["ticker"] for item in payloads}]
+    manifest = {"schema_version":SCHEMA_VERSION,"complete":True,"universe_mode":universe_mode,"universe_csv_sha256":csv_hash,"ticker_list_sha256":ticker_hash,"ticker_count":len(universe),"ticker_order":ticker_order,"price_from":"2015-01-01","price_to":"2019-12-31","query_specification":list(QUERY_SPEC),"payloads":payloads,"network_audit":audit,"successful_ticker_count":len(payloads),"failed_tickers":failures,"payload_hash_list_sha256":_payload_hash_list(payloads,ticker_order)}
+    # A complete cache is only persisted after its terminal audit shape is internally valid.
+    _validate_audit_records(audit,ticker_order,require_terminal=True)
+    _atomic_manifest_write(cache_dir / "cache_manifest.json",manifest); return manifest
 
 def feature_definition_hash() -> str:
     from src import v4_meta_label_mvp as m

@@ -6,10 +6,10 @@ sys.path.insert(0,str(Path(__file__).parents[1]))
 from src.v4_meta_label_formal import acquire_cache, evaluate_cache, write_artifacts, get_repository_state, production_yahoo_transport, validate_cache_manifest
 from src.v4_meta_label_mvp import load_fixed_universe
 
-def main() -> int:
+def main(argv=None) -> int:
     p=argparse.ArgumentParser(); modes=p.add_mutually_exclusive_group(required=True)
     modes.add_argument('--acquire-cache',action='store_true'); modes.add_argument('--evaluate-cache',action='store_true'); modes.add_argument('--synthetic-phase3a-smoke-test',action='store_true')
-    p.add_argument('--cache-dir'); p.add_argument('--output-dir'); p.add_argument('--confirmation'); a=p.parse_args(); repo=Path(__file__).parents[1]
+    p.add_argument('--cache-dir'); p.add_argument('--output-dir'); p.add_argument('--confirmation'); a=p.parse_args(argv); repo=Path(__file__).parents[1]
     if a.acquire_cache:
         if a.confirmation!='V4_ACQUIRE_2015_2019_CACHE' or not a.cache_dir: p.error('explicit acquisition confirmation and cache directory required')
         state=get_repository_state(repo); universe=load_fixed_universe(repo/'V4_UNIVERSE.csv'); manifest=acquire_cache(Path(a.cache_dir),universe,production_yahoo_transport,repo,universe_mode='FIXED_V4_300',universe_csv_path=repo/'V4_UNIVERSE.csv'); validate_cache_manifest(Path(a.cache_dir),universe,repo/'V4_UNIVERSE.csv'); print(f"FORMAL_ACQUISITION_COMPLETE success={manifest['successful_ticker_count']} failed={len(manifest['failed_tickers'])}"); return 0
