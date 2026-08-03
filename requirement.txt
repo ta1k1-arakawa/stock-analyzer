@@ -2,8 +2,10 @@ pandas
 pandas-ta
 lightgbm
 scikit-learn
+scipy
 joblib
 PyYAML
 requests
 python-dotenv
 pytest
+xlrd==2.0.2
