@@ -7,18 +7,21 @@ import json
 import math
 import shutil
 import time
+import subprocess
+from urllib.parse import parse_qsl, urlparse
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 import numpy as np
 import pandas as pd
+import requests
 
 from src.v4_meta_label_mvp import (
     FEATURE_COLUMNS, FOLDS, MODEL_PARAMS, PRICE_FROM, PRICE_TO,
     add_execution_labels, aggregate_portfolio_metrics, baseline_filled_acceptance_evidence,
     baseline_filled_classification_metrics, build_feature_frame, cash_safety_audit,
     check_fold_data_sufficiency, evaluate_acceptance_conditions, evaluate_blocked_conditions,
-    generate_oof_predictions, load_fixed_universe, parse_v4_yahoo_chart,
+    generate_oof_predictions, load_fixed_universe, parse_v4_yahoo_chart, UNIVERSE_CSV_SHA256, TICKER_LIST_SHA256,
     run_baseline_portfolio, run_v4_portfolio, select_daily_candidates,
 )
 
@@ -46,6 +49,34 @@ def yahoo_url(ticker: str) -> str:
     if not str(ticker).isalnum() or len(str(ticker)) != 4: raise ValueError("INVALID_TICKER")
     return f"https://{YAHOO_HOST}{YAHOO_PATH_PREFIX}{ticker}.T?" + "&".join(f"{k}={v}" for k,v in QUERY_SPEC)
 
+def get_repository_state(repo: Path, expected_branch: str = "v4-meta-label-mvp") -> dict[str,str]:
+    def git(*args: str) -> str: return subprocess.run(["git",*args],cwd=repo,text=True,capture_output=True,check=True).stdout.strip()
+    try: branch=git("rev-parse","--abbrev-ref","HEAD"); head=git("rev-parse","HEAD"); remote=git("rev-parse",f"origin/{expected_branch}"); dirty=git("status","--porcelain","--untracked-files=all")
+    except Exception as exc: raise ValueError("REPOSITORY_STATE_UNAVAILABLE") from exc
+    if branch!=expected_branch: raise ValueError("BRANCH_MISMATCH")
+    if dirty: raise ValueError("WORKTREE_DIRTY")
+    if head!=remote: raise ValueError("HEAD_REMOTE_MISMATCH")
+    return {"branch":branch,"head":head,"remote_sha":remote}
+
+def _validate_url(url: str, ticker: str) -> None:
+    p=urlparse(url)
+    if p.scheme!="https" or p.hostname!=YAHOO_HOST or p.port is not None or p.username or p.password or p.fragment: raise ValueError("YAHOO_URL_INVALID")
+    if p.path != f"{YAHOO_PATH_PREFIX}{ticker}.T" or tuple(parse_qsl(p.query,keep_blank_values=True)) != QUERY_SPEC: raise ValueError("YAHOO_URL_INVALID")
+
+def production_yahoo_transport(url: str, attempt: int, session: Any = requests) -> tuple[int, bytes, bool]:
+    """One production GET; retry policy intentionally remains in acquire_cache."""
+    response=session.get(url,timeout=45,allow_redirects=False,headers={"User-Agent":"stock-analyzer-v4-formal/1.0"})
+    body=response.content
+    redirect=bool(300 <= response.status_code < 400 or response.headers.get("Location"))
+    return int(response.status_code), body, redirect
+
+def _universe_hashes(universe: pd.DataFrame, csv_path: Path | None = None) -> tuple[str,str]:
+    if csv_path is not None:
+        data=csv_path.read_text(encoding="utf-8").replace("\r\n","\n").replace("\r","\n").encode(); csv_hash=_sha(data)
+    else: csv_hash="SYNTHETIC"
+    ticker_hash=_sha(("\n".join(universe["ticker"].astype(str))+"\n").encode())
+    return csv_hash,ticker_hash
+
 def _validate_manifest(cache: Path) -> dict[str, Any]:
     path = cache / "cache_manifest.json"
     if not path.exists(): raise ValueError("CACHE_MANIFEST_MISSING")
@@ -59,12 +90,43 @@ def _validate_manifest(cache: Path) -> dict[str, Any]:
     if raw.exists() and {p.resolve() for p in raw.glob("*.json")} != listed: raise ValueError("CACHE_UNREGISTERED_PAYLOAD")
     return manifest
 
-def acquire_cache(cache_dir: Path, universe: pd.DataFrame, transport: Callable[[str, int], tuple[int, bytes, bool]], repo: Path, sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+def validate_cache_manifest(cache: Path, universe: pd.DataFrame, universe_csv_path: Path | None = None) -> dict[str,Any]:
+    """Fail-closed production validator; SYNTHETIC manifests are never accepted here."""
+    manifest=_validate_manifest(cache)
+    required={"schema_version","complete","universe_mode","universe_csv_sha256","ticker_list_sha256","ticker_count","ticker_order","price_from","price_to","query_specification","payloads","network_audit","successful_ticker_count","failed_tickers","payload_hash_list_sha256"}
+    if not isinstance(manifest,dict) or not required.issubset(manifest): raise ValueError("MANIFEST_SCHEMA_INVALID")
+    csv_hash,ticker_hash=_universe_hashes(universe,universe_csv_path); tickers=universe["ticker"].astype(str).tolist()
+    if manifest["schema_version"]!=SCHEMA_VERSION or manifest["complete"] is not True or manifest["universe_mode"]!="FIXED_V4_300": raise ValueError("MANIFEST_MODE_INVALID")
+    if manifest["universe_csv_sha256"]!=csv_hash or manifest["ticker_list_sha256"]!=ticker_hash or manifest["ticker_count"]!=300 or manifest["ticker_order"]!=tickers: raise ValueError("MANIFEST_UNIVERSE_MISMATCH")
+    if manifest["price_from"]!="2015-01-01" or manifest["price_to"]!="2019-12-31" or tuple(map(tuple,manifest["query_specification"]))!=QUERY_SPEC: raise ValueError("MANIFEST_SPEC_MISMATCH")
+    seen=set(); hashes=[]; success=set()
+    for item in manifest["payloads"]:
+        ticker=item.get("ticker"); rel=item.get("relative_path")
+        if ticker not in tickers or ticker in seen or rel!=f"raw/{ticker}.json" or Path(rel).is_absolute() or ".." in Path(rel).parts: raise ValueError("MANIFEST_PAYLOAD_INVALID")
+        body=(cache/rel).read_bytes()
+        if len(body)!=item.get("byte_count") or _sha(body)!=item.get("sha256"): raise ValueError("PAYLOAD_HASH_MISMATCH")
+        seen.add(ticker); success.add(ticker); hashes.append(item["sha256"])
+    if _sha(("\n".join(hashes)+"\n").encode())!=manifest["payload_hash_list_sha256"] or len(success)!=manifest["successful_ticker_count"]: raise ValueError("PAYLOAD_HASH_LIST_MISMATCH")
+    failed=manifest["failed_tickers"]
+    if not isinstance(failed,list) or set(failed)&success or set(failed)|success != set(tickers): raise ValueError("MANIFEST_SUCCESS_FAILURE_INVALID")
+    audit=manifest["network_audit"]
+    if not isinstance(audit,list) or not audit: raise ValueError("NETWORK_AUDIT_MISSING")
+    for ticker in success:
+        if not any(a.get("ticker")==ticker and a.get("success") is True for a in audit): raise ValueError("PAYLOAD_SUCCESS_AUDIT_MISSING")
+    if any(a.get("ticker") not in tickers for a in audit): raise ValueError("NETWORK_AUDIT_TICKER_INVALID")
+    return manifest
+
+def acquire_cache(cache_dir: Path, universe: pd.DataFrame, transport: Callable[[str, int], tuple[int, bytes, bool]], repo: Path, sleep: Callable[[float], None] = time.sleep, universe_mode: str = "SYNTHETIC", universe_csv_path: Path | None = None) -> dict[str, Any]:
     """Stage A only; injected transport enables a no-network synthetic test."""
     _outside_repo(cache_dir, repo)
-    cache_dir.mkdir(parents=True, exist_ok=True); raw = cache_dir / "raw"; raw.mkdir(exist_ok=True)
+    if cache_dir.exists() and cache_dir.is_file(): raise ValueError("CACHE_PATH_IS_FILE")
+    cache_dir.mkdir(parents=True, exist_ok=True); raw = cache_dir / "raw"
+    if not (cache_dir / "cache_manifest.json").exists() and raw.exists() and any(raw.glob("*.json")): raise ValueError("RAW_WITHOUT_MANIFEST")
+    raw.mkdir(exist_ok=True)
     existing = _validate_manifest(cache_dir) if (cache_dir / "cache_manifest.json").exists() else None
-    if existing and existing.get("complete"): return existing
+    if existing and existing.get("complete"):
+        if universe_mode == "FIXED_V4_300": validate_cache_manifest(cache_dir, universe, universe_csv_path)
+        return existing
     payloads, audit, failures = [], [], []
     for ticker in universe["ticker"].astype(str):
         target = raw / f"{ticker}.json"
@@ -72,10 +134,11 @@ def acquire_cache(cache_dir: Path, universe: pd.DataFrame, transport: Callable[[
             body = target.read_bytes(); payloads.append({"ticker":ticker,"relative_path":f"raw/{ticker}.json","sha256":_sha(body),"byte_count":len(body)}); continue
         final = False
         for attempt in range(1,4):
-            try: status, body, redirect = transport(yahoo_url(ticker), attempt)
+            url=yahoo_url(ticker); _validate_url(url,ticker)
+            try: status, body, redirect = transport(url, attempt)
             except Exception: status, body, redirect = "TRANSPORT_EXCEPTION", b"", False
-            retry = isinstance(status, int) and (status == 429 or status >= 500) and attempt < 3
-            audit.append({"ticker":ticker,"attempt":attempt,"scheme":"https","host":YAHOO_HOST,"status":status,"redirect_detected":bool(redirect),"body_byte_count":len(body) if isinstance(body,bytes) else 0,"payload_sha256":_sha(body) if isinstance(body,bytes) and body else None,"retry":retry,"final":not retry})
+            retry = (status == "TRANSPORT_EXCEPTION" or (isinstance(status,int) and (status == 429 or status >= 500))) and attempt < 3
+            audit.append({"ticker":ticker,"attempt":attempt,"scheme":"https","host":YAHOO_HOST,"path":f"{YAHOO_PATH_PREFIX}{ticker}.T","query_specification":list(QUERY_SPEC),"status":status,"error_type":"TRANSPORT_EXCEPTION" if status=="TRANSPORT_EXCEPTION" else None,"redirect_detected":bool(redirect),"body_byte_count":len(body) if isinstance(body,bytes) else 0,"payload_sha256":_sha(body) if isinstance(body,bytes) and body else None,"retry":retry,"final":not retry,"success":status==200 and isinstance(body,bytes) and bool(body) and not redirect})
             if status == 200 and isinstance(body, bytes) and body and not redirect:
                 if target.exists(): raise ValueError("PAYLOAD_OVERWRITE_PROHIBITED")
                 target.write_bytes(body); payloads.append({"ticker":ticker,"relative_path":f"raw/{ticker}.json","sha256":_sha(body),"byte_count":len(body)}); final=True; break
@@ -83,7 +146,8 @@ def acquire_cache(cache_dir: Path, universe: pd.DataFrame, transport: Callable[[
             else: break
         if not final: failures.append(ticker)
     hashes = [item["sha256"] for item in sorted(payloads,key=lambda x:x["ticker"])]
-    manifest = {"schema_version":SCHEMA_VERSION,"complete":True,"universe_csv_sha256":"d40b1fcfd824822c7511f0d4f99445640706b7f5dfae08155636624704c41997","ticker_list_sha256":"12777a83f259cd885ebb828e0ce895a5bf53be37c27928c1a487f629002ce4f7","price_from":"2015-01-01","price_to":"2019-12-31","query_specification":list(QUERY_SPEC),"payloads":sorted(payloads,key=lambda x:x["ticker"]),"network_audit":audit,"successful_ticker_count":len(payloads),"failed_tickers":failures,"payload_hash_list_sha256":_sha(("\n".join(hashes)+"\n").encode())}
+    csv_hash,ticker_hash=_universe_hashes(universe,universe_csv_path)
+    manifest = {"schema_version":SCHEMA_VERSION,"complete":True,"universe_mode":universe_mode,"universe_csv_sha256":csv_hash,"ticker_list_sha256":ticker_hash,"ticker_count":len(universe),"ticker_order":universe["ticker"].astype(str).tolist(),"price_from":"2015-01-01","price_to":"2019-12-31","query_specification":list(QUERY_SPEC),"payloads":sorted(payloads,key=lambda x:x["ticker"]),"network_audit":audit,"successful_ticker_count":len(payloads),"failed_tickers":failures,"payload_hash_list_sha256":_sha(("\n".join(hashes)+"\n").encode())}
     (cache_dir / "cache_manifest.json").write_bytes(_canonical_json(manifest)); return manifest
 
 def feature_definition_hash() -> str:

@@ -1,9 +1,9 @@
 # V4 Meta-Label MVP implementation status
 
-- current phase: Phase 3A — complete
-- completed: Phase 1–2C; formal acquisition with immutable external raw cache; cache-only formal evaluation; reproducibility hashes; canonical three-artifact generation; and two-run synthetic cache determinism
-- remaining: read-only pre-execution review and final HUMAN_GATE before the one authorized formal real-data evaluation
-- tests: Phase 1–3A tests 73 passed; full suite 148 passed (cache provider disabled); Phase 3A synthetic smoke passed
+- current phase: Phase 3B1 — complete
+- completed: Phase 1–3A; production CLI acquisition wiring; production evaluation preflight; fixed V4 300 universe enforcement; requests transport; fail-closed production manifest validation; repository/cache/output preflight safety
+- remaining: Phase 3B2 BLOCKED artifact handling, determinism, audit, and atomic writer
+- tests: formal + Phase 3B1 tests 11 passed; full suite 152 passed (cache provider disabled); Phase 3A synthetic smoke passed
 - network calls: 0
 - real-data price acquisition: 0
 - synthetic model fits: 6 (Phase 2A smoke test only)

@@ -3,7 +3,8 @@ import argparse, json, shutil, tempfile
 from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).parents[1]))
-from src.v4_meta_label_formal import acquire_cache, evaluate_cache, write_artifacts
+from src.v4_meta_label_formal import acquire_cache, evaluate_cache, write_artifacts, get_repository_state, production_yahoo_transport, validate_cache_manifest
+from src.v4_meta_label_mvp import load_fixed_universe
 
 def main() -> int:
     p=argparse.ArgumentParser(); modes=p.add_mutually_exclusive_group(required=True)
@@ -11,10 +12,15 @@ def main() -> int:
     p.add_argument('--cache-dir'); p.add_argument('--output-dir'); p.add_argument('--confirmation'); a=p.parse_args(); repo=Path(__file__).parents[1]
     if a.acquire_cache:
         if a.confirmation!='V4_ACQUIRE_2015_2019_CACHE' or not a.cache_dir: p.error('explicit acquisition confirmation and cache directory required')
-        raise RuntimeError('production acquisition is implemented but must not be invoked in Phase 3A')
+        state=get_repository_state(repo); universe=load_fixed_universe(repo/'V4_UNIVERSE.csv'); manifest=acquire_cache(Path(a.cache_dir),universe,production_yahoo_transport,repo,universe_mode='FIXED_V4_300',universe_csv_path=repo/'V4_UNIVERSE.csv'); validate_cache_manifest(Path(a.cache_dir),universe,repo/'V4_UNIVERSE.csv'); print(f"FORMAL_ACQUISITION_COMPLETE success={manifest['successful_ticker_count']} failed={len(manifest['failed_tickers'])}"); return 0
     if a.evaluate_cache:
         if a.confirmation!='V4_ONE_SHOT_FORMAL_EVALUATION' or not a.cache_dir or not a.output_dir: p.error('explicit evaluation confirmation, cache and output directory required')
-        raise RuntimeError('production evaluation is implemented but must not be invoked in Phase 3A')
+        state=get_repository_state(repo); universe=load_fixed_universe(repo/'V4_UNIVERSE.csv'); validate_cache_manifest(Path(a.cache_dir),universe,repo/'V4_UNIVERSE.csv')
+        output=Path(a.output_dir)
+        if output.exists() and (output.is_file() or any(output.iterdir())): raise ValueError('OUTPUT_DIRECTORY_NONEMPTY_OR_FILE')
+        from src.v4_meta_label_formal import _outside_repo
+        _outside_repo(Path(a.cache_dir),repo); _outside_repo(output,repo)
+        print('FORMAL_EVALUATION_PREFLIGHT_READY'); return 0
     root=Path(tempfile.mkdtemp(prefix='v4-formal-',dir=tempfile.gettempdir()))
     try:
         dates=__import__('pandas').date_range('2015-01-01','2019-12-31',freq='B'); universe=__import__('pandas').DataFrame({'ticker':['3633','2984','6150'],'industry':['A','B','C'],'market':['M']*3})
