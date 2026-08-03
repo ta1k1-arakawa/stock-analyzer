@@ -14,6 +14,8 @@ import json
 import math
 from pathlib import Path
 import re
+from dataclasses import dataclass
+from urllib.parse import parse_qsl, urlencode, urlparse
 from typing import Any, Iterable
 
 import numpy as np
@@ -249,3 +251,45 @@ def preflight(root: Path, cache_dir: Path | None = None, output_dir: Path | None
         if path is not None and (path.resolve() == root or root in path.resolve().parents):
             raise ValueError("CACHE_OR_OUTPUT_MUST_BE_OUTSIDE_REPOSITORY")
     return validate_fixed_inputs(root)
+
+# V4R1 Stage 1A: no parser, cache, or network adapter is provided here.
+YAHOO_SCHEME="https"; YAHOO_HOST="query1.finance.yahoo.com"; YAHOO_TIMEOUT_SECONDS=20; YAHOO_MAX_ATTEMPTS=3; YAHOO_RETRY_DELAY_SECONDS=1
+YAHOO_QUERY=(('period1','1420070400'),('period2','1577836800'),('interval','1d'),('events','div,splits'),('includeAdjustedClose','true'))
+class V4SafetyError(Exception):
+    def __init__(self,code,audit=None): super().__init__(code); self.code=code; self.audit=audit
+class V4DataBlockedError(Exception):
+    def __init__(self,code,audit=None): super().__init__(code); self.code=code; self.audit=audit
+@dataclass(frozen=True)
+class YahooTransportResponse:
+    status:int; body:bytes; final_url:str; redirect_count:int
+def build_yahoo_chart_url(ticker:str)->str:
+    if not re.fullmatch(r'[0-9A-Z]{4}',ticker): raise V4SafetyError('INVALID_TICKER')
+    return f'https://{YAHOO_HOST}/v8/finance/chart/{ticker}.T?'+urlencode(YAHOO_QUERY)
+def validate_yahoo_chart_url(url:str)->str:
+    p=urlparse(url); m=re.fullmatch(r'/v8/finance/chart/([0-9A-Z]{4})\.T',p.path or '')
+    if not m or p.scheme!='https' or p.hostname!=YAHOO_HOST or p.port is not None or p.username or p.password or p.fragment: raise V4SafetyError('UNSAFE_URL')
+    if parse_qsl(p.query,keep_blank_values=True)!=list(YAHOO_QUERY) or url!=build_yahoo_chart_url(m.group(1)): raise V4SafetyError('UNSAFE_URL')
+    return m.group(1)
+def _audit(ticker,url): return {'ticker':ticker,'url':url,'max_attempts':3,'network_call_count':0,'prohibited_network_count':0,'outcome':None,'attempts':[]}
+def fetch_yahoo_payload(ticker:str,transport,sleeper):
+    url=build_yahoo_chart_url(ticker); audit=_audit(ticker,url)
+    try: validate_yahoo_chart_url(url)
+    except V4SafetyError as e: audit['prohibited_network_count']=1; audit['outcome']='SAFETY_ERROR'; e.audit=audit; raise
+    for attempt in range(1,4):
+        audit['network_call_count']+=1
+        try:
+            r=transport(url,timeout_seconds=20,allow_redirects=False)
+        except Exception as e:
+            audit['attempts'].append({'attempt':attempt,'status':None,'outcome':'TRANSPORT_EXCEPTION','retryable':attempt<3,'error_type':type(e).__name__,'final_url':None,'redirect_count':None})
+            if attempt<3: sleeper(YAHOO_RETRY_DELAY_SECONDS); continue
+            audit['outcome']='BLOCKED'; raise V4DataBlockedError('TRANSPORT_RETRY_EXHAUSTED',audit)
+        if r.redirect_count or r.final_url!=url:
+            audit['attempts'].append({'attempt':attempt,'status':r.status,'outcome':'SAFETY_ERROR','retryable':False,'error_type':None,'final_url':r.final_url,'redirect_count':r.redirect_count}); audit['prohibited_network_count']=1; audit['outcome']='SAFETY_ERROR'; raise V4SafetyError('REDIRECT_OR_FINAL_URL',audit)
+        retryable=r.status==429 or 500<=r.status<=599
+        audit['attempts'].append({'attempt':attempt,'status':r.status,'outcome':'SUCCESS' if r.status==200 else 'HTTP_ERROR','retryable':retryable,'error_type':None,'final_url':r.final_url,'redirect_count':r.redirect_count})
+        if r.status==200:
+            if not isinstance(r.body,bytes): audit['outcome']='BLOCKED'; raise V4DataBlockedError('BODY_NOT_BYTES',audit)
+            audit['outcome']='SUCCESS'; return r.body,audit
+        if retryable and attempt<3: sleeper(YAHOO_RETRY_DELAY_SECONDS); continue
+        audit['outcome']='BLOCKED'; raise V4DataBlockedError('HTTP_STATUS',audit)
+    audit['outcome']='BLOCKED'; raise V4DataBlockedError('RETRY_EXHAUSTED',audit)

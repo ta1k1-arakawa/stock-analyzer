@@ -58,3 +58,39 @@ class PrototypeTests(unittest.TestCase):
         self.assertEqual(len(v4.FEATURE_COLUMNS),15); self.assertEqual(len(v4.FOLDS),3); self.assertEqual(v4.BLOCKED_CONDITIONS,10); self.assertEqual(v4.ACCEPTANCE_CONDITIONS,17); self.assertEqual(v4.stable_json_bytes({"b":1,"a":2}),b'{"a":2,"b":1}\n')
     def test_blocked_conditions(self):
         train=pd.DataFrame({"label":[0]*100}); test=pd.DataFrame({"label":[0,1]}); baseline=pd.DataFrame(index=range(40)); blockers=v4.data_sufficiency_blockers([{"train":train,"test":test,"baseline":baseline}],149,False,1,True,False); self.assertEqual(len(blockers),7)
+
+class Stage1ATests(unittest.TestCase):
+    def response(self,status=200,body=b'x',final=None,redirects=0): return v4.YahooTransportResponse(status,body,final or v4.build_yahoo_chart_url('1234'),redirects)
+    def test_url(self): self.assertEqual(v4.build_yahoo_chart_url('1234'),'https://query1.finance.yahoo.com/v8/finance/chart/1234.T?period1=1420070400&period2=1577836800&interval=1d&events=div%2Csplits&includeAdjustedClose=true')
+    def test_suffix(self): self.assertIn('1234.T',v4.build_yahoo_chart_url('1234'))
+    def test_bad_ticker(self):
+        with self.assertRaises(v4.V4SafetyError): v4.build_yahoo_chart_url('abc')
+    def test_bad_urls(self):
+        for u in ['http://query1.finance.yahoo.com/v8/finance/chart/1234.T','https://query1.finance.yahoo.com.example.com/v8/finance/chart/1234.T','https://evil.example@query1.finance.yahoo.com/v8/finance/chart/1234.T','https://query1.finance.yahoo.com:443/v8/finance/chart/1234.T','https://query1.finance.yahoo.com/v8/finance/chart/1234.T#x']:
+            with self.assertRaises(v4.V4SafetyError): v4.validate_yahoo_chart_url(u)
+    def test_path_query(self):
+        with self.assertRaises(v4.V4SafetyError): v4.validate_yahoo_chart_url(v4.build_yahoo_chart_url('1234')+'&x=1')
+    def test_call_args(self):
+        seen=[]
+        def t(*a,**k): seen.append((a,k)); return self.response()
+        v4.fetch_yahoo_payload('1234',t,lambda _:None); self.assertEqual(seen[0][1],{'timeout_seconds':20,'allow_redirects':False})
+    def test_success(self): self.assertEqual(v4.fetch_yahoo_payload('1234',lambda *a,**k:self.response(),lambda _:None)[0],b'x')
+    def test_exception_retry(self):
+        xs=[RuntimeError(),self.response()]; self.assertEqual(v4.fetch_yahoo_payload('1234',lambda *a,**k: (_ for _ in ()).throw(xs.pop(0)) if isinstance(xs[0],Exception) else xs.pop(0),lambda _:None)[1]['network_call_count'],2)
+    def test_429_retry(self):
+        xs=[self.response(429),self.response()]; self.assertEqual(v4.fetch_yahoo_payload('1234',lambda *a,**k:xs.pop(0),lambda _:None)[1]['network_call_count'],2)
+    def test_5xx_retry(self):
+        xs=[self.response(500),self.response()]; self.assertEqual(v4.fetch_yahoo_payload('1234',lambda *a,**k:xs.pop(0),lambda _:None)[1]['network_call_count'],2)
+    def test_404_no_retry(self):
+        with self.assertRaises(v4.V4DataBlockedError) as x: v4.fetch_yahoo_payload('1234',lambda *a,**k:self.response(404),lambda _:None)
+        self.assertEqual(x.exception.audit['network_call_count'],1)
+    def test_three_failures(self):
+        with self.assertRaises(v4.V4DataBlockedError) as x: v4.fetch_yahoo_payload('1234',lambda *a,**k:self.response(500),lambda _:None)
+        self.assertEqual(x.exception.audit['network_call_count'],3)
+    def test_redirect(self):
+        with self.assertRaises(v4.V4SafetyError): v4.fetch_yahoo_payload('1234',lambda *a,**k:self.response(200,redirects=1),lambda _:None)
+    def test_final_url(self):
+        with self.assertRaises(v4.V4SafetyError): v4.fetch_yahoo_payload('1234',lambda *a,**k:self.response(final='https://x'),lambda _:None)
+    def test_body_and_audit(self):
+        with self.assertRaises(v4.V4DataBlockedError): v4.fetch_yahoo_payload('1234',lambda *a,**k:self.response(body='x'),lambda _:None)
+        body,a=v4.fetch_yahoo_payload('1234',lambda *a,**k:self.response(body=b'secret'),lambda _:None); self.assertNotIn('secret',str(a)); self.assertEqual([x['attempt'] for x in a['attempts']],[1])
