@@ -12,6 +12,8 @@ from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
+from lightgbm import LGBMClassifier
+from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 
 from src.free_prototype import validate_ohlcv
 from src.trade_simulator import simulate_execution
@@ -30,6 +32,19 @@ FEATURE_COLUMNS = (
     "momentum_20d_percentile_rank", "relative_momentum_20d",
     "cross_section_median_return_20d", "cross_section_breadth_above_ma20",
     "cross_section_median_volatility_20d", "cross_section_eligible_count",
+)
+MODEL_PARAMS = {
+    "objective": "binary", "n_estimators": 300, "learning_rate": 0.03,
+    "num_leaves": 15, "max_depth": -1, "min_child_samples": 40,
+    "subsample": 0.8, "subsample_freq": 1, "colsample_bytree": 0.8,
+    "reg_alpha": 0.0, "reg_lambda": 1.0, "random_state": 20260803,
+    "n_jobs": 1, "deterministic": True, "force_col_wise": True,
+    "verbosity": -1, "class_weight": None,
+}
+FOLDS = (
+    {"fold": 1, "train_from": "2016-04-01", "train_to": "2016-12-31", "test_from": "2017-01-01", "test_to": "2017-12-31"},
+    {"fold": 2, "train_from": "2016-04-01", "train_to": "2017-12-31", "test_from": "2018-01-01", "test_to": "2018-12-31"},
+    {"fold": 3, "train_from": "2016-04-01", "train_to": "2018-12-31", "test_from": "2019-01-01", "test_to": "2019-12-31"},
 )
 PRELIMINARY_STOCK_FEATURE_COLUMNS = (
     "return_5d", "return_20d", "return_60d", "volatility_20d",
@@ -230,3 +245,131 @@ def run_synthetic_smoke_test(universe: pd.DataFrame) -> pd.DataFrame:
     if selected[["EntryDate", "ExitDate", "label"]].isna().any().any():
         raise AssertionError("SYNTHETIC_SMOKE_LABEL_FAILURE")
     return candidates
+
+
+_CANDIDATE_REQUIRED_COLUMNS = (
+    "candidate_status", "eligible", "signal_date", "ticker", "label",
+    "LabelConfirmedDate", "EntryDate", "ExitDate", "EntryPrice", "ExitPrice",
+    "ExitReason", "realized_net_return_percent", *FEATURE_COLUMNS,
+)
+
+
+def validate_candidate_samples(candidates: pd.DataFrame) -> pd.DataFrame:
+    """Fail closed before a model sees deterministic daily candidate samples."""
+    missing = [column for column in _CANDIDATE_REQUIRED_COLUMNS if column not in candidates.columns]
+    if missing:
+        raise ValueError(f"CANDIDATE_REQUIRED_COLUMNS_MISSING:{missing}")
+    result = candidates.copy()
+    candidate_rows = result["candidate_status"] == "CANDIDATE"
+    if (~result["candidate_status"].isin(["CANDIDATE", "NO_CANDIDATE"])).any():
+        raise ValueError("INVALID_CANDIDATE_STATUS")
+    for column in ("signal_date", "LabelConfirmedDate", "EntryDate", "ExitDate"):
+        result[column] = pd.to_datetime(result[column], errors="coerce")
+        if result.loc[candidate_rows, column].isna().any():
+            raise ValueError(f"INVALID_CANDIDATE_DATE:{column}")
+    if (result.loc[candidate_rows, ["signal_date", "LabelConfirmedDate", "EntryDate", "ExitDate"]] >= pd.Timestamp("2020-01-01")).any().any():
+        raise ValueError("PROHIBITED_POST_2019_CANDIDATE")
+    if result.loc[candidate_rows, "ticker"].isna().any() or (result.loc[candidate_rows, "ticker"].astype(str).str.strip() == "").any():
+        raise ValueError("INVALID_CANDIDATE_TICKER")
+    if result.loc[candidate_rows, "signal_date"].duplicated().any():
+        raise ValueError("DUPLICATE_DAILY_CANDIDATE")
+    labels = result.loc[candidate_rows, "label"]
+    if (~labels.isin([0, 1])).any():
+        raise ValueError("INVALID_CANDIDATE_LABEL")
+    values = result.loc[candidate_rows, FEATURE_COLUMNS].apply(pd.to_numeric, errors="coerce")
+    if not np.isfinite(values.to_numpy(dtype=float)).all():
+        raise ValueError("NONFINITE_CANDIDATE_FEATURE")
+    if not result.loc[candidate_rows, "eligible"].eq(True).all():
+        raise ValueError("INELIGIBLE_CANDIDATE")
+    return result.sort_values(["signal_date", "ticker"], kind="mergesort").reset_index(drop=True)
+
+
+def make_walk_forward_fold(candidates: pd.DataFrame, fold_spec: Mapping[str, Any]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Extract sorted train/test samples, applying the pre-test label embargo."""
+    valid = validate_candidate_samples(candidates)
+    train_from, train_to = pd.Timestamp(fold_spec["train_from"]), pd.Timestamp(fold_spec["train_to"])
+    test_from, test_to = pd.Timestamp(fold_spec["test_from"]), pd.Timestamp(fold_spec["test_to"])
+    candidate = valid["candidate_status"].eq("CANDIDATE")
+    train = valid.loc[candidate & valid["signal_date"].between(train_from, train_to) & (valid["LabelConfirmedDate"] < test_from)]
+    test = valid.loc[candidate & valid["signal_date"].between(test_from, test_to)]
+    return (
+        train.sort_values(["signal_date", "ticker"], kind="mergesort").reset_index(drop=True),
+        test.sort_values(["signal_date", "ticker"], kind="mergesort").reset_index(drop=True),
+    )
+
+
+def build_meta_label_model() -> LGBMClassifier:
+    """Construct exactly the preregistered pooled binary classifier."""
+    return LGBMClassifier(**MODEL_PARAMS)
+
+
+def check_fold_data_sufficiency(train: pd.DataFrame, test: pd.DataFrame) -> dict[str, Any]:
+    """Report Phase 2A availability blockers without inventing substitute data."""
+    reasons: list[str] = []
+    train_labels, test_labels = train["label"], test["label"]
+    positive, negative = int((train_labels == 1).sum()), int((train_labels == 0).sum())
+    if len(train) < 100: reasons.append("TRAIN_CANDIDATES_LT_100")
+    if train_labels.nunique() != 2: reasons.append("TRAIN_LABEL_NOT_TWO_CLASSES")
+    if positive < 20: reasons.append("TRAIN_POSITIVE_LT_20")
+    if negative < 20: reasons.append("TRAIN_NEGATIVE_LT_20")
+    if test_labels.nunique() != 2: reasons.append("TEST_LABEL_NOT_TWO_CLASSES")
+    return {"blocked": bool(reasons), "reasons": reasons, "train_count": int(len(train)), "test_count": int(len(test)), "train_positive": positive, "train_negative": negative}
+
+
+def generate_oof_predictions(candidates: pd.DataFrame, model_factory: Any = None) -> pd.DataFrame:
+    """Fit exactly one fixed classifier per walk-forward fold and return OOF rows."""
+    factory = build_meta_label_model if model_factory is None else model_factory
+    outputs = []
+    for fold in FOLDS:
+        train, test = make_walk_forward_fold(candidates, fold)
+        sufficiency = check_fold_data_sufficiency(train, test)
+        if sufficiency["blocked"]:
+            raise ValueError(f"FOLD_{fold['fold']}_BLOCKED:{','.join(sufficiency['reasons'])}")
+        model = factory()
+        model.fit(train.loc[:, FEATURE_COLUMNS], train["label"])
+        probability = np.asarray(model.predict_proba(test.loc[:, FEATURE_COLUMNS]))[:, 1]
+        part = test.loc[:, ["signal_date", "ticker", "label", "realized_net_return_percent", "EntryDate", "ExitDate", "EntryPrice", "ExitPrice", "ExitReason", *FEATURE_COLUMNS]].copy()
+        part.insert(0, "fold", fold["fold"])
+        part["probability"] = probability
+        part["decision"] = np.where(part["probability"] >= .55, "ACCEPT", "ABSTAIN")
+        outputs.append(part)
+    columns = ["fold", "signal_date", "ticker", "label", "probability", "decision", "realized_net_return_percent", "EntryDate", "ExitDate", "EntryPrice", "ExitPrice", "ExitReason", *FEATURE_COLUMNS]
+    return pd.concat(outputs, ignore_index=True).loc[:, columns].sort_values(["fold", "signal_date", "ticker"], kind="mergesort").reset_index(drop=True)
+
+
+def classification_metrics(oof: pd.DataFrame) -> dict[str, Any]:
+    """Classification-only metrics; single-class inputs explicitly remain blocked."""
+    labels = oof["label"]
+    if len(oof) == 0 or labels.nunique() != 2:
+        return {"status": "BLOCKED", "reason": "LABEL_NOT_TWO_CLASSES"}
+    probabilities = oof["probability"].astype(float)
+    accepted = oof.loc[oof["decision"] == "ACCEPT", "realized_net_return_percent"]
+    abstained = oof.loc[oof["decision"] == "ABSTAIN", "realized_net_return_percent"]
+    accept_mean = float(accepted.mean()) if len(accepted) else None
+    abstain_mean = float(abstained.mean()) if len(abstained) else None
+    return {
+        "status": "OK", "sample_count": int(len(oof)), "positive_rate": float(labels.mean()),
+        "roc_auc": float(roc_auc_score(labels, probabilities)), "brier_score": float(brier_score_loss(labels, probabilities)),
+        "log_loss": float(log_loss(labels, probabilities, labels=[0, 1])),
+        "probability_minimum": float(probabilities.min()), "probability_maximum": float(probabilities.max()),
+        "probability_mean": float(probabilities.mean()), "probability_median": float(probabilities.median()),
+        "accept_rate_at_055": float((probabilities >= .55).mean()),
+        "accept_mean_realized_net_return_percent": accept_mean,
+        "abstain_mean_realized_net_return_percent": abstain_mean,
+        "accept_minus_abstain_mean_realized_net_return_percent": None if accept_mean is None or abstain_mean is None else accept_mean - abstain_mean,
+    }
+
+
+def make_synthetic_phase2a_candidates() -> pd.DataFrame:
+    """Deterministic offline candidates satisfying every Phase 2A fold minimum."""
+    dates = pd.date_range("2016-04-01", "2019-12-27", freq="B")
+    rows = []
+    for position, date in enumerate(dates):
+        label = position % 2
+        row = {"candidate_status": "CANDIDATE", "eligible": True, "signal_date": date, "ticker": "3633",
+               "label": label, "LabelConfirmedDate": date + pd.offsets.BDay(2), "EntryDate": date + pd.offsets.BDay(1),
+               "ExitDate": date + pd.offsets.BDay(2), "EntryPrice": 1_000.0, "ExitPrice": 1_000.0 + (10 if label else -10),
+               "ExitReason": "TIME", "realized_net_return_percent": 1.0 if label else -1.0}
+        row.update({column: ((position + index * 3) % 17) / 17 for index, column in enumerate(FEATURE_COLUMNS)})
+        rows.append(row)
+    return pd.DataFrame(rows)
