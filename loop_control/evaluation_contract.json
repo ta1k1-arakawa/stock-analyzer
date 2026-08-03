@@ -1,16 +1,24 @@
 {
   "contract_version": 1,
-  "active": false,
-  "task_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "metrics": [],
-  "pass_conditions": ["schema_valid", "cross_file_hashes_consistent", "stock_research_remains_closed", "no_automation_present"],
-  "failure_conditions": ["unknown_state", "invalid_transition", "task_hash_mismatch", "secret_detected", "stock_research_reopened", "runner_or_scheduler_added", "unexpected_network", "unexpected_git_ref_change"],
+  "active": true,
+  "task_hash": "3a954790c8458779cd1eb970c18d35cbff08b3a9769f55c482137e1cd14a1d87",
+  "metrics": [
+    {"name": "required_state_count", "operator": "=", "value": 12},
+    {"name": "required_state_order", "operator": "=", "value": ["NEW", "PLANNED", "READY", "IMPLEMENTING", "VERIFYING", "RETRY_ALLOWED", "HUMAN_GATE", "ACCEPTED", "REJECTED", "BLOCKED", "CANCELLED", "DONE"]},
+    {"name": "document_title", "operator": "=", "value": "# Pilot state glossary"},
+    {"name": "markdown_table_count", "operator": "=", "value": 1},
+    {"name": "table_columns", "operator": "=", "value": ["State", "Meaning"]},
+    {"name": "meaning_requirement", "operator": "=", "value": "one non-empty Japanese sentence"},
+    {"name": "forbidden_topics", "operator": "=", "value": ["stock", "investment", "model", "backtest", "profit", "order"]}
+  ],
+  "pass_conditions": ["pilot_glossary_exists", "all_12_states_present", "state_order_is_deterministic", "definitions_are_non_empty", "only_authorized_files_changed", "schema_valid", "history_chain_valid", "stock_research_remains_closed", "no_automation_present", "no_network_used", "required_tests_pass"],
+  "failure_conditions": ["missing_state", "duplicate_state", "empty_definition", "unauthorized_file_change", "task_hash_mismatch", "contract_changed_after_planning", "stock_research_reopened", "runner_or_scheduler_added", "unexpected_network", "secret_detected", "budget_exceeded"],
   "data_boundary": {"data_use": "none"},
   "prohibited_periods": [],
   "allowed_network_hosts": [],
-  "allowed_files": ["loop_control/LOOP_SPEC.md", "loop_control/loop_state.json", "loop_control/evaluation_contract.json", "loop_control/loop_history.jsonl", "loop_control/human_approvals.jsonl", "loop_control/PHASE_A_MANUAL_CHECKLIST.md", "loop_control/schemas/loop_state.schema.json", "loop_control/schemas/evaluation_contract.schema.json", "loop_control/schemas/loop_history_event.schema.json", "loop_control/schemas/human_approval.schema.json", "scripts/validate_loop_contracts.py", "tests/test_loop_contracts.py"],
-  "forbidden_files": ["models/**", "data/**", "raw_data/**", ".github/workflows/**", "existing stock evaluation results", "shadow-related files", "files containing API keys or secrets"],
-  "required_tests": ["validator", "pytest", "unittest", "git diff --check"],
+  "allowed_files": ["loop_control/loop_state.json", "loop_control/evaluation_contract.json", "loop_control/loop_history.jsonl", "loop_control/PILOT_STATE_GLOSSARY.md"],
+  "forbidden_files": ["models/**", "data/**", "raw_data/**", ".github/workflows/**", "existing stock evaluation results", "shadow-related files", "files containing API keys or secrets", "runner, scheduler, or lock related files"],
+  "required_tests": ["python scripts/validate_loop_contracts.py", "pytest", "unittest", "git diff --check"],
   "determinism": {"runs": 2, "summary_hashes_must_match": true},
-  "budget": {"max_agent_runs": 0, "max_retries": 0, "max_api_calls": 0, "max_download_bytes": 0, "max_changed_files": 0, "max_model_fits": 0, "max_evaluations": 0}
+  "budget": {"max_agent_runs": 10, "max_retries": 1, "max_api_calls": 0, "max_download_bytes": 0, "max_changed_files": 4, "max_model_fits": 0, "max_evaluations": 1}
 }
