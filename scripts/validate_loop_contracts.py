@@ -32,6 +32,8 @@ STATIC_ALLOWED_TRANSITIONS = {
 }
 PHASE_A_NEXT_STATES = STATIC_ALLOWED_TRANSITIONS["NEW"]
 EMPTY_TASK_HASH = hashlib.sha256(b"").hexdigest()
+BOOTSTRAP_LOOP_ID = "phase-a-bootstrap"
+BOOTSTRAP_ORIGIN_COMMIT = "c8552e30539f062fa76c4ac77d767039b6a7903e"
 REQUIRED_CONTROL_FILES = (
     "LOOP_SPEC.md",
     "loop_state.json",
@@ -220,8 +222,11 @@ def _validate_initialization(event: dict[str, Any], state: dict[str, Any]) -> No
         raise ValidationFailure("first history event must be INITIALIZED NEW->NEW")
     if event["state_transition"] is not None or event["output_commit"] is not None:
         raise ValidationFailure("initialization must have null state_transition and output_commit")
-    if event["loop_id"] != state["loop_id"] or event["input_commit"] != state["base_commit"]:
-        raise ValidationFailure("initialization does not match loop state")
+    if event["loop_id"] != state["loop_id"]:
+        raise ValidationFailure("initialization loop_id does not match loop state")
+    expected_origin = BOOTSTRAP_ORIGIN_COMMIT if state["loop_id"] == BOOTSTRAP_LOOP_ID else state["base_commit"]
+    if event["input_commit"] != expected_origin:
+        raise ValidationFailure("initialization input_commit does not match bootstrap origin")
     if event["task_hash"] != EMPTY_TASK_HASH:
         raise ValidationFailure("initialization must use empty task hash")
 
@@ -232,6 +237,8 @@ def _validate_bootstrap(
 ) -> None:
     if state["current_state"] != "NEW" or tuple(state["allowed_next_states"]) != PHASE_A_NEXT_STATES:
         raise ValidationFailure("bootstrap state must be NEW with fixed allowed_next_states")
+    if state["base_commit"] != BOOTSTRAP_ORIGIN_COMMIT:
+        raise ValidationFailure("bootstrap base_commit must equal bootstrap origin")
     if state["current_task"] != "" or state["task_hash"] != EMPTY_TASK_HASH:
         raise ValidationFailure("bootstrap must not register an executable task")
     if state["attempt"] != 0 or state["max_attempts"] != 0 or state["last_verified_commit"] is not None:
@@ -319,6 +326,14 @@ def _validate_history(
         if index == 0:
             previous = event
             continue
+        if event["input_commit"] != state["base_commit"]:
+            raise ValidationFailure("post-initialization input_commit does not match task base_commit")
+        if index == 1 and (
+            event["event_type"] != "STATE_TRANSITION"
+            or event["start_state"] != "NEW"
+            or event["end_state"] != "PLANNED"
+        ):
+            raise ValidationFailure("first state transition must be NEW->PLANNED")
         if previous is None:
             raise AssertionError("unreachable")
         if previous["end_state"] in {"DONE", "CANCELLED"}:

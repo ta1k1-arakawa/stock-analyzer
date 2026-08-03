@@ -28,3 +28,5 @@ A human must separately choose and approve a small, non-confidential, non-invest
 ## Manual-record constraint before Phase B
 
 Manual Phase A history records may use `output_commit: null`. A Git commit cannot safely contain its own final SHA before that commit exists, and the validator must never infer or fill this value from Git history. No follow-up commit may be created merely to backfill it. Before Phase B adds any `run_once` implementation, a separate human-approved design must choose the commit-evidence format.
+
+`INITIALIZED.input_commit` is the immutable bootstrap origin: for `phase-a-bootstrap` it is `c8552e30539f062fa76c4ac77d767039b6a7903e`. `loop_state.base_commit` instead identifies the fixed task base commit. In Phase A these fields have different meanings and may differ after a task is registered. Every manual `STATE_TRANSITION` and `EVIDENCE` event after initialization must record the fixed task base commit as `input_commit`; the initialization event must never be rewritten. Phase B must separately decide how to record individual state-revision commits.

@@ -224,7 +224,10 @@ def test_phase_a_state_remains_new() -> None:
     assert state["task_hash"] == validator.EMPTY_TASK_HASH
 
 
-def _transition(start: str, end: str, index: int, task_hash: str, *, gate: bool = False) -> dict:
+def _transition(
+    start: str, end: str, index: int, task_hash: str, *, gate: bool = False,
+    input_commit: str = validator.BOOTSTRAP_ORIGIN_COMMIT,
+) -> dict:
     result = "NOT_RUN"
     failure_reason = None
     if end == "ACCEPTED":
@@ -237,7 +240,7 @@ def _transition(start: str, end: str, index: int, task_hash: str, *, gate: bool 
     event = {
         "run_id": f"manual-{index}", "loop_id": "phase-a-bootstrap",
         "event_type": "STATE_TRANSITION", "start_state": start, "end_state": end,
-        "input_commit": "c8552e30539f062fa76c4ac77d767039b6a7903e",
+        "input_commit": input_commit,
         "output_commit": None, "task_hash": task_hash,
         "command_summary": "manual record only", "changed_files": [], "test_results": {},
         "verification_result": result, "state_transition": {"from": start, "to": end},
@@ -265,14 +268,17 @@ def _path_to(state: str) -> list[tuple[str, str]]:
         "ACCEPTED": [("NEW", "PLANNED"), ("PLANNED", "READY"), ("READY", "IMPLEMENTING"), ("IMPLEMENTING", "VERIFYING"), ("VERIFYING", "ACCEPTED")],
         "REJECTED": [("NEW", "PLANNED"), ("PLANNED", "READY"), ("READY", "IMPLEMENTING"), ("IMPLEMENTING", "VERIFYING"), ("VERIFYING", "REJECTED")],
         "BLOCKED": [("NEW", "PLANNED"), ("PLANNED", "BLOCKED")],
-        "HUMAN_GATE": [("NEW", "HUMAN_GATE")],
-        "CANCELLED": [("NEW", "CANCELLED")],
+        "HUMAN_GATE": [("NEW", "PLANNED"), ("PLANNED", "HUMAN_GATE")],
+        "CANCELLED": [("NEW", "PLANNED"), ("PLANNED", "CANCELLED")],
         "DONE": [("NEW", "PLANNED"), ("PLANNED", "READY"), ("READY", "IMPLEMENTING"), ("IMPLEMENTING", "VERIFYING"), ("VERIFYING", "ACCEPTED"), ("ACCEPTED", "DONE")],
     }
     return paths[state]
 
 
-def _manual_root(tmp_path: Path, transitions: list[tuple[str, str]]) -> Path:
+def _manual_root(
+    tmp_path: Path, transitions: list[tuple[str, str]],
+    *, task_base: str = validator.BOOTSTRAP_ORIGIN_COMMIT,
+) -> Path:
     root = _bootstrap_copy(tmp_path)
     task = "non-confidential documentation pilot"
     task_hash = hashlib.sha256(task.encode("utf-8")).hexdigest()
@@ -283,14 +289,17 @@ def _manual_root(tmp_path: Path, transitions: list[tuple[str, str]]) -> Path:
     for name in contract["budget"]:
         contract["budget"][name] = 1
         state["budget_remaining"][name] = 1
-    state.update({"current_task": task, "task_hash": task_hash, "max_attempts": 1})
+    state.update({
+        "current_task": task, "task_hash": task_hash, "max_attempts": 1,
+        "base_commit": task_base,
+    })
     history_path = root / "loop_control" / "loop_history.jsonl"
     initial = json.loads(history_path.read_text(encoding="utf-8"))
     events = [initial]
     approvals: list[dict] = []
     for index, (start, end) in enumerate(transitions, start=1):
         gate = start == "HUMAN_GATE"
-        events.append(_transition(start, end, index, task_hash, gate=gate))
+        events.append(_transition(start, end, index, task_hash, gate=gate, input_commit=task_base))
         if gate:
             approvals.append({
                 "approval_id": "approval-gate", "loop_id": state["loop_id"], "task_hash": task_hash,
@@ -327,14 +336,100 @@ def test_manual_planned_record_validates(tmp_path: Path) -> None:
     assert result.approval_count == 0
 
 
+def test_manual_planned_record_allows_task_base_after_bootstrap_origin(tmp_path: Path) -> None:
+    task_base = "eaf0e982646885e490f12e85c0ddd67ec2f9bbb4"
+    root = _manual_root(tmp_path, [("NEW", "PLANNED")], task_base=task_base)
+    state = _read_json(root, "loop_state.json")
+    initial, planned = [
+        json.loads(line)
+        for line in (root / "loop_control" / "loop_history.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert initial["input_commit"] == validator.BOOTSTRAP_ORIGIN_COMMIT
+    assert state["base_commit"] == task_base
+    assert planned["input_commit"] == task_base
+    validator.validate(root)
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["origin_rewritten", "origin_invalid", "origin_loop", "origin_state", "origin_transition"],
+)
+def test_initialization_origin_is_immutable(tmp_path: Path, change: str) -> None:
+    root = _manual_root(tmp_path, [("NEW", "PLANNED")], task_base="eaf0e982646885e490f12e85c0ddd67ec2f9bbb4")
+    history_path = root / "loop_control" / "loop_history.jsonl"
+    events = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
+    if change == "origin_rewritten":
+        events[0]["input_commit"] = "eaf0e982646885e490f12e85c0ddd67ec2f9bbb4"
+    elif change == "origin_invalid":
+        events[0]["input_commit"] = "invalid"
+    elif change == "origin_loop":
+        events[0]["loop_id"] = "other-loop"
+    elif change == "origin_state":
+        events[0]["end_state"] = "PLANNED"
+    else:
+        events[0]["state_transition"] = {"from": "NEW", "to": "NEW"}
+    history_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    with pytest.raises(validator.ValidationFailure):
+        validator.validate(root)
+
+
+def test_post_initialization_commit_must_equal_task_base(tmp_path: Path) -> None:
+    root = _manual_root(tmp_path, [("NEW", "PLANNED")], task_base="eaf0e982646885e490f12e85c0ddd67ec2f9bbb4")
+    history_path = root / "loop_control" / "loop_history.jsonl"
+    events = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
+    events[1]["input_commit"] = validator.BOOTSTRAP_ORIGIN_COMMIT
+    history_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    with pytest.raises(validator.ValidationFailure, match="task base_commit"):
+        validator.validate(root)
+
+
+def test_post_initialization_commit_cannot_change_mid_history(tmp_path: Path) -> None:
+    task_base = "eaf0e982646885e490f12e85c0ddd67ec2f9bbb4"
+    root = _manual_root(tmp_path, [("NEW", "PLANNED"), ("PLANNED", "READY")], task_base=task_base)
+    history_path = root / "loop_control" / "loop_history.jsonl"
+    events = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
+    events[2]["input_commit"] = validator.BOOTSTRAP_ORIGIN_COMMIT
+    history_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    with pytest.raises(validator.ValidationFailure, match="task base_commit"):
+        validator.validate(root)
+
+
+@pytest.mark.parametrize("field", ["task_hash", "loop_id"])
+def test_post_initialization_task_identity_cannot_change(tmp_path: Path, field: str) -> None:
+    root = _manual_root(tmp_path, [("NEW", "PLANNED")])
+    history_path = root / "loop_control" / "loop_history.jsonl"
+    events = [json.loads(line) for line in history_path.read_text(encoding="utf-8").splitlines()]
+    events[1][field] = ("0" * 64) if field == "task_hash" else "other-loop"
+    history_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+    with pytest.raises(validator.ValidationFailure):
+        validator.validate(root)
+
+
+def test_first_post_initialization_event_must_plan(tmp_path: Path) -> None:
+    root = _manual_root(tmp_path, [("NEW", "READY")])
+    with pytest.raises(validator.ValidationFailure, match="first state transition"):
+        validator.validate(root)
+
+
+def test_bootstrap_mode_requires_matching_origin_and_base(tmp_path: Path) -> None:
+    root = _bootstrap_copy(tmp_path)
+    state = _read_json(root, "loop_state.json")
+    state["base_commit"] = "eaf0e982646885e490f12e85c0ddd67ec2f9bbb4"
+    _write_json(root, "loop_state.json", state)
+    with pytest.raises(validator.ValidationFailure, match="bootstrap base_commit"):
+        validator.validate(root)
+
+
 def test_all_static_allowed_transitions_validate(tmp_path: Path) -> None:
     checked = 0
     for source, targets in validator.STATIC_ALLOWED_TRANSITIONS.items():
         for target in targets:
+            if source == "NEW" and target != "PLANNED":
+                continue
             root = _manual_root(tmp_path / f"{source}-{target}", _path_to(source) + [(source, target)])
             validator.validate(root)
             checked += 1
-    assert checked == sum(len(targets) for targets in validator.STATIC_ALLOWED_TRANSITIONS.values())
+    assert checked == sum(len(targets) for targets in validator.STATIC_ALLOWED_TRANSITIONS.values()) - 2
 
 
 def test_human_gate_return_transition_validates(tmp_path: Path) -> None:
@@ -365,7 +460,7 @@ def test_all_forbidden_transitions_fail(tmp_path: Path) -> None:
 
 def test_history_cannot_skip_a_state(tmp_path: Path) -> None:
     root = _manual_root(tmp_path, [("NEW", "READY")])
-    with pytest.raises(validator.ValidationFailure, match="not allowed"):
+    with pytest.raises(validator.ValidationFailure, match="first state transition"):
         validator.validate(root)
 
 
