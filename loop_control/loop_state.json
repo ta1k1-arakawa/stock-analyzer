@@ -1,0 +1,19 @@
+{
+  "project_id": "loop-engineering-framework",
+  "loop_id": "phase-a-bootstrap",
+  "current_state": "NEW",
+  "allowed_next_states": ["PLANNED", "CANCELLED", "HUMAN_GATE"],
+  "base_branch": "loop-engineering-design",
+  "base_commit": "c8552e30539f062fa76c4ac77d767039b6a7903e",
+  "work_branch": "loop-engineering-phase-a",
+  "worktree_path": "C:\\taiki\\hobbies\\stock-analyzer-loop-engineering-phase-a",
+  "current_task": "",
+  "task_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "attempt": 0,
+  "max_attempts": 0,
+  "budget_remaining": {"max_agent_runs": 0, "max_retries": 0, "max_api_calls": 0, "max_download_bytes": 0, "max_changed_files": 0, "max_model_fits": 0, "max_evaluations": 0},
+  "human_gate": {"required": false, "approval_id": null, "requested_action": null, "return_state": null},
+  "last_verified_commit": null,
+  "created_at": "2026-08-03T00:00:00Z",
+  "updated_at": "2026-08-03T00:00:00Z"
+}

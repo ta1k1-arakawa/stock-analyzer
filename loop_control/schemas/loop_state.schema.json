@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["project_id", "loop_id", "current_state", "allowed_next_states", "base_branch", "base_commit", "work_branch", "worktree_path", "current_task", "task_hash", "attempt", "max_attempts", "budget_remaining", "human_gate", "last_verified_commit", "created_at", "updated_at"],
+  "properties": {
+    "project_id": {"type": "string", "minLength": 1}, "loop_id": {"type": "string", "minLength": 1}, "current_state": {"$ref": "#/$defs/state"}, "allowed_next_states": {"type": "array", "items": {"$ref": "#/$defs/state"}, "uniqueItems": true}, "base_branch": {"type": "string", "minLength": 1}, "base_commit": {"$ref": "#/$defs/commit"}, "work_branch": {"type": "string", "minLength": 1}, "worktree_path": {"type": "string", "minLength": 1}, "current_task": {"type": "string"}, "task_hash": {"$ref": "#/$defs/sha256"}, "attempt": {"type": "integer", "minimum": 0}, "max_attempts": {"type": "integer", "minimum": 0}, "budget_remaining": {"$ref": "#/$defs/budget"}, "human_gate": {"$ref": "#/$defs/humanGate"}, "last_verified_commit": {"anyOf": [{"$ref": "#/$defs/commit"}, {"type": "null"}]}, "created_at": {"type": "string", "format": "date-time"}, "updated_at": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {
+    "state": {"type": "string", "enum": ["NEW", "PLANNED", "READY", "IMPLEMENTING", "VERIFYING", "RETRY_ALLOWED", "HUMAN_GATE", "ACCEPTED", "REJECTED", "BLOCKED", "CANCELLED", "DONE"]}, "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "budget": {"type": "object", "required": ["max_agent_runs", "max_retries", "max_api_calls", "max_download_bytes", "max_changed_files", "max_model_fits", "max_evaluations"], "properties": {"max_agent_runs": {"type": "integer", "minimum": 0}, "max_retries": {"type": "integer", "minimum": 0}, "max_api_calls": {"type": "integer", "minimum": 0}, "max_download_bytes": {"type": "integer", "minimum": 0}, "max_changed_files": {"type": "integer", "minimum": 0}, "max_model_fits": {"type": "integer", "minimum": 0}, "max_evaluations": {"type": "integer", "minimum": 0}}, "additionalProperties": false},
+    "humanGate": {"type": "object", "required": ["required", "approval_id", "requested_action", "return_state"], "properties": {"required": {"type": "boolean"}, "approval_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}, "requested_action": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}, "return_state": {"anyOf": [{"$ref": "#/$defs/state"}, {"type": "null"}]}}, "additionalProperties": false}
+  },
+  "additionalProperties": false
+}

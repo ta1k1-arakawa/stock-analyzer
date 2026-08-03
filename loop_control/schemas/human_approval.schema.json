@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["approval_id", "loop_id", "task_hash", "approved_action", "approver_id", "approved_at", "expires_at", "used", "used_at", "permitted_return_state", "corresponding_commit"],
+  "properties": {
+    "approval_id": {"type": "string", "minLength": 1}, "loop_id": {"type": "string", "minLength": 1}, "task_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "approved_action": {"type": "string", "minLength": 1}, "approver_id": {"type": "string", "minLength": 1}, "approved_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"}, "used": {"type": "boolean"}, "used_at": {"anyOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]}, "permitted_return_state": {"type": "string", "enum": ["NEW", "PLANNED", "READY", "IMPLEMENTING", "VERIFYING", "RETRY_ALLOWED", "HUMAN_GATE", "ACCEPTED", "REJECTED", "BLOCKED", "CANCELLED", "DONE"]}, "corresponding_commit": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "null"}]}
+  },
+  "additionalProperties": false
+}

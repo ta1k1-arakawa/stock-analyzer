@@ -1,0 +1,16 @@
+{
+  "contract_version": 1,
+  "active": false,
+  "task_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "metrics": [],
+  "pass_conditions": ["schema_valid", "cross_file_hashes_consistent", "stock_research_remains_closed", "no_automation_present"],
+  "failure_conditions": ["unknown_state", "invalid_transition", "task_hash_mismatch", "secret_detected", "stock_research_reopened", "runner_or_scheduler_added", "unexpected_network", "unexpected_git_ref_change"],
+  "data_boundary": {"data_use": "none"},
+  "prohibited_periods": [],
+  "allowed_network_hosts": [],
+  "allowed_files": ["loop_control/LOOP_SPEC.md", "loop_control/loop_state.json", "loop_control/evaluation_contract.json", "loop_control/loop_history.jsonl", "loop_control/human_approvals.jsonl", "loop_control/PHASE_A_MANUAL_CHECKLIST.md", "loop_control/schemas/loop_state.schema.json", "loop_control/schemas/evaluation_contract.schema.json", "loop_control/schemas/loop_history_event.schema.json", "loop_control/schemas/human_approval.schema.json", "scripts/validate_loop_contracts.py", "tests/test_loop_contracts.py"],
+  "forbidden_files": ["models/**", "data/**", "raw_data/**", ".github/workflows/**", "existing stock evaluation results", "shadow-related files", "files containing API keys or secrets"],
+  "required_tests": ["validator", "pytest", "unittest", "git diff --check"],
+  "determinism": {"runs": 2, "summary_hashes_must_match": true},
+  "budget": {"max_agent_runs": 0, "max_retries": 0, "max_api_calls": 0, "max_download_bytes": 0, "max_changed_files": 0, "max_model_fits": 0, "max_evaluations": 0}
+}

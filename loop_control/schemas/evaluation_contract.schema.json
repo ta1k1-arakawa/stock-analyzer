@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["contract_version", "active", "task_hash", "metrics", "pass_conditions", "failure_conditions", "data_boundary", "prohibited_periods", "allowed_network_hosts", "allowed_files", "forbidden_files", "required_tests", "determinism", "budget"],
+  "properties": {
+    "contract_version": {"type": "integer", "minimum": 1}, "active": {"type": "boolean"}, "task_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "metrics": {"type": "array"}, "pass_conditions": {"type": "array", "items": {"type": "string"}}, "failure_conditions": {"type": "array", "items": {"type": "string"}}, "data_boundary": {"type": "object", "additionalProperties": true}, "prohibited_periods": {"type": "array", "items": {"type": "string"}}, "allowed_network_hosts": {"type": "array", "items": {"type": "string"}}, "allowed_files": {"type": "array", "items": {"type": "string"}}, "forbidden_files": {"type": "array", "items": {"type": "string"}}, "required_tests": {"type": "array", "items": {"type": "string"}}, "determinism": {"type": "object", "required": ["runs", "summary_hashes_must_match"], "properties": {"runs": {"type": "integer", "minimum": 1}, "summary_hashes_must_match": {"type": "boolean"}}, "additionalProperties": false}, "budget": {"$ref": "#/$defs/budget"}
+  },
+  "$defs": {"budget": {"type": "object", "required": ["max_agent_runs", "max_retries", "max_api_calls", "max_download_bytes", "max_changed_files", "max_model_fits", "max_evaluations"], "properties": {"max_agent_runs": {"type": "integer", "minimum": 0}, "max_retries": {"type": "integer", "minimum": 0}, "max_api_calls": {"type": "integer", "minimum": 0}, "max_download_bytes": {"type": "integer", "minimum": 0}, "max_changed_files": {"type": "integer", "minimum": 0}, "max_model_fits": {"type": "integer", "minimum": 0}, "max_evaluations": {"type": "integer", "minimum": 0}}, "additionalProperties": false}},
+  "additionalProperties": false
+}
