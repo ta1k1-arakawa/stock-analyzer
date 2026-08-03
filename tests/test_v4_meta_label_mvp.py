@@ -3,6 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+import subprocess
+import sys
+from pathlib import Path
 
 from src.v4_meta_label_mvp import (
     FEATURE_COLUMNS, add_execution_labels, build_feature_frame, prepare_price_frame,
@@ -111,3 +114,54 @@ def test_price_adapter_exposes_adjusted_ohlc_and_rejects_2020():
     price.index = pd.DatetimeIndex(["2020-01-01", "2020-01-02"])
     with pytest.raises(ValueError, match="PROHIBITED_V4"):
         validate_v4_ohlcv(price)
+
+
+def trend_frame(slope: float, volume: float = 100_000.0, n: int = 600) -> pd.DataFrame:
+    result = raw_frame(n)
+    close = 1_000.0 + np.arange(n, dtype=float) * slope
+    result[["Open", "Close", "Adj Close"]] = np.repeat(close[:, None], 3, axis=1)
+    result["High"], result["Low"], result["Volume"] = close + 2, close - 2, volume
+    return result
+
+
+def test_history_insufficient_ticker_is_excluded_from_momentum_rank_population():
+    long = trend_frame(2.0)
+    short = trend_frame(10.0, n=260); short.index = pd.date_range("2016-01-01", periods=260, freq="B")
+    features = build_feature_frame({"1111": long, "2222": short}, universe("1111", "2222"))
+    rows = features.loc[features.signal_date == pd.Timestamp("2016-06-01")].set_index("ticker")
+    assert rows.loc["1111", "momentum_20d_percentile_rank"] == 1.0
+    assert pd.isna(rows.loc["2222", "momentum_20d_percentile_rank"])
+
+
+def test_illiquid_ticker_is_excluded_from_rank_and_cross_section_median_population():
+    high_a, high_b, low = trend_frame(1.0), trend_frame(3.0), trend_frame(100.0, volume=1_000.0)
+    features = build_feature_frame({"1111": high_a, "2222": high_b, "3333": low}, universe("1111", "2222", "3333"))
+    rows = features.loc[features.signal_date == features.signal_date.max()].set_index("ticker")
+    expected_median = (rows.loc["1111", "return_20d"] + rows.loc["2222", "return_20d"]) / 2
+    assert pd.isna(rows.loc["3333", "momentum_20d_percentile_rank"])
+    assert rows.loc["1111", "cross_section_median_return_20d"] == pytest.approx(expected_median)
+
+
+def test_only_eligible_tickers_have_percentile_rank_between_zero_and_one():
+    prices = {"1111": trend_frame(1.0), "2222": trend_frame(3.0), "3333": trend_frame(100.0, volume=1_000.0)}
+    features = build_feature_frame(prices, universe("1111", "2222", "3333"))
+    eligible_ranks = features.loc[features.eligible, "momentum_20d_percentile_rank"]
+    assert not eligible_ranks.empty and eligible_ranks.between(0, 1).all()
+    assert features.loc[~features.eligible, "momentum_20d_percentile_rank"].isna().all()
+
+
+def test_cross_section_eligible_count_equals_preliminary_eligible_population():
+    prices = {"1111": trend_frame(1.0), "2222": trend_frame(3.0), "3333": trend_frame(100.0, volume=1_000.0)}
+    features = build_feature_frame(prices, universe("1111", "2222", "3333"))
+    rows = features.loc[features.signal_date == features.signal_date.max()]
+    assert rows.loc[rows.eligible, "cross_section_eligible_count"].iloc[0] == int(rows.eligible.sum()) == 2
+
+
+def test_synthetic_smoke_test_runs_features_labels_and_candidates():
+    root = Path(__file__).parents[1]
+    result = subprocess.run(
+        [sys.executable, "scripts/run_v4_meta_label_mvp.py", "--synthetic-smoke-test"],
+        cwd=root, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "synthetic smoke test passed" in result.stdout

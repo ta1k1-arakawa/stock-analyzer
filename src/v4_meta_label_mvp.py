@@ -31,6 +31,11 @@ FEATURE_COLUMNS = (
     "cross_section_median_return_20d", "cross_section_breadth_above_ma20",
     "cross_section_median_volatility_20d", "cross_section_eligible_count",
 )
+PRELIMINARY_STOCK_FEATURE_COLUMNS = (
+    "return_5d", "return_20d", "return_60d", "volatility_20d",
+    "volume_ratio_5d_20d", "close_to_ma20", "close_to_ma60",
+    "high_low_range_20d", "required_cash_ratio",
+)
 
 
 def load_fixed_universe(path: str | Path = "V4_UNIVERSE.csv") -> pd.DataFrame:
@@ -132,20 +137,28 @@ def build_feature_frame(prices: Mapping[str, pd.DataFrame], universe: pd.DataFra
     if not parts:
         return pd.DataFrame(columns=["signal_date", "ticker", "industry", "market", *FEATURE_COLUMNS])
     all_rows = pd.concat(parts, ignore_index=True)
-    # Cross-sectional eligibility intentionally uses only information available on the signal date.
-    past_ok = ((all_rows["History_Count"] >= 252) & (all_rows["median_turnover_60d"] >= 100_000_000) &
-               (all_rows["median_volume_60d"] >= 50_000) & (all_rows["required_cash_ratio"] <= 1))
-    grouped = all_rows.groupby("signal_date", sort=False)
-    all_rows["momentum_20d_percentile_rank"] = grouped["return_20d"].rank(pct=True, method="average")
-    eligible_returns = all_rows["return_20d"].where(past_ok)
+    # This is the complete causal population for every cross-sectional feature.
+    # In particular, incomplete-history or illiquid rows never influence a rank
+    # or aggregate observed by a preliminary-eligible ticker.
+    stock_values = all_rows.loc[:, PRELIMINARY_STOCK_FEATURE_COLUMNS].apply(pd.to_numeric, errors="coerce")
+    preliminary_eligible = (
+        (all_rows["History_Count"] >= 252)
+        & (all_rows["median_turnover_60d"] >= 100_000_000)
+        & (all_rows["median_volume_60d"] >= 50_000)
+        & (all_rows["required_cash_ratio"] <= 1)
+        & np.isfinite(stock_values.to_numpy(dtype=float)).all(axis=1)
+    )
+    eligible_returns = all_rows["return_20d"].where(preliminary_eligible)
+    all_rows["momentum_20d_percentile_rank"] = eligible_returns.groupby(all_rows["signal_date"]).rank(pct=True, method="average")
     all_rows["cross_section_median_return_20d"] = eligible_returns.groupby(all_rows["signal_date"]).transform("median")
-    all_rows["relative_momentum_20d"] = all_rows["return_20d"] - all_rows["cross_section_median_return_20d"]
-    all_rows["cross_section_breadth_above_ma20"] = all_rows["above_ma20"].where(past_ok).groupby(all_rows["signal_date"]).transform("mean")
-    all_rows["cross_section_median_volatility_20d"] = all_rows["volatility_20d"].where(past_ok).groupby(all_rows["signal_date"]).transform("median")
-    all_rows["cross_section_eligible_count"] = past_ok.astype(int).groupby(all_rows["signal_date"]).transform("sum")
+    all_rows["relative_momentum_20d"] = (all_rows["return_20d"] - all_rows["cross_section_median_return_20d"]).where(preliminary_eligible)
+    all_rows["cross_section_breadth_above_ma20"] = all_rows["above_ma20"].where(preliminary_eligible).groupby(all_rows["signal_date"]).transform("mean")
+    all_rows["cross_section_median_volatility_20d"] = all_rows["volatility_20d"].where(preliminary_eligible).groupby(all_rows["signal_date"]).transform("median")
+    all_rows["cross_section_eligible_count"] = preliminary_eligible.astype(int).groupby(all_rows["signal_date"]).transform("sum")
+    all_rows.loc[~preliminary_eligible, [column for column in FEATURE_COLUMNS if column not in PRELIMINARY_STOCK_FEATURE_COLUMNS]] = np.nan
     feature_values = all_rows.loc[:, FEATURE_COLUMNS].apply(pd.to_numeric, errors="coerce")
     all_rows.loc[:, FEATURE_COLUMNS] = feature_values
-    all_rows["eligible"] = past_ok & np.isfinite(feature_values.to_numpy(dtype=float)).all(axis=1)
+    all_rows["eligible"] = preliminary_eligible & np.isfinite(feature_values.to_numpy(dtype=float)).all(axis=1)
     return all_rows.loc[(all_rows["signal_date"] >= SIGNAL_FROM) & (all_rows["signal_date"] <= SIGNAL_TO)].reset_index(drop=True)
 
 
@@ -195,3 +208,25 @@ def select_daily_candidates(labelled: pd.DataFrame) -> pd.DataFrame:
             chosen["purchase_status"] = "INSUFFICIENT_CASH" if float(chosen["EntryPrice"]) * 100 > 300_000 else "AFFORDABLE"
             rows.append(chosen)
     return pd.DataFrame(rows)
+
+
+def run_synthetic_smoke_test(universe: pd.DataFrame) -> pd.DataFrame:
+    """Execute the entire Phase 1 transformation path with no network access."""
+    tickers = universe["ticker"].head(3).tolist()
+    dates = pd.date_range("2015-01-01", periods=400, freq="B")
+    prices: dict[str, pd.DataFrame] = {}
+    for offset, ticker in enumerate(tickers):
+        close = 1_000.0 + offset * 20 + np.arange(len(dates), dtype=float) * (1 + offset * .1)
+        prices[ticker] = pd.DataFrame({
+            "Open": close, "High": close + 3, "Low": close - 3,
+            "Close": close, "Adj Close": close, "Volume": 200_000.0,
+        }, index=dates)
+    features = build_feature_frame(prices, universe.loc[universe["ticker"].isin(tickers)].copy())
+    labelled = add_execution_labels(features, prices, {ticker: set() for ticker in tickers})
+    candidates = select_daily_candidates(labelled)
+    selected = candidates.loc[candidates["candidate_status"] == "CANDIDATE"]
+    if selected.empty or not set(FEATURE_COLUMNS).issubset(features.columns):
+        raise AssertionError("SYNTHETIC_SMOKE_FEATURE_OR_CANDIDATE_FAILURE")
+    if selected[["EntryDate", "ExitDate", "label"]].isna().any().any():
+        raise AssertionError("SYNTHETIC_SMOKE_LABEL_FAILURE")
+    return candidates

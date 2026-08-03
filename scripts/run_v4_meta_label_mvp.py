@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from src.v4_meta_label_mvp import load_fixed_universe
+from src.v4_meta_label_mvp import load_fixed_universe, run_synthetic_smoke_test
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -15,6 +15,9 @@ def main() -> int:
     if not (args.validate_only or args.synthetic_smoke_test):
         parser.error("Phase 1 is offline-only; use --validate-only or --synthetic-smoke-test")
     universe = load_fixed_universe(Path(__file__).parents[1] / "V4_UNIVERSE.csv")
+    if args.synthetic_smoke_test:
+        candidates = run_synthetic_smoke_test(universe)
+        print(f"V4 Phase 1 synthetic smoke test passed: {len(candidates)} daily rows")
     print(f"V4 Phase 1 validation passed: {len(universe)} frozen tickers; network=0 model_fits=0 backtests=0")
     return 0
 
