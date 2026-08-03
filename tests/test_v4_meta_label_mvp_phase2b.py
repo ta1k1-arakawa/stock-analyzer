@@ -110,7 +110,7 @@ def acceptance_fixture():
     baseline = {"aggregate_net_profit": 0, "max_drawdown_percent": 2, "win_rate": .4, "folds": baseline_fold, "negative_cash_count": 0, "capital_reuse_count": 0, "duplicate_order_count": 0}
     v4 = {"aggregate_net_profit": 1, "max_drawdown_percent": 1, "win_rate": .5, "closed_trades": 100, "folds": v4_fold, "negative_cash_count": 0, "capital_reuse_count": 0, "duplicate_order_count": 0, "max_stock_positive_profit_share": .3, "top5_stock_positive_profit_share": .5, "max_industry_positive_profit_share": .4}
     classification = {"overall": {"roc_auc": .6}, "folds": {str(i): {"roc_auc": .6} for i in (1,2,3)}}
-    audit = {"price_success_tickers": 300, "fold_sufficiency": {}, "baseline_closed_trades": {str(i): 40 for i in (1,2,3)}, "hashes_fixed": True, "post_2020_rows": 0, "network_hosts_allowed": True, "deterministic": True, "byte_identical": True, "model_acceptance_rate": .5}
+    audit = {"price_success_tickers": 300, "fold_sufficiency": {str(i): {"reasons": []} for i in (1,2,3)}, "baseline_closed_trades": {str(i): 40 for i in (1,2,3)}, "hashes_fixed": True, "post_2020_rows": 0, "network_hosts_allowed": True, "deterministic": True, "byte_identical": True, "model_acceptance_rate": .5}
     return baseline, v4, classification, audit
 
 

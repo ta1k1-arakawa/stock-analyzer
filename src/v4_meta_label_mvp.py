@@ -422,19 +422,22 @@ def _portfolio_record(row: Mapping[str, Any], strategy: str, industry: str, stat
             "label": int(row["label"]) if "label" in row else None,
             "realized_net_return_percent": float(row["realized_net_return_percent"]), "probability": float(row["probability"]),
             "model_decision": row["decision"], "portfolio_status": status, "skip_reason": skip,
-            "cash_before": cash_before, "cash_after_entry": cash_after_entry, "cash_after_exit": cash_after_exit}
+            "cash_before": cash_before, "cash_after_entry": cash_after_entry, "cash_after_exit": cash_after_exit,
+            **{column: float(row[column]) for column in FEATURE_COLUMNS}}
 
 
-def _execute_fixed_lot(opportunities: pd.DataFrame, strategy: str, industry_map: Mapping[str, str], accept_only: bool) -> tuple[pd.DataFrame, pd.DataFrame]:
-    orders, ledgers = [], []
+def _execute_fixed_lot(opportunities: pd.DataFrame, strategy: str, industry_map: Mapping[str, str], accept_only: bool) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    orders, ledgers, events = [], [], []
     for fold, group in opportunities.groupby("fold", sort=True):
-        cash, pending, position = PORTFOLIO_STARTING_CASH, 0.0, None
+        cash, pending, position, sequence = PORTFOLIO_STARTING_CASH, 0.0, None, 0
         initial = {"fold": int(fold), "strategy": strategy, "date": pd.Timestamp(group["EntryDate"].min()) - pd.Timedelta(days=1), "available_cash": cash, "pending_cash": 0.0, "locked_entry_capital": 0.0, "open_positions": 0, "equity": cash}
         ledgers.append(initial)
         entries = {date: frame.sort_values(["signal_date", "ticker"], kind="mergesort") for date, frame in group.groupby("EntryDate", sort=True)}
         dates = sorted(set(group["EntryDate"]) | set(group["ExitDate"]))
         for date in dates:
+            before_cash, before_pending = cash, pending
             cash += pending; pending = 0.0
+            events.append({"fold": int(fold), "strategy": strategy, "date": date, "sequence": sequence, "event_type": "PRIOR_PENDING_RELEASE", "ticker": None, "signal_date": pd.NaT, "available_cash_before": before_cash, "available_cash_after": cash, "pending_cash_before": before_pending, "pending_cash_after": pending, "amount": before_pending}); sequence += 1
             for _, row in entries.get(date, pd.DataFrame()).iterrows():
                 industry = industry_map.get(str(row["ticker"]), "MISSING")
                 before = cash
@@ -450,11 +453,14 @@ def _execute_fixed_lot(opportunities: pd.DataFrame, strategy: str, industry_map:
                     orders.append(_portfolio_record(row, strategy, industry, "SKIPPED", "INSUFFICIENT_CASH", before, cash, cash)); continue
                 cash -= cost
                 position = row.to_dict()
+                events.append({"fold": int(fold), "strategy": strategy, "date": date, "sequence": sequence, "event_type": "ENTRY_FILLED", "ticker": str(row["ticker"]), "signal_date": row["signal_date"], "available_cash_before": before, "available_cash_after": cash, "pending_cash_before": pending, "pending_cash_after": pending, "amount": cost}); sequence += 1
                 record = _portfolio_record(row, strategy, industry, "FILLED", None, before, cash, cash)
                 orders.append(record)
             if position is not None and pd.Timestamp(position["ExitDate"]) == date:
                 proceeds = float(position["ExitPrice"]) * PORTFOLIO_QUANTITY
+                before_pending = pending
                 pending += proceeds
+                events.append({"fold": int(fold), "strategy": strategy, "date": date, "sequence": sequence, "event_type": "EXIT_TO_PENDING", "ticker": str(position["ticker"]), "signal_date": position["signal_date"], "available_cash_before": cash, "available_cash_after": cash, "pending_cash_before": before_pending, "pending_cash_after": pending, "amount": proceeds}); sequence += 1
                 for record in reversed(orders):
                     if record["portfolio_status"] == "FILLED" and record["fold"] == fold and record["signal_date"] == position["signal_date"] and record["ticker"] == position["ticker"]:
                         record["cash_after_exit"] = cash
@@ -463,24 +469,63 @@ def _execute_fixed_lot(opportunities: pd.DataFrame, strategy: str, industry_map:
             locked = float(position["EntryPrice"]) * PORTFOLIO_QUANTITY if position is not None else 0.0
             ledgers.append({"fold": int(fold), "strategy": strategy, "date": date, "available_cash": cash, "pending_cash": pending, "locked_entry_capital": locked, "open_positions": int(position is not None), "equity": cash + pending + locked})
             if cash < -1e-8: raise AssertionError("NEGATIVE_CASH")
-    return pd.DataFrame(orders), pd.DataFrame(ledgers)
+    return pd.DataFrame(orders), pd.DataFrame(ledgers), pd.DataFrame(events)
 
 
-def run_baseline_portfolio(oof: pd.DataFrame, universe: pd.DataFrame | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_baseline_portfolio(oof: pd.DataFrame, universe: pd.DataFrame | None = None, return_events: bool = False) -> tuple[pd.DataFrame, pd.DataFrame] | tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     valid = validate_portfolio_oof(oof)
     industries = {} if universe is None else universe.set_index("ticker")["industry"].astype(str).to_dict()
-    return _execute_fixed_lot(valid, "BASELINE", industries, False)
+    orders, ledger, events = _execute_fixed_lot(valid, "BASELINE", industries, False)
+    orders.attrs["event_ledger"] = events
+    return (orders, ledger, events) if return_events else (orders, ledger)
 
 
-def run_v4_portfolio(baseline_orders: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def run_v4_portfolio(baseline_orders: pd.DataFrame, return_events: bool = False) -> tuple[pd.DataFrame, pd.DataFrame] | tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     opportunities = baseline_orders.loc[baseline_orders["portfolio_status"] == "FILLED"].copy()
-    if opportunities.empty: return pd.DataFrame(columns=baseline_orders.columns), pd.DataFrame()
+    if opportunities.empty:
+        empty_orders, empty_ledger, empty_events = pd.DataFrame(columns=baseline_orders.columns), pd.DataFrame(), pd.DataFrame()
+        return (empty_orders, empty_ledger, empty_events) if return_events else (empty_orders, empty_ledger)
     opportunities["decision"] = opportunities["model_decision"]
     industries = opportunities.set_index("ticker")["industry"].astype(str).to_dict()
-    return _execute_fixed_lot(opportunities, "V4", industries, True)
+    orders, ledger, events = _execute_fixed_lot(opportunities, "V4", industries, True)
+    orders.attrs["event_ledger"] = events
+    return (orders, ledger, events) if return_events else (orders, ledger)
 
 
-def portfolio_metrics(orders: pd.DataFrame, ledger: pd.DataFrame) -> dict[str, Any]:
+def cash_safety_audit(events: pd.DataFrame) -> dict[str, int]:
+    """Mechanically derive cash-safety counters from the ordered cash event ledger."""
+    required = {"fold", "date", "sequence", "event_type", "available_cash_before", "available_cash_after", "pending_cash_before", "pending_cash_after", "amount", "ticker", "signal_date"}
+    if not required.issubset(events.columns):
+        raise ValueError("CASH_EVENT_SCHEMA_MISSING")
+    work = events.sort_values(["fold", "date", "sequence"], kind="mergesort")
+    negative = int(((work["available_cash_before"] < -1e-8) | (work["available_cash_after"] < -1e-8)).sum())
+    violations = 0
+    for (_, _), day in work.groupby(["fold", "date"], sort=False):
+        exits_seen = False
+        for event in day.itertuples():
+            if event.event_type == "EXIT_TO_PENDING":
+                exits_seen = True
+                if abs(float(event.available_cash_after) - float(event.available_cash_before)) > 1e-8: violations += 1
+            elif event.event_type == "ENTRY_FILLED":
+                if float(event.available_cash_before) + 1e-8 < float(event.amount): violations += 1
+                if exits_seen: violations += 1
+                if abs(float(event.pending_cash_after) - float(event.pending_cash_before)) > 1e-8: violations += 1
+    entries = work.loc[work["event_type"] == "ENTRY_FILLED"]
+    duplicate = int(entries.duplicated(["fold", "ticker", "signal_date"]).sum())
+    return {"negative_cash_count": negative, "capital_reuse_count": violations, "duplicate_order_count": duplicate}
+
+
+def baseline_filled_acceptance_evidence(baseline_orders: pd.DataFrame) -> dict[str, Any]:
+    """Acceptance denominator is exactly the fixed Baseline FILLED opportunity set."""
+    filled = baseline_orders.loc[baseline_orders["portfolio_status"] == "FILLED"]
+    if filled.empty:
+        return {"status": "BLOCKED", "reason": "BASELINE_FILLED_OPPORTUNITIES_EMPTY", "baseline_filled_opportunity_count": 0, "model_acceptance_count": 0, "model_abstain_count": 0, "model_acceptance_rate": None}
+    accepted = int(filled["model_decision"].eq("ACCEPT").sum())
+    count = int(len(filled))
+    return {"status": "OK", "baseline_filled_opportunity_count": count, "model_acceptance_count": accepted, "model_abstain_count": count - accepted, "model_acceptance_rate": accepted / count}
+
+
+def portfolio_metrics(orders: pd.DataFrame, ledger: pd.DataFrame, events: pd.DataFrame | None = None) -> dict[str, Any]:
     filled = orders.loc[orders["portfolio_status"] == "FILLED"].copy()
     profit = float(filled["realized_net_profit_yen"].sum()) if len(filled) else 0.0
     equity = ledger["equity"] if len(ledger) else pd.Series([PORTFOLIO_STARTING_CASH])
@@ -491,11 +536,13 @@ def portfolio_metrics(orders: pd.DataFrame, ledger: pd.DataFrame) -> dict[str, A
     denominator = float(positives["realized_net_profit_yen"].sum())
     by_ticker = positives.groupby("ticker")["realized_net_profit_yen"].sum() if len(positives) else pd.Series(dtype=float)
     by_industry = positives.groupby("industry")["realized_net_profit_yen"].sum() if len(positives) else pd.Series(dtype=float)
+    event_frame = events if events is not None else orders.attrs.get("event_ledger", pd.DataFrame())
+    safety = cash_safety_audit(event_frame) if len(event_frame) else {"negative_cash_count": 0, "capital_reuse_count": 0, "duplicate_order_count": 0}
     return {"net_profit": profit, "ending_equity": PORTFOLIO_STARTING_CASH + profit, "max_drawdown_percent": float(drawdown.max()), "closed_trades": int(len(filled)),
             "win_rate": float((filled["realized_net_profit_yen"] > 0).mean()) if len(filled) else 0.0, "monthly_win_rate": float((monthly > 0).mean()) if len(monthly) else 0.0,
             "yearly_net_profit": {str(key): float(value) for key, value in yearly.items()}, "insufficient_cash_count": int(orders["skip_reason"].eq("INSUFFICIENT_CASH").sum()),
             "stop_count": int((filled["ExitReason"] == "STOP").sum()), "gap_stop_count": int((filled["ExitReason"] == "GAP_STOP").sum()), "time_count": int((filled["ExitReason"] == "TIME").sum()),
-            "negative_cash_count": int((ledger["available_cash"] < -1e-8).sum()) if len(ledger) else 0, "capital_reuse_count": 0, "duplicate_order_count": int(filled.duplicated(["fold", "signal_date", "ticker"]).sum()),
+            **safety,
             "model_acceptance_count": int(orders["model_decision"].eq("ACCEPT").sum()), "model_abstain_count": int(orders["model_decision"].eq("ABSTAIN").sum()),
             "model_acceptance_rate": float(orders["model_decision"].eq("ACCEPT").mean()) if len(orders) else 0.0,
             "accept_insufficient_cash_count": int(((orders["model_decision"] == "ACCEPT") & (orders["skip_reason"] == "INSUFFICIENT_CASH")).sum()),
@@ -503,10 +550,11 @@ def portfolio_metrics(orders: pd.DataFrame, ledger: pd.DataFrame) -> dict[str, A
             "max_industry_positive_profit_share": float(by_industry.max() / denominator) if denominator else 0.0}
 
 
-def aggregate_portfolio_metrics(orders: pd.DataFrame, ledger: pd.DataFrame) -> dict[str, Any]:
-    folds = {str(fold): portfolio_metrics(orders.loc[orders["fold"] == fold], ledger.loc[ledger["fold"] == fold]) for fold in (1, 2, 3)}
+def aggregate_portfolio_metrics(orders: pd.DataFrame, ledger: pd.DataFrame, events: pd.DataFrame | None = None) -> dict[str, Any]:
+    event_frame = events if events is not None else orders.attrs.get("event_ledger", pd.DataFrame())
+    folds = {str(fold): portfolio_metrics(orders.loc[orders["fold"] == fold], ledger.loc[ledger["fold"] == fold], event_frame.loc[event_frame["fold"] == fold] if len(event_frame) else None) for fold in (1, 2, 3)}
     aggregate_profit = sum(item["net_profit"] for item in folds.values())
-    overall = portfolio_metrics(orders, ledger)
+    overall = portfolio_metrics(orders, ledger, event_frame if len(event_frame) else None)
     overall.update({"aggregate_net_profit": aggregate_profit, "aggregate_ending_equity_equivalent": PORTFOLIO_STARTING_CASH + aggregate_profit,
                     "max_drawdown_percent": max((item["max_drawdown_percent"] for item in folds.values()), default=0.0), "folds": folds})
     return overall
@@ -523,15 +571,29 @@ def baseline_filled_classification_metrics(baseline_orders: pd.DataFrame) -> dic
 def evaluate_blocked_conditions(evidence: Mapping[str, Any]) -> dict[str, Any]:
     """Evaluate every preregistered blocker; callers inject audit evidence in formal runs."""
     reasons: list[str] = []
-    if int(evidence.get("price_success_tickers", 0)) < 150: reasons.append("PRICE_SUCCESS_TICKERS_LT_150")
-    for fold, status in evidence.get("fold_sufficiency", {}).items():
-        for reason in status.get("reasons", []): reasons.append(f"FOLD_{fold}_{reason}")
-    for fold, count in evidence.get("baseline_closed_trades", {}).items():
-        if int(count) < 40: reasons.append(f"FOLD_{fold}_BASELINE_CLOSED_TRADES_LT_40")
-    if not bool(evidence.get("hashes_fixed", False)): reasons.append("REQUIRED_HASH_NOT_FIXED")
-    if int(evidence.get("post_2020_rows", 0)) > 0: reasons.append("POST_2020_ROWS_DETECTED")
-    if not bool(evidence.get("network_hosts_allowed", False)): reasons.append("PROHIBITED_NETWORK_HOST_DETECTED")
-    if not bool(evidence.get("deterministic", False)): reasons.append("DETERMINISM_NOT_CONFIRMED")
+    price = evidence.get("price_success_tickers")
+    if not isinstance(price, int): reasons.append("PRICE_SUCCESS_TICKERS_EVIDENCE_MISSING_OR_INVALID")
+    elif price < 150: reasons.append("PRICE_SUCCESS_TICKERS_LT_150")
+    sufficiency, closed = evidence.get("fold_sufficiency"), evidence.get("baseline_closed_trades")
+    if not isinstance(sufficiency, Mapping): reasons.append("FOLD_SUFFICIENCY_EVIDENCE_MISSING_OR_INVALID"); sufficiency = {}
+    if not isinstance(closed, Mapping): reasons.append("BASELINE_CLOSED_TRADES_EVIDENCE_MISSING_OR_INVALID"); closed = {}
+    for fold in (1, 2, 3):
+        key = str(fold)
+        status = sufficiency.get(key, sufficiency.get(fold))
+        if not isinstance(status, Mapping) or not isinstance(status.get("reasons"), list): reasons.append(f"FOLD_{fold}_SUFFICIENCY_EVIDENCE_MISSING")
+        else:
+            for reason in status["reasons"]: reasons.append(f"FOLD_{fold}_{reason}")
+        count = closed.get(key, closed.get(fold))
+        if not isinstance(count, int): reasons.append(f"FOLD_{fold}_BASELINE_CLOSED_TRADES_EVIDENCE_MISSING")
+        elif count < 40: reasons.append(f"FOLD_{fold}_BASELINE_CLOSED_TRADES_LT_40")
+    for key, reason in (("hashes_fixed", "REQUIRED_HASH_EVIDENCE_MISSING_OR_INVALID"), ("network_hosts_allowed", "NETWORK_HOST_EVIDENCE_MISSING_OR_INVALID"), ("deterministic", "DETERMINISM_EVIDENCE_MISSING_OR_INVALID")):
+        if not isinstance(evidence.get(key), bool): reasons.append(reason)
+    if evidence.get("hashes_fixed") is False: reasons.append("REQUIRED_HASH_NOT_FIXED")
+    post = evidence.get("post_2020_rows")
+    if not isinstance(post, int): reasons.append("POST_2020_ROWS_EVIDENCE_MISSING_OR_INVALID")
+    elif post > 0: reasons.append("POST_2020_ROWS_DETECTED")
+    if evidence.get("network_hosts_allowed") is False: reasons.append("PROHIBITED_NETWORK_HOST_DETECTED")
+    if evidence.get("deterministic") is False: reasons.append("DETERMINISM_NOT_CONFIRMED")
     return {"status": "FREE_META_LABEL_PROTOTYPE_BLOCKED" if reasons else "CLEAR", "reasons": reasons}
 
 
@@ -548,20 +610,20 @@ def evaluate_acceptance_conditions(baseline: Mapping[str, Any], v4: Mapping[str,
         ("aggregate_net_profit_beats_baseline", v4["aggregate_net_profit"] > baseline["aggregate_net_profit"], v4["aggregate_net_profit"], f"> {baseline['aggregate_net_profit']}"),
         ("aggregate_net_profit_positive", v4["aggregate_net_profit"] > 0, v4["aggregate_net_profit"], "> 0"),
         ("max_drawdown_below_baseline", v4["max_drawdown_percent"] < baseline["max_drawdown_percent"], v4["max_drawdown_percent"], f"< {baseline['max_drawdown_percent']}"),
-        ("two_folds_profit_beat_baseline", sum(v4_folds[str(f)]["net_profit"] > base_folds[str(f)]["net_profit"] for f in (1,2,3)) >= 2, None, ">= 2 folds"),
-        ("all_folds_drawdown_not_above_baseline", all(v4_folds[str(f)]["max_drawdown_percent"] <= base_folds[str(f)]["max_drawdown_percent"] for f in (1,2,3)), None, "all folds <= baseline"),
+        ("two_folds_profit_beat_baseline", sum(v4_folds[str(f)]["net_profit"] > base_folds[str(f)]["net_profit"] for f in (1,2,3)) >= 2, {"winning_fold_count": sum(v4_folds[str(f)]["net_profit"] > base_folds[str(f)]["net_profit"] for f in (1,2,3)), "folds": {str(f): {"baseline_net_profit": base_folds[str(f)]["net_profit"], "v4_net_profit": v4_folds[str(f)]["net_profit"], "v4_beats_baseline": v4_folds[str(f)]["net_profit"] > base_folds[str(f)]["net_profit"]} for f in (1,2,3)}}, ">= 2 folds"),
+        ("all_folds_drawdown_not_above_baseline", all(v4_folds[str(f)]["max_drawdown_percent"] <= base_folds[str(f)]["max_drawdown_percent"] for f in (1,2,3)), {"passing_fold_count": sum(v4_folds[str(f)]["max_drawdown_percent"] <= base_folds[str(f)]["max_drawdown_percent"] for f in (1,2,3)), "folds": {str(f): {"baseline_max_drawdown_percent": base_folds[str(f)]["max_drawdown_percent"], "v4_max_drawdown_percent": v4_folds[str(f)]["max_drawdown_percent"]} for f in (1,2,3)}}, "all folds <= baseline"),
         ("win_rate_beats_baseline", v4["win_rate"] > baseline["win_rate"], v4["win_rate"], f"> {baseline['win_rate']}"),
         ("closed_trades_at_least_100", v4["closed_trades"] >= 100, v4["closed_trades"], ">= 100"),
         ("acceptance_rate_20_to_80_percent", .2 <= acceptance_rate <= .8, acceptance_rate, "0.20 <= rate <= 0.80"),
         ("overall_roc_auc_above_052", overall.get("roc_auc") is not None and overall.get("roc_auc") > .52, overall.get("roc_auc"), "> 0.52"),
-        ("two_folds_roc_auc_above_050", sum((fold_class[str(f)].get("roc_auc") or -np.inf) > .50 for f in (1,2,3)) >= 2, None, ">= 2 folds"),
+        ("two_folds_roc_auc_above_050", sum((fold_class[str(f)].get("roc_auc") or -np.inf) > .50 for f in (1,2,3)) >= 2, {"passing_fold_count": sum((fold_class[str(f)].get("roc_auc") or -np.inf) > .50 for f in (1,2,3)), "fold_roc_auc": {str(f): fold_class[str(f)].get("roc_auc") for f in (1,2,3)}}, ">= 2 folds"),
         ("max_stock_positive_profit_share_at_most_35_percent", v4["max_stock_positive_profit_share"] <= .35, v4["max_stock_positive_profit_share"], "<= 0.35"),
         ("top5_stock_positive_profit_share_at_most_60_percent", v4["top5_stock_positive_profit_share"] <= .60, v4["top5_stock_positive_profit_share"], "<= 0.60"),
         ("max_industry_positive_profit_share_at_most_50_percent", v4["max_industry_positive_profit_share"] <= .50, v4["max_industry_positive_profit_share"], "<= 0.50"),
-        ("no_cash_reuse_or_duplicate_orders", zero_safety, None, "all counters = 0"),
-        ("two_full_runs_byte_identical", bool(audit.get("byte_identical", False)), audit.get("byte_identical"), "True"),
+        ("no_cash_reuse_or_duplicate_orders", zero_safety, {"baseline_negative_cash_count": baseline.get("negative_cash_count"), "baseline_capital_reuse_count": baseline.get("capital_reuse_count"), "baseline_duplicate_order_count": baseline.get("duplicate_order_count"), "v4_negative_cash_count": v4.get("negative_cash_count"), "v4_capital_reuse_count": v4.get("capital_reuse_count"), "v4_duplicate_order_count": v4.get("duplicate_order_count")}, "all counters = 0"),
+        ("two_full_runs_byte_identical", isinstance(audit.get("byte_identical"), bool) and audit.get("byte_identical") is True, audit.get("byte_identical"), "True"),
         ("no_post_2020_rows", int(audit.get("post_2020_rows", 0)) == 0, audit.get("post_2020_rows", 0), "0"),
-        ("no_prohibited_network_calls", bool(audit.get("network_hosts_allowed", False)), audit.get("network_hosts_allowed"), "True"),
+        ("no_prohibited_network_calls", isinstance(audit.get("network_hosts_allowed"), bool) and audit.get("network_hosts_allowed") is True, audit.get("network_hosts_allowed"), "True"),
     ]
     conditions = [{"condition_number": index + 1, "name": name, "passed": bool(passed), "actual_value": actual, "required_value": required} for index, (name, passed, actual, required) in enumerate(specs)]
     return {"status": "FREE_META_LABEL_PROTOTYPE_PROMISING" if all(item["passed"] for item in conditions) else "FREE_META_LABEL_PROTOTYPE_NOT_PROMISING", "blocked_reasons": [], "conditions": conditions}
