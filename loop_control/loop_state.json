@@ -1,8 +1,8 @@
 {
   "project_id": "loop-engineering-framework",
   "loop_id": "phase-a-bootstrap",
-  "current_state": "IMPLEMENTING",
-  "allowed_next_states": ["VERIFYING", "BLOCKED", "CANCELLED", "HUMAN_GATE"],
+  "current_state": "VERIFYING",
+  "allowed_next_states": ["ACCEPTED", "REJECTED", "RETRY_ALLOWED", "BLOCKED", "HUMAN_GATE"],
   "base_branch": "loop-engineering-phase-a3",
   "base_commit": "59a1a392de4c38a2266e555518cee4b147eda274",
   "work_branch": "loop-engineering-pilot-1-plan-v2",
@@ -15,5 +15,5 @@
   "human_gate": {"required": false, "approval_id": null, "requested_action": null, "return_state": null},
   "last_verified_commit": null,
   "created_at": "2026-08-03T00:00:00Z",
-  "updated_at": "2026-08-03T04:29:59Z"
+  "updated_at": "2026-08-03T05:08:54Z"
 }
