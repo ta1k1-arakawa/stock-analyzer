@@ -93,3 +93,22 @@ def test_two_pass_mismatch_writes_nothing(tmp_path,monkeypatch):
 def test_formal_cli_requires_confirmation():
     from scripts.run_v5_adaptive_baseline import main
     with pytest.raises(SystemExit): main(["--evaluate-cache"])
+
+def cross_year_inputs(*, stop=False):
+    dates=pd.date_range("2017-01-02","2018-01-12",freq="B"); values=np.repeat(1000.,len(dates))
+    low=values-2
+    signal=pd.Timestamp("2017-12-29"); entry=dates[dates.get_loc(signal)+1]; exit_=dates[dates.get_loc(signal)+5]
+    if stop: low[dates.get_loc(entry)+1]=900
+    price=pd.DataFrame({"Open":values,"High":values+2,"Low":low,"Close":values,"Adj Close":values,"Volume":200_000.},index=dates)
+    row={key:np.nan for key in CANDIDATE_COLUMNS}; row.update({"fold":1,"signal_date":signal,"ticker":"1001","industry":"A","rank":1,"candidate_status":"CANDIDATE","stop_percent":.04,"entry_date":entry,"exit_date":exit_})
+    return {"1001":price},pd.DataFrame([row],columns=CANDIDATE_COLUMNS),entry,exit_
+
+def test_cross_year_time_exit_stays_in_fold1_and_is_complete():
+    p,c,entry,exit_=cross_year_inputs(); o,e=run_portfolio(c,p); f=o[o.status=="FILLED"].iloc[0]
+    assert f.fold==1 and pd.Timestamp(f.entry_date)==entry and pd.Timestamp(f.exit_date)==exit_ and f.exit_reason=="TIME"
+    assert e[e.fold==1].date.max()>=exit_ and all(pd.notna(f[k]) for k in ("exit_price","exit_proceeds","realized_net_profit_yen","realized_net_return_percent"))
+    assert e[e.fold==1].open_positions.iloc[-1]==0 and e[e.fold==2].open_positions.max()==0
+
+def test_cross_year_stop_closes_before_planned_exit():
+    p,c,entry,planned=cross_year_inputs(stop=True); o,e=run_portfolio(c,p); f=o[o.status=="FILLED"].iloc[0]
+    assert f.fold==1 and f.exit_reason=="STOP" and pd.Timestamp(f.exit_date)<planned and e[e.fold==1].open_positions.iloc[-1]==0

@@ -102,7 +102,13 @@ def run_portfolio(candidates: pd.DataFrame, prices: Mapping[str,pd.DataFrame]) -
     frames={ticker:_frame(value) for ticker,value in prices.items()}; orders=[]; equity=[]
     for fold in (1,2,3):
         cash=STARTING_CASH; pending=0.; open_:list[dict[str,Any]]=[]
-        days=sorted(set(candidates.loc[candidates.fold.eq(fold),"signal_date"]) | set(candidates.loc[candidates.fold.eq(fold),"entry_date"].dropna()) | {d for p in frames.values() for d in p.index if pd.Timestamp(FOLDS[fold-1]["test_from"])<=d<=pd.Timestamp(FOLDS[fold-1]["test_to"])})
+        fold_candidates=candidates.loc[candidates.fold.eq(fold)]
+        planned_exits=fold_candidates.loc[fold_candidates.candidate_status.eq("CANDIDATE"),"exit_date"].dropna()
+        calendar_end=max(planned_exits) if len(planned_exits) else pd.Timestamp(FOLDS[fold-1]["test_to"])
+        calendar_start=pd.Timestamp(FOLDS[fold-1]["test_from"])
+        # Fold ownership remains signal-date based; its event calendar extends
+        # through the last planned D5 exit, including earlier stop dates.
+        days=sorted({d for p in frames.values() for d in p.index if calendar_start<=d<=calendar_end})
         for day in days:
             cash+=pending; pending=0.
             # A D0 signal never locks capital or a slot.  D1 is the first entry event.
@@ -132,6 +138,10 @@ def run_portfolio(candidates: pd.DataFrame, prices: Mapping[str,pd.DataFrame]) -
             locked=sum(x["entry_cost"] for x in open_); equity.append({"fold":fold,"date":day,"available_cash":cash,"pending_cash":pending,"locked_entry_capital":locked,"open_positions":len(open_),"equity":cash+pending+locked})
             if cash < -1e-8: raise AssertionError("NEGATIVE_CASH")
             if len(open_)>MAX_OPEN_POSITIONS: raise AssertionError("MAX_POSITION_VIOLATION")
+        if open_: raise AssertionError("FOLD_OPEN_POSITION_REMAINS")
+        filled=[x for x in orders if x["fold"]==fold and x["status"]=="FILLED"]
+        required=("exit_date","exit_price","exit_proceeds","realized_net_profit_yen","realized_net_return_percent","exit_reason")
+        if any(value.get(key) is None or pd.isna(value.get(key)) for value in filled for key in required): raise AssertionError("FILLED_EXIT_FIELDS_MISSING")
     return pd.DataFrame(orders,columns=TRADE_COLUMNS),pd.DataFrame(equity,columns=EQUITY_COLUMNS)
 
 def _metrics(orders: pd.DataFrame, equity: pd.DataFrame, candidates: pd.DataFrame) -> dict[str,Any]:
