@@ -29,7 +29,8 @@ def main(argv=None) -> int:
             ticker=url.split('/').pop().split('.')[0]; base=1000+int(ticker)%100; values=[base+i*.1+(0,10,0)[i%3] for i in range(len(dates))]; ts=[int(x.timestamp()) for x in dates.tz_localize('UTC')]
             payload={'chart':{'result':[{'timestamp':ts,'indicators':{'quote':[{'open':values,'high':[x+2 for x in values],'low':[x-2 for x in values],'close':values,'volume':[200000]*len(values)}],'adjclose':[{'adjclose':values}]},'events':{'splits':{}}}],'error':None}}
             return 200,json.dumps(payload,separators=(',',':')).encode(),False
-        cache=root/'cache'; output=root/'output'; acquire_cache(cache,universe,transport,repo,sleep=lambda _:None); first=evaluate_cache(cache,output,universe,repo); second=evaluate_cache(cache,output,universe,repo)
+        universe_csv=root/'synthetic-universe.csv'; universe.to_csv(universe_csv,index=False,lineterminator='\n')
+        cache=root/'cache'; output=root/'output'; acquire_cache(cache,universe,transport,repo,sleep=lambda _:None,universe_csv_path=universe_csv); first=evaluate_cache(cache,output,universe,repo); second=evaluate_cache(cache,output,universe,repo)
         if first!=second or len(first)!=3: raise AssertionError('SYNTHETIC_PHASE3A_NONDETERMINISTIC')
         write_artifacts(output,first,repo)
         summary=json.loads(first['summary.json']); assert summary['verdict']=='FREE_META_LABEL_PROTOTYPE_BLOCKED' and 'PRICE_SUCCESS_TICKERS_LT_150' in summary['blocked_reasons']
@@ -41,7 +42,8 @@ def main(argv=None) -> int:
                 values=[1000+i for i in range(len(short_dates))]; ts=[int(x.timestamp()) for x in short_dates.tz_localize('UTC')]
                 payload={'chart':{'result':[{'timestamp':ts,'indicators':{'quote':[{'open':values,'high':[x+1 for x in values],'low':[x-1 for x in values],'close':values,'volume':[200000]*len(values)}],'adjclose':[{'adjclose':values}]},'events':{'splits':{}}}],'error':None}}
                 return 200,json.dumps(payload,separators=(',',':')).encode(),False
-            short_cache=root/'short-cache'; short_out=root/'short-output'; acquire_cache(short_cache,short_universe,short_transport,repo,sleep=lambda _:None)
+            short_universe_csv=root/'short-synthetic-universe.csv'; short_universe.to_csv(short_universe_csv,index=False,lineterminator='\n')
+            short_cache=root/'short-cache'; short_out=root/'short-output'; acquire_cache(short_cache,short_universe,short_transport,repo,sleep=lambda _:None,universe_csv_path=short_universe_csv)
             short_artifacts=run_two_pass_formal_evaluation(short_cache,short_out,short_universe,repo,{"head":"SYNTHETIC","branch":"SYNTHETIC"}); short_summary=json.loads(short_artifacts['summary.json'])
             assert short_summary['verdict']=='FREE_META_LABEL_PROTOTYPE_BLOCKED' and short_summary['not_computed_reason'] and short_artifacts['trades.csv'].count(b'\n')==1 and short_artifacts['predictions.csv'].count(b'\n')==1 and len(list(short_out.iterdir()))==3
             print('V4 Phase 3B2 synthetic smoke test passed: scenario=A fits=6; scenario=B fits=0 header-only artifacts=3')
