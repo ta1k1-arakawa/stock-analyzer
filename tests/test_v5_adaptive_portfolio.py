@@ -7,6 +7,7 @@ import pytest
 
 from src.v5_adaptive_portfolio import *
 from src.v5_adaptive_portfolio import _execution, _frame
+import src.v5_adaptive_portfolio as v5
 
 def raw(n=330, base=1000., *, low_at=None, gap_at=None):
     d=pd.date_range("2016-01-01",periods=n,freq="B"); c=base+np.arange(n,dtype=float); c[-8:]-=np.arange(8)*7
@@ -64,3 +65,31 @@ def test_empty_scenario_header_only(tmp_path):
 
 def test_writer_rejects_repo_and_schema(tmp_path):
     with pytest.raises(ValueError): atomic_write_artifacts(Path.cwd()/"bad",{},Path.cwd())
+
+def test_d0_does_not_lock_and_d1_debits_cash():
+    p,u,s=data(); c=build_candidates(p,u,s); o,e=run_portfolio(c,p); f=o[o.status=="FILLED"].iloc[0]
+    d0=e[(e.fold==f.fold)&(e.date==pd.Timestamp(f.signal_date))].iloc[0]; d1=e[(e.fold==f.fold)&(e.date==pd.Timestamp(f.entry_date))].iloc[0]
+    assert d0.available_cash==STARTING_CASH and d0.open_positions==0
+    assert d1.available_cash < STARTING_CASH and pd.Timestamp(f.entry_date)>pd.Timestamp(f.signal_date)
+
+def test_same_day_exit_still_occupies_slot_and_pending_next_day():
+    p,u,s=data(); c=build_candidates(p,u,s); _,e=run_portfolio(c,p)
+    pending=e[e.pending_cash>0]
+    if len(pending):
+        row=pending.iloc[0]; later=e[(e.fold==row.fold)&(e.date>row.date)].iloc[0]
+        assert row.pending_cash>0 and later.available_cash>=row.available_cash
+
+def test_two_pass_mismatch_writes_nothing(tmp_path,monkeypatch):
+    manifest={"payload_hash_list_sha256":FORMAL_PAYLOAD_HASH_LIST_SHA256,"universe_csv_sha256":"a","ticker_list_sha256":"b","successful_ticker_count":283,"failed_tickers":[str(i) for i in range(17)],"network_audit":[]}
+    u=pd.DataFrame({"ticker":[],"industry":[],"market":[]})
+    monkeypatch.setattr(v5,"validate_v5_formal_cache",lambda *a:(manifest,u))
+    monkeypatch.setattr(v5,"load_v5_cache",lambda *a:({}, {}, u))
+    calls=[]
+    def builder(*a):
+        calls.append(1); return {"summary.json":b"{}\n" if len(calls)==1 else b"{ }\n","trades.csv":b"x\n","candidates.csv":b"x\n","daily_equity.csv":b"x\n"}
+    with pytest.raises(ValueError,match="MISMATCH"): run_two_pass_formal_evaluation(tmp_path/"cache",tmp_path/"out",tmp_path/"u",Path.cwd(),{"branch":"v5-adaptive-portfolio-baseline","repository_commit":"x","remote_sha":"x"},loader=v5.load_v5_cache,builder=builder)
+    assert not (tmp_path/"out").exists()
+
+def test_formal_cli_requires_confirmation():
+    from scripts.run_v5_adaptive_baseline import main
+    with pytest.raises(SystemExit): main(["--evaluate-cache"])

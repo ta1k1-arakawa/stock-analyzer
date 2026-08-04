@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0,str(Path(__file__).parents[1]))
-from src.v5_adaptive_portfolio import build_artifacts, atomic_write_artifacts
+from src.v5_adaptive_portfolio import build_artifacts, atomic_write_artifacts, repository_state, run_two_pass_formal_evaluation
 
 def _prices(dates: pd.DatetimeIndex, base: float, *, stop: bool=False, gap: bool=False) -> pd.DataFrame:
     trend=base+np.arange(len(dates))*1.0
@@ -41,7 +41,11 @@ def smoke() -> None:
         shutil.rmtree(root,ignore_errors=True)
 
 def main(argv=None) -> int:
-    p=argparse.ArgumentParser(); p.add_argument("--synthetic-smoke-test",action="store_true"); a=p.parse_args(argv)
-    if not a.synthetic_smoke_test: p.error("only --synthetic-smoke-test is enabled; production evaluation is intentionally disabled")
-    smoke(); return 0
+    p=argparse.ArgumentParser(); mode=p.add_mutually_exclusive_group(required=True); mode.add_argument("--synthetic-smoke-test",action="store_true"); mode.add_argument("--evaluate-cache",action="store_true")
+    p.add_argument("--cache-dir"); p.add_argument("--output-dir"); p.add_argument("--confirmation"); a=p.parse_args(argv)
+    if a.synthetic_smoke_test: smoke(); return 0
+    if a.confirmation!="V5_A_ONE_SHOT_CACHE_EVALUATION" or not a.cache_dir or not a.output_dir: p.error("--evaluate-cache requires exact confirmation, --cache-dir, and --output-dir")
+    repo=Path(__file__).parents[1]; state=repository_state(repo)
+    artifacts=run_two_pass_formal_evaluation(Path(a.cache_dir),Path(a.output_dir),repo/"V4_UNIVERSE.csv",repo,state)
+    print("V5_FORMAL_CACHE_ONLY_EVALUATION_COMPLETE artifacts="+str(len(artifacts))); return 0
 if __name__=="__main__": raise SystemExit(main())

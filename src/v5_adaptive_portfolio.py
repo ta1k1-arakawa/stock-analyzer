@@ -5,7 +5,7 @@ evaluation is an explicit future operation; this module only consumes frames.
 """
 from __future__ import annotations
 
-import json, math, os, shutil
+import json, math, os, shutil, subprocess
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -16,11 +16,14 @@ import pandas as pd
 
 from src.v4_meta_label_mvp import (FOLDS, PRICE_FROM, PRICE_TO, SIGNAL_FROM,
     SIGNAL_TO, load_fixed_universe, parse_v4_yahoo_chart, prepare_price_frame)
+from src.v4_meta_label_formal import validate_cache_manifest
 
 STARTING_CASH=400_000.0; MAX_OPEN_POSITIONS=2; CASH_RESERVE=40_000.0
 MAX_POSITION_YEN=220_000.0; RISK_BUDGET_YEN=8_000.0; LOT_SIZE=100
 ENTRY_SLIPPAGE=.0003; EXIT_SLIPPAGE=.0003; STOP_SLIPPAGE=.001
 FUTURE_DAYS=5; MAX_CANDIDATES=20
+FORMAL_MANIFEST_SHA256="72ae3db1186f2c9c113b1bafe1d37fb74a5627ac7ceed1dfc2473a24e060de85"
+FORMAL_PAYLOAD_HASH_LIST_SHA256="5b6224682eebfd49f23d4d5ed025b81d886f9aa56b69ced87cf34c77af680ff4"
 TRADE_COLUMNS=("fold","signal_date","ticker","industry","rank","status","skip_reason","entry_date","exit_date","entry_price","exit_price","stop_price","stop_percent","quantity","entry_cost","exit_proceeds","realized_net_profit_yen","realized_net_return_percent","exit_reason","holding_days","cash_before","cash_after_entry")
 CANDIDATE_COLUMNS=("fold","signal_date","ticker","industry","rank","candidate_status","skip_reason","return_5d","return_20d","return_60d","close_to_ma20","close_to_ma60","atr14","stop_percent","entry_date","exit_date")
 EQUITY_COLUMNS=("fold","date","available_cash","pending_cash","locked_entry_capital","open_positions","equity")
@@ -99,11 +102,12 @@ def run_portfolio(candidates: pd.DataFrame, prices: Mapping[str,pd.DataFrame]) -
     frames={ticker:_frame(value) for ticker,value in prices.items()}; orders=[]; equity=[]
     for fold in (1,2,3):
         cash=STARTING_CASH; pending=0.; open_:list[dict[str,Any]]=[]
-        days=sorted(set(candidates.loc[candidates.fold.eq(fold),"signal_date"]) | {d for p in frames.values() for d in p.index if pd.Timestamp(FOLDS[fold-1]["test_from"])<=d<=pd.Timestamp(FOLDS[fold-1]["test_to"])})
+        days=sorted(set(candidates.loc[candidates.fold.eq(fold),"signal_date"]) | set(candidates.loc[candidates.fold.eq(fold),"entry_date"].dropna()) | {d for p in frames.values() for d in p.index if pd.Timestamp(FOLDS[fold-1]["test_from"])<=d<=pd.Timestamp(FOLDS[fold-1]["test_to"])})
         for day in days:
             cash+=pending; pending=0.
-            todays=candidates.loc[(candidates.fold.eq(fold))&(candidates.signal_date.eq(day))&(candidates.candidate_status.eq("CANDIDATE"))&(candidates["rank"]<=MAX_CANDIDATES)].sort_values(["rank","ticker"],kind="mergesort")
-            exited_today=False
+            # A D0 signal never locks capital or a slot.  D1 is the first entry event.
+            todays=candidates.loc[(candidates.fold.eq(fold))&(candidates.entry_date.eq(day))&(candidates.candidate_status.eq("CANDIDATE"))&(candidates["rank"]<=MAX_CANDIDATES)].sort_values(["signal_date","rank","ticker"],kind="mergesort")
+            exit_due_today=any(pd.Timestamp(x["exit_date"])==day for x in open_)
             for _,c in todays.iterrows():
                 c=c.to_dict(); same_tickers={x["ticker"] for x in open_}; same_industries={x["industry"] for x in open_}
                 if len(open_)>=MAX_OPEN_POSITIONS: orders.append(_skip(c,"MAX_OPEN_POSITIONS",cash)); continue
@@ -116,7 +120,7 @@ def run_portfolio(candidates: pd.DataFrame, prices: Mapping[str,pd.DataFrame]) -
                 spendable=min(MAX_POSITION_YEN,cash-CASH_RESERVE); capital_lots=math.floor(spendable/(execution["entry_price"]*LOT_SIZE)) if spendable>=0 else 0
                 if risk_lots<=0: orders.append(_skip(c,"RISK_BUDGET_TOO_SMALL",cash)); continue
                 if cash<=CASH_RESERVE: orders.append(_skip(c,"CASH_RESERVE",cash)); continue
-                if capital_lots<=0: orders.append(_skip(c,"SAME_DAY_PROCEEDS_UNAVAILABLE" if exited_today else "CAPITAL_LIMIT",cash)); continue
+                if capital_lots<=0: orders.append(_skip(c,"SAME_DAY_PROCEEDS_UNAVAILABLE" if exit_due_today else "CAPITAL_LIMIT",cash)); continue
                 qty=min(risk_lots,capital_lots)*LOT_SIZE; cost=qty*execution["entry_price"]
                 if cost>MAX_POSITION_YEN+1e-8: raise AssertionError("MAX_POSITION_VIOLATION")
                 before=cash; cash-=cost
@@ -124,7 +128,7 @@ def run_portfolio(candidates: pd.DataFrame, prices: Mapping[str,pd.DataFrame]) -
                 orders.append(record); open_.append(record)
             closing=sorted([x for x in open_ if pd.Timestamp(x["exit_date"])==day],key=lambda x:x["ticker"])
             for position in closing:
-                proceeds=position["quantity"]*position["exit_price"]; position["exit_proceeds"]=proceeds; position["realized_net_profit_yen"]=proceeds-position["entry_cost"]; position["realized_net_return_percent"]=(position["exit_price"]/position["entry_price"]-1)*100; pending+=proceeds; open_.remove(position); exited_today=True
+                proceeds=position["quantity"]*position["exit_price"]; position["exit_proceeds"]=proceeds; position["realized_net_profit_yen"]=proceeds-position["entry_cost"]; position["realized_net_return_percent"]=(position["exit_price"]/position["entry_price"]-1)*100; pending+=proceeds; open_.remove(position)
             locked=sum(x["entry_cost"] for x in open_); equity.append({"fold":fold,"date":day,"available_cash":cash,"pending_cash":pending,"locked_entry_capital":locked,"open_positions":len(open_),"equity":cash+pending+locked})
             if cash < -1e-8: raise AssertionError("NEGATIVE_CASH")
             if len(open_)>MAX_OPEN_POSITIONS: raise AssertionError("MAX_POSITION_VIOLATION")
@@ -176,11 +180,59 @@ def atomic_write_artifacts(output: Path, artifacts: Mapping[str,bytes], repo: Pa
     finally:
         if staging.exists(): shutil.rmtree(staging,ignore_errors=True)
 
+def validate_v5_formal_cache(cache: Path, universe_csv: Path) -> tuple[dict[str,Any],pd.DataFrame]:
+    """Fail closed by reusing V4's complete manifest/payload validator."""
+    universe=load_fixed_universe(universe_csv)
+    manifest=validate_cache_manifest(cache,universe,universe_csv)
+    manifest_bytes=(cache/"cache_manifest.json").read_bytes()
+    if sha256(manifest_bytes).hexdigest()!=FORMAL_MANIFEST_SHA256: raise ValueError("CACHE_MANIFEST_SHA256_MISMATCH")
+    if manifest.get("successful_ticker_count")!=283 or len(manifest.get("failed_tickers",[]))!=17: raise ValueError("CACHE_SUCCESS_FAILURE_COUNT_MISMATCH")
+    if manifest.get("payload_hash_list_sha256")!=FORMAL_PAYLOAD_HASH_LIST_SHA256: raise ValueError("PAYLOAD_HASH_LIST_SHA256_MISMATCH")
+    return manifest,universe
+
 def load_v5_cache(cache: Path, universe_csv: Path) -> tuple[dict[str,pd.DataFrame],dict[str,set[pd.Timestamp]],pd.DataFrame]:
-    """Read existing V4 formal cache only; call only in a future authorized run."""
-    universe=load_fixed_universe(universe_csv); manifest=json.loads((cache/"cache_manifest.json").read_text(encoding="utf-8")); prices={}; splits={}
+    """Read only a V4-validator-approved cache; no transport is available."""
+    manifest,universe=validate_v5_formal_cache(cache,universe_csv); prices={}; splits={}
     for item in manifest.get("payloads",[]):
         ticker=str(item["ticker"])
         if ticker not in set(universe.ticker): raise ValueError("CACHE_TICKER_NOT_IN_UNIVERSE")
         payload=json.loads((cache/item["relative_path"]).read_text(encoding="utf-8")); prices[ticker],splits[ticker]=parse_v4_yahoo_chart(payload)
     return prices,splits,universe
+
+def repository_state(repo: Path, branch: str="v5-adaptive-portfolio-baseline") -> dict[str,str]:
+    def git(*args: str) -> str:
+        return subprocess.run(["git","-c",f"safe.directory={repo.resolve()}",*args],cwd=repo,text=True,capture_output=True,check=True).stdout.strip()
+    try:
+        state={"branch":git("rev-parse","--abbrev-ref","HEAD"),"repository_commit":git("rev-parse","HEAD"),"remote_sha":git("rev-parse",f"origin/{branch}")}
+        dirty=git("status","--porcelain","--untracked-files=all")
+    except Exception as exc: raise ValueError("REPOSITORY_STATE_UNAVAILABLE") from exc
+    if state["branch"]!=branch: raise ValueError("BRANCH_MISMATCH")
+    if dirty: raise ValueError("WORKTREE_DIRTY")
+    if state["repository_commit"]!=state["remote_sha"]: raise ValueError("HEAD_REMOTE_MISMATCH")
+    return state
+
+def _formal_artifacts(base: Mapping[str,bytes], manifest: Mapping[str,Any], prices: Mapping[str,pd.DataFrame], state: Mapping[str,str], comparison: Mapping[str,bool]) -> dict[str,bytes]:
+    summary=json.loads(base["summary.json"])
+    network=manifest.get("network_audit",[])
+    future_rows=sum(int((frame.index>PRICE_TO).sum()) for frame in prices.values())
+    hashes={name:sha256(body).hexdigest() for name,body in base.items() if name!="summary.json"}
+    summary.update({"formal_evaluation":True,"deployment_allowed":False,"branch":state["branch"],"repository_commit":state["repository_commit"],"remote_sha":state["remote_sha"],"cache_manifest_sha256":FORMAL_MANIFEST_SHA256,"payload_hash_list_sha256":manifest["payload_hash_list_sha256"],"universe_csv_sha256":manifest["universe_csv_sha256"],"ticker_list_sha256":manifest["ticker_list_sha256"],"price_success_count":manifest["successful_ticker_count"],"price_failed_count":len(manifest["failed_tickers"]),"deterministic":all(comparison.values()),"byte_identical":all(comparison.values()),"comparison_results":dict(comparison),"artifact_sha256":hashes,"future_access_audit":{"post_2019_rows":future_rows,"status":"PASS" if future_rows==0 else "FAIL"},"network_audit":{"manifest_record_count":len(network),"successful_records":sum(x.get("success") is True for x in network),"runtime_network_access_count":0}})
+    return {**base,"summary.json":(json.dumps(summary,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False)+"\n").encode()}
+
+def run_two_pass_formal_evaluation(cache: Path, output: Path, universe_csv: Path, repo: Path, state: Mapping[str,str], *, loader=load_v5_cache, builder=build_artifacts) -> dict[str,bytes]:
+    """Two cache-only cores must match byte-for-byte before one atomic write."""
+    try: cache.resolve().relative_to(repo.resolve()); raise ValueError("CACHE_INSIDE_REPOSITORY_PROHIBITED")
+    except ValueError as exc:
+        if str(exc)=="CACHE_INSIDE_REPOSITORY_PROHIBITED": raise
+    try: output.resolve().relative_to(repo.resolve()); raise ValueError("OUTPUT_INSIDE_REPOSITORY_PROHIBITED")
+    except ValueError as exc:
+        if str(exc)=="OUTPUT_INSIDE_REPOSITORY_PROHIBITED": raise
+    if output.exists() and (output.is_file() or any(output.iterdir())): raise ValueError("OUTPUT_DIRECTORY_NONEMPTY_OR_FILE")
+    manifest,universe=validate_v5_formal_cache(cache,universe_csv)
+    p1,s1,_=loader(cache,universe_csv); p2,s2,_=loader(cache,universe_csv)
+    first=builder(p1,universe,s1,state["repository_commit"]); second=builder(p2,universe,s2,state["repository_commit"])
+    comparison={name:first.get(name)==second.get(name) for name in ("summary.json","trades.csv","candidates.csv","daily_equity.csv")}
+    if not all(comparison.values()): raise ValueError("TWO_PASS_ARTIFACT_MISMATCH")
+    artifacts=_formal_artifacts(first,manifest,p1,state,comparison)
+    atomic_write_artifacts(output,artifacts,repo)
+    return artifacts
