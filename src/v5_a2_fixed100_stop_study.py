@@ -28,6 +28,16 @@ def _d5_execution(p: pd.DataFrame, signal: pd.Timestamp) -> dict[str,Any] | None
     exit_price=float(p.iloc[exit_i]["Open"])*(1-EXIT_SLIPPAGE)
     return {"entry_date":p.index[entry_i],"exit_date":p.index[exit_i],"entry_price":entry,"exit_price":exit_price,"stop_price":None,"exit_reason":"TIME","holding_days":FUTURE_DAYS}
 
+def raw_close_asof(frame: pd.DataFrame, day: pd.Timestamp) -> tuple[pd.Timestamp, float]:
+    """Return the latest raw close at or before day; never forward-fill."""
+    target=pd.Timestamp(day); eligible=frame.loc[frame.index<=target]
+    if eligible.empty: raise ValueError("RAW_CLOSE_ASOF_UNAVAILABLE")
+    used=pd.Timestamp(eligible.index[-1])
+    if used>target: raise AssertionError("FUTURE_CLOSE_USED")
+    value=float(eligible.iloc[-1]["Close"])
+    if not np.isfinite(value): raise ValueError("RAW_CLOSE_ASOF_NONFINITE")
+    return used,value
+
 def _skip(arm: str, c: Mapping[str,Any], reason: str, cash: float) -> dict[str,Any]:
     return {**{k:None for k in A2_TRADE_COLUMNS},"arm":arm,"fold":c["fold"],"signal_date":c["signal_date"],"ticker":c["ticker"],"industry":c["industry"],"rank":c["rank"],"status":"SKIPPED","skip_reason":reason,"quantity":0,"cash_before":cash,"cash_after_entry":cash}
 
@@ -59,7 +69,7 @@ def _run_arm(arm: str, candidates: pd.DataFrame, prices: Mapping[str,pd.DataFram
                 orders.append(rec); open_.append(rec)
             for position in sorted([x for x in open_ if pd.Timestamp(x["exit_date"])==day],key=lambda x:x["ticker"]):
                 proceeds=100*float(position["exit_price"]); position["exit_proceeds"]=proceeds; position["realized_net_profit_yen"]=proceeds-position["entry_cost"]; position["realized_net_return_percent"]=(position["exit_price"]/position["entry_price"]-1)*100; pending+=proceeds; open_.remove(position)
-            market=sum(100*float(frames[x["ticker"]].loc[day,"Close"]) for x in open_)
+            market=sum(100*raw_close_asof(frames[x["ticker"]],day)[1] for x in open_)
             locked=sum(float(x["entry_cost"]) for x in open_); equity.append({"arm":arm,"fold":fold,"date":day,"available_cash":cash,"pending_cash":pending,"locked_entry_capital":locked,"raw_close_market_value":market,"book_equity":cash+pending+locked,"mark_to_market_equity":cash+pending+market,"open_positions":len(open_)})
             if cash< -1e-8 or len(open_)>MAX_OPEN_POSITIONS: raise AssertionError("PORTFOLIO_SAFETY_VIOLATION")
         if open_: raise AssertionError("FOLD_OPEN_POSITION_REMAINS")
@@ -73,7 +83,12 @@ def _pf(x: pd.DataFrame) -> float:
 
 def _metrics(t: pd.DataFrame,e: pd.DataFrame,c: pd.DataFrame) -> dict[str,Any]:
     f=t[t.status.eq("FILLED")].copy(); curve=e.mark_to_market_equity if len(e) else pd.Series([STARTING_CASH]); book=e.book_equity if len(e) else pd.Series([STARTING_CASH])
-    mdd=float(((curve.cummax()-curve)/curve.cummax()*100).max()); bdd=float(((book.cummax()-book)/book.cummax()*100).max()); pos=f[f.realized_net_profit_yen>0]; total=pos.realized_net_profit_yen.sum(); by_t=pos.groupby("ticker").realized_net_profit_yen.sum()/total if total else pd.Series(dtype=float); by_i=pos.groupby("industry").realized_net_profit_yen.sum()/total if total else pd.Series(dtype=float)
+    if len(e) and e["fold"].nunique()>1:
+        mdd=max(float((((g.mark_to_market_equity.cummax()-g.mark_to_market_equity)/g.mark_to_market_equity.cummax()*100).max())) for _,g in e.groupby("fold"))
+        bdd=max(float((((g.book_equity.cummax()-g.book_equity)/g.book_equity.cummax()*100).max())) for _,g in e.groupby("fold"))
+    else:
+        mdd=float(((curve.cummax()-curve)/curve.cummax()*100).max()); bdd=float(((book.cummax()-book)/book.cummax()*100).max())
+    pos=f[f.realized_net_profit_yen>0]; total=pos.realized_net_profit_yen.sum(); by_t=pos.groupby("ticker").realized_net_profit_yen.sum()/total if total else pd.Series(dtype=float); by_i=pos.groupby("industry").realized_net_profit_yen.sum()/total if total else pd.Series(dtype=float)
     months=f.assign(month=pd.to_datetime(f.exit_date).dt.to_period("M")).groupby("month").realized_net_profit_yen.sum() if len(f) else pd.Series(dtype=float); years=f.assign(year=pd.to_datetime(f.exit_date).dt.year).groupby("year").realized_net_profit_yen.sum() if len(f) else pd.Series(dtype=float)
     safety={"negative_cash_count":int((e.available_cash<0).sum()),"same_day_proceeds_reuse_count":0,"duplicate_order_count":int(f.duplicated(["fold","ticker","signal_date"]).sum()),"max_position_violation_count":int((e.open_positions>2).sum()),"cash_reserve_violation_count":0,"industry_overlap_violation_count":0}
     return {"candidate_count":int(c.candidate_status.eq("CANDIDATE").sum()),"entry_attempt_count":len(t),"filled_trade_count":len(f),"skip_reason_counts":t[t.status.eq("SKIPPED")].skip_reason.value_counts().sort_index().to_dict(),"net_profit":float(f.realized_net_profit_yen.sum()),"ending_equity":STARTING_CASH+float(f.realized_net_profit_yen.sum()),"win_rate":float((f.realized_net_profit_yen>0).mean()) if len(f) else 0.,"profit_factor":_pf(f),"average_profit":float(f.loc[f.realized_net_profit_yen>0,"realized_net_profit_yen"].mean()) if (f.realized_net_profit_yen>0).any() else 0.,"average_loss":float(f.loc[f.realized_net_profit_yen<0,"realized_net_profit_yen"].mean()) if (f.realized_net_profit_yen<0).any() else 0.,"maximum_profit":float(f.realized_net_profit_yen.max()) if len(f) else 0.,"maximum_loss":float(f.realized_net_profit_yen.min()) if len(f) else 0.,"average_holding_days":float(f.holding_days.mean()) if len(f) else 0.,"monthly_win_rate":float((months>0).mean()) if len(months) else 0.,"yearly_profit":{str(k):float(v) for k,v in years.items()},"book_cost_dd_percent":bdd,"mark_to_market_dd_percent":mdd,"maximum_open_positions":int(e.open_positions.max()) if len(e) else 0,"average_deployed_amount":float(f.entry_cost.mean()) if len(f) else 0.,"exit_reason_counts":f.exit_reason.value_counts().sort_index().to_dict(),"top5_stock_positive_profit_share":float(by_t.nlargest(5).sum()) if len(by_t) else 0.,"max_industry_positive_profit_share":float(by_i.max()) if len(by_i) else 0.,"safety_audit":safety,"folds":{str(k):float(v.realized_net_profit_yen.sum()) for k,v in f.groupby("fold")},"fold_filled_counts":{str(k):int(len(v)) for k,v in f.groupby("fold")}}
@@ -85,11 +100,18 @@ def _csv(df: pd.DataFrame,cols: tuple[str,...],sort: list[str]) -> bytes:
     return x.to_csv(index=False,lineterminator="\n",float_format="%.10f",na_rep="").encode()
 
 def _gate(m: Mapping[str,Any]) -> dict[str,bool]:
-    return {"net_profit_gt_0":m["net_profit"]>0,"two_folds_positive":sum(v>0 for v in m["folds"].values())>=2,"profit_factor_gt_1_05":m["profit_factor"]>1.05,"mtm_dd_le_20":m["mark_to_market_dd_percent"]<=20,"filled_ge_100":m["filled_trade_count"]>=100,"each_fold_ge_25":all(v>=25 for v in m["fold_filled_counts"].values()),"safety_zero":all(v==0 for v in m["safety_audit"].values())}
+    fold_filled={str(k):int(m["fold_filled_counts"].get(str(k),0)) for k in (1,2,3)}; fold_profit={str(k):float(m["folds"].get(str(k),0.0)) for k in (1,2,3)}
+    return {"net_profit_gt_0":m["net_profit"]>0,"two_folds_positive":sum(fold_profit[str(k)]>0 for k in (1,2,3))>=2,"profit_factor_gt_1_05":m["profit_factor"]>1.05,"mtm_dd_le_20":m["mark_to_market_dd_percent"]<=20,"filled_ge_100":m["filled_trade_count"]>=100,"each_fold_ge_25":all(fold_filled[str(k)]>=25 for k in (1,2,3)),"safety_zero":all(v==0 for v in m["safety_audit"].values())}
 
 def run_study(prices: Mapping[str,pd.DataFrame], universe: pd.DataFrame, splits: Mapping[str,set[pd.Timestamp]], repository_commit: str="SYNTHETIC") -> dict[str,bytes]:
     candidates=build_candidates(prices,universe,splits); first={}; metrics={}; equity={}
-    for arm in ARMS: first[arm],equity[arm]=_run_arm(arm,candidates,prices); metrics[arm]={"aggregate":_metrics(first[arm],equity[arm],candidates),"folds":{str(f):_metrics(first[arm][first[arm].fold.eq(f)],equity[arm][equity[arm].fold.eq(f)],candidates[candidates.fold.eq(f)]) for f in (1,2,3)}}
+    for arm in ARMS:
+        first[arm],equity[arm]=_run_arm(arm,candidates,prices)
+        fold_metrics={str(f):_metrics(first[arm][first[arm].fold.eq(f)],equity[arm][equity[arm].fold.eq(f)],candidates[candidates.fold.eq(f)]) for f in (1,2,3)}
+        aggregate=_metrics(first[arm],equity[arm],candidates)
+        aggregate["mark_to_market_dd_percent"]=max(fold_metrics[str(f)]["mark_to_market_dd_percent"] for f in (1,2,3)); aggregate["book_cost_dd_percent"]=max(fold_metrics[str(f)]["book_cost_dd_percent"] for f in (1,2,3)); aggregate["dd_audit"]={"fold_mtm_dd_percent":{str(f):fold_metrics[str(f)]["mark_to_market_dd_percent"] for f in (1,2,3)},"fold_book_dd_percent":{str(f):fold_metrics[str(f)]["book_cost_dd_percent"] for f in (1,2,3)},"aggregate_mtm_equals_max_fold":aggregate["mark_to_market_dd_percent"]==max(fold_metrics[str(f)]["mark_to_market_dd_percent"] for f in (1,2,3)),"aggregate_book_equals_max_fold":aggregate["book_cost_dd_percent"]==max(fold_metrics[str(f)]["book_cost_dd_percent"] for f in (1,2,3))}
+        if not aggregate["dd_audit"]["aggregate_mtm_equals_max_fold"] or not aggregate["dd_audit"]["aggregate_book_equals_max_fold"]: raise AssertionError("AGGREGATE_DD_AUDIT_FAILED")
+        metrics[arm]={"aggregate":aggregate,"folds":fold_metrics}
     keys=["fold","signal_date","ticker","rank"]; sets={arm:set(map(tuple,first[arm].loc[first[arm].status.eq("FILLED"),keys].itertuples(index=False,name=None))) for arm in ARMS}; common=sets[ARM_STOP]&sets[ARM_D5]
     sfill=first[ARM_STOP].set_index(keys); dfill=first[ARM_D5].set_index(keys); both_exit=sum(sfill.loc[k,"exit_reason"]!=dfill.loc[k,"exit_reason"] for k in common)
     comparison={"candidate_byte_identical":True,"net_profit_difference":metrics[ARM_STOP]["aggregate"]["net_profit"]-metrics[ARM_D5]["aggregate"]["net_profit"],"profit_factor_difference":metrics[ARM_STOP]["aggregate"]["profit_factor"]-metrics[ARM_D5]["aggregate"]["profit_factor"],"filled_trade_difference":metrics[ARM_STOP]["aggregate"]["filled_trade_count"]-metrics[ARM_D5]["aggregate"]["filled_trade_count"],"mark_to_market_dd_difference":metrics[ARM_STOP]["aggregate"]["mark_to_market_dd_percent"]-metrics[ARM_D5]["aggregate"]["mark_to_market_dd_percent"],"fold_net_profit_difference":{str(f):metrics[ARM_STOP]["folds"][str(f)]["net_profit"]-metrics[ARM_D5]["folds"][str(f)]["net_profit"] for f in (1,2,3)},"common_filled_count":len(common),"stop_only_filled_count":len(sets[ARM_STOP]-sets[ARM_D5]),"d5_only_filled_count":len(sets[ARM_D5]-sets[ARM_STOP]),"both_filled_exit_different_count":both_exit}

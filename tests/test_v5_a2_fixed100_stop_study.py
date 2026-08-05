@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from src.v5_a2_fixed100_stop_study import *
-from src.v5_a2_fixed100_stop_study import _d5_execution, _run_arm
+from src.v5_a2_fixed100_stop_study import _d5_execution, _run_arm, raw_close_asof, _gate, _metrics
 from src.v5_adaptive_portfolio import _frame
 from scripts.run_v5_a2_fixed100_stop_study import _prices
 
@@ -48,3 +48,19 @@ def test_cross_year_calendar_closes_position():
 
 def test_arm_d_never_has_stop_rows():
     p,u,s=sample(); tr=pd.read_csv(pd.io.common.BytesIO(run_study(p,u,s)['trades.csv'])); assert not tr[(tr.arm==ARM_D5)&tr.exit_reason.isin(['STOP','GAP_STOP'])].shape[0]
+
+def test_fold_boundary_does_not_create_dd():
+    e=pd.DataFrame({'fold':[1,1,2,2],'mark_to_market_equity':[400000,500000,400000,410000],'book_equity':[400000,500000,400000,410000],'available_cash':[400000]*4,'open_positions':[0]*4}); t=pd.DataFrame(columns=A2_TRADE_COLUMNS); c=pd.DataFrame(columns=CANDIDATE_COLUMNS); m=_metrics(t,e,c); assert m['mark_to_market_dd_percent']==0 and m['book_cost_dd_percent']==0
+
+def test_aggregate_dd_audit_is_fold_max():
+    sm=json.loads(run_study(*sample())['summary.json']);
+    for arm in sm['arms'].values():
+        a=arm['aggregate']; assert a['mark_to_market_dd_percent']==max(a['dd_audit']['fold_mtm_dd_percent'].values()); assert a['book_cost_dd_percent']==max(a['dd_audit']['fold_book_dd_percent'].values())
+
+def test_raw_close_asof_is_causal_and_missing_fails():
+    idx=pd.to_datetime(['2019-01-01','2019-01-03']); frame=pd.DataFrame({'Close':[10.,12.]},index=idx); used,value=raw_close_asof(frame,pd.Timestamp('2019-01-02')); assert used==idx[0] and value==10.;
+    with pytest.raises(ValueError): raw_close_asof(frame,pd.Timestamp('2018-12-31'))
+
+def test_gate_missing_fold_is_false_for_both_fold_conditions():
+    base={'net_profit':1,'folds':{'1':1,'2':-1},'fold_filled_counts':{'1':25,'2':25},'profit_factor':2,'mark_to_market_dd_percent':1,'filled_trade_count':100,'safety_audit':{}}
+    g=_gate(base); assert not g['each_fold_ge_25'] and g['two_folds_positive'] is False
