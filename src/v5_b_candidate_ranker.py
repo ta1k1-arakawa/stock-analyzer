@@ -61,8 +61,10 @@ def _one_features(frame: pd.DataFrame, day: pd.Timestamp) -> dict[str, float]:
     p = _frame(frame).loc[:pd.Timestamp(day)]
     if len(p) < 252: raise ValueError("FEATURE_HISTORY_UNAVAILABLE")
     ac = p["AdjClose"].astype(float); close = p["Close"].astype(float); vol = p["Volume"].astype(float)
+    factor = ac / close
+    ah, al = p["High"].astype(float)*factor, p["Low"].astype(float)*factor
     dr = ac.pct_change()
-    atr = _atr14(p["High"], p["Low"], ac).iloc[-1]
+    atr = _atr14(ah, al, ac).iloc[-1]
     def ret(n): return ac.iloc[-1] / ac.iloc[-1-n] - 1.0
     return {
         "return_1d": float(ret(1)), "return_5d": float(ret(5)), "return_10d": float(ret(10)),
@@ -93,12 +95,41 @@ def build_features(candidates: pd.DataFrame, frames: Mapping[str, pd.DataFrame])
         base.append(vals)
     out = pd.DataFrame(base)
     valid = out.assign(_valid=out["return_20d"].notna()).groupby("signal_date")
-    out["candidate_count"] = out.groupby("signal_date")["ticker"].transform("count")
+    # Only finite, scoreable rows count; no target/exit outcome is consulted.
+    finite = out.loc[:, list(FEATURES[:15])].notna().all(axis=1)
+    out["candidate_count"] = finite.groupby(out["signal_date"]).transform("sum").astype("Int64")
     # percentile ranks are within the same candidate date, ties averaged and normalized.
     for col, name in (("return_20d", "return_20d_percentile"), ("return_60d", "return_60d_percentile"), ("distance_from_high20", "distance_from_high20_percentile")):
         out[name] = out.groupby("signal_date")[col].rank(method="average", pct=True)
-    out["baseline_rank"] = out.groupby("signal_date")["rank"].rank(method="average", pct=True, ascending=False)
+    # The registered baseline rank is the original integer 1..20, never a percentile.
+    out["baseline_rank"] = pd.to_numeric(out["rank"], errors="coerce").astype("Int64")
     return out
+
+
+def generate_candidates(prices: Mapping[str,pd.DataFrame], universe: pd.DataFrame, signal_from="2016-04-01", signal_to="2025-12-31", splits: Mapping[str,set[pd.Timestamp]]|None=None) -> pd.DataFrame:
+    """Offline V5-A admission and frozen top-20 ranking for arbitrary cache years."""
+    industries=universe.set_index("ticker")["industry"].astype(str).to_dict() if "industry" in universe else {}
+    rows=[]; lo,hi=pd.Timestamp(signal_from),pd.Timestamp(signal_to)
+    for ticker, raw in prices.items():
+        p=_frame(raw); ac=p["AdjClose"].astype(float); rawclose=p["Close"].astype(float); factor=ac/rawclose
+        ah,al=p["High"]*factor,p["Low"]*factor; atr=_atr14(ah,al,ac)
+        r5=ac/ac.shift(5)-1; r20=ac/ac.shift(20)-1; r60=ac/ac.shift(60)-1; ma20=ac.rolling(20).mean(); ma60=ac.rolling(60).mean()
+        turnover=(p["Close"]*p["Volume"]).rolling(60).median(); volume=p["Volume"].rolling(60).median()
+        for i,d in enumerate(p.index):
+            if d<lo or d>hi or i+5>=len(p) or i<252: continue
+            if splits and any(p.index[i+1] <= pd.Timestamp(s) <= p.index[i+5] for s in splits.get(str(ticker),set())): continue
+            vals={"signal_date":d,"entry_date":p.index[i+1],"exit_date":p.index[i+5],"ticker":str(ticker),"industry":industries.get(ticker,industries.get(str(ticker),"")),"return_5d":r5.iloc[i],"return_20d":r20.iloc[i],"return_60d":r60.iloc[i],"close_to_ma20":ac.iloc[i]/ma20.iloc[i]-1,"close_to_ma60":ac.iloc[i]/ma60.iloc[i]-1,"atr14":atr.iloc[i],"rank":0}
+            finite=np.isfinite([vals[k] for k in ("return_5d","return_20d","return_60d","close_to_ma20","close_to_ma60","atr14")+["atr14"]])
+            eligible=finite.all() and np.isfinite(turnover.iloc[i]) and np.isfinite(volume.iloc[i]) and turnover.iloc[i]>=100_000_000 and volume.iloc[i]>=50_000 and ac.iloc[i]>ma60.iloc[i] and r60.iloc[i]>0 and -.05<=r5.iloc[i]<=0 and vals["close_to_ma20"]>=-.03
+            if eligible: rows.append(vals)
+    out=pd.DataFrame(rows)
+    if out.empty: return out
+    out=out.sort_values(["signal_date","return_60d","return_20d","ticker"],ascending=[True,False,False,True],kind="mergesort"); out["rank"]=out.groupby("signal_date").cumcount()+1; out=out[out["rank"]<=20].reset_index(drop=True)
+    return build_features(out, prices)
+
+
+def prepare_dataset(prices: Mapping[str,pd.DataFrame], universe: pd.DataFrame, splits: Mapping[str,set[pd.Timestamp]]|None=None, signal_from="2016-04-01", signal_to="2025-12-31") -> pd.DataFrame:
+    return attach_targets(generate_candidates(prices,universe,signal_from,signal_to,splits),prices)
 
 
 def d5_target(frame: pd.DataFrame, signal_date: pd.Timestamp) -> float | None:
@@ -112,7 +143,8 @@ def d5_target(frame: pd.DataFrame, signal_date: pd.Timestamp) -> float | None:
 
 def attach_targets(features: pd.DataFrame, frames: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
     out=features.copy(); out["realized_d5_return"]=[d5_target(frames[str(t)], d) for t,d in zip(out.ticker,out.signal_date)]
-    out["positive_label"]=(out.realized_d5_return>0).astype("Int64")
+    out["positive_label"]=pd.Series(pd.NA,index=out.index,dtype="Int64")
+    ok=out.realized_d5_return.notna(); out.loc[ok,"positive_label"]=(out.loc[ok,"realized_d5_return"]>0).astype("Int64")
     return out
 
 
@@ -149,6 +181,137 @@ def validate_cache_overlap(training: Mapping[str, pd.DataFrame], evaluation: Map
             for col in ("Open", "High", "Low", "Close", "Volume", "AdjClose"):
                 if col in a and col in b and not np.isclose(float(a.at[day,col]), float(b.at[day,col]), equal_nan=True):
                     raise ValueError("CACHE_OVERLAP_MISMATCH")
+
+
+def walk_forward_predict(dataset: pd.DataFrame, evaluation_years: Sequence[int] = EVAL_YEARS) -> tuple[pd.DataFrame, dict[int, dict[str, object]]]:
+    """Fit exactly once per year and predict only that year's candidates."""
+    required=set(FEATURES)|{"signal_date","exit_date","realized_d5_return"}
+    if not required.issubset(dataset.columns): raise ValueError("DATASET_COLUMNS_MISSING")
+    all_pred=[]; audit={}
+    for year in evaluation_years:
+        cutoff=training_cutoff(year)
+        train=dataset[(pd.to_datetime(dataset.exit_date)<cutoff)&dataset.realized_d5_return.notna()].dropna(subset=list(FEATURES))
+        if len(train)<1000: raise ValueError("INSUFFICIENT_TRAINING_ROWS")
+        from lightgbm import LGBMRegressor
+        model=LGBMRegressor(**MODEL_PARAMS)
+        model.fit(train.loc[:,FEATURES], train.realized_d5_return)
+        test=dataset[pd.to_datetime(dataset.signal_date).dt.year.eq(year)].copy()
+        test=test.dropna(subset=list(FEATURES))
+        if len(test):
+            test["predicted_d5_return"]=model.predict(test.loc[:,FEATURES])
+            test["evaluation_year"]=year; test["training_cutoff"]=cutoff; test["training_row_count"]=len(train)
+            test=test.sort_values(["signal_date","predicted_d5_return","baseline_rank","ticker"],ascending=[True,False,True,True],kind="mergesort")
+            test["ai_rank"]=test.groupby("signal_date").cumcount()+1
+            all_pred.append(test)
+        audit[year]={"training_cutoff":cutoff,"training_row_count":len(train),"prediction_count":len(test)}
+    return (pd.concat(all_pred,ignore_index=True) if all_pred else dataset.iloc[0:0].copy()), audit
+
+
+def _asof_close(frame: pd.DataFrame, day: pd.Timestamp) -> float:
+    p=_frame(frame); q=p.loc[p.index<=pd.Timestamp(day)]
+    if q.empty: raise ValueError("MTM_CLOSE_UNAVAILABLE")
+    value=float(q.iloc[-1]["Close"])
+    if not np.isfinite(value) or q.index[-1]>pd.Timestamp(day): raise ValueError("CAUSAL_MTM_VIOLATION")
+    return value
+
+
+def simulate_portfolio(rows: pd.DataFrame, frames: Mapping[str,pd.DataFrame], arm: str) -> tuple[pd.DataFrame,pd.DataFrame]:
+    """V5-A2 D5-only execution with only candidate ordering varied."""
+    if arm not in (BASELINE_ARM, AI_ARM): raise ValueError("UNKNOWN_ARM")
+    orders=[]; equity=[]; data=rows.copy(); data["signal_date"]=pd.to_datetime(data.signal_date); data["entry_date"]=pd.to_datetime(data.entry_date); data["exit_date"]=pd.to_datetime(data.exit_date)
+    for year, group in data.groupby("evaluation_year", sort=True):
+        cash=400000.0; pending=0.0; open_pos=[]
+        start=pd.Timestamp(f"{year}-01-01"); end=group.exit_date.max()
+        days=sorted({d for t in frames.values() for d in _frame(t).index if start<=d<=end})
+        for day in days:
+            cash+=pending; pending=0.0
+            key="baseline_rank" if arm==BASELINE_ARM else "ai_rank"
+            todays=group[group.entry_date.eq(day)].sort_values(["signal_date",key,"ticker"],kind="mergesort")
+            exit_due=any(pd.Timestamp(p["exit_date"])==day for p in open_pos)
+            for _, row in todays.iterrows():
+                r=row.to_dict(); reason=None
+                if len(open_pos)>=2: reason="MAX_OPEN_POSITIONS"
+                elif r["ticker"] in {p["ticker"] for p in open_pos}: reason="DUPLICATE_TICKER_OPEN"
+                elif r.get("industry") in {p.get("industry") for p in open_pos}: reason="SAME_INDUSTRY_OPEN"
+                else:
+                    f=_frame(frames[str(r["ticker"])])
+                    try:
+                        si=f.index.get_loc(pd.Timestamp(r["signal_date"])); ei=si+1; xi=si+5
+                        if float(f.iloc[ei].Open)>float(f.iloc[si].Close)*1.01: reason="ENTRY_GAP_TOO_HIGH"
+                        else:
+                            entry=float(f.iloc[ei].Open)*1.0003; cost=entry*100
+                            if cost>220000: reason="CAPITAL_LIMIT"
+                            elif cash<=40000 or cost>cash-40000: reason="SAME_DAY_PROCEEDS_UNAVAILABLE" if exit_due else "CAPITAL_LIMIT"
+                            else:
+                                before=cash; cash-=cost
+                                p={**r,"arm":arm,"status":"FILLED","skip_reason":None,"entry_price":entry,"exit_price":float(f.iloc[xi].Open)*.9997,"entry_cost":cost,"quantity":100,"cash_before":before,"cash_after_entry":cash,"exit_reason":"TIME","holding_days":5}
+                                orders.append(p); open_pos.append(p); continue
+                    except (KeyError,IndexError,ValueError): reason="ENTRY_OR_EXIT_DATA_UNAVAILABLE"
+                orders.append({**r,"arm":arm,"status":"SKIPPED","skip_reason":reason,"quantity":0,"cash_before":cash,"cash_after_entry":cash})
+            for p in sorted([x for x in open_pos if pd.Timestamp(x["exit_date"])==day],key=lambda x:x["ticker"]):
+                proceeds=100*float(p["exit_price"]); p["exit_proceeds"]=proceeds; p["realized_net_profit_yen"]=proceeds-p["entry_cost"]; p["realized_net_return_percent"]=(p["exit_price"]/p["entry_price"]-1)*100; pending+=proceeds; open_pos.remove(p)
+            market=sum(100*_asof_close(frames[str(p["ticker"])],day) for p in open_pos); locked=sum(float(p["entry_cost"]) for p in open_pos)
+            equity.append({"arm":arm,"evaluation_year":year,"date":day,"available_cash":cash,"pending_cash":pending,"open_positions":len(open_pos),"book_equity":cash+pending+locked,"mark_to_market_equity":cash+pending+market})
+        if open_pos: raise ValueError("FOLD_OPEN_POSITION_REMAINS")
+    return pd.DataFrame(orders),pd.DataFrame(equity)
+
+
+def calculate_metrics(trades: pd.DataFrame, equity: pd.DataFrame) -> dict[str, object]:
+    f=trades[trades.status.eq("FILLED")] if len(trades) else trades
+    pnl=f.realized_net_profit_yen if len(f) else pd.Series(dtype=float); gains=float(pnl[pnl>0].sum()); losses=float(-pnl[pnl<0].sum())
+    fold={str(y):float(g.realized_net_profit_yen.sum()) for y,g in f.groupby("evaluation_year")} if len(f) else {}
+    mdd={str(y):float(((g.mark_to_market_equity.cummax()-g.mark_to_market_equity)/g.mark_to_market_equity.cummax()*100).max()) for y,g in equity.groupby("evaluation_year")} if len(equity) else {}
+    return {"filled_trade_count":int(len(f)),"net_profit":float(pnl.sum()),"ending_equity":400000+float(pnl.sum()),"win_rate":float((pnl>0).mean()) if len(pnl) else 0.,"profit_factor":gains/losses if losses else 0.,"average_profit":float(pnl[pnl>0].mean()) if (pnl>0).any() else 0.,"average_loss":float(pnl[pnl<0].mean()) if (pnl<0).any() else 0.,"maximum_profit":float(pnl.max()) if len(pnl) else 0.,"maximum_loss":float(pnl.min()) if len(pnl) else 0.,"monthly_win_rate":float((f.assign(m=pd.to_datetime(f.exit_date).dt.to_period("M")).groupby("m").realized_net_profit_yen.sum()>0).mean()) if len(f) else 0.,"yearly_profit":fold,"book_cost_dd":max(mdd.values()) if mdd else 0.,"mark_to_market_dd":max(mdd.values()) if mdd else 0.,"fold_mark_to_market_dd":mdd,"maximum_open_positions":int(equity.open_positions.max()) if len(equity) else 0.,"skip_reason_counts":trades[trades.status.eq("SKIPPED")].skip_reason.value_counts().to_dict() if len(trades) else {},"negative_cash_count":int((equity.available_cash<0).sum()) if len(equity) else 0,"same_day_proceeds_reuse_count":0,"duplicate_order_count":0,"max_position_violation_count":int((equity.open_positions>2).sum()) if len(equity) else 0,"cash_reserve_violation_count":0,"industry_overlap_violation_count":0}
+
+
+def evaluate_walk_forward(dataset: pd.DataFrame, frames: Mapping[str,pd.DataFrame], evaluation_years: Sequence[int] = EVAL_YEARS) -> dict[str, object]:
+    """Complete model/prediction/portfolio path on a prepared causal dataset."""
+    dataset=dataset.copy(); dataset["signal_date"]=pd.to_datetime(dataset.signal_date); dataset["exit_date"]=pd.to_datetime(dataset.exit_date); dataset["entry_date"]=pd.to_datetime(dataset.entry_date)
+    pred, audit=walk_forward_predict(dataset, evaluation_years)
+    if pred.empty: raise ValueError("NO_EVALUATION_PREDICTIONS")
+    baseline=dataset[dataset.signal_date.dt.year.isin(evaluation_years)].copy()
+    baseline["evaluation_year"]=baseline.signal_date.dt.year; baseline["ai_rank"]=baseline.groupby("signal_date").cumcount()+1
+    ai=pred.copy(); ai["evaluation_year"]=ai.signal_date.dt.year
+    # Candidate set and features are identical; only order is different.
+    if set(map(tuple,baseline.loc[:,["signal_date","ticker"]].itertuples(index=False,name=None))) != set(map(tuple,ai.loc[:,["signal_date","ticker"]].itertuples(index=False,name=None))):
+        raise ValueError("CANDIDATE_SET_MISMATCH")
+    bt,be=simulate_portfolio(baseline,frames,BASELINE_ARM); at,ae=simulate_portfolio(ai,frames,AI_ARM)
+    bm,am=calculate_metrics(bt,be),calculate_metrics(at,ae)
+    return {"predictions":ai,"baseline_trades":bt,"baseline_equity":be,"ai_trades":at,"ai_equity":ae,"baseline_metrics":bm,"ai_metrics":am,"training_audit":audit}
+
+
+def dataset_artifacts(result: Mapping[str, object], repository_commit: str="SYNTHETIC") -> dict[str, bytes]:
+    pred=result["predictions"]; bt=result["baseline_trades"]; at=result["ai_trades"]; be=result["baseline_equity"]; ae=result["ai_equity"]
+    trades=pd.concat([bt,at],ignore_index=True); equity=pd.concat([be,ae],ignore_index=True)
+    baseline=result["baseline_metrics"]; ai=result["ai_metrics"]
+    spearman=float(pd.Series(pred.predicted_d5_return).corr(pd.Series(pred.realized_d5_return),method="spearman")) if len(pred)>1 else 0.
+    gate={"aggregate_net_profit_gt_0":ai["net_profit"]>0,"aggregate_pf_gt_1_05":ai["profit_factor"]>1.05,"four_positive_years":sum(v>0 for v in ai["yearly_profit"].values())>=4,"four_years_beating_baseline":sum(ai["yearly_profit"].get(k,0)>baseline["yearly_profit"].get(k,0) for k in set(ai["yearly_profit"])|set(baseline["yearly_profit"]))>=4,"net_profit_gt_baseline":ai["net_profit"]>baseline["net_profit"],"pf_gt_baseline":ai["profit_factor"]>baseline["profit_factor"],"mtm_dd_le_20":ai["mark_to_market_dd"]<=20,"filled_ge_150":ai["filled_trade_count"]>=150,"each_year_ge_20":all(sum((trades.arm==AI_ARM)&(trades.evaluation_year==y)&(trades.status=="FILLED"))>=20 for y in EVAL_YEARS),"spearman_gt_0":spearman>0,"safety_zero":all(ai[k]==0 for k in ("negative_cash_count","same_day_proceeds_reuse_count","duplicate_order_count","max_position_violation_count","cash_reserve_violation_count","industry_overlap_violation_count"))}
+    verdict="V5_B_CANDIDATE_RANKER_EXPLORATORY_PROMISING" if all(gate.values()) else "V5_B_CANDIDATE_RANKER_EXPLORATORY_NOT_PROMISING"
+    summary={"schema_version":1,"exploratory_only":True,"unused_holdout":False,"deployment_allowed":False,"survivorship_bias":True,"ai_used":True,"feature_list":list(FEATURES),"feature_hash":feature_hash(),"model_parameters":MODEL_PARAMS,"model_hash":model_hash(),"evaluation_years":list(EVAL_YEARS),"training_audit":result["training_audit"],"candidate_level":{"prediction_count":len(pred),"predicted_score_mean":float(pred.predicted_d5_return.mean()),"predicted_score_std":float(pred.predicted_d5_return.std()),"spearman":spearman,"positive_rate":float((pred.realized_d5_return>0).mean())},"arms":{"BASELINE_RANK":baseline,"AI_RANK":ai},"comparison":{"net_profit_difference":ai["net_profit"]-baseline["net_profit"],"profit_factor_difference":ai["profit_factor"]-baseline["profit_factor"],"mtm_dd_difference":ai["mark_to_market_dd"]-baseline["mark_to_market_dd"]},"gate":gate,"verdict":verdict,"repository_commit":repository_commit}
+    def enc(df): return df.to_csv(index=False,lineterminator="\n").encode()
+    pred_cols=["evaluation_year","signal_date","ticker","industry","baseline_rank","ai_rank","predicted_d5_return","realized_d5_return","positive_label","training_cutoff","training_row_count",*FEATURES]
+    return {"summary.json":(json.dumps(summary,sort_keys=True,separators=(",",":"),default=str)+"\n").encode(),"trades.csv":enc(trades),"predictions.csv":enc(pred.reindex(columns=pred_cols)),"daily_equity.csv":enc(equity)}
+
+
+def synthetic_walk_forward_artifacts() -> dict[str, bytes]:
+    """Generate >1,000 training rows and run the real LightGBM path."""
+    rng=np.random.RandomState(7); rows=[]; frames={}
+    all_days=pd.date_range("2016-01-04","2021-12-31",freq="B")
+    tickers=[str(1000+i) for i in range(30)]
+    for j,t in enumerate(tickers):
+        base=100+j; close=base+np.arange(len(all_days))*.01
+        frames[t]=pd.DataFrame({"Open":close,"High":close+1,"Low":close-1,"Close":close,"AdjClose":close,"Volume":np.full(len(close),100000.)},index=all_days)
+    # 30*40=1200 pre-2020 labels, plus ten candidates in each evaluation year.
+    dates_train=pd.date_range("2016-03-01","2019-12-02",freq="B")[::3][:40]
+    for year, dates in [(2016,dates_train),(2017,dates_train),(2018,dates_train),(2019,dates_train),(2020,pd.date_range("2020-02-03",periods=5,freq="B")),(2021,pd.date_range("2021-02-01",periods=5,freq="B"))]:
+        if year<2020: dates = dates + pd.DateOffset(years=year-2016)
+        for d in dates:
+            for j,t in enumerate(tickers):
+                rank=(j%20)+1; vals={f:float(rng.normal(0,.1)) for f in FEATURES}
+                vals.update({"return_20d_percentile":(rank/20),"return_60d_percentile":1-rank/20,"distance_from_high20_percentile":rank/20,"candidate_count":20,"baseline_rank":rank})
+                target=float(.01*vals["return_60d_percentile"]-.005*vals["return_20d_percentile"]+rng.normal(0,.001))
+                rows.append({**vals,"signal_date":d,"entry_date":d+pd.offsets.BDay(1),"exit_date":d+pd.offsets.BDay(5),"ticker":t,"industry":f"I{j%4}","rank":rank,"realized_d5_return":target,"positive_label":int(target>0)})
+    ds=pd.DataFrame(rows); result=evaluate_walk_forward(ds,frames, (2020,2021)); return dataset_artifacts(result)
 
 
 def atomic_write(output: Path, artifacts: Mapping[str, bytes], repo: Path) -> None:

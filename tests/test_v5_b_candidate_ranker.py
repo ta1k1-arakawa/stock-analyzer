@@ -13,7 +13,7 @@ def test_exact_feature_registration_and_model_params():
 def test_causal_features_and_same_day_percentiles():
     d=pd.Timestamp("2017-02-01"); c=pd.DataFrame([{"signal_date":d,"ticker":"A","industry":"i","rank":1},{"signal_date":d,"ticker":"B","industry":"j","rank":2}])
     x=build_features(c,{"A":frame(),"B":frame(bump=2)})
-    assert set(FEATURES).issubset(x.columns); assert x.candidate_count.tolist()==[2,2]; assert x.baseline_rank.between(0,1).all()
+    assert set(FEATURES).issubset(x.columns); assert x.candidate_count.tolist()==[2,2]; assert x.baseline_rank.tolist()==[1,2]
 
 def test_target_gap_and_future_cutoff():
     f=frame(); d=f.index[252]; assert d5_target(f,d) is not None; assert training_cutoff(2020)==pd.Timestamp("2020-01-01")

@@ -6,4 +6,4 @@ The target is raw D1 open with 0.03% entry slippage to raw D5 open with 0.03% ex
 
 One pooled LightGBM L1 regressor and the fixed parameters in `MODEL_PARAMS` are pre-registered. For evaluation year Y, only labels with `exit_date < Y-01-01` are eligible and at least 1,000 rows are required. Years 2020–2025 are exploratory, not holdout; deployment remains false. Future evaluation cache overlap must be OHLCV-identical before any run.
 
-Formal cache acquisition/evaluation is deliberately disabled in this implementation turn. Synthetic smoke is the only executed evaluation.
+The formal runner is cache-only, validates repository state and overlap rows, performs two identical core passes, and writes only after byte equality. It was not invoked in this implementation turn. Synthetic smoke is the only executed evaluation.
