@@ -47,8 +47,24 @@ def model_hash() -> str:
 
 def _frame(x: pd.DataFrame) -> pd.DataFrame:
     y = x.copy()
+    aliases={"adjusted_close":"AdjClose","adjusted_high":"AdjHigh","adjusted_low":"AdjLow","Adj Close":"AdjClose"}
+    for src,dst in aliases.items():
+        if src in y.columns and dst not in y.columns: y[dst]=y[src]
     y.index = pd.to_datetime(y.index).tz_localize(None)
     return y.sort_index()
+
+
+def canonical_ticker(value: object) -> str:
+    s=str(value).strip().upper()
+    if s.endswith(".T"): s=s[:-2]
+    if s.endswith(".0") and s[:-2].isdigit(): s=s[:-2]
+    return s
+
+
+def normalize_universe(universe: pd.DataFrame) -> pd.DataFrame:
+    u=universe.copy(); u["ticker"]=u["ticker"].map(canonical_ticker); u["industry"]=u["industry"].fillna("").astype(str)
+    if u.ticker.duplicated().any(): raise ValueError("UNIVERSE_DUPLICATE_TICKER")
+    return u
 
 
 def _atr14(h: pd.Series, l: pd.Series, c: pd.Series) -> pd.Series:
@@ -84,7 +100,7 @@ def _one_features(frame: pd.DataFrame, day: pd.Timestamp) -> dict[str, float]:
 
 def build_features(candidates: pd.DataFrame, frames: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
     """Build exactly the pre-registered 20 causal features."""
-    x = candidates.copy(); x["signal_date"] = pd.to_datetime(x["signal_date"])
+    frames={canonical_ticker(k):v for k,v in frames.items()}; x = candidates.copy(); x["ticker"]=x["ticker"].map(canonical_ticker); x["signal_date"] = pd.to_datetime(x["signal_date"])
     base=[]
     for _, r in x.iterrows():
         f = frames[str(r["ticker"])]
@@ -96,7 +112,7 @@ def build_features(candidates: pd.DataFrame, frames: Mapping[str, pd.DataFrame])
     out = pd.DataFrame(base)
     valid = out.assign(_valid=out["return_20d"].notna()).groupby("signal_date")
     # Only finite, scoreable rows count; no target/exit outcome is consulted.
-    finite = out.loc[:, list(FEATURES[:15])].notna().all(axis=1)
+    finite = pd.Series(np.isfinite(out.loc[:, list(FEATURES[:15])].to_numpy(dtype=float)).all(axis=1), index=out.index)
     out["candidate_count"] = finite.groupby(out["signal_date"]).transform("sum").astype("Int64")
     # percentile ranks are within the same candidate date, ties averaged and normalized.
     for col, name in (("return_20d", "return_20d_percentile"), ("return_60d", "return_60d_percentile"), ("distance_from_high20", "distance_from_high20_percentile")):
@@ -108,9 +124,21 @@ def build_features(candidates: pd.DataFrame, frames: Mapping[str, pd.DataFrame])
 
 def generate_candidates(prices: Mapping[str,pd.DataFrame], universe: pd.DataFrame, signal_from="2016-04-01", signal_to="2025-12-31", splits: Mapping[str,set[pd.Timestamp]]|None=None) -> pd.DataFrame:
     """Offline V5-A admission and frozen top-20 ranking for arbitrary cache years."""
-    industries=universe.set_index("ticker")["industry"].astype(str).to_dict() if "industry" in universe else {}
+    universe=normalize_universe(universe); allowed=set(universe.ticker); industries=universe.set_index("ticker")["industry"].to_dict() if "industry" in universe else {}
+    # For the audited 2017-2019 interval use the V5-A scientific generator
+    # directly, then add V5-B features without changing admission/ranking.
+    if pd.Timestamp(signal_from)>=pd.Timestamp("2017-01-01") and pd.Timestamp(signal_to)<=pd.Timestamp("2019-12-31"):
+        from src.v5_adaptive_portfolio import build_candidates as v5a_build
+        base=v5a_build({canonical_ticker(k):v for k,v in prices.items()},universe,splits)
+        base=base[(base.candidate_status=="CANDIDATE")&base["rank"].between(1,20)&base.signal_date.between(pd.Timestamp(signal_from),pd.Timestamp(signal_to))].copy()
+        if base.empty: return base
+        enriched=build_features(base,prices)
+        for col in ["industry","entry_date","exit_date","return_5d","return_20d","return_60d","close_to_ma20","close_to_ma60"]: enriched[col]=base[col].to_numpy()
+        return enriched
     rows=[]; lo,hi=pd.Timestamp(signal_from),pd.Timestamp(signal_to)
-    for ticker, raw in prices.items():
+    for raw_ticker, raw in prices.items():
+        ticker=canonical_ticker(raw_ticker)
+        if ticker not in allowed: continue
         p=_frame(raw); ac=p["AdjClose"].astype(float); rawclose=p["Close"].astype(float); factor=ac/rawclose
         ah,al=p["High"]*factor,p["Low"]*factor; atr=_atr14(ah,al,ac)
         r5=ac/ac.shift(5)-1; r20=ac/ac.shift(20)-1; r60=ac/ac.shift(60)-1; ma20=ac.rolling(20).mean(); ma60=ac.rolling(60).mean()
@@ -119,7 +147,8 @@ def generate_candidates(prices: Mapping[str,pd.DataFrame], universe: pd.DataFram
             if d<lo or d>hi or i+5>=len(p) or i<252: continue
             if splits and any(p.index[i+1] <= pd.Timestamp(s) <= p.index[i+5] for s in splits.get(str(ticker),set())): continue
             vals={"signal_date":d,"entry_date":p.index[i+1],"exit_date":p.index[i+5],"ticker":str(ticker),"industry":industries.get(ticker,industries.get(str(ticker),"")),"return_5d":r5.iloc[i],"return_20d":r20.iloc[i],"return_60d":r60.iloc[i],"close_to_ma20":ac.iloc[i]/ma20.iloc[i]-1,"close_to_ma60":ac.iloc[i]/ma60.iloc[i]-1,"atr14":atr.iloc[i],"rank":0}
-            finite=np.isfinite([vals[k] for k in ("return_5d","return_20d","return_60d","close_to_ma20","close_to_ma60","atr14")+["atr14"]])
+            needed=("return_5d","return_20d","return_60d","close_to_ma20","close_to_ma60","atr14")
+            finite=np.isfinite([vals[k] for k in needed])
             eligible=finite.all() and np.isfinite(turnover.iloc[i]) and np.isfinite(volume.iloc[i]) and turnover.iloc[i]>=100_000_000 and volume.iloc[i]>=50_000 and ac.iloc[i]>ma60.iloc[i] and r60.iloc[i]>0 and -.05<=r5.iloc[i]<=0 and vals["close_to_ma20"]>=-.03
             if eligible: rows.append(vals)
     out=pd.DataFrame(rows)
@@ -132,6 +161,23 @@ def prepare_dataset(prices: Mapping[str,pd.DataFrame], universe: pd.DataFrame, s
     return attach_targets(generate_candidates(prices,universe,signal_from,signal_to,splits),prices)
 
 
+def combine_cache_frames(training_prices: Mapping[str,pd.DataFrame], evaluation_prices: Mapping[str,pd.DataFrame]) -> dict[str,pd.DataFrame]:
+    """Causally concatenate overlapping cache frames without overwriting history."""
+    out={}
+    for ticker in sorted(set(map(canonical_ticker,training_prices))|set(map(canonical_ticker,evaluation_prices))):
+        a=next((v for k,v in training_prices.items() if canonical_ticker(k)==ticker),None); b=next((v for k,v in evaluation_prices.items() if canonical_ticker(k)==ticker),None)
+        parts=[]
+        for f in (a,b):
+            if f is not None:
+                q=_frame(f); q.index=pd.to_datetime(q.index).tz_localize(None); parts.append(q)
+        x=pd.concat(parts).sort_index()
+        if x.index.duplicated().any():
+            x=x[~x.index.duplicated(keep="first")]
+        if x.index.duplicated().any(): raise ValueError("DUPLICATE_COMBINED_DATE")
+        out[ticker]=x
+    return out
+
+
 def d5_target(frame: pd.DataFrame, signal_date: pd.Timestamp) -> float | None:
     p=_frame(frame); d=pd.Timestamp(signal_date)
     try:
@@ -142,7 +188,7 @@ def d5_target(frame: pd.DataFrame, signal_date: pd.Timestamp) -> float | None:
 
 
 def attach_targets(features: pd.DataFrame, frames: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
-    out=features.copy(); out["realized_d5_return"]=[d5_target(frames[str(t)], d) for t,d in zip(out.ticker,out.signal_date)]
+    fmap={canonical_ticker(k):v for k,v in frames.items()}; out=features.copy(); out["realized_d5_return"]=[d5_target(fmap[canonical_ticker(t)], d) for t,d in zip(out.ticker,out.signal_date)]
     out["positive_label"]=pd.Series(pd.NA,index=out.index,dtype="Int64")
     ok=out.realized_d5_return.notna(); out.loc[ok,"positive_label"]=(out.loc[ok,"realized_d5_return"]>0).astype("Int64")
     return out
@@ -174,8 +220,9 @@ def baseline_order(frame: pd.DataFrame) -> pd.DataFrame:
 
 def validate_cache_overlap(training: Mapping[str, pd.DataFrame], evaluation: Mapping[str, pd.DataFrame]) -> None:
     """Fail closed when overlapping ticker/date OHLCV rows differ."""
-    for ticker in sorted(set(training) & set(evaluation)):
-        a, b = _frame(training[ticker]), _frame(evaluation[ticker])
+    tmap={canonical_ticker(k):v for k,v in training.items()}; emap={canonical_ticker(k):v for k,v in evaluation.items()}
+    for ticker in sorted(set(tmap) & set(emap)):
+        a, b = _frame(tmap[ticker]), _frame(emap[ticker])
         common=a.index.intersection(b.index)
         for day in common:
             for col in ("Open", "High", "Low", "Close", "Volume", "AdjClose"):

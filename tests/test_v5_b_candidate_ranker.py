@@ -35,3 +35,13 @@ def test_no_identifier_features_and_atomic_two_pass():
 
 def test_formal_evaluation_is_not_run():
     assert synthetic_artifacts()["summary.json"]
+
+def test_ticker_normalization_and_cache_merge_preserves_history():
+    u=normalize_universe(pd.DataFrame({"ticker":[1301,"1302.T"],"industry":["A","B"]})); assert u.ticker.tolist()==["1301","1302"]
+    a=frame(3); b=frame(3).iloc[1:].copy(); b.index=pd.date_range(a.index[-1],periods=2,freq="B")
+    merged=combine_cache_frames({"1301":a},{"1301":b}); assert merged["1301"].index.is_monotonic_increasing
+
+def test_positive_label_is_na_for_unavailable_target_and_chart_host():
+    f=frame(300); d=f.index[-1]; assert d5_target(f,d) is None
+    from scripts.acquire_v5_b_evaluation_cache import chart_url, HOST
+    assert HOST in chart_url("1301") and "period1=" in chart_url("1301") and ".T" in chart_url("1301")
