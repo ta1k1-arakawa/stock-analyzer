@@ -27,6 +27,7 @@ def _raw_cache(path: Path, exact=False, universe_path: Path|None=None):
         prices,splits,universe=load_v5_cache(path,universe_path); return {"complete":True},prices,splits
     manifest=json.loads((path/"cache_manifest.json").read_text(encoding="utf-8")); prices={}; splits={}
     if manifest.get("complete") is not True: raise ValueError("CACHE_INCOMPLETE")
+    if manifest.get("usable_for_evaluation") is not True: raise ValueError("CACHE_NOT_USABLE_FOR_EVALUATION")
     payloads=manifest.get("payloads",[])
     if manifest.get("ticker_count")!=300 or len(payloads)+len(manifest.get("failed_tickers",[]))!=300: raise ValueError("CACHE_OUTCOME_COUNT_MISMATCH")
     seen=set()
