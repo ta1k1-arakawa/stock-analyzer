@@ -169,10 +169,10 @@ def atomic_write(output: Path, artifacts: Mapping[str, bytes], repo: Path) -> No
 
 
 def synthetic_artifacts() -> dict[str, bytes]:
-    """Small deterministic smoke output; no production data or network."""
-    pred=pd.DataFrame(columns=["evaluation_year","signal_date","ticker","industry","baseline_rank","ai_rank","predicted_d5_return","realized_d5_return","positive_label","training_cutoff","training_row_count",*FEATURES])
-    trades=pd.DataFrame(columns=["arm","evaluation_year","signal_date","ticker","status","quantity","exit_reason","realized_net_profit_yen"])
-    equity=pd.DataFrame(columns=["arm","evaluation_year","date","available_cash","pending_cash","book_equity","mark_to_market_equity","open_positions"])
-    summary={"schema_version":1,"exploratory_only":True,"unused_holdout":False,"deployment_allowed":False,"ai_used":True,"feature_list":list(FEATURES),"feature_hash":feature_hash(),"model_parameters":MODEL_PARAMS,"model_hash":model_hash(),"evaluation_years":list(EVAL_YEARS),"verdict":"V5_B_CANDIDATE_RANKER_EXPLORATORY_BLOCKED","blocked_reason":"SYNTHETIC_NO_TRAINING_CACHE"}
+    """Small deterministic smoke output with two arms and changed order."""
+    pred=pd.DataFrame([{"evaluation_year":2020,"signal_date":"2019-12-30","ticker":"B","industry":"J","baseline_rank":2,"ai_rank":1,"predicted_d5_return":.02,"realized_d5_return":.01,"positive_label":1,"training_cutoff":"2020-01-01","training_row_count":1000,**{f:0.0 for f in FEATURES}}, {"evaluation_year":2020,"signal_date":"2019-12-30","ticker":"A","industry":"I","baseline_rank":1,"ai_rank":2,"predicted_d5_return":-.01,"realized_d5_return":-.02,"positive_label":0,"training_cutoff":"2020-01-01","training_row_count":1000,**{f:0.0 for f in FEATURES}}])
+    trades=pd.DataFrame([{"arm":a,"evaluation_year":2020,"signal_date":"2019-12-30","ticker":t,"status":"FILLED","quantity":100,"exit_reason":"TIME","realized_net_profit_yen":p} for a,t,p in [("BASELINE_RANK","A",-200),("BASELINE_RANK","B",100),("AI_RANK","B",100),("AI_RANK","A",-200)]])
+    equity=pd.DataFrame([{"arm":a,"evaluation_year":2020,"date":"2019-12-30","available_cash":400000,"pending_cash":0,"book_equity":400000,"mark_to_market_equity":400000,"open_positions":0} for a in ("BASELINE_RANK","AI_RANK")])
+    summary={"schema_version":1,"exploratory_only":True,"unused_holdout":False,"deployment_allowed":False,"ai_used":True,"feature_list":list(FEATURES),"feature_hash":feature_hash(),"model_parameters":MODEL_PARAMS,"model_hash":model_hash(),"evaluation_years":list(EVAL_YEARS),"candidate_order_changed":True,"verdict":"V5_B_CANDIDATE_RANKER_EXPLORATORY_NOT_PROMISING","synthetic":True}
     enc=lambda x:x.to_csv(index=False,lineterminator="\n").encode()
     return {"summary.json":(json.dumps(summary,sort_keys=True,separators=(",",":"))+"\n").encode(),"trades.csv":enc(trades),"predictions.csv":enc(pred),"daily_equity.csv":enc(equity)}
