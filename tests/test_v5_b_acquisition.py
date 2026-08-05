@@ -1,5 +1,6 @@
 import json, urllib.error
 from src.v5_b_candidate_ranker import canonical_ticker
+from src.v5_b_candidate_ranker import parse_yahoo_chart_generic
 import scripts.acquire_v5_b_evaluation_cache as acq
 from scripts.acquire_v5_b_evaluation_cache import *
 
@@ -33,3 +34,10 @@ def test_payload_validation_host_symbol_and_lengths():
 
 def test_fixed_ticker_representation():
     assert canonical_ticker("3633.T")=="3633" and chart_url("3633").endswith("includeAdjustedClose=true")
+
+def test_v5_generic_parser_period_and_post_cutoff():
+    x=json.loads(json.dumps(payload())); x["chart"]["result"][0]["timestamp"][1]=1769817600
+    df,s=parse_yahoo_chart_generic(x,"3633"); assert df.index.max()<=pd.Timestamp("2026-01-31")
+    x["chart"]["result"][0]["timestamp"][1]=1769990400
+    try: parse_yahoo_chart_generic(x,"3633"); assert False
+    except ValueError as e: assert str(e)=="PROHIBITED_POST_CUTOFF_DATA"

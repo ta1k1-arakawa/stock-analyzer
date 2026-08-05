@@ -67,6 +67,28 @@ def normalize_universe(universe: pd.DataFrame) -> pd.DataFrame:
     return u
 
 
+def parse_yahoo_chart_generic(payload: Mapping[str, object], expected_ticker: str, min_date="2019-01-01", max_date="2026-01-31") -> tuple[pd.DataFrame, set[pd.Timestamp]]:
+    """V5-B parser: structural/causal validation without V4's historical cutoff."""
+    chart=payload.get("chart",{})
+    if chart.get("error") is not None: raise ValueError("CHART_ERROR")
+    result=chart.get("result") or []
+    if not result: raise ValueError("CHART_RESULT_EMPTY")
+    r=result[0]; meta=r.get("meta",{}); symbol=canonical_ticker(meta.get("symbol",expected_ticker))
+    if symbol!=canonical_ticker(expected_ticker): raise ValueError("SYMBOL_MISMATCH")
+    ts=r.get("timestamp") or []; quote=(r.get("indicators",{}).get("quote") or [{}])[0]; adj=(r.get("indicators",{}).get("adjclose") or [{}])[0].get("adjclose")
+    fields=("open","high","low","close","volume")
+    if not ts or adj is None or any(quote.get(k) is None for k in fields): raise ValueError("OHLCV_STRUCTURE_INVALID")
+    if len(set([len(ts),len(adj)]+[len(quote[k]) for k in fields]))!=1: raise ValueError("OHLCV_LENGTH_MISMATCH")
+    index=pd.to_datetime(ts,unit="s",utc=True).tz_convert("Asia/Tokyo").tz_localize(None).normalize()
+    if index.duplicated().any(): raise ValueError("DUPLICATE_PRICE_DATE")
+    lo,hi=pd.Timestamp(min_date),pd.Timestamp(max_date)
+    if index.min()<lo or index.max()>hi: raise ValueError("PROHIBITED_POST_CUTOFF_DATA")
+    raw=pd.DataFrame({"Open":quote["open"],"High":quote["high"],"Low":quote["low"],"Close":quote["close"],"Adj Close":adj,"Volume":quote["volume"]},index=index)
+    if not np.isfinite(raw.to_numpy(dtype=float)).all(): raise ValueError("NONFINITE_OHLCV")
+    splits={pd.to_datetime(int(e["date"]),unit="s",utc=True).tz_convert("Asia/Tokyo").tz_localize(None).normalize() for e in (r.get("events",{}).get("splits",{}) or {}).values() if e.get("date") is not None}
+    return raw.sort_index(),splits
+
+
 def _atr14(h: pd.Series, l: pd.Series, c: pd.Series) -> pd.Series:
     prev = c.shift(1)
     tr = pd.concat([h-l, (h-prev).abs(), (l-prev).abs()], axis=1).max(axis=1)

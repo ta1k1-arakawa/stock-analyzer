@@ -9,6 +9,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from src.v5_b_candidate_ranker import *
 
 CONFIRM="V5_B_ONE_SHOT_EXPLORATORY_EVALUATION"; BRANCH="v5-b-candidate-ranker"
+EVALUATION_MANIFEST_SHA="797265BF671AF2245A342051FFAD02AA2929D67BA885945E7762149649148AA5"
 
 def _state(repo: Path):
     import subprocess
@@ -38,10 +39,17 @@ def _raw_cache(path: Path, exact=False, universe_path: Path|None=None):
         path_item=path/item["relative_path"]
         if not path_item.resolve().is_relative_to(path.resolve()) or not path_item.exists(): raise ValueError("CACHE_PAYLOAD_INVALID")
         if sha256(path_item.read_bytes()).hexdigest()!=item.get("sha256"): raise ValueError("CACHE_PAYLOAD_HASH_MISMATCH")
-    from src.v4_meta_label_mvp import parse_v4_yahoo_chart
     for item in manifest.get("payloads",[]):
-        payload=json.loads((path/item["relative_path"]).read_text(encoding="utf-8")); prices[str(item["ticker"])],splits[str(item["ticker"])]=parse_v4_yahoo_chart(payload)
+        payload=json.loads((path/item["relative_path"]).read_text(encoding="utf-8")); prices[canonical_ticker(item["ticker"])],splits[canonical_ticker(item["ticker"])]=parse_yahoo_chart_generic(payload,item["ticker"])
     return manifest,prices,splits
+
+def validate_evaluation_cache(path: Path) -> dict[str,object]:
+    body=(path/"cache_manifest.json").read_bytes()
+    if sha256(body).hexdigest().upper()!=EVALUATION_MANIFEST_SHA: raise ValueError("EVALUATION_MANIFEST_SHA_MISMATCH")
+    manifest,prices,_=_raw_cache(path)
+    if manifest.get("success_count")!=300 or manifest.get("failed_count")!=0: raise ValueError("EVALUATION_SUCCESS_COUNT_MISMATCH")
+    if len(prices)!=300: raise ValueError("EVALUATION_PAYLOAD_COUNT_MISMATCH")
+    return {"manifest_sha256":sha256(body).hexdigest(),"payload_count":len(prices),"min_date":min(str(p.index.min().date()) for p in prices.values()),"max_date":max(str(p.index.max().date()) for p in prices.values()),"post_2026_01_rows":sum(int((p.index>pd.Timestamp("2026-01-31")).sum()) for p in prices.values()),"duplicate_dates":sum(int(p.index.duplicated().sum()) for p in prices.values()),"ai_fit":False,"portfolio_simulation":False,"network":False}
 
 def validate_v5a_parity(training_cache: Path, v5a_csv: Path) -> dict[str,int]:
     universe_path=Path(__file__).resolve().parents[1]/"V4_UNIVERSE.csv"; _,prices,splits=_raw_cache(training_cache,True,universe_path); u=pd.read_csv(universe_path); generated=prepare_dataset(prices,u,splits,"2017-01-01","2019-12-31")
@@ -75,9 +83,12 @@ def _formal(args):
     atomic_write(Path(args.output_dir),artifacts,repo); return 0
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--synthetic-smoke-test",action="store_true"); ap.add_argument("--synthetic-scenario-b",action="store_true"); ap.add_argument("--evaluate-cache",action="store_true"); ap.add_argument("--validate-v5a-parity",action="store_true"); ap.add_argument("--training-cache"); ap.add_argument("--evaluation-cache"); ap.add_argument("--v5a-candidates"); ap.add_argument("--output-dir"); ap.add_argument("--confirmation")
+    ap=argparse.ArgumentParser(); ap.add_argument("--synthetic-smoke-test",action="store_true"); ap.add_argument("--synthetic-scenario-b",action="store_true"); ap.add_argument("--evaluate-cache",action="store_true"); ap.add_argument("--validate-v5a-parity",action="store_true"); ap.add_argument("--validate-evaluation-cache",action="store_true"); ap.add_argument("--training-cache"); ap.add_argument("--evaluation-cache"); ap.add_argument("--v5a-candidates"); ap.add_argument("--output-dir"); ap.add_argument("--confirmation")
     a=ap.parse_args()
     if a.evaluate_cache: return _formal(a)
+    if getattr(a,"validate_evaluation_cache",False):
+        if not a.evaluation_cache: raise SystemExit("EVALUATION_CACHE_REQUIRED")
+        print("evaluation cache validation PASS",validate_evaluation_cache(Path(a.evaluation_cache))); return 0
     if getattr(a,"validate_v5a_parity",False):
         if not a.training_cache or not a.v5a_candidates: raise SystemExit("PARITY_ARGUMENTS_REQUIRED")
         print("V5-A parity PASS",validate_v5a_parity(Path(a.training_cache),Path(a.v5a_candidates))); return 0
