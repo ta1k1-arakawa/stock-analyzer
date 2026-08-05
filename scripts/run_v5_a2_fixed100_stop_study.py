@@ -32,5 +32,5 @@ def main(argv=None):
     p=argparse.ArgumentParser(); g=p.add_mutually_exclusive_group(required=True); g.add_argument('--synthetic-smoke-test',action='store_true'); g.add_argument('--evaluate-cache',action='store_true'); p.add_argument('--cache-dir'); p.add_argument('--output-dir'); p.add_argument('--confirmation'); a=p.parse_args(argv)
     if a.synthetic_smoke_test: smoke(); return 0
     if a.confirmation!='V5_A2_ONE_SHOT_EXPLORATORY_EVALUATION' or not a.cache_dir or not a.output_dir: p.error('exact confirmation, --cache-dir, and --output-dir required')
-    repo=Path(__file__).parents[1]; state=repository_state(repo); run_two_pass(Path(a.cache_dir),Path(a.output_dir),repo/'V4_UNIVERSE.csv',repo,state); print('V5-A2 formal cache-only artifacts written'); return 0
+    repo=Path(__file__).parents[1]; state=repository_state(repo,branch='v5-a2-fixed100-stop-study'); run_two_pass(Path(a.cache_dir),Path(a.output_dir),repo/'V4_UNIVERSE.csv',repo,state); print('V5-A2 formal cache-only artifacts written'); return 0
 if __name__=='__main__': raise SystemExit(main())

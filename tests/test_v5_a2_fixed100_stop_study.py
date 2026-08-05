@@ -64,3 +64,14 @@ def test_raw_close_asof_is_causal_and_missing_fails():
 def test_gate_missing_fold_is_false_for_both_fold_conditions():
     base={'net_profit':1,'folds':{'1':1,'2':-1},'fold_filled_counts':{'1':25,'2':25},'profit_factor':2,'mark_to_market_dd_percent':1,'filled_trade_count':100,'safety_audit':{}}
     g=_gate(base); assert not g['each_fold_ge_25'] and g['two_folds_positive'] is False
+
+def test_formal_runner_validates_a2_branch_and_not_v5a(monkeypatch, tmp_path):
+    import scripts.run_v5_a2_fixed100_stop_study as runner
+    seen={}
+    def state(repo, branch='unexpected'):
+        seen['branch']=branch
+        return {'branch':branch,'repository_commit':'HEAD','remote_sha':'HEAD'}
+    monkeypatch.setattr(runner,'repository_state',state)
+    monkeypatch.setattr(runner,'run_two_pass',lambda *args: {})
+    assert runner.main(['--evaluate-cache','--cache-dir',str(tmp_path/'cache'),'--output-dir',str(tmp_path/'out'),'--confirmation','V5_A2_ONE_SHOT_EXPLORATORY_EVALUATION'])==0
+    assert seen['branch']=='v5-a2-fixed100-stop-study' and seen['branch']!='v5-adaptive-portfolio-baseline'
