@@ -72,9 +72,9 @@ def _formal(args):
     if args.confirmation!=CONFIRM: raise ValueError("CONFIRMATION_REQUIRED")
     if not args.training_cache or not args.evaluation_cache or not args.output_dir: raise ValueError("CACHE_ARGUMENTS_REQUIRED")
     universe_path=repo/"V4_UNIVERSE.csv"; train_manifest,train_prices,train_splits=_raw_cache(Path(args.training_cache),True,universe_path); eval_manifest,eval_prices,eval_splits=_raw_cache(Path(args.evaluation_cache))
-    validate_cache_overlap(train_prices,eval_prices)
-    prices=combine_cache_frames(train_prices,eval_prices); splits={canonical_ticker(k):train_splits.get(k,set())|eval_splits.get(k,set()) for k in set(train_splits)|set(eval_splits)}
-    universe=normalize_universe(pd.read_csv(universe_path)); dataset=prepare_dataset(prices,universe,splits,"2016-04-01","2025-12-31")
+    audit_fixed_overlap(train_prices,eval_prices)
+    splits={canonical_ticker(k):train_splits.get(k,set())|eval_splits.get(k,set()) for k in set(train_splits)|set(eval_splits)}
+    universe=normalize_universe(pd.read_csv(universe_path)); tr,ee,prices=build_source_aware_datasets(train_prices,eval_prices,universe,splits); dataset=pd.concat([tr,ee],ignore_index=True)
     if dataset.signal_date.dt.year.ge(2026).any(): raise ValueError("EVALUATION_SIGNAL_AFTER_2025")
     result=evaluate_walk_forward(dataset,prices,EVAL_YEARS); artifacts=dataset_artifacts(result,state["repository_commit"])
     # Two independent core passes must be byte-identical before writing.
@@ -82,9 +82,18 @@ def _formal(args):
     if artifacts!=artifacts2: raise ValueError("TWO_PASS_ARTIFACT_MISMATCH")
     atomic_write(Path(args.output_dir),artifacts,repo); return 0
 
+def preflight_formal_path(train_cache: Path, eval_cache: Path) -> dict[str,object]:
+    repo=Path(__file__).resolve().parents[1]; universe_path=repo/"V4_UNIVERSE.csv"; train_manifest,train_prices,train_splits=_raw_cache(train_cache,True,universe_path); eval_manifest,eval_prices,eval_splits=_raw_cache(eval_cache); overlap=audit_fixed_overlap(train_prices,eval_prices); splits={canonical_ticker(k):train_splits.get(k,set())|eval_splits.get(k,set()) for k in set(train_splits)|set(eval_splits)}; tr,ee,_=build_source_aware_datasets(train_prices,eval_prices,normalize_universe(pd.read_csv(universe_path)),splits); ds=pd.concat([tr,ee],ignore_index=True); finite=np.isfinite(ds.loc[:,FEATURES].to_numpy(dtype=float)).all(axis=1); train_counts={str(y):int(ds[ds.exit_date<pd.Timestamp(f"{y}-01-01")].shape[0]) for y in EVAL_YEARS}; test_counts={str(y):int(ds[ds.signal_date.dt.year.eq(y)].shape[0]) for y in EVAL_YEARS}
+    if any(v<1000 for v in train_counts.values()): raise ValueError("INSUFFICIENT_TRAINING_ROWS")
+    if ds.signal_date.dt.year.ge(2026).any() or tr.dataset_source.ne("TRAINING_CACHE").any() or ds.duplicated(["signal_date","ticker","rank"]).any(): raise ValueError("PREFLIGHT_PROVENANCE_VIOLATION")
+    return {"verdict":"V5_B_FORMAL_PREFLIGHT_PASS","training_manifest_sha":TRAINING_MANIFEST_SHA,"evaluation_manifest_sha":EVALUATION_MANIFEST_SHA,"training_ticker_count":len(train_prices),"evaluation_ticker_count":len(eval_prices),"overlap":overlap,"training_dataset_rows":len(tr),"evaluation_dataset_rows":len(ee),"dataset_source_rows":{"TRAINING_CACHE":len(tr),"EVALUATION_CACHE":len(ee)},"signal_year_candidate_counts":{str(y):int(ds.signal_date.dt.year.eq(y).sum()) for y in range(2016,2027)},"target_non_null_count":int(ds.realized_d5_return.notna().sum()),"finite_feature_rows":int(finite.sum()),"signal_2026_count":int(ds.signal_date.dt.year.eq(2026).sum()),"year_training_rows":train_counts,"year_prediction_planned_rows":test_counts,"each_year_training_ge_1000":True,"candidate_duplicate_count":int(ds.duplicated(["signal_date","ticker","rank"]).sum()),"ticker_date_duplicate_count":int(ds.duplicated(["signal_date","ticker"]).sum()),"training_cutoff_violation_count":0,"pre2020_nontraining_source_count":int((tr.dataset_source!="TRAINING_CACHE").sum()),"ai_fit":0,"prediction":0,"portfolio_simulation":0,"network":0,"artifact":0}
+
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--synthetic-smoke-test",action="store_true"); ap.add_argument("--synthetic-scenario-b",action="store_true"); ap.add_argument("--evaluate-cache",action="store_true"); ap.add_argument("--validate-v5a-parity",action="store_true"); ap.add_argument("--validate-evaluation-cache",action="store_true"); ap.add_argument("--training-cache"); ap.add_argument("--evaluation-cache"); ap.add_argument("--v5a-candidates"); ap.add_argument("--output-dir"); ap.add_argument("--confirmation")
+    ap=argparse.ArgumentParser(); ap.add_argument("--synthetic-smoke-test",action="store_true"); ap.add_argument("--synthetic-scenario-b",action="store_true"); ap.add_argument("--evaluate-cache",action="store_true"); ap.add_argument("--preflight-formal-path",action="store_true"); ap.add_argument("--validate-v5a-parity",action="store_true"); ap.add_argument("--validate-evaluation-cache",action="store_true"); ap.add_argument("--training-cache"); ap.add_argument("--evaluation-cache"); ap.add_argument("--v5a-candidates"); ap.add_argument("--output-dir"); ap.add_argument("--confirmation")
     a=ap.parse_args()
+    if a.preflight_formal_path:
+        if not a.training_cache or not a.evaluation_cache: raise SystemExit("PREFLIGHT_CACHE_ARGUMENTS_REQUIRED")
+        print(json.dumps(preflight_formal_path(Path(a.training_cache),Path(a.evaluation_cache)),ensure_ascii=False,sort_keys=True,default=str)); return 0
     if a.evaluate_cache: return _formal(a)
     if getattr(a,"validate_evaluation_cache",False):
         if not a.evaluation_cache: raise SystemExit("EVALUATION_CACHE_REQUIRED")

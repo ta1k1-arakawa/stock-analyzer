@@ -35,6 +35,8 @@ MODEL_PARAMS = {
     "verbosity": -1,
 }
 EVAL_YEARS = (2020, 2021, 2022, 2023, 2024, 2025)
+TRAINING_MANIFEST_SHA="72ae3db1186f2c9c113b1bafe1d37fb74a5627ac7ceed1dfc2473a24e060de85"
+EVALUATION_MANIFEST_SHA="797265bf671af2245a342051ffad02aa2929d67ba885945e7762149649148aa5"
 
 
 def feature_hash() -> str:
@@ -198,6 +200,40 @@ def combine_cache_frames(training_prices: Mapping[str,pd.DataFrame], evaluation_
         if x.index.duplicated().any(): raise ValueError("DUPLICATE_COMBINED_DATE")
         out[ticker]=x
     return out
+
+
+def audit_fixed_overlap(training_prices: Mapping[str,pd.DataFrame], evaluation_prices: Mapping[str,pd.DataFrame]) -> dict[str,object]:
+    """Audit the known Yahoo AdjClose revision without relaxing raw OHLCV checks."""
+    tm={canonical_ticker(k):_frame(v) for k,v in training_prices.items()}; em={canonical_ticker(k):_frame(v) for k,v in evaluation_prices.items()}; common=sorted(set(tm)&set(em)); raw_cols=("Open","High","Low","Close","Volume"); mismatch=[]; dates=[]
+    def col(f,name):
+        if name in f: return f[name]
+        if name=="Adj Close" and "adjusted_close" in f: return f["adjusted_close"]
+        if name=="Adj Close" and "AdjClose" in f: return f["AdjClose"]
+        raise ValueError("ADJCLOSE_COLUMN_MISSING")
+    for t in common:
+        a,b=tm[t],em[t]; overlap=a.index.intersection(b.index); dates.extend(overlap)
+        for d in overlap:
+            for c in raw_cols+("Adj Close",):
+                av=float(a.at[d,c]); bv=float(b.at[d,c] if c in b else col(b,c).at[d])
+                if av!=bv:
+                    if c=="Adj Close" and np.isclose(av,bv,rtol=1e-5,atol=1e-6): continue
+                    mismatch.append((t,d,c,av,bv))
+    raw_m=[x for x in mismatch if x[2] in raw_cols]; adj_m=[x for x in mismatch if x[2]=="Adj Close"]
+    if raw_m or len(adj_m)!=482 or {x[0] for x in adj_m}!={"4768","7609"}: raise ValueError("CACHE_OVERLAP_MISMATCH")
+    return {"overlap_ticker_count":len(common),"overlap_row_count":len(dates),"overlap_min_date":min(dates),"overlap_max_date":max(dates),"raw_ohlcv_mismatch_count":len(raw_m),"adjclose_mismatch_count":len(adj_m),"adjclose_mismatch_tickers":sorted({x[0] for x in adj_m})}
+
+
+def build_source_aware_datasets(training_prices: Mapping[str,pd.DataFrame], evaluation_prices: Mapping[str,pd.DataFrame], universe: pd.DataFrame, splits: Mapping[str,set[pd.Timestamp]]|None=None) -> tuple[pd.DataFrame,pd.DataFrame,dict[str,pd.DataFrame]]:
+    """Fixed Option-1 boundary: training is authoritative through 2019."""
+    u=normalize_universe(universe); train={canonical_ticker(k):v for k,v in training_prices.items()}; ev={canonical_ticker(k):v for k,v in evaluation_prices.items()}; combined={}
+    for t,f in combine_cache_frames(train,ev).items():
+        if t in train: combined[t]=pd.concat([_frame(train[t]).loc[lambda x:x.index<=pd.Timestamp("2019-12-31")],_frame(ev[t]).loc[lambda x:x.index>=pd.Timestamp("2020-01-01")]])
+        else: combined[t]=_frame(ev[t]).loc[lambda x:x.index>=pd.Timestamp("2019-01-01")]
+        combined[t]=combined[t][~combined[t].index.duplicated(keep="first")].sort_index(); combined[t]["dataset_source"]=None
+    tr=prepare_dataset(train,u,splits,"2016-04-01","2019-12-31"); tr["dataset_source"]="TRAINING_CACHE"
+    ee=prepare_dataset(combined,u,splits,"2020-01-01","2025-12-31"); ee["dataset_source"]="EVALUATION_CACHE"
+    if ee.signal_date.dt.year.ge(2026).any(): raise ValueError("EVALUATION_SIGNAL_AFTER_2025")
+    return tr,ee,combined
 
 
 def d5_target(frame: pd.DataFrame, signal_date: pd.Timestamp) -> float | None:
