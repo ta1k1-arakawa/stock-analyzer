@@ -190,9 +190,14 @@ Formal artifacts: `C:\taiki\hobbies\v5-b-candidate-ranker-output`
 - design status: `FROZEN`
 - design branch: `v6-a-confirmed-breakout-baseline`
 - design commit: `2e227787067805138c40e19f33a52cb03ef730fe`
-- implementation_started=false
+- design_status=FROZEN
+- implementation_status=ACCEPTED
+- implementation_commit=`ecd8a0f7f6341cf78e7d7bd8590c83ea934308e7`
 - formal_run_started=false
-- next_authorized_action=`IMPLEMENTATION_AND_PREFLIGHT`
+- formal_result=NOT_RUN
+- The original implementation commit `3cac45b036f34e8402ada9385cf07c606beac743` was not formal-ready because concentration metrics and safety counters were fixed zeros and aggregate drawdown crossed independent fold boundaries.
+- The single allowed genuine implementation-bug retry was used before any formal evaluation.
+- next_authorized_action=`ONE_SHOT_FORMAL_EXPLORATORY_EVALUATION`
 
 ## 6. Known limitations and artifact caveats
 
@@ -264,9 +269,12 @@ Purpose: Replace the shallow-pullback candidate family with a non-AI, broad-mark
 V6-A design status=FROZEN
 design branch=v6-a-confirmed-breakout-baseline
 design commit=2e227787067805138c40e19f33a52cb03ef730fe
-implementation_started=false
+design_status=FROZEN
+implementation_status=ACCEPTED
+implementation_commit=ecd8a0f7f6341cf78e7d7bd8590c83ea934308e7
 formal_run_started=false
-next_authorized_action=IMPLEMENTATION_AND_PREFLIGHT
+formal_result=NOT_RUN
+next_authorized_action=ONE_SHOT_FORMAL_EXPLORATORY_EVALUATION
 ```
 
 ## 11. State update protocol
