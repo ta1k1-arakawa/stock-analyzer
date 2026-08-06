@@ -180,6 +180,20 @@ Formal artifacts: `C:\taiki\hobbies\v5-b-candidate-ranker-output`
 | summary.json | `2394928FCD711E4A8915DC0C7E87A57E6221696A9FA004BE845F7FFF421996FF` |
 | trades.csv | `1DC70D9AD63697AA26D944C973398094785B7B72041EADD8584F13951743A920` |
 
+### V6-A confirmed breakout baseline
+
+- hypothesis family: broad-market-gated volatility-contraction breakout with volume confirmation
+- exit: fixed D10 TIME exit
+- AI: not used
+- formal status: not run
+- deployment: not allowed
+- design status: `FROZEN`
+- design branch: `v6-a-confirmed-breakout-baseline`
+- design commit: `2e227787067805138c40e19f33a52cb03ef730fe`
+- implementation_started=false
+- formal_run_started=false
+- next_authorized_action=`IMPLEMENTATION_AND_PREFLIGHT`
+
 ## 6. Known limitations and artifact caveats
 
 The V5-B scientific `NOT_PROMISING` conclusion is fixed and does not require rerunning.
@@ -247,9 +261,12 @@ Current next research task: `V6-A confirmed breakout baseline`.
 Purpose: Replace the shallow-pullback candidate family with a non-AI, broad-market-gated, volatility-contraction breakout strategy with volume confirmation and a fixed D10 exit.
 
 ```text
-DESIGN_NOT_YET_CREATED
+V6-A design status=FROZEN
+design branch=v6-a-confirmed-breakout-baseline
+design commit=2e227787067805138c40e19f33a52cb03ef730fe
 implementation_started=false
 formal_run_started=false
+next_authorized_action=IMPLEMENTATION_AND_PREFLIGHT
 ```
 
 ## 11. State update protocol
@@ -283,4 +300,3 @@ Any mismatch is resolved by the applicable authority above; PROJECT_STATE descri
 - The do-not-rerun registry is present.
 - The next step is V6-A.
 - `git diff --check`: to be run before commit.
-
