@@ -12,14 +12,27 @@ import copy
 import json
 import math
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+
+def _parse_iso_date(value: str) -> date:
+    if not isinstance(value, str):
+        raise ValueError("INVALID_DATE_FORMAT")
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d").date()
+    except (TypeError, ValueError) as error:
+        raise ValueError("INVALID_DATE_FORMAT") from error
+    if parsed.isoformat() != value:
+        raise ValueError("INVALID_DATE_FORMAT")
+    return parsed
 
 
 def read_price(frames: Mapping[str, Mapping[str, Mapping[str, float]]], ticker: str,
                requested_date: str, field: str, engine_day: str) -> float:
     """Read one finite price, failing closed on invalid or future access."""
-    if requested_date > engine_day:
+    if _parse_iso_date(requested_date) > _parse_iso_date(engine_day):
         raise ValueError("FUTURE_PRICE_ACCESS_PROHIBITED")
     if ticker not in frames:
         raise ValueError("TICKER_NOT_FOUND")
@@ -117,6 +130,9 @@ def _require_candidate(row: Mapping[str, Any], calendar: Sequence[str]) -> None:
     signal = str(row["signal_date"])
     entry = str(row["entry_attempt_date"])
     planned = str(row["planned_exit_date"])
+    _parse_iso_date(signal)
+    _parse_iso_date(entry)
+    _parse_iso_date(planned)
     if signal not in calendar or entry not in calendar or planned not in calendar:
         raise ValueError("CANDIDATE_DATE_NOT_IN_COMMON_CALENDAR")
     index = {day: i for i, day in enumerate(calendar)}
@@ -142,10 +158,12 @@ class CausalEventEngine:
                  starting_cash: float = 400000.0) -> None:
         self.frames = frames
         self.calendar = tuple(calendar)
+        self._calendar_dates = tuple(_parse_iso_date(day) for day in self.calendar)
         if len(self.calendar) != len(set(self.calendar)):
             raise ValueError("DUPLICATE_COMMON_CALENDAR_DATE")
-        if tuple(sorted(self.calendar)) != self.calendar:
+        if tuple(sorted(self._calendar_dates)) != self._calendar_dates:
             raise ValueError("COMMON_CALENDAR_NOT_SORTED")
+        self._calendar_index = {day: index for index, day in enumerate(self.calendar)}
         self.state = EngineState(available_cash=float(starting_cash))
         self.candidates = [dict(row) for row in candidates]
         self._candidate_ids: set[str] = set()
@@ -191,6 +209,19 @@ class CausalEventEngine:
                 return row
         raise ValueError("LEDGER_ORDER_NOT_FOUND")
 
+    def read_engine_price(self, ticker: str, requested_date: str, field: str,
+                          engine_day: str) -> float:
+        try:
+            return read_price(self.frames, ticker, requested_date, field, engine_day)
+        except ValueError as error:
+            if str(error) == "FUTURE_PRICE_ACCESS_PROHIBITED":
+                self._safety["future_price_access_violation_count"] += 1
+                self.state.event_audit.append({"event": "FUTURE_PRICE_ACCESS_PROHIBITED",
+                                               "date": engine_day,
+                                               "requested_date": requested_date,
+                                               "ticker": ticker, "field": field})
+            raise
+
     def _ensure_ledger(self, order: PendingOrder) -> dict[str, Any]:
         for row in self.state.completed_trades:
             if row["order_id"] == order.order_id:
@@ -211,7 +242,8 @@ class CausalEventEngine:
         for item in proceeds:
             self.state.available_cash += item.proceeds
             self.state.event_audit.append({"event": "PROCEEDS_RELEASED", "date": day,
-                                           "order_id": item.order_id, "amount": item.proceeds})
+                                           "order_id": item.order_id, "amount": item.proceeds,
+                                           "exit_date": item.exit_date})
         if self.state.available_cash < 0:
             self._safety["negative_cash_count"] += 1
 
@@ -222,10 +254,10 @@ class CausalEventEngine:
             ledger = self._ensure_ledger(order)
             cash_before = self.state.available_cash
             position_count_before = len(self.state.open_positions)
-            signal_close = read_price(self.frames, order.ticker, order.signal_date, "Close", day)
+            signal_close = self.read_engine_price(order.ticker, order.signal_date, "Close", day)
             if not math.isclose(signal_close, order.signal_raw_close, rel_tol=0.0, abs_tol=1e-12):
                 raise ValueError("CANDIDATE_SIGNAL_CLOSE_MISMATCH")
-            raw_open = read_price(self.frames, order.ticker, day, "Open", day)
+            raw_open = self.read_engine_price(order.ticker, day, "Open", day)
             tickers = {position.ticker for position in self.state.open_positions}
             industries = {position.industry for position in self.state.open_positions}
             reason = None
@@ -282,7 +314,8 @@ class CausalEventEngine:
         exits = [position for position in self.state.open_positions if position.planned_exit_date == day]
         for position in exits:
             next_day = self._next_day(day)
-            raw_open = read_price(self.frames, position.ticker, day, "Open", day)
+            cash_before_exit = self.state.available_cash
+            raw_open = self.read_engine_price(position.ticker, day, "Open", day)
             exit_price = raw_open * 0.9997
             proceeds = exit_price * position.quantity
             self.state.open_positions.remove(position)
@@ -296,19 +329,23 @@ class CausalEventEngine:
                            "realized_net_return_percent": profit / float(ledger["entry_cost"]) * 100.0,
                            "proceeds_available_date": next_day})
             self.state.event_audit.append({"event": "EXIT_EXECUTED", "date": day,
-                                           "order_id": position.order_id, "proceeds": proceeds,
-                                           "availability_date": next_day})
+                                           "order_id": position.order_id, "exit_proceeds": proceeds,
+                                           "cash_before_exit": cash_before_exit,
+                                           "cash_after_exit": self.state.available_cash,
+                                           "proceeds_available_date": next_day,
+                                           "exit_date": day})
 
     def phase4_record_equity(self, day: str) -> None:
-        book = self.state.available_cash + sum(p.entry_cost for p in self.state.open_positions)
         pending_total = sum(item.proceeds for items in self.state.pending_proceeds_by_available_date.values()
                              for item in items)
+        book = self.state.available_cash + sum(p.entry_cost for p in self.state.open_positions) + pending_total
         mtm = self.state.available_cash + pending_total
         for position in self.state.open_positions:
-            close = read_price(self.frames, position.ticker, day, "Close", day)
+            close = self.read_engine_price(position.ticker, day, "Close", day)
             mtm += close * position.quantity
         self.state.daily_equity.append({"date": day, "book_equity": book,
                                         "mtm_equity": mtm, "available_cash": self.state.available_cash,
+                                        "pending_proceeds": pending_total,
                                         "open_position_count": len(self.state.open_positions)})
 
     def phase5_queue_signals(self, day: str) -> None:
@@ -361,9 +398,23 @@ class CausalEventEngine:
             1 for row in self.state.daily_equity if float(row["available_cash"]) < 0
         ) + sum(1 for event in self.state.event_audit
                 if event["event"] == "CASH_DEDUCTED" and float(event["cash_after"]) < 0)
-        counters["same_day_proceeds_reuse_count"] = sum(
-            1 for row in self.state.completed_trades
-            if row["status"] == "CLOSED" and row["exit_execution_date"] == row["entry_state_transition_date"])
+        reuse_count = 0
+        for event in self.state.event_audit:
+            if event["event"] == "EXIT_EXECUTED":
+                if float(event["cash_after_exit"]) > float(event["cash_before_exit"]):
+                    reuse_count += 1
+                if event["proceeds_available_date"] <= event["exit_date"]:
+                    reuse_count += 1
+        indexed_events = list(enumerate(self.state.event_audit))
+        for index, event in indexed_events:
+            if event["event"] == "ENTRY_FILLED":
+                if any(other["event"] == "EXIT_EXECUTED" and other["date"] == event["date"]
+                       and other_index < index for other_index, other in indexed_events):
+                    reuse_count += 1
+        for event in self.state.event_audit:
+            if event["event"] == "PROCEEDS_RELEASED" and _parse_iso_date(event["date"]) <= _parse_iso_date(event["exit_date"]):
+                reuse_count += 1
+        counters["same_day_proceeds_reuse_count"] = reuse_count
         counters["max_position_violation_count"] = sum(
             1 for event in self.state.event_audit
             if event["event"] == "ENTRY_FILLED" and event.get("position_count_after", 0) > 2)
@@ -375,8 +426,8 @@ class CausalEventEngine:
         counters["industry_overlap_violation_count"] = sum(
             1 for left in filled for right in filled
             if left["order_id"] < right["order_id"] and left["industry"] == right["industry"]
-            and left["entry_state_transition_date"] < right["planned_exit_date"]
-            and right["entry_state_transition_date"] < left["planned_exit_date"])
+            and _parse_iso_date(left["entry_state_transition_date"]) <= _parse_iso_date(right["exit_execution_date"] or right["planned_exit_date"])
+            and _parse_iso_date(right["entry_state_transition_date"]) <= _parse_iso_date(left["exit_execution_date"] or left["planned_exit_date"]))
         counters["future_price_access_violation_count"] = sum(
             1 for event in self.state.event_audit if event["event"] == "FUTURE_PRICE_ACCESS_PROHIBITED")
         return counters
@@ -386,7 +437,7 @@ def validate_event_invariants(engine: CausalEventEngine) -> None:
     for row in engine.state.completed_trades:
         if row["order_created_date"] != row["signal_date"]:
             raise ValueError("INVARIANT_ORDER_CREATED_DATE")
-        if row["status"] == "FILLED":
+        if row["status"] in {"FILLED", "CLOSED"}:
             if row["entry_state_transition_date"] != row["entry_attempt_date"]:
                 raise ValueError("INVARIANT_ENTRY_STATE_DATE")
             if row["entry_price_source_date"] != row["entry_attempt_date"]:
@@ -427,8 +478,8 @@ def concentration_metrics(trades: Sequence[Mapping[str, Any]]) -> dict[str, floa
     industry_totals: dict[str, float] = {}
     for row in positive:
         industry_totals[str(row["industry"])] = industry_totals.get(str(row["industry"]), 0.0) + float(row["realized_net_profit_yen"])
-    return {"top5_positive_profit_share_percent": top5 / total * 100.0 if total else 0.0,
-            "max_industry_positive_profit_share_percent": max(industry_totals.values(), default=0.0) / total * 100.0 if total else 0.0}
+    return {"top5_positive_profit_share": top5 / total if total else 0.0,
+            "max_industry_positive_profit_share": max(industry_totals.values(), default=0.0) / total if total else 0.0}
 
 
 def _dates(count: int = 21) -> list[str]:
@@ -513,7 +564,7 @@ def _artifact_bytes(engine: CausalEventEngine, candidates: Sequence[Mapping[str,
         "summary.json": (json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"),
         "trades.csv": csv_bytes(LEDGER_FIELDS, trades),
         "candidates.csv": csv_bytes(candidate_fields, candidate_rows),
-        "daily_equity.csv": csv_bytes(["date", "book_equity", "mtm_equity", "available_cash", "open_position_count"], engine.state.daily_equity),
+        "daily_equity.csv": csv_bytes(["date", "pending_proceeds", "book_equity", "mtm_equity", "available_cash", "open_position_count"], engine.state.daily_equity),
     }
 
 
@@ -529,8 +580,9 @@ def run_synthetic_golden() -> SyntheticGoldenResult:
     calendar, frames, candidates = synthetic_fixture()
     engine = CausalEventEngine(frames, calendar, candidates).run()
     scenario_b = synthetic_scenario_b()
+    guard_engine = CausalEventEngine(frames, calendar, [])
     try:
-        read_price(frames, "AAA", calendar[1], "Open", calendar[0])
+        guard_engine.read_engine_price("AAA", calendar[1], "Open", calendar[0])
     except ValueError as error:
         future_error = str(error)
     else:
