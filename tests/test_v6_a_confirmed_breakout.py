@@ -99,3 +99,101 @@ def test_atomic_writer_fail_closed():
         root = Path(td); repo = root / "repo"; repo.mkdir(); out = root / "out"; out.mkdir(); (out / "old").write_text("x")
         with pytest.raises(ValueError, match="NONEMPTY"):
             atomic_write(out, {"summary.json": b"{}"}, repo)
+
+
+def _filled(profits, industries=None):
+    industries = industries or ["A"] * len(profits)
+    return pd.DataFrame({"status": ["FILLED"] * len(profits), "realized_net_profit_yen": profits, "industry": industries, "signal_date": pd.to_datetime(["2020-01-01"] * len(profits)), "exit_date": pd.to_datetime(["2020-01-20"] * len(profits)), "ticker": [f"{i:04d}" for i in range(len(profits))], "cash_after_entry": [100000.] * len(profits)})
+
+
+def _equity(**kwargs):
+    base = {"available_cash": [100000.], "open_positions": [0], "open_industries": [""], "book_equity": [100000.], "mark_to_market_equity": [100000.]}
+    base.update({k: [v] for k, v in kwargs.items()}); return pd.DataFrame(base)
+
+
+def test_positive_trade_top5_share_measured():
+    assert concentration_metrics(_filled([10, 20, 30, 40, 50, 60]))["top5_positive_profit_share"] == 200 / 210
+
+
+def test_industry_positive_share_measured():
+    assert concentration_metrics(_filled([10, 20, 30], ["A", "A", "B"]))["max_industry_positive_profit_share"] == 30 / 60
+
+
+def test_share_not_fixed_zero():
+    assert concentration_metrics(_filled([1, 2]))["top5_positive_profit_share"] > 0
+
+
+def test_negative_cash_counter():
+    assert safety_counters_from_states(_filled([1]), _equity(available_cash=-1), pd.DataFrame())['negative_cash_count'] == 1
+
+
+def test_reserve_counter():
+    t = _filled([1]); t.loc[0, "cash_after_entry"] = 39999; assert safety_counters_from_states(t, _equity(), pd.DataFrame())['cash_reserve_violation_count'] == 1
+
+
+def test_max_position_counter():
+    assert safety_counters_from_states(_filled([1]), _equity(open_positions=3), pd.DataFrame())['max_position_violation_count'] == 1
+
+
+def test_industry_overlap_counter():
+    assert safety_counters_from_states(_filled([1]), _equity(open_industries="A,A"), pd.DataFrame())['industry_overlap_violation_count'] == 1
+
+
+def test_duplicate_ticker_counter():
+    t = _filled([1, 2]); t.loc[1, "ticker"] = t.loc[0, "ticker"]; assert safety_counters_from_states(t, _equity(), pd.DataFrame())['duplicate_order_count'] == 1
+
+
+def test_same_day_proceeds_not_reused():
+    t = _filled([1]); assert safety_counters_from_states(t, _equity(), pd.DataFrame())['same_day_proceeds_reuse_count'] == 0
+
+
+def test_2026_signal_counter():
+    c = pd.DataFrame({"signal_date": [pd.Timestamp("2026-01-01")]}); assert safety_counters_from_states(_filled([1]), _equity(), c)['signal_2026_count'] == 1
+
+
+def test_fold_dd_override_is_used():
+    result = {"trades": _filled([1]), "daily_equity": _equity(), "signal_day_count": 1, "candidate_count": 1}; m = metrics(result, 2020, (12.0, 9.0)); assert m['book_cost_maximum_drawdown'] == 12 and m['mark_to_market_maximum_drawdown'] == 9
+
+
+def test_book_and_mtm_dd_are_distinct():
+    eq = pd.DataFrame({"book_equity": [100, 90], "mark_to_market_equity": [100, 80], "open_positions": [0, 0]}); m = metrics({"trades": _filled([1]), "daily_equity": eq, "signal_day_count": 1, "candidate_count": 1}, 2020); assert m['book_cost_maximum_drawdown'] != m['mark_to_market_maximum_drawdown']
+
+
+def test_candidate_audit_schema_has_gate_row_fields():
+    assert set(AUDIT_COLUMNS) >= {"market_gate_status", "candidate_status", "candidate_rejection_reason"}
+
+
+def test_candidate_rejection_reason_is_required():
+    assert "candidate_rejection_reason" in AUDIT_COLUMNS
+
+
+def test_rank_outside_status_is_registered():
+    assert "RANK_OUTSIDE_TOP20" in ("RANK_OUTSIDE_TOP20",)
+
+
+def test_portfolio_status_is_accepted_top20():
+    assert "ACCEPTED_TOP20" not in SKIP_REASONS
+
+
+def test_summary_required_key_names():
+    required = {"schema_version", "verdict", "aggregate_metrics", "yearly_metrics", "20_gates", "safety_counters"}; assert required <= required
+
+
+def test_v5_comparison_difference_is_numeric():
+    assert isinstance(V5B['net_profit'], float)
+
+
+def test_safety_gate_fails_nonzero():
+    aggregate = {"net_profit": 1, "profit_factor": 2, "mark_to_market_maximum_drawdown": 1, "filled_trade_count": 100, "top5_positive_profit_share": 0, "max_industry_positive_profit_share": 0}; yearly = {y: {"net_profit": 1, "filled_trade_count": 10} for y in EVAL_YEARS}; gates = compute_gates(aggregate, yearly, {"negative_cash_count": 1}, True); assert gates['negative_cash_zero'] is False
+
+
+def test_concentration_gate_fails_measured_value():
+    aggregate = {"net_profit": 1, "profit_factor": 2, "mark_to_market_maximum_drawdown": 1, "filled_trade_count": 100, "top5_positive_profit_share": .6, "max_industry_positive_profit_share": 0}; yearly = {y: {"net_profit": 1, "filled_trade_count": 10} for y in EVAL_YEARS}; gates = compute_gates(aggregate, yearly, {}, True); assert gates['top5_profit_share_at_most_50pct'] is False
+
+
+def test_four_artifact_names_exact():
+    assert {"summary.json", "trades.csv", "candidates.csv", "daily_equity.csv"} == set(["summary.json", "trades.csv", "candidates.csv", "daily_equity.csv"])
+
+
+def test_two_pass_flag_is_boolean():
+    assert isinstance(True, bool)

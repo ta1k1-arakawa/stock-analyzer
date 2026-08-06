@@ -47,7 +47,7 @@ def synthetic_prices(seed: int = 7, tickers: int = 300, days: int = 290) -> tupl
 def synthetic_smoke() -> dict[str, object]:
     frames, universe, splits, cal = synthetic_prices()
     # Smoke uses the same feature/candidate path and checks the simulator path.
-    candidates, gates = generate_candidates(frames, universe, splits, cal, "2019-12-31", "2019-12-31")
+    candidates, gates, audit = generate_candidates(frames, universe, splits, cal, "2019-12-31", "2019-12-31")
     if len(candidates):
         result = simulate_fold(candidates, frames, cal, 2019); yearly = {2019: metrics(result, 2019)}
     else:
@@ -58,7 +58,7 @@ def synthetic_smoke() -> dict[str, object]:
     # Disposable smoke artifacts validate the four schemas and deterministic writer path.
     with tempfile.TemporaryDirectory(prefix="v6a-smoke-") as td:
         out = Path(td) / "output";
-        artifacts = {"summary.json": (json.dumps({"schema_version": "v6-A", "verdict": verdict_from_gates(gates20), "20_gates": gates20}, sort_keys=True, separators=(",", ":")) + "\n").encode(), "trades.csv": b"\n", "candidates.csv": b"\n", "daily_equity.csv": b"\n"}
+        artifacts = {"summary.json": (json.dumps({"schema_version": "v6-A", "verdict": verdict_from_gates(gates20), "aggregate_metrics": aggregate, "yearly_metrics": yearly, "20_gates": gates20, "safety_counters": result.get("safety_counters", {}), "two_pass_byte_identical": True}, sort_keys=True, separators=(",", ":")) + "\n").encode(), "trades.csv": result["trades"].to_csv(index=False, lineterminator="\n").encode(), "candidates.csv": audit.reindex(columns=AUDIT_COLUMNS).to_csv(index=False, lineterminator="\n").encode(), "daily_equity.csv": result["daily_equity"].to_csv(index=False, lineterminator="\n").encode()}
         atomic_write(out, artifacts, Path.cwd())
         first = {p.name: p.read_bytes() for p in out.iterdir()}
         out2 = Path(td) / "output2"; atomic_write(out2, artifacts, Path.cwd()); second = {p.name: p.read_bytes() for p in out2.iterdir()}
@@ -83,18 +83,19 @@ def evaluate(args: argparse.Namespace) -> int:
     if output.exists() and (output.is_file() or any(output.iterdir())): raise ValueError("OUTPUT_DIRECTORY_NONEMPTY_OR_FILE")
     if output.is_relative_to(repo.resolve()): raise ValueError("OUTPUT_INSIDE_REPOSITORY_PROHIBITED")
     tm, tp, ts = load_cache(Path(args.training_cache), TRAINING_MANIFEST_SHA, universe); em, ep, es = load_cache(Path(args.evaluation_cache), EVALUATION_MANIFEST_SHA, universe)
-    audit_overlap(tp, ep); frames = combine_source_aware(tp, ep); splits = {t: ts.get(t, set()) | es.get(t, set()) for t in frames}; cal = common_calendar(frames); candidates, gate_audit = generate_candidates(frames, universe, splits, cal)
+    audit_overlap(tp, ep); frames = combine_source_aware(tp, ep); splits = {t: ts.get(t, set()) | es.get(t, set()) for t in frames}; cal = common_calendar(frames); candidates, gate_audit, candidate_audit = generate_candidates(frames, universe, splits, cal)
     def core() -> dict[str, bytes]:
         results = {y: simulate_fold(candidates, frames, cal, y) for y in EVAL_YEARS}
         yearly = {y: metrics(results[y], y) for y in EVAL_YEARS}
         all_trades = pd.concat([results[y]["trades"] for y in EVAL_YEARS], ignore_index=True)
         all_eq = pd.concat([results[y]["daily_equity"] for y in EVAL_YEARS], ignore_index=True)
-        aggregate = metrics({"trades": all_trades, "daily_equity": all_eq, "signal_day_count": int(candidates.signal_date.nunique()), "candidate_count": len(candidates)}, 0)
-        aggregate["top5_positive_profit_share"] = 0.0; aggregate["max_industry_positive_profit_share"] = 0.0
-        safety = {k: 0 for k in ("negative_cash_count", "same_day_proceeds_reuse_count", "duplicate_order_count", "max_position_violation_count", "cash_reserve_violation_count", "industry_overlap_violation_count", "signal_2026_count")}
+        aggregate = metrics({"trades": all_trades, "daily_equity": all_eq, "signal_day_count": int(candidates.signal_date.nunique()), "candidate_count": len(candidates)}, 0, (max(yearly[y]["book_cost_maximum_drawdown"] for y in EVAL_YEARS), max(yearly[y]["mark_to_market_maximum_drawdown"] for y in EVAL_YEARS)))
+        aggregate.update(concentration_metrics(all_trades))
+        safety = {k: sum(int(results[y].get("safety_counters", {}).get(k, 0)) for y in EVAL_YEARS) for k in ("negative_cash_count", "same_day_proceeds_reuse_count", "duplicate_order_count", "max_position_violation_count", "cash_reserve_violation_count", "industry_overlap_violation_count", "signal_2026_count")}
         gates20 = compute_gates(aggregate, yearly, safety, True)
-        summary = {"schema_version": "V6-A-1", "verdict": verdict_from_gates(gates20), "repository_commit": state["repository_commit"], "exploratory_only": True, "unused_holdout": False, "deployment_allowed": False, "ai_used": False, "survivorship_bias": True, "training_manifest_sha": TRAINING_MANIFEST_SHA, "evaluation_manifest_sha": EVALUATION_MANIFEST_SHA, "evaluation_years": EVAL_YEARS, "candidate_rules": "V6-A frozen design", "portfolio_rules": "V6-A frozen design", "aggregate_metrics": aggregate, "yearly_metrics": yearly, "20_gates": gates20, "safety_counters": safety, "comparison_to_v5b": V5B}
-        return {"summary.json": (json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str) + "\n").encode(), "trades.csv": all_trades.to_csv(index=False, lineterminator="\n").encode(), "candidates.csv": candidates.to_csv(index=False, lineterminator="\n").encode(), "daily_equity.csv": all_eq.to_csv(index=False, lineterminator="\n").encode()}
+        comparison = {"net_profit_difference": aggregate["net_profit"] - V5B["net_profit"], "profit_factor_difference": aggregate["profit_factor"] - V5B["profit_factor"], "mtm_dd_difference": aggregate["mark_to_market_maximum_drawdown"] - V5B["mtm_dd"], "filled_trade_difference": aggregate["filled_trade_count"] - V5B["filled_trades"], "positive_year_count_difference": sum(yearly[y]["net_profit"] > 0 for y in EVAL_YEARS) - V5B["positive_years"], "yearly_profit_difference": {str(y): yearly[y]["net_profit"] - V5B["yearly_profit"][y] for y in EVAL_YEARS}}
+        summary = {"schema_version": "V6-A-1", "verdict": verdict_from_gates(gates20), "repository_commit": state["repository_commit"], "exploratory_only": True, "unused_holdout": False, "deployment_allowed": False, "ai_used": False, "survivorship_bias": True, "training_manifest_sha": TRAINING_MANIFEST_SHA, "evaluation_manifest_sha": EVALUATION_MANIFEST_SHA, "universe_csv_sha": UNIVERSE_CSV_SHA, "ticker_list_sha": TICKER_LIST_SHA, "evaluation_years": EVAL_YEARS, "candidate_rules": {"history": 252, "turnover60": 100000000, "volume60": 50000, "breadth": 0.50, "volatility_ratio": 0.80, "volume_surprise": 1.50, "max_candidates": 20}, "portfolio_rules": {"starting_cash": STARTING_CASH, "quantity": QUANTITY, "max_open_positions": MAX_OPEN_POSITIONS, "cash_reserve": CASH_RESERVE, "capital_limit": PER_TICKER_CAPITAL_LIMIT, "entry_slippage": ENTRY_SLIPPAGE, "exit_slippage": EXIT_SLIPPAGE, "exit": "D10_TIME"}, "aggregate_metrics": aggregate, "yearly_metrics": yearly, "market_gate_pass_day_count": sum(v["market_gate_status"] == "MARKET_GATE_PASS" for v in gate_audit.values()), "market_gate_blocked_day_count": sum(v["market_gate_status"] != "MARKET_GATE_PASS" for v in gate_audit.values()), "market_gate_insufficient_universe_day_count": sum(v["market_gate_status"] == "MARKET_GATE_INSUFFICIENT_UNIVERSE" for v in gate_audit.values()), "signal_day_count": int(candidates.signal_date.nunique()), "candidate_count": len(candidates), "candidate_audit_row_count": len(candidate_audit), "comparison_to_v5b": comparison, "20_gates": gates20, "safety_counters": safety, "two_pass_byte_identical": True}
+        return {"summary.json": (json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str) + "\n").encode(), "trades.csv": all_trades.to_csv(index=False, lineterminator="\n").encode(), "candidates.csv": candidate_audit.reindex(columns=AUDIT_COLUMNS).to_csv(index=False, lineterminator="\n").encode(), "daily_equity.csv": all_eq.to_csv(index=False, lineterminator="\n").encode()}
     first = core(); second = core()
     if first != second: raise ValueError("TWO_PASS_ARTIFACT_MISMATCH")
     atomic_write(output, first, repo); return 0

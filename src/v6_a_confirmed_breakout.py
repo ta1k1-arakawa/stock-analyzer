@@ -67,6 +67,7 @@ V5B = {
                        2022: -45253.59194076466, 2023: 114181.43414215161,
                        2024: 102867.2727392584, 2025: 84729.66325317451},
 }
+AUDIT_COLUMNS = ["signal_year", "signal_date", "ticker", "industry", "market_gate_status", "market_denominator_count", "breadth_above_ma60", "cross_sectional_median_return20", "candidate_status", "candidate_rejection_reason", "rank", "raw_close", "adj_close", "ma20", "ma60", "return1", "return20", "return60", "volatility10", "volatility60", "median_turnover60", "median_volume60", "prior_high20", "volume_surprise", "atr14_percent", "breakout_strength_atr", "entry_date", "exit_date"]
 
 
 def canonical_ticker(value: object) -> str:
@@ -282,10 +283,14 @@ def gate_for_day(frames: Mapping[str, pd.DataFrame], universe: pd.DataFrame, day
             "breadth_above_ma60": breadth, "cross_sectional_median_return20": median}
 
 
-def generate_candidates(frames: Mapping[str, pd.DataFrame], universe: pd.DataFrame, splits: Mapping[str, set[pd.Timestamp]], calendar: pd.DatetimeIndex, signal_from="2020-01-01", signal_to="2025-12-31") -> tuple[pd.DataFrame, dict[pd.Timestamp, dict[str, Any]]]:
+def generate_candidates(frames: Mapping[str, pd.DataFrame], universe: pd.DataFrame, splits: Mapping[str, set[pd.Timestamp]], calendar: pd.DatetimeIndex, signal_from="2020-01-01", signal_to="2025-12-31") -> tuple[pd.DataFrame, dict[pd.Timestamp, dict[str, Any]], pd.DataFrame]:
     u = normalize_universe(universe).set_index("ticker"); frames = {t: adjusted_columns(f) for t, f in frames.items()}; rows: list[dict[str, Any]] = []; gates: dict[pd.Timestamp, dict[str, Any]] = {}
     lo, hi = pd.Timestamp(signal_from), pd.Timestamp(signal_to); signal_days = calendar[(calendar >= lo) & (calendar <= hi)]
     for day in signal_days: gates[day] = gate_for_day(frames, u.reset_index(), day)
+    audit_rows: list[dict[str, Any]] = []
+    for day in signal_days:
+        g = gates[day]
+        audit_rows.append({"signal_year": day.year, "signal_date": day, "ticker": "", "industry": "", **g, "candidate_status": "MARKET_GATE_AUDIT", "candidate_rejection_reason": ""})
     for ticker in u.index:
         if ticker not in frames: continue
         p = frames[ticker]; pos_by_day = {d: i for i, d in enumerate(p.index)}; industry = u.at[ticker, "industry"]
@@ -297,16 +302,32 @@ def generate_candidates(frames: Mapping[str, pd.DataFrame], universe: pd.DataFra
             d1day, d10day = calendar[d1pos], calendar[d10pos]; d1i = pos_by_day.get(d1day); d10i = pos_by_day.get(d10day)
             if d1i is None or d10i is None: continue
             try: vals = _feature_at(p, idx, d1i, d10i, splits.get(ticker, set()))
-            except ValueError: continue
+            except ValueError as exc:
+                audit_rows.append({"signal_year": day.year, "signal_date": day, "ticker": ticker, "industry": industry, **g, "candidate_status": "REJECTED", "candidate_rejection_reason": str(exc)})
+                continue
             finite_values = [vals[k] for k in ("return1", "return20", "return60", "ma20", "ma60", "volatility10", "volatility60", "median_turnover60", "median_volume60", "prior_high20", "volume_surprise", "atr14", "atr14_percent", "raw_close", "adj_close")]
             eligible = (np.isfinite(finite_values).all() and vals["median_turnover60"] >= 100_000_000 and vals["median_volume60"] >= 50_000 and vals["raw_close"] * 100 <= 220_000 and vals["adj_close"] > vals["ma60"] and vals["ma20"] > vals["ma60"] and vals["return60"] > 0 and vals["volatility10"] <= 0.80 * vals["volatility60"] and vals["adj_close"] > vals["prior_high20"] and 0 < vals["return1"] <= 0.06 and vals["volume_surprise"] >= 1.50 and vals["atr14_percent"] > 0 and np.isfinite(vals["breakout_strength_atr"]))
-            if eligible: rows.append({"signal_date": day, "ticker": ticker, "industry": industry, **g, **vals, "candidate_status": "CANDIDATE", "candidate_rejection_reason": ""})
+            rejection = ""
+            if not eligible:
+                checks = [("HISTORY_OR_FEATURE_INVALID", np.isfinite(finite_values).all()), ("LIQUIDITY", vals["median_turnover60"] >= 100_000_000 and vals["median_volume60"] >= 50_000), ("PRICE_LIMIT", vals["raw_close"] * 100 <= 220_000), ("TREND", vals["adj_close"] > vals["ma60"] and vals["ma20"] > vals["ma60"] and vals["return60"] > 0), ("VOLATILITY_CONTRACTION", vals["volatility10"] <= 0.80 * vals["volatility60"]), ("BREAKOUT", vals["adj_close"] > vals["prior_high20"] and 0 < vals["return1"] <= 0.06), ("VOLUME_CONFIRMATION", vals["volume_surprise"] >= 1.50), ("ATR_INVALID", vals["atr14_percent"] > 0 and np.isfinite(vals["breakout_strength_atr"]))]
+                rejection = next(name for name, passed in checks if not passed)
+            audit_rows.append({"signal_year": day.year, "signal_date": day, "ticker": ticker, "industry": industry, **g, **vals, "candidate_status": "CANDIDATE" if eligible else "REJECTED", "candidate_rejection_reason": rejection})
+            if eligible: rows.append({"signal_date": day, "ticker": ticker, "industry": industry, **g, **vals, "candidate_status": "ACCEPTED_TOP20", "candidate_rejection_reason": ""})
     out = pd.DataFrame(rows)
-    if out.empty: return out, gates
+    if out.empty: return out, gates, pd.DataFrame(audit_rows)
     out = out.sort_values(["signal_date", "breakout_strength_atr", "volume_surprise", "return60", "ticker"], ascending=[True, False, False, False, True], kind="mergesort")
     out["rank"] = out.groupby("signal_date").cumcount() + 1
-    out = out[out["rank"] <= MAX_CANDIDATES_PER_DAY].reset_index(drop=True)
-    return out, gates
+    out["candidate_status"] = "ACCEPTED_TOP20"
+    audit = pd.DataFrame(audit_rows)
+    if len(out):
+        keys = set(zip(out.signal_date, out.ticker))
+        for i, row in audit.iterrows():
+            if row.get("candidate_status") == "CANDIDATE":
+                if (row.signal_date, row.ticker) in keys:
+                    audit.at[i, "candidate_status"] = "ACCEPTED_TOP20"
+                else:
+                    audit.at[i, "candidate_status"] = "RANK_OUTSIDE_TOP20"; audit.at[i, "candidate_rejection_reason"] = "RANK_OUTSIDE_TOP20"
+    return out, gates, audit
 
 
 @dataclass
@@ -319,6 +340,12 @@ def _raw_at(frames: Mapping[str, pd.DataFrame], ticker: str, date: pd.Timestamp,
     p = normalize_frame(frames[ticker]);
     if date not in p.index or not np.isfinite(p.at[date, col]): raise ValueError("ENTRY_OR_EXIT_DATA_UNAVAILABLE")
     return float(p.at[date, col])
+
+
+def safety_counters_from_states(trades: pd.DataFrame, equity: pd.DataFrame, candidates: pd.DataFrame) -> dict[str, int]:
+    filled = trades[trades.status == "FILLED"] if len(trades) else trades
+    exit_dates = set(pd.to_datetime(filled.exit_date)) if len(filled) else set()
+    return {"negative_cash_count": int((equity.available_cash < 0).sum()) if len(equity) else 0, "same_day_proceeds_reuse_count": int(sum(pd.Timestamp(d) in exit_dates for d in filled.signal_date)) if len(filled) else 0, "duplicate_order_count": int(filled.duplicated(["signal_date", "ticker"]).sum()) if len(filled) else 0, "max_position_violation_count": int((equity.open_positions > MAX_OPEN_POSITIONS).sum()) if len(equity) else 0, "cash_reserve_violation_count": int((filled.cash_after_entry < CASH_RESERVE).sum()) if len(filled) else 0, "industry_overlap_violation_count": int(sum(max(x.split(",").count(i) - 1, 0) for x in equity.open_industries for i in set(x.split(",")) if i)) if len(equity) and "open_industries" in equity else 0, "signal_2026_count": int(pd.to_datetime(candidates.signal_date).dt.year.eq(2026).sum()) if len(candidates) else 0}
 
 
 def simulate_fold(candidates: pd.DataFrame, frames: Mapping[str, pd.DataFrame], calendar: pd.DatetimeIndex, year: int) -> dict[str, Any]:
@@ -360,20 +387,32 @@ def simulate_fold(candidates: pd.DataFrame, frames: Mapping[str, pd.DataFrame], 
             except ValueError: raise
         book = cash + sum(p.entry_cost for p in positions) + sum(pending.values())
         mtm = cash + sum(_raw_at(frames, p.ticker, day, "Close") * QUANTITY for p in positions) + sum(pending.values())
-        equity.append({"signal_year": year, "date": day, "available_cash": cash, "pending_proceeds": sum(pending.values()), "open_positions": len(positions), "book_equity": book, "mark_to_market_equity": mtm})
-    return {"trades": pd.DataFrame(rows), "daily_equity": pd.DataFrame(equity), "signal_day_count": len(signal_dates), "candidate_count": len(candidates[candidates.signal_date.dt.year == year])}
+        equity.append({"signal_year": year, "date": day, "available_cash": cash, "pending_proceeds": sum(pending.values()), "open_positions": len(positions), "book_equity": book, "mark_to_market_equity": mtm, "open_tickers": ",".join(sorted(p.ticker for p in positions)), "open_industries": ",".join(sorted(p.industry for p in positions))})
+    trades = pd.DataFrame(rows); eq = pd.DataFrame(equity)
+    safety = safety_counters_from_states(trades, eq, candidates)
+    return {"trades": trades, "daily_equity": eq, "signal_day_count": len(signal_dates), "candidate_count": len(candidates[candidates.signal_date.dt.year == year]), "safety_counters": safety}
 
 
 def _dd(series: pd.Series) -> float:
     x = pd.to_numeric(series, errors="raise"); peak = x.cummax(); return float(((peak - x) / peak.replace(0, np.nan)).max() * 100) if len(x) else 0.0
 
 
-def metrics(result: Mapping[str, Any], year: int) -> dict[str, Any]:
+def concentration_metrics(trades: pd.DataFrame) -> dict[str, float]:
+    if len(trades) == 0 or "realized_net_profit_yen" not in trades: return {"top5_positive_profit_share": 0.0, "max_industry_positive_profit_share": 0.0}
+    x = trades[(trades.status == "FILLED") & pd.to_numeric(trades.realized_net_profit_yen, errors="coerce").notna()].copy(); profits = pd.to_numeric(x.realized_net_profit_yen, errors="coerce").clip(lower=0); total = float(profits.sum())
+    if total == 0: return {"top5_positive_profit_share": 0.0, "max_industry_positive_profit_share": 0.0}
+    return {"top5_positive_profit_share": float(profits.sort_values(ascending=False).head(5).sum() / total), "max_industry_positive_profit_share": float(x.assign(_p=profits).groupby("industry", dropna=False)["_p"].sum().max() / total)}
+
+
+def metrics(result: Mapping[str, Any], year: int, dd_override: tuple[float, float] | None = None) -> dict[str, Any]:
     trades = result["trades"]; eq = result["daily_equity"]; filled = trades[trades.status == "FILLED"].copy() if len(trades) else trades
     profits = pd.to_numeric(filled.get("realized_net_profit_yen", pd.Series(dtype=float)), errors="coerce").dropna(); pos = profits[profits > 0]; neg = profits[profits < 0]
     gross_loss = abs(float(neg.sum())); pf = float(pos.sum() / gross_loss) if gross_loss else (float("inf") if len(pos) else 0.0)
     months = filled.assign(month=pd.to_datetime(filled.signal_date).dt.to_period("M")).groupby("month")["realized_net_profit_yen"].sum() if len(filled) else pd.Series(dtype=float)
-    return {"net_profit": float(profits.sum()), "ending_equity_equivalent": STARTING_CASH + float(profits.sum()), "filled_trade_count": int(len(filled)), "win_rate": float((profits > 0).mean() * 100) if len(profits) else 0.0, "profit_factor": pf, "average_profit": float(pos.mean()) if len(pos) else 0.0, "average_loss": float(neg.mean()) if len(neg) else 0.0, "maximum_profit": float(pos.max()) if len(pos) else 0.0, "maximum_loss": float(neg.min()) if len(neg) else 0.0, "monthly_win_rate": float((months > 0).mean() * 100) if len(months) else 0.0, "mark_to_market_maximum_drawdown": _dd(eq.mark_to_market_equity) if len(eq) else 0.0, "book_cost_maximum_drawdown": _dd(eq.book_equity) if len(eq) else 0.0, "average_holding_period": 10.0 if len(filled) else 0.0, "maximum_open_positions": int(eq.open_positions.max()) if len(eq) else 0, "skip_reason_counts": trades[trades.status == "SKIPPED"].skip_reason.value_counts().sort_index().to_dict() if len(trades) else {}, "yearly_profit": float(profits.sum()), "signal_day_count": result["signal_day_count"], "candidate_count": result["candidate_count"]}
+    book_dd = _dd(eq.book_equity) if len(eq) else 0.0; mtm_dd = _dd(eq.mark_to_market_equity) if len(eq) else 0.0
+    if dd_override is not None: book_dd, mtm_dd = dd_override
+    skip_counts = trades[trades.status == "SKIPPED"].get("skip_reason", pd.Series(dtype=str)).value_counts().sort_index().to_dict() if len(trades) else {}
+    return {"net_profit": float(profits.sum()), "ending_equity_equivalent": STARTING_CASH + float(profits.sum()), "filled_trade_count": int(len(filled)), "win_rate": float((profits > 0).mean() * 100) if len(profits) else 0.0, "profit_factor": pf, "average_profit": float(pos.mean()) if len(pos) else 0.0, "average_loss": float(neg.mean()) if len(neg) else 0.0, "maximum_profit": float(pos.max()) if len(pos) else 0.0, "maximum_loss": float(neg.min()) if len(neg) else 0.0, "monthly_win_rate": float((months > 0).mean() * 100) if len(months) else 0.0, "mark_to_market_maximum_drawdown": mtm_dd, "book_cost_maximum_drawdown": book_dd, "average_holding_period": 10.0 if len(filled) else 0.0, "maximum_open_positions": int(eq.open_positions.max()) if len(eq) else 0, "skip_reason_counts": skip_counts, "yearly_profit": float(profits.sum()), "signal_day_count": result["signal_day_count"], "candidate_count": result["candidate_count"], **concentration_metrics(trades)}
 
 
 def compute_gates(aggregate: Mapping[str, Any], yearly: Mapping[int, Mapping[str, Any]], safety: Mapping[str, int], two_pass_byte_identical: bool) -> dict[str, bool]:
@@ -407,7 +446,7 @@ def csv_bytes(frame: pd.DataFrame, columns: Sequence[str]) -> bytes:
 
 
 def source_aware_preflight(training_prices: Mapping[str, pd.DataFrame], evaluation_prices: Mapping[str, pd.DataFrame], training_splits: Mapping[str, set[pd.Timestamp]], evaluation_splits: Mapping[str, set[pd.Timestamp]], universe: pd.DataFrame) -> dict[str, Any]:
-    overlap = audit_overlap(training_prices, evaluation_prices); frames = combine_source_aware(training_prices, evaluation_prices); splits = {t: training_splits.get(t, set()) | evaluation_splits.get(t, set()) for t in frames}; cal = common_calendar(frames); candidates, gates = generate_candidates(frames, universe, splits, cal)
+    overlap = audit_overlap(training_prices, evaluation_prices); frames = combine_source_aware(training_prices, evaluation_prices); splits = {t: training_splits.get(t, set()) | evaluation_splits.get(t, set()) for t in frames}; cal = common_calendar(frames); candidates, gates, audit = generate_candidates(frames, universe, splits, cal)
     pass_days = sum(v["market_gate_status"] == "MARKET_GATE_PASS" for v in gates.values()); insufficient = sum(v["market_gate_status"] == "MARKET_GATE_INSUFFICIENT_UNIVERSE" for v in gates.values()); blocked = sum(v["market_gate_status"] == "MARKET_GATE_BLOCKED" for v in gates.values())
     yearly = {str(y): int((candidates.signal_date.dt.year == y).sum()) if len(candidates) else 0 for y in EVAL_YEARS}
-    return {"verdict": "V6_A_FORMAL_PREFLIGHT_PASS", "training_ticker_count": len(training_prices), "evaluation_ticker_count": len(evaluation_prices), "overlap_audit": overlap, "calendar_min": cal.min(), "calendar_max": cal.max(), "evaluation_signal_dates": ["2020-01-01", "2025-12-31"], "market_denominator_min": min(int(v["market_denominator_count"]) for v in gates.values()), "market_denominator_max": max(int(v["market_denominator_count"]) for v in gates.values()), "market_gate_pass_day_count": pass_days, "market_gate_blocked_day_count": blocked + insufficient, "market_gate_insufficient_universe_day_count": insufficient, "eligible_candidate_count": len(candidates), "ranked_top20_candidate_count": len(candidates), "signal_day_count": int(candidates.signal_date.nunique()) if len(candidates) else 0, "yearly_candidate_count": yearly, "D1_missing_count": 0, "D10_missing_count": 0, "split_violation_count": 0, "nonfinite_accepted_count": 0, "duplicate_candidate_key_count": int(candidates.duplicated(["signal_date", "ticker"]).sum()) if len(candidates) else 0, "2026_signal_count": 0, "AI_fit": 0, "prediction": 0, "portfolio_simulation": 0, "formal_evaluation": 0, "artifact": 0, "network": 0, "cache_modification": 0}
+    return {"verdict": "V6_A_FORMAL_PREFLIGHT_PASS", "training_ticker_count": len(training_prices), "evaluation_ticker_count": len(evaluation_prices), "overlap_audit": overlap, "calendar_min": cal.min(), "calendar_max": cal.max(), "evaluation_signal_dates": ["2020-01-01", "2025-12-31"], "market_denominator_min": min(int(v["market_denominator_count"]) for v in gates.values()), "market_denominator_max": max(int(v["market_denominator_count"]) for v in gates.values()), "market_gate_pass_day_count": pass_days, "market_gate_blocked_day_count": blocked + insufficient, "market_gate_insufficient_universe_day_count": insufficient, "eligible_candidate_count": len(candidates), "ranked_top20_candidate_count": len(candidates), "signal_day_count": int(candidates.signal_date.nunique()) if len(candidates) else 0, "yearly_candidate_count": yearly, "candidate_audit_row_count": len(audit), "D1_missing_count": 0, "D10_missing_count": 0, "split_violation_count": 0, "nonfinite_accepted_count": 0, "duplicate_candidate_key_count": int(candidates.duplicated(["signal_date", "ticker"]).sum()) if len(candidates) else 0, "2026_signal_count": 0, "AI_fit": 0, "prediction": 0, "portfolio_simulation": 0, "formal_evaluation": 0, "artifact": 0, "network": 0, "cache_modification": 0}
