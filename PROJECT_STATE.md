@@ -355,3 +355,26 @@ frozen top 20 may be added.
 The D0 equity invariant was also clarified to compare state immediately
 before and after Phase 5 order queuing, not D0 equity against the
 previous trading day.
+
+## V6-A-R2 implementation retry record
+
+```text
+V6-A-R2 implementation_status=GATE2_REVIEW_PENDING_AFTER_RETRY
+initial_engine_commit=88cc4344f31225fbcc23b54fac991156ec542dea
+fixed_engine_commit=548288f9e16739fe0bff2d21996a7c53274f3e54
+single_implementation_bug_retry_used=true
+additional_implementation_retry_allowed=false
+formal_run_started=false
+formal_result=NOT_RUN
+scientific_hypothesis_tested=false
+next_authorized_action=INDEPENDENT_GATE2_CODE_REVIEW
+```
+
+Independent Gate 2 review found before any real-cache execution that
+book equity omitted pending proceeds, the same-day proceeds counter did
+not measure cross-order reuse, CLOSED rows skipped entry-date
+invariants, and several synthetic acceptance tests were insufficient.
+
+The single preregistered implementation-bug retry was used to correct
+the causal engine and strengthen negative tests before real-cache
+preflight.
