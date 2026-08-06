@@ -75,6 +75,16 @@ class ParityResult:
     duplicate_keys: int
     accepted_candidate_key_sha256: str
 
+@dataclass(frozen=True)
+class ReadOnlyPreparation:
+    preflight_result: dict[str, Any]
+    raw_price_frames: Mapping[str, pd.DataFrame]
+    common_calendar: pd.DatetimeIndex
+    accepted_candidates: list[dict[str, Any]]
+    full_candidate_audit: pd.DataFrame
+    market_gate_audit: Mapping[Any, Mapping[str, Any]]
+    combined_splits: Mapping[str, set[pd.Timestamp]]
+
 
 def _iso(value: Any) -> str:
     timestamp = pd.Timestamp(value)
@@ -268,7 +278,7 @@ def blocked_json_payload(error: PreflightBlocked) -> dict[str, Any]:
             **error.diagnostics}
 
 
-def load_read_only_formal_inputs(training_cache: str | Path, evaluation_cache: str | Path) -> dict[str, Any]:
+def _load_read_only_formal_inputs(training_cache: str | Path, evaluation_cache: str | Path) -> dict[str, Any]:
     """Return validated in-memory inputs for the later formal evaluator."""
     repo = Path(__file__).resolve().parents[1]
     try:
@@ -287,7 +297,13 @@ def load_read_only_formal_inputs(training_cache: str | Path, evaluation_cache: s
             "full_candidate_audit": audit, "market_gate_audit": gates}
 
 
-def run_read_only_preflight(training_cache: str | Path, evaluation_cache: str | Path,
+def prepare_read_only_formal_bundle(training_cache: str | Path, evaluation_cache: str | Path,
+                                    repository_commit: str, branch: str, worktree_clean: bool) -> ReadOnlyPreparation:
+    """Compatibility wrapper for the canonical preparation path."""
+    return prepare_read_only_context(training_cache, evaluation_cache, repository_commit, branch, worktree_clean)
+
+
+def prepare_read_only_context(training_cache: str | Path, evaluation_cache: str | Path,
                             repository_commit: str, branch: str, worktree_clean: bool) -> dict[str, Any]:
     repo = Path(__file__).resolve().parents[1]
     try:
@@ -353,4 +369,8 @@ def run_read_only_preflight(training_cache: str | Path, evaluation_cache: str | 
         validate_preflight_expectations(result)
     except PreflightBlocked:
         raise
-    return result
+    return ReadOnlyPreparation(result, frames, calendar, rows, audit, gates, combined_splits)
+
+
+def run_read_only_preflight(training_cache: str | Path, evaluation_cache: str | Path, repository_commit: str, branch: str, worktree_clean: bool) -> dict[str, Any]:
+    return prepare_read_only_context(training_cache, evaluation_cache, repository_commit, branch, worktree_clean).preflight_result

@@ -12,7 +12,7 @@ import subprocess
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from v6_a_r2_causal_breakout import run_synthetic_golden, write_synthetic_artifacts
-from v6_a_r2_preflight import PreflightBlocked, blocked_json_payload, load_read_only_formal_inputs, run_read_only_preflight
+from v6_a_r2_preflight import PreflightBlocked, blocked_json_payload, prepare_read_only_formal_bundle, run_read_only_preflight
 from v6_a_r2_formal import CONFIRMATION, FormalBlocked, atomic_write_formal_artifacts, build_formal_bundle, run_formal_two_pass, validate_output_target
 
 
@@ -51,9 +51,9 @@ def main(argv: list[str] | None = None) -> int:
         except FormalBlocked as error:
             print(json.dumps({"verdict":"V6_A_BREAKOUT_BASELINE_EXPLORATORY_BLOCKED","blocked_stage":"OUTPUT_TARGET","error_code":str(error),"portfolio_simulation_started":0,"formal_artifacts_written":0}, sort_keys=True)); return 2
         try:
-            preflight = run_read_only_preflight(args.training_cache, args.evaluation_cache, head, branch, True)
-            inputs = load_read_only_formal_inputs(args.training_cache, args.evaluation_cache)
-            bundle = build_formal_bundle(preflight, inputs["raw_price_frames"], inputs["common_calendar"], inputs["accepted_candidates"], inputs["full_candidate_audit"], inputs["market_gate_audit"])
+            inputs = prepare_read_only_formal_bundle(args.training_cache, args.evaluation_cache, head, branch, True)
+            preflight = inputs.preflight_result
+            bundle = build_formal_bundle(preflight, inputs.raw_price_frames, inputs.common_calendar, inputs.accepted_candidates, inputs.full_candidate_audit, inputs.market_gate_audit)
             metadata = {"repository_commit": head, "branch": branch, "training_manifest_sha": preflight["training_manifest_sha"], "evaluation_manifest_sha": preflight["evaluation_manifest_sha"], "universe_csv_sha": preflight["universe_csv_sha"], "ticker_list_sha": preflight["ticker_list_sha"], "candidate_rules": "frozen_v6_a", "ranking_rules": "frozen_v6_a", "portfolio_rules": "causal_d0_d1_d10", "event_phase_order": ["phase1_release_proceeds", "phase2_attempt_entries", "phase3_execute_exits", "phase4_record_equity", "phase5_queue_signals"]}
             result = run_formal_two_pass(bundle, metadata)
             atomic_write_formal_artifacts(args.output_dir, result["artifacts"], repo)
