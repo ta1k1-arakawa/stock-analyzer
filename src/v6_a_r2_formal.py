@@ -15,7 +15,7 @@ from typing import Any, Callable, Mapping, Sequence
 import pandas as pd
 
 from v6_a_r2_causal_breakout import CausalEventEngine, LEDGER_FIELDS, concentration_metrics, fold_max_drawdown
-from v6_a_r2_preflight import EXPECTED_PREFLIGHT, candidate_key_sha256
+from v6_a_r2_preflight import EXPECTED_PREFLIGHT, R2_CANDIDATE_COLUMNS, candidate_key_sha256
 
 CONFIRMATION = "V6_A_R2_ONE_SHOT_EXPLORATORY_EVALUATION"
 YEARS = (2020, 2021, 2022, 2023, 2024, 2025)
@@ -71,6 +71,8 @@ def build_fold_calendar(bundle: Mapping[str, Any], year: int) -> list[str]:
 def _validate_bundle(bundle: Mapping[str, Any]) -> None:
     diag = bundle["preflight_diagnostics"]
     if bundle["accepted_candidate_key_sha256"] != EXPECTED_HASH: raise FormalBlocked("ACCEPTED_CANDIDATE_HASH_MISMATCH")
+    if any(set(row) != set(R2_CANDIDATE_COLUMNS) for row in bundle["accepted_candidates"]):
+        raise FormalBlocked("CANDIDATE_FUTURE_VALUE_COLUMN_PROHIBITED")
     checks = {"accepted_top20_candidates": len(bundle["accepted_candidates"]),
               "signal_days": len({r["signal_date"] for r in bundle["accepted_candidates"]}),
               "yearly_candidate_counts": {str(y): sum(int(r["signal_year"]) == y for r in bundle["accepted_candidates"]) for y in YEARS},

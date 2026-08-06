@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from pathlib import Path
 import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import v6_a_r2_formal as formal  # noqa: E402
 from v6_a_r2_formal import ARTIFACTS, FormalBlocked, atomic_write_formal_artifacts, build_engine_price_frames, build_fold_calendar, build_formal_artifacts, compute_aggregate_metrics, compute_fold_metrics, compute_twenty_gates, compute_v5b_comparison, run_one_fold
 
 def _fixture():
@@ -24,6 +25,14 @@ def test_price_adapter_and_metrics_exclude_skips():
     bundle, _ = _fixture(); assert build_engine_price_frames(bundle["price_frames"])["AAA"]
     fold = run_one_fold(bundle, 2020); fold["trades"].append({"status": "SKIPPED", "skip_reason": "CASH_RESERVE", "realized_net_profit_yen": 99999})
     assert compute_fold_metrics(fold)["filled_trade_count"] == 1
+
+def test_hash_and_future_candidate_column_block_before_engine(monkeypatch):
+    bundle, _ = _fixture(); bundle["preflight_diagnostics"] = {"market_gate_counts": {"pass_days": 691, "blocked_days": 774}, "split_violations": 0, "duplicate_accepted_key": 0, "2026_signals": 0}
+    bundle["accepted_candidate_key_sha256"] = "bad"
+    with pytest.raises(FormalBlocked, match="HASH"): formal._validate_bundle(bundle)
+    bundle["accepted_candidate_key_sha256"] = formal.EXPECTED_HASH
+    bundle["accepted_candidates"][0]["d10_open"] = 1.0
+    with pytest.raises(FormalBlocked, match="FUTURE_VALUE"): formal._validate_bundle(bundle)
 
 @pytest.mark.parametrize("profits,pf,infinite", [([10, -5], 2.0, False), ([10], None, True), ([], 0.0, False)])
 def test_profit_factor_json_safe(profits, pf, infinite):
