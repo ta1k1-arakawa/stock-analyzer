@@ -19,6 +19,8 @@ from v6_a_r2_preflight import (  # noqa: E402
     candidate_key_sha256,
     canonical_candidate_keys,
     compare_candidate_parity,
+    blocked_json_payload,
+    _candidate_counts,
     validate_preflight_expectations,
 )
 from v6_a_r2_causal_breakout import validate_candidate_schema  # noqa: E402
@@ -167,8 +169,11 @@ def test_cache_hash_mismatch_fails_closed():
               "nonfinite_accepted": 0, "duplicate_accepted_key": 0, "2026_signals": 0}
     expected = dict(EXPECTED_PREFLIGHT)
     expected["training_tickers"] = 999
-    with pytest.raises(PreflightBlocked, match="V6_A_R2_REAL_CACHE_PREFLIGHT_BLOCKED"):
+    with pytest.raises(PreflightBlocked, match="FIXED_EXPECTATION_MISMATCH") as caught:
         validate_preflight_expectations(result, expected)
+    assert caught.value.stage == "FIXED_EXPECTATION_VALIDATION"
+    assert caught.value.diagnostics["expectation_mismatches"]["training_tickers"] == {
+        "actual": 283, "expected": 999}
 
 
 def test_candidate_expectation_mismatch_fails_closed():
@@ -181,5 +186,65 @@ def test_candidate_expectation_mismatch_fails_closed():
               "yearly_candidate_counts": EXPECTED_PREFLIGHT["yearly_candidate_counts"],
               "D1_missing": 0, "D10_missing": 0, "split_violations": 0,
               "nonfinite_accepted": 0, "duplicate_accepted_key": 0, "2026_signals": 0}
-    with pytest.raises(PreflightBlocked, match="V6_A_R2_REAL_CACHE_PREFLIGHT_BLOCKED"):
+    with pytest.raises(PreflightBlocked) as caught:
         validate_preflight_expectations(result)
+    payload = blocked_json_payload(caught.value)
+    assert payload["blocked_stage"] == "FIXED_EXPECTATION_VALIDATION"
+    assert payload["actual_preflight_values"]["accepted_top20_candidates"] == 607
+    assert payload["expected_preflight_values"]["accepted_top20_candidates"] == 608
+    assert "accepted_top20_candidates" in payload["expectation_mismatches"]
+
+
+def _audit_and_gates():
+    return pd.DataFrame([{"candidate_rejection_reason": "SPLIT_SPANNING"}]), {
+        "2020-01-01": {"market_gate_status": "MARKET_GATE_PASS"}}
+
+
+def test_rejected_split_spanning_is_not_accepted_split_violation():
+    accepted = _accepted_rows().iloc[:1].copy()
+    audit, gates = _audit_and_gates()
+    counts = _candidate_counts(accepted, audit, gates,
+                               {"1111": {pd.Timestamp("2020-01-20")} },
+                               pd.date_range("2020-01-01", periods=20))
+    assert counts["split_violations"] == 0
+    assert counts["rejected_split_spanning_count"] == 1
+
+
+def test_accepted_split_violation_includes_entry_and_exit_boundaries():
+    accepted = _accepted_rows().iloc[:1].copy()
+    counts = _candidate_counts(accepted, pd.DataFrame(),
+                               {"2020-01-01": {"market_gate_status": "MARKET_GATE_PASS"}},
+                               {"1111": {pd.Timestamp("2020-01-03"), pd.Timestamp("2020-01-12")}},
+                               pd.date_range("2020-01-01", periods=20))
+    assert counts["split_violations"] == 1
+
+
+def test_accepted_only_dates_and_nonfinite_are_measured():
+    accepted = pd.concat([_accepted_rows().iloc[:1], _accepted_rows().iloc[:1]], ignore_index=True)
+    accepted.loc[1, "raw_close"] = float("nan")
+    accepted.loc[1, "rank"] = float("nan")
+    accepted.loc[1, "entry_date"] = pd.NaT
+    accepted.loc[1, "exit_date"] = pd.NaT
+    counts = _candidate_counts(accepted,
+                               pd.DataFrame([{"candidate_rejection_reason": "D1_MISSING"}]),
+                               {"2020-01-01": {"market_gate_status": "MARKET_GATE_PASS"}},
+                               {}, pd.date_range("2020-01-01", periods=20))
+    assert counts["D1_missing"] == 1
+    assert counts["D10_missing"] == 1
+    assert counts["nonfinite_accepted"] == 1
+
+
+def test_expected_preflight_constants_are_not_mutated_by_validation():
+    before = copy.deepcopy(EXPECTED_PREFLIGHT)
+    result = {"training_tickers": 0, "evaluation_tickers": 0,
+              "source_overlap_audit": {"overlap_tickers": 0, "overlap_rows": 0,
+                                        "raw_ohlcv_mismatches": 0, "adj_close_mismatches": 0,
+                                        "affected_revised_tickers": []},
+              "market_gate_counts": {"pass_days": 0, "blocked_days": 0},
+              "candidate_counts": {"accepted_top20": 0, "signal_days": 0},
+              "yearly_candidate_counts": {}, "D1_missing": 0, "D10_missing": 0,
+              "split_violations": 0, "nonfinite_accepted": 0,
+              "duplicate_accepted_key": 0, "2026_signals": 0}
+    with pytest.raises(PreflightBlocked):
+        validate_preflight_expectations(result)
+    assert EXPECTED_PREFLIGHT == before

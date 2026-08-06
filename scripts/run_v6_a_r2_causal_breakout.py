@@ -12,7 +12,7 @@ import subprocess
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from v6_a_r2_causal_breakout import run_synthetic_golden, write_synthetic_artifacts
-from v6_a_r2_preflight import PreflightBlocked, run_read_only_preflight
+from v6_a_r2_preflight import PreflightBlocked, blocked_json_payload, run_read_only_preflight
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,12 +45,12 @@ def main(argv: list[str] | None = None) -> int:
             result = run_read_only_preflight(args.training_cache, args.evaluation_cache,
                                              commit, branch, clean)
         except PreflightBlocked as error:
-            print(json.dumps({"verdict": "V6_A_R2_REAL_CACHE_PREFLIGHT_BLOCKED",
-                              "error": str(error)}, sort_keys=True))
+            print(json.dumps(blocked_json_payload(error), ensure_ascii=False, sort_keys=True))
             return 1
         except Exception as error:
             print(json.dumps({"verdict": "V6_A_R2_REAL_CACHE_PREFLIGHT_BLOCKED",
-                              "error": type(error).__name__ + ":" + str(error)}, sort_keys=True))
+                              "blocked_stage": "CACHE_VALIDATION",
+                              "error": type(error).__name__}, sort_keys=True))
             return 1
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0

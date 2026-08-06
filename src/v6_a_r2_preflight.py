@@ -61,7 +61,11 @@ R2_CANDIDATE_COLUMNS = (
 
 
 class PreflightBlocked(RuntimeError):
-    pass
+    def __init__(self, stage: str, error_code: str, diagnostics: Mapping[str, Any] | None = None):
+        self.stage = stage
+        self.error_code = error_code
+        self.diagnostics = dict(diagnostics or {})
+        super().__init__(error_code)
 
 
 @dataclass(frozen=True)
@@ -150,22 +154,45 @@ def _source_overlap(overlap: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _candidate_counts(accepted: pd.DataFrame, audit: pd.DataFrame, gates: Mapping[Any, Mapping[str, Any]]) -> dict[str, Any]:
+def _candidate_counts(accepted: pd.DataFrame, audit: pd.DataFrame, gates: Mapping[Any, Mapping[str, Any]],
+                      combined_splits: Mapping[str, set[pd.Timestamp]],
+                      calendar: pd.DatetimeIndex) -> dict[str, Any]:
     yearly = {str(year): int((pd.to_datetime(accepted["signal_date"]).dt.year == year).sum())
               for year in range(2020, 2026)}
     blocked = sum(value["market_gate_status"] in {"MARKET_GATE_BLOCKED", "MARKET_GATE_INSUFFICIENT_UNIVERSE"}
                   for value in gates.values())
     passed = sum(value["market_gate_status"] == "MARKET_GATE_PASS" for value in gates.values())
-    nonfinite = int((~pd.to_numeric(accepted["raw_close"], errors="coerce").map(pd.notna)).sum()) if len(accepted) else 0
-    split_violations = int((audit.get("candidate_rejection_reason", pd.Series(dtype=str)) == "SPLIT_SPANNING").sum())
+    calendar_set = {pd.Timestamp(day).normalize() for day in calendar}
+    invalid_rows = 0
+    d1_missing = d10_missing = 0
+    split_violations = 0
+    for record in accepted.to_dict(orient="records"):
+        raw_close = pd.to_numeric(pd.Series([record.get("raw_close")]), errors="coerce").iloc[0]
+        rank = pd.to_numeric(pd.Series([record.get("rank")]), errors="coerce").iloc[0]
+        entry = pd.to_datetime(record.get("entry_date"), errors="coerce")
+        exit_ = pd.to_datetime(record.get("exit_date"), errors="coerce")
+        entry_ok = pd.notna(entry) and pd.Timestamp(entry).normalize() in calendar_set
+        exit_ok = pd.notna(exit_) and pd.Timestamp(exit_).normalize() in calendar_set
+        if not entry_ok:
+            d1_missing += 1
+        if not exit_ok:
+            d10_missing += 1
+        row_invalid = not (pd.notna(raw_close) and pd.notna(rank) and entry_ok and exit_ok)
+        invalid_rows += int(row_invalid)
+        if entry_ok and exit_ok:
+            ticker_splits = {pd.Timestamp(day).normalize() for day in combined_splits.get(str(record["ticker"]), set())}
+            split_violations += int(any(pd.Timestamp(entry).normalize() <= day <= pd.Timestamp(exit_).normalize()
+                                        for day in ticker_splits))
+    rejected_split_spanning = int((audit.get("candidate_rejection_reason", pd.Series(dtype=str)) == "SPLIT_SPANNING").sum())
     return {
         "market_gate_counts": {"pass_days": passed, "blocked_days": blocked},
         "candidate_counts": {"accepted_top20": int(len(accepted)), "signal_days": int(accepted["signal_date"].nunique()) if len(accepted) else 0},
         "yearly_candidate_counts": yearly,
-        "D1_missing": int(accepted["entry_date"].isna().sum()) if len(accepted) else 0,
-        "D10_missing": int(accepted["exit_date"].isna().sum()) if len(accepted) else 0,
+        "D1_missing": d1_missing,
+        "D10_missing": d10_missing,
         "split_violations": split_violations,
-        "nonfinite_accepted": nonfinite,
+        "rejected_split_spanning_count": rejected_split_spanning,
+        "nonfinite_accepted": invalid_rows,
         "duplicate_accepted_key": int(accepted.duplicated(["signal_date", "ticker", "rank"]).sum()) if len(accepted) else 0,
         "2026_signals": int(pd.to_datetime(accepted["signal_date"]).dt.year.eq(2026).sum()) if len(accepted) else 0,
     }
@@ -214,32 +241,70 @@ def validate_preflight_expectations(result: Mapping[str, Any], expected: Mapping
         "split_violations": result["split_violations"], "nonfinite_accepted": result["nonfinite_accepted"],
         "duplicate_accepted_key": result["duplicate_accepted_key"], "2026_signals": result["2026_signals"],
     }
-    mismatches = {key: (checks[key], expected[key]) for key in expected if checks[key] != expected[key]}
+    mismatches = {key: {"actual": checks[key], "expected": expected[key]}
+                  for key in expected if checks[key] != expected[key]}
     if mismatches:
-        raise PreflightBlocked("V6_A_R2_REAL_CACHE_PREFLIGHT_BLOCKED")
+        raise PreflightBlocked(
+            "FIXED_EXPECTATION_VALIDATION", "FIXED_EXPECTATION_MISMATCH",
+            {"actual_preflight_values": checks,
+             "expected_preflight_values": dict(expected),
+             "expectation_mismatches": mismatches,
+             **_parity_diagnostics(result)},
+        )
+
+
+def _parity_diagnostics(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Return only bounded, safe diagnostic values suitable for stdout."""
+    keys = ("market_gate_counts", "candidate_counts", "yearly_candidate_counts",
+            "missing_in_r2", "extra_in_r2", "duplicate_keys",
+            "accepted_candidate_key_sha256", "split_violations",
+            "rejected_split_spanning_count")
+    return {key: result[key] for key in keys if key in result}
+
+
+def blocked_json_payload(error: PreflightBlocked) -> dict[str, Any]:
+    return {"verdict": "V6_A_R2_REAL_CACHE_PREFLIGHT_BLOCKED",
+            "blocked_stage": error.stage, "error": error.error_code,
+            **error.diagnostics}
 
 
 def run_read_only_preflight(training_cache: str | Path, evaluation_cache: str | Path,
                             repository_commit: str, branch: str, worktree_clean: bool) -> dict[str, Any]:
     repo = Path(__file__).resolve().parents[1]
-    universe = validate_universe(repo / "V4_UNIVERSE.csv")
-    training_manifest, training_prices, training_splits = load_cache(Path(training_cache), TRAINING_MANIFEST_SHA, universe)
-    evaluation_manifest, evaluation_prices, evaluation_splits = load_cache(Path(evaluation_cache), EVALUATION_MANIFEST_SHA, universe)
-    overlap = audit_overlap(training_prices, evaluation_prices)
-    frames = combine_source_aware(training_prices, evaluation_prices)
-    calendar = common_calendar(frames)
-    accepted_all, gates, audit = _generate_candidates_read_only(
-        frames, universe,
-        {ticker: training_splits.get(ticker, set()) | evaluation_splits.get(ticker, set()) for ticker in frames},
-        calendar)
-    if accepted_all.empty:
-        raise PreflightBlocked("V6_A_R2_REAL_CACHE_PREFLIGHT_BLOCKED")
+    try:
+        universe = validate_universe(repo / "V4_UNIVERSE.csv")
+        _, training_prices, training_splits = load_cache(Path(training_cache), TRAINING_MANIFEST_SHA, universe)
+        _, evaluation_prices, evaluation_splits = load_cache(Path(evaluation_cache), EVALUATION_MANIFEST_SHA, universe)
+    except Exception as error:
+        raise PreflightBlocked("CACHE_VALIDATION", "CACHE_VALIDATION_FAILED") from error
+    try:
+        overlap = audit_overlap(training_prices, evaluation_prices)
+        frames = combine_source_aware(training_prices, evaluation_prices)
+        calendar = common_calendar(frames)
+    except Exception as error:
+        raise PreflightBlocked("SOURCE_OVERLAP", "SOURCE_OVERLAP_FAILED") from error
+    try:
+        combined_splits = {ticker: training_splits.get(ticker, set()) | evaluation_splits.get(ticker, set())
+                           for ticker in frames}
+        accepted_all, gates, audit = _generate_candidates_read_only(frames, universe, combined_splits, calendar)
+        if accepted_all.empty:
+            raise ValueError("NO_CANDIDATES")
+    except PreflightBlocked:
+        raise
+    except Exception as error:
+        raise PreflightBlocked("CANDIDATE_GENERATION", "CANDIDATE_GENERATION_FAILED") from error
     accepted = accepted_all[accepted_all["candidate_status"] == "ACCEPTED_TOP20"].copy()
-    rows = adapt_accepted_candidates(accepted)
-    iso_calendar = [pd.Timestamp(day).strftime("%Y-%m-%d") for day in calendar]
-    validate_candidate_schema(iso_calendar, rows)
-    parity = compare_candidate_parity(accepted, rows)
-    counts = _candidate_counts(accepted, audit, gates)
+    try:
+        rows = adapt_accepted_candidates(accepted)
+        iso_calendar = [pd.Timestamp(day).strftime("%Y-%m-%d") for day in calendar]
+        validate_candidate_schema(iso_calendar, rows)
+        counts = _candidate_counts(accepted, audit, gates, combined_splits, calendar)
+    except Exception as error:
+        raise PreflightBlocked("CANDIDATE_ADAPTER", "CANDIDATE_ADAPTER_FAILED") from error
+    try:
+        parity = compare_candidate_parity(accepted, rows)
+    except Exception as error:
+        raise PreflightBlocked("CANDIDATE_PARITY", "CANDIDATE_PARITY_FAILED") from error
     result: dict[str, Any] = {
         "verdict": "V6_A_R2_REAL_CACHE_PREFLIGHT_PASS",
         "repository_commit": repository_commit, "branch": branch, "worktree_clean": bool(worktree_clean),
@@ -251,7 +316,9 @@ def run_read_only_preflight(training_cache: str | Path, evaluation_cache: str | 
         "candidate_counts": counts["candidate_counts"],
         "yearly_candidate_counts": counts["yearly_candidate_counts"],
         "D1_missing": counts["D1_missing"], "D10_missing": counts["D10_missing"],
-        "split_violations": counts["split_violations"], "nonfinite_accepted": counts["nonfinite_accepted"],
+        "split_violations": counts["split_violations"],
+        "rejected_split_spanning_count": counts["rejected_split_spanning_count"],
+        "nonfinite_accepted": counts["nonfinite_accepted"],
         "duplicate_accepted_key": counts["duplicate_accepted_key"], "2026_signals": counts["2026_signals"],
         "missing_in_r2": parity.missing_in_r2, "extra_in_r2": parity.extra_in_r2,
         "duplicate_keys": parity.duplicate_keys,
@@ -262,6 +329,9 @@ def run_read_only_preflight(training_cache: str | Path, evaluation_cache: str | 
         "formal_artifacts": 0, "network": 0, "cache_modification": 0,
     }
     if not worktree_clean or parity.missing_in_r2 or parity.extra_in_r2 or parity.duplicate_keys:
-        raise PreflightBlocked("V6_A_R2_REAL_CACHE_PREFLIGHT_BLOCKED")
-    validate_preflight_expectations(result)
+        raise PreflightBlocked("CANDIDATE_PARITY", "CANDIDATE_PARITY_MISMATCH", _parity_diagnostics(result))
+    try:
+        validate_preflight_expectations(result)
+    except PreflightBlocked:
+        raise
     return result
