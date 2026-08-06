@@ -333,10 +333,25 @@ status=DESIGN_FROZEN_IMPLEMENTATION_NOT_STARTED
 derived_from=V6-A
 reason=causal D0/D1/D10 event-engine preregistration
 design_branch=v6-a-r2-causal-breakout-baseline
-design_commit=<this commit>
+design_commit=eae60d7a472c1365afb8f8da69db7878dbf3c6a0
+human_design_review=PASS_AFTER_CLARIFICATION
+design_clarification_parameter_change=false
 formal_run_started=false
 formal_result=NOT_RUN
 scientific_hypothesis_tested=false
 deployment_allowed=false
-next_authorized_action=HUMAN_DESIGN_REVIEW
+next_authorized_action=IMPLEMENTATION
 ```
+
+Human design review found that “no alternative candidate” could
+conflict with the frozen V6-A rule of processing later ranked
+candidates after a skipped entry.
+
+The design was clarified before implementation:
+all D0 top-20 queued orders are processed on D1 in frozen rank order,
+processing continues after skips, and no candidate outside the
+frozen top 20 may be added.
+
+The D0 equity invariant was also clarified to compare state immediately
+before and after Phase 5 order queuing, not D0 equity against the
+previous trading day.
