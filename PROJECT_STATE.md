@@ -324,3 +324,19 @@ Any mismatch is resolved by the applicable authority above; PROJECT_STATE descri
 - The do-not-rerun registry is present.
 - The next step is V6-A.
 - `git diff --check`: to be run before commit.
+
+## V6-A-R2 design start
+
+```text
+experiment=V6-A-R2
+status=DESIGN_FROZEN_IMPLEMENTATION_NOT_STARTED
+derived_from=V6-A
+reason=causal D0/D1/D10 event-engine preregistration
+design_branch=v6-a-r2-causal-breakout-baseline
+design_commit=<this commit>
+formal_run_started=false
+formal_result=NOT_RUN
+scientific_hypothesis_tested=false
+deployment_allowed=false
+next_authorized_action=HUMAN_DESIGN_REVIEW
+```
