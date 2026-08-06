@@ -124,17 +124,17 @@ entry_attempt_date=D1
 planned_exit_date=D10
 ```
 
-D0で許可されるportfolio operationはpending orderをD1 queueへ登録することだけ。D0ではD1 openの読取り、cash控除、position追加、slot消費、industry枠消費、entry FILLED判定、entry SKIPPED判定を禁止する。alternative candidateは使わない。
+D0で許可されるportfolio operationはpending orderをD1 queueへ登録することだけ。D0ではD1 openの読取り、cash控除、position追加、slot消費、industry枠消費、entry FILLED判定、entry SKIPPED判定を禁止する。
 
 ### Fixed daily processing order
 
 Common market calendarの各日Tを、必ず以下の順で処理する。
 
 1. **Phase 1 — proceeds release:** `availability_date == T` のpending proceedsだけをavailable cashへ移す。Tにexitするpositionの代金は含めない。
-2. **Phase 2 — D1 entry attempts:** `entry_attempt_date == T` のpending ordersを、D0で固定されたrank順、ticker tie-breakで処理する。Tにexit予定の既存positionもopen position、slot占有、industry占有として扱い、T exit proceedsは使えない。読める価格はsignal_dateのraw closeとTのraw openのみ。`T raw open <= D0 raw close * 1.02`、entry price `T raw open * 1.0003`、quantity=100、entry cost <=220000、entry後available cash >=40000、open positions <2、same ticker not open、same industry not openを要求する。FILLED時だけTにcashを控除しpositionを追加しentry timestampを記録する。SKIPPED時はposition/cashを変更しない。
+2. **Phase 2 — D1 entry attempts:** `entry_attempt_date == T` のpending ordersを、D0で固定されたrank ascending、ticker ascendingの固定順ですべて処理する。Tにexit予定の既存positionもopen position、slot占有、industry占有として扱い、T exit proceedsは使えない。読める価格はsignal_dateのraw closeとTのraw openのみ。`T raw open <= D0 raw close * 1.02`、entry price `T raw open * 1.0003`、quantity=100、entry cost <=220000、entry後available cash >=40000、open positions <2、same ticker not open、same industry not openを要求する。あるorderが`ENTRY_GAP_TOO_HIGH`、`MAX_OPEN_POSITIONS`、`DUPLICATE_TICKER_OPEN`、`SAME_INDUSTRY_OPEN`、`CAPITAL_LIMIT`、`CASH_RESERVE`その他の理由でSKIPPEDになってもentry phaseは終了せず、次のrankのqueued orderを処理する。これは旧V6-Aでいうalternative candidate processingである。D0でtop20外だった候補を新たに補充せず、D1に新しいrankingを作らず、skipされたorderを別日に再試行しない。FILLED時だけTにcashを控除しpositionを追加しentry timestampを記録する。SKIPPED時はposition/cashを変更しない。
 3. **Phase 3 — D10 exits:** `planned_exit_date == T` の既存positionをT raw openでexitする。exit priceは `T raw open * 0.9997`。positionはTに削除し、proceedsはavailable cashへ加えず、`availability_date = Tの次のcommon-calendar trading day`としてpending proceedsへ登録する。
 4. **Phase 4 — end-of-day equity:** T終了後、book equity=`available cash + open position entry cost + pending proceeds`、MTM equity=`available cash + open positionのT raw close時価 + pending proceeds`を記録する。pending ordersには価値を付けない。
-5. **Phase 5 — D0 signal queue:** T closeまでの情報だけで成立したaccepted top20 candidateを、`entry_attempt_date = next common-calendar trading day`のpending orderへ登録する。このphaseでcash、position、equityを変更しない。
+5. **Phase 5 — D0 signal queue:** T closeまでの情報だけで成立したaccepted top20 candidateを、`entry_attempt_date = next common-calendar trading day`のpending orderへ登録する。このphaseでcash、position、equityを変更しない。Phase 4 end-of-day equity記録直後のstate snapshotとPhase 5 D0 signal queue完了直後のstate snapshotを比較する。Phase 5によって変更を許可するのは`pending_orders_by_entry_date`だけであり、`available_cash`、`open_positions`、`pending_proceeds`、`completed_trades`、その日に既に記録された`daily_equity`はPhase 5前後でbyte-identicalでなければならない。既存positionのT raw close変動により、D0のMTM equityが前営業日のMTM equityと異なることは正常である。
 
 ### Future-read guard
 
@@ -161,16 +161,17 @@ formal `trades.csv`または内部event auditには最低限、`signal_date`、`
 
 | Engine day | Required events | Cash / position rule |
 |---|---|---|
-| D0 | order queued | cash unchanged; positions unchanged; equity unchanged |
-| D1 | entry attempted; D1 open read | cash deducted and position opened only if FILLED |
+| D0 Phase 4 | record equity using current open positions and D0 close | Phase-4 equity is recorded from the current state |
+| D0 Phase 5 | queue orders only | Phase-4 state/equity must not be mutated |
+| D1 | process every queued top20 order in frozen D0 rank order; continue after each skipped order; never pull a replacement from outside D0 top20; D1 open read | cash deducted and position opened only if FILLED |
 | D10 | entry phase first; existing exit position still occupies slot; exit executed afterward | exit proceeds pending |
 | D11 | proceeds released | proceeds become available |
 
 ## Acceptance test contract before implementation
 
-次の30 testsを実装前の受入契約として固定する。
+次の32 testsを実装前の受入契約として固定する。
 
-1. D0はorder queueだけが変化し、cash/positions/equityは変化しない
+1. Phase 4 end-of-day equity記録直後とPhase 5 D0 signal queue完了直後のsnapshotを比較し、pending_orders_by_entry_dateだけが変化し、available_cash/open_positions/pending_proceeds/completed_trades/その日に既に記録されたdaily_equityがbyte-identicalである
 2. D0処理中のD1 open読取りがfuture-read guardで失敗する
 3. D1当日に初めてentry fillとcash控除が起きる
 4. D1 openを変更してもD0 state/D0 equityがbyte-identical
@@ -200,6 +201,8 @@ formal `trades.csv`または内部event auditには最低限、`signal_date`、`
 28. preflightはreal-cache portfolio simulationを呼ばない
 29. network処理が存在しない
 30. 2026 signalをfail closed
+31. rank1がgap超過でSKIPPEDでもrank2のentry attemptが実行される
+32. top20がすべて処理されてもrank21以降はD1 queueへ入らない
 
 ## Human gates, review, and retry policy
 
