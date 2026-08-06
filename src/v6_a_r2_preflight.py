@@ -171,6 +171,30 @@ def _candidate_counts(accepted: pd.DataFrame, audit: pd.DataFrame, gates: Mappin
     }
 
 
+def _generate_candidates_read_only(frames: Mapping[str, pd.DataFrame], universe: pd.DataFrame,
+                                   splits: Mapping[str, set[pd.Timestamp]], calendar: pd.DatetimeIndex):
+    """Call the frozen generator with an in-memory normalization cache only.
+
+    The old generator's feature and ranking logic is unchanged.  Its global
+    normalizer is restored in ``finally``; no repository or cache state is
+    touched.
+    """
+    original_normalizer = generate_candidates.__globals__["adjusted_columns"]
+    normalized: dict[int, pd.DataFrame] = {}
+
+    def cached_normalizer(frame: pd.DataFrame) -> pd.DataFrame:
+        key = id(frame)
+        if key not in normalized:
+            normalized[key] = original_normalizer(frame)
+        return normalized[key]
+
+    generate_candidates.__globals__["adjusted_columns"] = cached_normalizer
+    try:
+        return generate_candidates(frames, universe, splits, calendar)
+    finally:
+        generate_candidates.__globals__["adjusted_columns"] = original_normalizer
+
+
 def validate_preflight_expectations(result: Mapping[str, Any], expected: Mapping[str, Any] = EXPECTED_PREFLIGHT) -> None:
     overlap = result["source_overlap_audit"]
     checks = {
@@ -204,9 +228,10 @@ def run_read_only_preflight(training_cache: str | Path, evaluation_cache: str | 
     overlap = audit_overlap(training_prices, evaluation_prices)
     frames = combine_source_aware(training_prices, evaluation_prices)
     calendar = common_calendar(frames)
-    accepted_all, gates, audit = generate_candidates(frames, universe,
-                                                     {ticker: training_splits.get(ticker, set()) | evaluation_splits.get(ticker, set()) for ticker in frames},
-                                                     calendar)
+    accepted_all, gates, audit = _generate_candidates_read_only(
+        frames, universe,
+        {ticker: training_splits.get(ticker, set()) | evaluation_splits.get(ticker, set()) for ticker in frames},
+        calendar)
     if accepted_all.empty:
         raise PreflightBlocked("V6_A_R2_REAL_CACHE_PREFLIGHT_BLOCKED")
     accepted = accepted_all[accepted_all["candidate_status"] == "ACCEPTED_TOP20"].copy()
@@ -240,4 +265,3 @@ def run_read_only_preflight(training_cache: str | Path, evaluation_cache: str | 
         raise PreflightBlocked("V6_A_R2_REAL_CACHE_PREFLIGHT_BLOCKED")
     validate_preflight_expectations(result)
     return result
-
