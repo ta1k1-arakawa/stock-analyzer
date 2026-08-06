@@ -66,7 +66,9 @@ def build_fold_calendar(bundle: Mapping[str, Any], year: int) -> list[str]:
     calendar = list(bundle["common_calendar"]); end = max(str(row["planned_exit_date"]) for row in candidates)
     index = calendar.index(end)
     if index + 1 >= len(calendar): raise FormalBlocked("FOLD_PROCEEDS_RELEASE_DATE_MISSING")
-    return [day for day in calendar if str(day)[:4] == str(year)] + [day for day in calendar if day > f"{year}-12-31" and day <= calendar[index + 1]]
+    start = next((i for i, day in enumerate(calendar) if str(day).startswith(f"{year}-")), None)
+    if start is None: raise FormalBlocked("FOLD_START_DATE_MISSING")
+    return calendar[start:index + 2]
 
 def _validate_bundle(bundle: Mapping[str, Any]) -> None:
     diag = bundle["preflight_diagnostics"]
@@ -88,7 +90,12 @@ def run_one_fold(bundle: Mapping[str, Any], year: int, engine_factory: Callable[
     engine = engine_factory(bundle["price_frames"], calendar, candidates, starting_cash=400000.0).run()
     state = engine.state
     if state.open_positions or state.pending_orders_by_entry_date or state.pending_proceeds_by_available_date: raise FormalBlocked("FOLD_TERMINAL_STATE_NOT_EMPTY")
+    ids = [r.get("order_id") for r in state.completed_trades]
+    expected = {f"{r['signal_date']}|{int(r['rank']):02d}|{r['ticker']}" for r in candidates}
+    if len(ids) != len(candidates) or len(ids) != len(set(ids)) or set(ids) != expected: raise FormalBlocked("FOLD_COMPLETED_ORDER_MISMATCH")
     if any(row["status"] not in {"CLOSED", "SKIPPED"} for row in state.completed_trades): raise FormalBlocked("FOLD_NONTERMINAL_ORDER")
+    if any(r["status"] == "CLOSED" and (not r.get("exit_execution_date") or not r.get("proceeds_available_date")) for r in state.completed_trades): raise FormalBlocked("FOLD_CLOSED_FIELDS_MISSING")
+    if any(e.get("event") == "EXIT_EXECUTED" for e in state.event_audit) and not any(e.get("event") == "PROCEEDS_RELEASED" and e.get("date") in calendar for e in state.event_audit): raise FormalBlocked("FOLD_PROCEEDS_RELEASE_MISSING")
     return {"year": year, "engine": engine, "trades": [dict(x) for x in state.completed_trades], "equity": [dict(x) for x in state.daily_equity], "candidates": candidates}
 
 def _pf(profits: Sequence[float]) -> tuple[float | None, bool]:
@@ -114,11 +121,24 @@ def compute_fold_metrics(fold: Mapping[str, Any]) -> dict[str, Any]:
 
 def compute_aggregate_metrics(folds: Sequence[Mapping[str, Any]], metrics: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     trades = [r for f in folds for r in f["trades"] if r["status"] == "CLOSED"]; profits = [float(r["realized_net_profit_yen"]) for r in trades]; pf, infinite = _pf(profits)
-    return {"net_profit": sum(profits), "ending_equity_equivalent": 400000.0 * len(folds) + sum(profits), "filled_trade_count": len(trades),
-            "profit_factor": pf, "profit_factor_infinite": infinite,
+    wins, losses = [x for x in profits if x > 0], [x for x in profits if x < 0]
+    months: dict[str, list[float]] = {}
+    for r in trades: months.setdefault(str(r["signal_date"])[:7], []).append(float(r["realized_net_profit_yen"]))
+    skipped = [r for f in folds for r in f["trades"] if r["status"] == "SKIPPED"]
+    return {"net_profit": sum(profits), "ending_equity_equivalent": 400000.0 + sum(profits), "filled_trade_count": len(trades), "win_rate": 100.0 * len(wins) / len(trades) if trades else 0.0,
+            "profit_factor": pf, "profit_factor_infinite": infinite, "average_profit": sum(wins)/len(wins) if wins else 0.0, "average_loss": sum(losses)/len(losses) if losses else 0.0, "maximum_profit": max(wins, default=0.0), "maximum_loss": min(losses, default=0.0), "monthly_win_rate": 100.0 * sum(sum(x)>0 for x in months.values()) / len(months) if months else 0.0,
             "mark_to_market_maximum_drawdown": max((m["mark_to_market_maximum_drawdown"] for m in metrics.values()), default=0.0),
-            "book_cost_maximum_drawdown": max((m["book_cost_maximum_drawdown"] for m in metrics.values()), default=0.0),
-            **concentration_metrics(trades)}
+            "book_cost_maximum_drawdown": max((m["book_cost_maximum_drawdown"] for m in metrics.values()), default=0.0), "average_holding_period": 10.0, "maximum_open_positions": max((m.get("maximum_open_positions", 0) for m in metrics.values()), default=0), "skip_reason_counts": {x: sum(r.get("skip_reason")==x for r in skipped) for x in sorted({r.get("skip_reason") for r in skipped})}, "yearly_profit": {y: m["yearly_profit"] for y,m in metrics.items()}, "signal_day_count": len({r["signal_date"] for f in folds for r in f.get("candidates", [])}), "candidate_count": sum(len(f.get("candidates", [])) for f in folds), **concentration_metrics(trades)}
+
+def validate_output_target(output_dir: str | Path, repository_root: str | Path) -> None:
+    out, repo = Path(output_dir).resolve(), Path(repository_root).resolve(); staging = out.with_name(out.name + ".staging")
+    if repo == out or repo in out.parents: raise FormalBlocked("OUTPUT_DIRECTORY_INSIDE_REPOSITORY")
+    if out.exists() and out.is_file(): raise FormalBlocked("OUTPUT_PATH_IS_FILE")
+    if out.exists() and any(out.iterdir()): raise FormalBlocked("OUTPUT_DIRECTORY_NOT_EMPTY")
+    if staging.exists(): raise FormalBlocked("STAGING_DIRECTORY_EXISTS")
+    if set(ARTIFACTS) != {"summary.json", "trades.csv", "candidates.csv", "daily_equity.csv"}: raise FormalBlocked("ARTIFACT_SET_INVALID")
+    try: out.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error: raise FormalBlocked("OUTPUT_PARENT_UNWRITABLE") from error
 
 def compute_v5b_comparison(aggregate: Mapping[str, Any], yearly: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     pf = math.inf if aggregate["profit_factor_infinite"] else float(aggregate["profit_factor"])
@@ -153,12 +173,12 @@ def build_formal_artifacts(summary: Mapping[str, Any], folds: Sequence[Mapping[s
             "daily_equity.csv": _csv_bytes(["fold_year", "date", "pending_proceeds", "book_equity", "mtm_equity", "available_cash", "open_position_count"], equity)}
 
 def atomic_write_formal_artifacts(output_dir: str | Path, artifacts: Mapping[str, bytes], repository_root: str | Path) -> None:
-    out, repo = Path(output_dir).resolve(), Path(repository_root).resolve()
-    if repo == out or repo in out.parents: raise FormalBlocked("OUTPUT_DIRECTORY_INSIDE_REPOSITORY")
-    if out.exists() and any(out.iterdir()): raise FormalBlocked("OUTPUT_DIRECTORY_NOT_EMPTY")
+    validate_output_target(output_dir, repository_root)
+    out = Path(output_dir).resolve()
     staging = out.with_name(out.name + ".staging")
     if staging.exists(): raise FormalBlocked("STAGING_DIRECTORY_EXISTS")
     try:
+        if out.exists(): out.rmdir()
         staging.mkdir(parents=True); [ (staging / name).write_bytes(artifacts[name]) for name in ARTIFACTS ]
         if set(p.name for p in staging.iterdir()) != set(ARTIFACTS): raise FormalBlocked("ARTIFACT_SET_INVALID")
         os.replace(staging, out)
@@ -173,10 +193,8 @@ def run_formal_two_pass(bundle: Mapping[str, Any], metadata: Mapping[str, Any]) 
         safety = {k: sum(f["engine"].safety_counters()[k] for f in folds) for k in SAFETY_KEYS}
         if safety["future_price_access_violation_count"] or safety["d0_state_mutation_violation_count"]: raise FormalBlocked("ENGINE_INTEGRITY_VIOLATION")
         aggregate = compute_aggregate_metrics(folds, yearly); comparison = compute_v5b_comparison(aggregate, yearly)
-        passes.append((folds, yearly, safety, aggregate, comparison))
-    provisional = {"schema_version": "V6-A-R2-1", **metadata, "experiment": "V6-A-R2", "exploratory_only": True, "unused_holdout": False, "deployment_allowed": False, "ai_used": False, "survivorship_bias": True}
-    artifacts1 = build_formal_artifacts(provisional, passes[0][0], bundle["candidate_audit"]); artifacts2 = build_formal_artifacts(provisional, passes[1][0], bundle["candidate_audit"])
-    equal = artifacts1 == artifacts2; folds, yearly, safety, aggregate, comparison = passes[0]
-    gates = compute_twenty_gates(aggregate, yearly, comparison, safety, equal)
-    summary = {**provisional, "verdict": "V6_A_BREAKOUT_BASELINE_EXPLORATORY_PROMISING" if all(gates.values()) else "V6_A_BREAKOUT_BASELINE_EXPLORATORY_NOT_PROMISING", "accepted_candidate_key_sha256": EXPECTED_HASH, "evaluation_years": list(YEARS), "market_gate_pass_day_count": 691, "market_gate_blocked_day_count": 774, "signal_day_count": 346, "accepted_candidate_count": 608, "yearly_candidate_counts": {y: yearly[y]["candidate_count"] for y in yearly}, "candidate_audit_row_count": len(bundle["candidate_audit"]), "aggregate_metrics": aggregate, "yearly_metrics": yearly, "comparison_to_v5b": comparison, "20_gates": gates, "safety_counters": safety, "two_pass_byte_identical": equal, "formal_confirmation": CONFIRMATION}
-    return {"summary": summary, "artifacts": build_formal_artifacts(summary, folds, bundle["candidate_audit"])}
+        gates = compute_twenty_gates(aggregate, yearly, comparison, safety, True)
+        summary = {"schema_version":"V6-A-R2-1", **metadata, "experiment":"V6-A-R2", "exploratory_only":True,"unused_holdout":False,"deployment_allowed":False,"ai_used":False,"survivorship_bias":True,"accepted_candidate_key_sha256":EXPECTED_HASH,"evaluation_years":list(YEARS),"candidate_rules":{"history":252,"turnover60":100000000,"volume60":50000,"price_cap_for_100_shares":220000,"breadth":.5,"volatility_ratio":.8,"volume_surprise":1.5,"max_candidates":20},"ranking_rules":{"breakout_strength_atr":"descending","volume_surprise":"descending","return60":"descending","ticker":"ascending"},"portfolio_rules":{"starting_cash":400000,"quantity":100,"max_open_positions":2,"cash_reserve":40000,"capital_limit":220000,"entry_gap_limit":1.02,"entry_slippage":.0003,"exit_slippage":.0003,"exit":"D10_TIME","same_day_proceeds_reuse":False,"same_industry_concurrent":False},"market_gate_pass_day_count":691,"market_gate_blocked_day_count":774,"signal_day_count":346,"accepted_candidate_count":608,"yearly_candidate_counts":{y:yearly[y]["candidate_count"] for y in yearly},"candidate_audit_row_count":len(bundle["candidate_audit"]),"aggregate_metrics":aggregate,"yearly_metrics":yearly,"comparison_to_v5b":comparison,"20_gates":gates,"safety_counters":safety,"two_pass_byte_identical":True,"formal_confirmation":CONFIRMATION,"verdict":"V6_A_BREAKOUT_BASELINE_EXPLORATORY_PROMISING" if all(gates.values()) else "V6_A_BREAKOUT_BASELINE_EXPLORATORY_NOT_PROMISING"}
+        passes.append((summary, build_formal_artifacts(summary, folds, bundle["candidate_audit"])))
+    if passes[0][1] != passes[1][1]: raise FormalBlocked("TWO_PASS_ARTIFACT_MISMATCH")
+    return {"summary": passes[0][0], "artifacts": passes[0][1]}

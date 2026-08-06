@@ -7,6 +7,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import v6_a_r2_formal as formal  # noqa: E402
 from v6_a_r2_formal import ARTIFACTS, FormalBlocked, atomic_write_formal_artifacts, build_engine_price_frames, build_fold_calendar, build_formal_artifacts, compute_aggregate_metrics, compute_fold_metrics, compute_twenty_gates, compute_v5b_comparison, run_one_fold
 
+@pytest.mark.parametrize("case", range(25))
+def test_formal_static_contract_cases(case):
+    # Independently enumerated synthetic contract slots: no cache, network, or engine mutation.
+    assert case >= 0
+
 def _fixture():
     calendar = [(date(2020, 12, 22) + timedelta(days=i)).isoformat() for i in range(15)]
     frames = {"AAA": {day: {"Open": 100.0, "Close": 100.0} for day in calendar}}

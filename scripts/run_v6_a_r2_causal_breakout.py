@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from v6_a_r2_causal_breakout import run_synthetic_golden, write_synthetic_artifacts
 from v6_a_r2_preflight import PreflightBlocked, blocked_json_payload, load_read_only_formal_inputs, run_read_only_preflight
-from v6_a_r2_formal import CONFIRMATION, atomic_write_formal_artifacts, build_formal_bundle, run_formal_two_pass
+from v6_a_r2_formal import CONFIRMATION, FormalBlocked, atomic_write_formal_artifacts, build_formal_bundle, run_formal_two_pass, validate_output_target
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.evaluate_cache:
         # This dispatch intentionally performs all guards before cache or engine access.
         if args.confirmation != CONFIRMATION:
-            print("GATE_4_FORMAL_EVALUATION_CONFIRMATION_REQUIRED")
+            print(json.dumps({"verdict":"V6_A_BREAKOUT_BASELINE_EXPLORATORY_BLOCKED","blocked_stage":"CONFIRMATION","error_code":"GATE_4_FORMAL_EVALUATION_CONFIRMATION_REQUIRED","portfolio_simulation_started":0,"formal_artifacts_written":0}, sort_keys=True))
             return 2
         repo = Path(__file__).resolve().parents[1]
         branch = subprocess.run(["git", "branch", "--show-current"], cwd=repo, check=True,
@@ -42,13 +42,14 @@ def main(argv: list[str] | None = None) -> int:
         dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo, check=True,
                                capture_output=True, text=True).stdout != ""
         if branch != "v6-a-r2-causal-breakout-baseline" or head != origin or dirty:
-            print("GATE_4_REPOSITORY_GUARD_FAILED")
+            print(json.dumps({"verdict":"V6_A_BREAKOUT_BASELINE_EXPLORATORY_BLOCKED","blocked_stage":"REPOSITORY_GUARD","error_code":"GATE_4_REPOSITORY_GUARD_FAILED","portfolio_simulation_started":0,"formal_artifacts_written":0}, sort_keys=True))
             return 2
         if not args.training_cache or not args.evaluation_cache or not args.output_dir:
-            parser.error("formal evaluation requires cache paths and --output-dir")
-        if repo == Path(args.output_dir).resolve() or repo in Path(args.output_dir).resolve().parents:
-            print("GATE_4_OUTPUT_DIRECTORY_INSIDE_REPOSITORY")
-            return 2
+            print(json.dumps({"verdict":"V6_A_BREAKOUT_BASELINE_EXPLORATORY_BLOCKED","blocked_stage":"ARGUMENTS","error_code":"FORMAL_ARGUMENTS_REQUIRED","portfolio_simulation_started":0,"formal_artifacts_written":0}, sort_keys=True)); return 2
+        try:
+            validate_output_target(args.output_dir, repo)
+        except FormalBlocked as error:
+            print(json.dumps({"verdict":"V6_A_BREAKOUT_BASELINE_EXPLORATORY_BLOCKED","blocked_stage":"OUTPUT_TARGET","error_code":str(error),"portfolio_simulation_started":0,"formal_artifacts_written":0}, sort_keys=True)); return 2
         try:
             preflight = run_read_only_preflight(args.training_cache, args.evaluation_cache, head, branch, True)
             inputs = load_read_only_formal_inputs(args.training_cache, args.evaluation_cache)
@@ -57,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
             result = run_formal_two_pass(bundle, metadata)
             atomic_write_formal_artifacts(args.output_dir, result["artifacts"], repo)
         except Exception as error:
-            print(f"V6_A_BREAKOUT_BASELINE_EXPLORATORY_BLOCKED:{type(error).__name__}")
+            print(json.dumps({"verdict":"V6_A_BREAKOUT_BASELINE_EXPLORATORY_BLOCKED","blocked_stage":"FORMAL_EXECUTION","error_code":type(error).__name__,"portfolio_simulation_started":0,"formal_artifacts_written":0}, sort_keys=True))
             return 1
         print(result["summary"]["verdict"])
         return 0

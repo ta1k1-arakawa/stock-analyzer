@@ -134,7 +134,9 @@ def test_evaluate_cache_mode_remains_unauthorized(capsys):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
     import run_v6_a_r2_causal_breakout as runner
     assert runner.main(["--evaluate-cache"]) == 2
-    assert capsys.readouterr().out.strip() == "GATE_4_FORMAL_EVALUATION_CONFIRMATION_REQUIRED"
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error_code"] == "GATE_4_FORMAL_EVALUATION_CONFIRMATION_REQUIRED"
+    assert payload["portfolio_simulation_started"] == 0
 
 
 def test_preflight_json_schema_keys():
