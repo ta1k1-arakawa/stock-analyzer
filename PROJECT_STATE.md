@@ -399,3 +399,22 @@ audits, CLOSED-row invariants, and strengthened synthetic negative tests.
 
 Real-cache candidate preflight is authorized, but real-cache portfolio
 simulation and formal evaluation remain prohibited.
+
+## V6-A-R2 read-only real-cache preflight
+
+```text
+V6-A-R2 real_cache_preflight=PASS
+candidate_parity=PASS
+accepted_candidate_count=608
+signal_day_count=346
+yearly_candidate_counts=109,107,63,118,87,124
+market_gate_pass_days=691
+market_gate_blocked_days=774
+accepted_candidate_key_sha256=4c550c8635a192fc4d60a753d8ac77ca9f992dc62bad3f36f19ef7512c29e818
+preflight_diagnostic_correction=true
+engine_code_changed=false
+portfolio_simulation_started=false
+formal_run_started=false
+formal_result=NOT_RUN
+next_authorized_action=INDEPENDENT_GATE3_STATIC_REVIEW
+```
