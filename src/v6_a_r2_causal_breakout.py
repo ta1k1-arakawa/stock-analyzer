@@ -150,6 +150,27 @@ def _require_candidate(row: Mapping[str, Any], calendar: Sequence[str]) -> None:
         raise ValueError("NONFINITE_CANDIDATE_CLOSE")
 
 
+def validate_candidate_schema(calendar: Sequence[str], candidates: Sequence[Mapping[str, Any]]) -> None:
+    """Validate R2 candidate rows without constructing or running the engine."""
+    calendar = tuple(calendar)
+    parsed_calendar = tuple(_parse_iso_date(day) for day in calendar)
+    if tuple(sorted(parsed_calendar)) != parsed_calendar or len(set(calendar)) != len(calendar):
+        raise ValueError("INVALID_COMMON_CALENDAR")
+    ids: set[str] = set()
+    signal_tickers: set[tuple[str, str]] = set()
+    signal_ranks: set[tuple[str, int]] = set()
+    for row in candidates:
+        _require_candidate(row, calendar)
+        order_id = _order_id(row)
+        ticker_key = (str(row["signal_date"]), str(row["ticker"]))
+        rank_key = (str(row["signal_date"]), int(row["rank"]))
+        if order_id in ids or ticker_key in signal_tickers or rank_key in signal_ranks:
+            raise ValueError("DUPLICATE_CANDIDATE_KEY")
+        ids.add(order_id)
+        signal_tickers.add(ticker_key)
+        signal_ranks.add(rank_key)
+
+
 class CausalEventEngine:
     """A new, explicit five-phase state-transition engine."""
 
