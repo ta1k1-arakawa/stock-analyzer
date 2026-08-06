@@ -12,21 +12,55 @@ import subprocess
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from v6_a_r2_causal_breakout import run_synthetic_golden, write_synthetic_artifacts
-from v6_a_r2_preflight import PreflightBlocked, blocked_json_payload, run_read_only_preflight
+from v6_a_r2_preflight import PreflightBlocked, blocked_json_payload, load_read_only_formal_inputs, run_read_only_preflight
+from v6_a_r2_formal import CONFIRMATION, atomic_write_formal_artifacts, build_formal_bundle, run_formal_two_pass
 
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
-    if "--preflight-formal-path" in raw or "--evaluate-cache" in raw:
-        if "--evaluate-cache" in raw:
-            print("GATE_3_FORMAL_EVALUATION_NOT_AUTHORIZED")
-            return 2
     parser = argparse.ArgumentParser(prog="run_v6_a_r2_causal_breakout")
     parser.add_argument("--synthetic-golden-test", action="store_true")
     parser.add_argument("--preflight-formal-path", action="store_true")
     parser.add_argument("--training-cache")
     parser.add_argument("--evaluation-cache")
+    parser.add_argument("--evaluate-cache", action="store_true")
+    parser.add_argument("--output-dir")
+    parser.add_argument("--confirmation")
     args = parser.parse_args(raw)
+    if args.evaluate_cache:
+        # This dispatch intentionally performs all guards before cache or engine access.
+        if args.confirmation != CONFIRMATION:
+            print("GATE_4_FORMAL_EVALUATION_CONFIRMATION_REQUIRED")
+            return 2
+        repo = Path(__file__).resolve().parents[1]
+        branch = subprocess.run(["git", "branch", "--show-current"], cwd=repo, check=True,
+                                capture_output=True, text=True).stdout.strip()
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                              capture_output=True, text=True).stdout.strip()
+        origin = subprocess.run(["git", "rev-parse", "origin/v6-a-r2-causal-breakout-baseline"], cwd=repo, check=True,
+                                capture_output=True, text=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo, check=True,
+                               capture_output=True, text=True).stdout != ""
+        if branch != "v6-a-r2-causal-breakout-baseline" or head != origin or dirty:
+            print("GATE_4_REPOSITORY_GUARD_FAILED")
+            return 2
+        if not args.training_cache or not args.evaluation_cache or not args.output_dir:
+            parser.error("formal evaluation requires cache paths and --output-dir")
+        if repo == Path(args.output_dir).resolve() or repo in Path(args.output_dir).resolve().parents:
+            print("GATE_4_OUTPUT_DIRECTORY_INSIDE_REPOSITORY")
+            return 2
+        try:
+            preflight = run_read_only_preflight(args.training_cache, args.evaluation_cache, head, branch, True)
+            inputs = load_read_only_formal_inputs(args.training_cache, args.evaluation_cache)
+            bundle = build_formal_bundle(preflight, inputs["raw_price_frames"], inputs["common_calendar"], inputs["accepted_candidates"], inputs["full_candidate_audit"], inputs["market_gate_audit"])
+            metadata = {"repository_commit": head, "branch": branch, "training_manifest_sha": preflight["training_manifest_sha"], "evaluation_manifest_sha": preflight["evaluation_manifest_sha"], "universe_csv_sha": preflight["universe_csv_sha"], "ticker_list_sha": preflight["ticker_list_sha"], "candidate_rules": "frozen_v6_a", "ranking_rules": "frozen_v6_a", "portfolio_rules": "causal_d0_d1_d10", "event_phase_order": ["phase1_release_proceeds", "phase2_attempt_entries", "phase3_execute_exits", "phase4_record_equity", "phase5_queue_signals"]}
+            result = run_formal_two_pass(bundle, metadata)
+            atomic_write_formal_artifacts(args.output_dir, result["artifacts"], repo)
+        except Exception as error:
+            print(f"V6_A_BREAKOUT_BASELINE_EXPLORATORY_BLOCKED:{type(error).__name__}")
+            return 1
+        print(result["summary"]["verdict"])
+        return 0
     if args.synthetic_golden_test and args.preflight_formal_path:
         parser.error("choose one authorized mode")
     if args.preflight_formal_path:

@@ -268,6 +268,25 @@ def blocked_json_payload(error: PreflightBlocked) -> dict[str, Any]:
             **error.diagnostics}
 
 
+def load_read_only_formal_inputs(training_cache: str | Path, evaluation_cache: str | Path) -> dict[str, Any]:
+    """Return validated in-memory inputs for the later formal evaluator."""
+    repo = Path(__file__).resolve().parents[1]
+    try:
+        universe = validate_universe(repo / "V4_UNIVERSE.csv")
+        _, training_prices, training_splits = load_cache(Path(training_cache), TRAINING_MANIFEST_SHA, universe)
+        _, evaluation_prices, evaluation_splits = load_cache(Path(evaluation_cache), EVALUATION_MANIFEST_SHA, universe)
+        frames = combine_source_aware(training_prices, evaluation_prices)
+        calendar = common_calendar(frames)
+        splits = {ticker: training_splits.get(ticker, set()) | evaluation_splits.get(ticker, set()) for ticker in frames}
+        accepted_all, gates, audit = _generate_candidates_read_only(frames, universe, splits, calendar)
+        accepted = accepted_all[accepted_all["candidate_status"] == "ACCEPTED_TOP20"].copy()
+        rows = adapt_accepted_candidates(accepted)
+    except Exception as error:
+        raise PreflightBlocked("FORMAL_INPUT_BUNDLE", "FORMAL_INPUT_BUNDLE_FAILED") from error
+    return {"raw_price_frames": frames, "common_calendar": calendar, "accepted_candidates": rows,
+            "full_candidate_audit": audit, "market_gate_audit": gates}
+
+
 def run_read_only_preflight(training_cache: str | Path, evaluation_cache: str | Path,
                             repository_commit: str, branch: str, worktree_clean: bool) -> dict[str, Any]:
     repo = Path(__file__).resolve().parents[1]
