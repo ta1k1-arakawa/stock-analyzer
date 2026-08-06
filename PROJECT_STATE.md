@@ -378,3 +378,24 @@ invariants, and several synthetic acceptance tests were insufficient.
 The single preregistered implementation-bug retry was used to correct
 the causal engine and strengthen negative tests before real-cache
 preflight.
+
+## V6-A-R2 Gate 2 review pass
+
+```text
+V6-A-R2 implementation_status=GATE2_ACCEPTED
+independent_gate2_code_review=PASS
+accepted_engine_commit=548288f9e16739fe0bff2d21996a7c53274f3e54
+single_implementation_bug_retry_used=true
+additional_implementation_retry_allowed=false
+formal_run_started=false
+formal_result=NOT_RUN
+scientific_hypothesis_tested=false
+next_authorized_action=READ_ONLY_REAL_CACHE_PREFLIGHT
+```
+
+Independent Gate 2 review confirmed the corrected five-phase causal
+engine, pending-proceeds accounting, future-read guard, measured safety
+audits, CLOSED-row invariants, and strengthened synthetic negative tests.
+
+Real-cache candidate preflight is authorized, but real-cache portfolio
+simulation and formal evaluation remain prohibited.
