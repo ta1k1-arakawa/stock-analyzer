@@ -21,6 +21,10 @@ from v6_a_r2_preflight import (  # noqa: E402
     compare_candidate_parity,
     blocked_json_payload,
     _candidate_counts,
+    ReadOnlyPreparation,
+    prepare_read_only_context,
+    prepare_read_only_formal_bundle,
+    run_read_only_preflight,
     validate_preflight_expectations,
 )
 from v6_a_r2_causal_breakout import validate_candidate_schema  # noqa: E402
@@ -250,3 +254,65 @@ def test_expected_preflight_constants_are_not_mutated_by_validation():
     with pytest.raises(PreflightBlocked):
         validate_preflight_expectations(result)
     assert EXPECTED_PREFLIGHT == before
+
+
+def test_single_preparation_path_call_counts(monkeypatch):
+    import v6_a_r2_preflight as module
+
+    calls = {"load_cache": [], "audit_overlap": 0, "combine": 0, "generate": 0,
+             "adapt": 0, "parity": 0, "expectations": 0}
+    accepted = _accepted_rows()
+    prices = {"1111": pd.DataFrame({"Open": [100.0], "Close": [100.0]},
+                                    index=[pd.Timestamp("2020-01-01")])}
+    overlap = {"overlap_tickers": 283, "overlap_rows": 67843, "raw_ohlcv_mismatch": 0,
+               "adjclose_mismatch": 482, "adjclose_mismatch_tickers": ["4768", "7609"],
+               "overlap_min": pd.Timestamp("2019-01-04"), "overlap_max": pd.Timestamp("2019-12-30")}
+    gates = {"2020-01-01": {"market_gate_status": "MARKET_GATE_PASS"}}
+    audit = pd.DataFrame()
+
+    monkeypatch.setattr(module, "validate_universe", lambda path: pd.DataFrame())
+    def fake_load(path, manifest, universe):
+        calls["load_cache"].append((str(path), manifest))
+        return ({}, prices, {"1111": set()})
+    monkeypatch.setattr(module, "load_cache", fake_load)
+    monkeypatch.setattr(module, "audit_overlap", lambda a, b: overlap)
+    monkeypatch.setattr(module, "combine_source_aware", lambda a, b: calls.__setitem__("combine", calls["combine"] + 1) or prices)
+    monkeypatch.setattr(module, "common_calendar", lambda frames: pd.date_range("2020-01-01", periods=20))
+    monkeypatch.setattr(module, "_generate_candidates_read_only", lambda *args: calls.__setitem__("generate", calls["generate"] + 1) or (accepted, gates, audit))
+    original_adapt = module.adapt_accepted_candidates
+    monkeypatch.setattr(module, "adapt_accepted_candidates", lambda value: calls.__setitem__("adapt", calls["adapt"] + 1) or original_adapt(value))
+    monkeypatch.setattr(module, "validate_candidate_schema", lambda *args: None)
+    original_parity = module.compare_candidate_parity
+    monkeypatch.setattr(module, "compare_candidate_parity", lambda *args: calls.__setitem__("parity", calls["parity"] + 1) or original_parity(*args))
+    monkeypatch.setattr(module, "validate_preflight_expectations", lambda result: calls.__setitem__("expectations", calls["expectations"] + 1))
+
+    preparation = prepare_read_only_context("training", "evaluation", "sha", "branch", True)
+    assert isinstance(preparation, ReadOnlyPreparation)
+    assert len(calls["load_cache"]) == 2
+    assert calls["load_cache"][0][0] == "training" and calls["load_cache"][1][0] == "evaluation"
+    assert calls["combine"] == calls["generate"] == calls["adapt"] == calls["parity"] == calls["expectations"] == 1
+
+
+def test_run_preflight_uses_context_once_and_returns_preflight_result(monkeypatch):
+    import v6_a_r2_preflight as module
+    result = {"verdict": "PASS"}
+    preparation = ReadOnlyPreparation(result, {}, pd.DatetimeIndex([]), [], pd.DataFrame(), {}, {})
+    calls = []
+    monkeypatch.setattr(module, "prepare_read_only_context", lambda *args: calls.append(args) or preparation)
+    assert run_read_only_preflight("training", "evaluation", "sha", "branch", True) is result
+    assert len(calls) == 1
+
+
+def test_formal_bundle_is_thin_single_context_wrapper(monkeypatch):
+    import v6_a_r2_preflight as module
+    preparation = ReadOnlyPreparation({"verdict": "PASS"}, {}, pd.DatetimeIndex([]), [], pd.DataFrame(), {}, {})
+    calls = []
+    monkeypatch.setattr(module, "prepare_read_only_context", lambda *args: calls.append(args) or preparation)
+    assert prepare_read_only_formal_bundle("training", "evaluation", "sha", "branch", True) is preparation
+    assert len(calls) == 1
+
+
+def test_duplicate_formal_input_helper_removed():
+    source = (Path(__file__).resolve().parents[1] / "src" / "v6_a_r2_preflight.py").read_text(encoding="utf-8")
+    assert "_load_read_only_formal_inputs" not in source
+    assert "-> ReadOnlyPreparation" in source

@@ -106,8 +106,11 @@ def _pf(profits: Sequence[float]) -> tuple[float | None, bool]:
 def compute_fold_metrics(fold: Mapping[str, Any]) -> dict[str, Any]:
     closed = [r for r in fold["trades"] if r["status"] == "CLOSED"]; profits = [float(r["realized_net_profit_yen"]) for r in closed]
     wins, losses = [x for x in profits if x > 0], [x for x in profits if x < 0]; pf, infinite = _pf(profits)
-    months = {str(r.get("signal_date", r.get("exit_execution_date")))[:7]: [] for r in closed}
-    for r, p in zip(closed, profits): months[str(r.get("signal_date", r.get("exit_execution_date")))[:7]].append(p)
+    months: dict[str, list[float]] = {}
+    for r, p in zip(closed, profits):
+        if not r.get("signal_date"):
+            raise FormalBlocked("TRADE_SIGNAL_DATE_MISSING")
+        months.setdefault(str(r["signal_date"])[:7], []).append(p)
     return {"net_profit": sum(profits), "ending_equity_equivalent": 400000.0 + sum(profits), "filled_trade_count": len(closed),
             "win_rate": 100.0 * len(wins) / len(closed) if closed else 0.0, "profit_factor": pf, "profit_factor_infinite": infinite,
             "average_profit": sum(wins) / len(wins) if wins else 0.0, "average_loss": sum(losses) / len(losses) if losses else 0.0,
