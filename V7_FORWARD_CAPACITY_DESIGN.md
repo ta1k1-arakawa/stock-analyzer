@@ -376,3 +376,220 @@ This change performs none of the following and authorizes none of them:
 The design phase has no forward activation boundary. It creates no signal,
 candidate, order, trade, equity, or evaluation artifact.
 
+## 15. Gate 1 correction addendum: frozen V6-A-R2 lineage and event boundary
+
+The V6-A-R2 lineage used by both arms is frozen as follows:
+
+```text
+v6_a_r2_design_commit=eae60d7a472c1365afb8f8da69db7878dbf3c6a0
+v6_a_r2_engine_commit=548288f9e16739fe0bff2d21996a7c53274f3e54
+v6_a_r2_static_evaluator_commit=ae6e70921e0883f6f06f5fc6c1f94bc38fd48d47
+v7_base_project_state_commit=cd337c952efa58abf937bdc27fb4570673b681a1
+```
+
+The following event phase order is common and frozen for both arms:
+
+1. release proceeds available on current engine day
+2. process D1 entries before same-day exits
+3. process D10 exits at current raw open
+4. record end-of-day equity
+5. queue D0 signals for next trading day
+
+D0 signal processing must not mutate cash, positions, pending proceeds, or
+equity. The price read guard is:
+
+```text
+requested_date > engine_day => fail closed
+```
+
+A violation of lineage, phase order, or the price read guard is a causal-safety
+failure and forces `V7_FORWARD_CAPACITY_BLOCKED`.
+
+## 16. Forward-only warm-up
+
+Historical cache, existing V6 cache, past candidates, and past portfolio state
+remain prohibited. Only daily snapshots collected after activation are eligible
+for feature history.
+
+```text
+historical_seed_data_allowed=false
+historical_feature_backfill_allowed=false
+pre_activation_price_rows_used_by_candidate_engine=0
+warmup_required_trading_observations=252
+signals_during_warmup=0
+```
+
+Each ticker remains ineligible until it has 252 valid trading observations
+collected append-only after the activation boundary. No signal is generated for
+that ticker during warm-up. The 12-calendar-month and 24-calendar-month clocks
+still start at activation, exactly as specified in this design. The study accepts
+that warm-up may result in insufficient trade counts and does not extend the
+period afterward.
+
+The market-breadth denominator follows the existing frozen V6-A-R2 rule: it
+uses only fixed-universe tickers with the required history available by that
+day and for which the breadth calculation is computable. Ticker eligibility
+and breadth-denominator membership are auditable per engine day.
+
+## 17. Fixed study calendar and activation inputs
+
+The study calendar is independent of individual ticker data availability. Before
+activation, Gate 3 must fix the JPX trading-calendar source, timezone, calendar
+version or commit, and the method used to generate target engine days in the
+activation manifest.
+
+```text
+calendar_timezone=Asia/Tokyo
+missing_ticker_data_does_not_remove_engine_day=true
+individual_ticker_missing_data=fail_closed_or_audited_skip
+calendar_rewrite_after_activation=false
+```
+
+The activation manifest must also fix the collector source, daily acquisition
+window, and schema mapping. None of these may be changed after human Gate 4.
+Changing the source or acquisition time blocks the study and requires a new
+preregistration as a new study. A change to schema mapping or calendar
+definition is treated the same way.
+
+## 18. Canonical snapshots and revisions
+
+For each ticker and trading date, the first snapshot that passes validation and
+is appended becomes the study's canonical observation.
+
+```text
+first_validated_snapshot_is_canonical=true
+canonical_snapshot_replacement_allowed=false
+revision_recomputes_candidates=false
+revision_recomputes_orders=false
+revision_recomputes_trades=false
+revision_recomputes_equity=false
+missed_snapshot_backfill_allowed=false
+```
+
+A later correction may be stored as a revision record for audit purposes only.
+It must not change historical candidates, orders, fills, cash, positions, or
+equity. If the first acquisition is missing or invalid, that ticker/date is
+fixed as missing; a later acquisition may not backfill or reconstruct it.
+
+## 19. Daily acquisition and processing boundary
+
+A D-day candidate is calculated only from the canonical daily snapshot acquired
+and validated after the D-day market close. The D-day candidate is queued as a
+pending D1 order for the next JPX trading day.
+
+D1 open and D10 open are supplied to the paper engine when the canonical
+snapshot for that engine day has been acquired. Their event timestamps and
+logical phase order nevertheless remain the frozen V6-A-R2 order in Section 15.
+No OHLC value from a date later than the current engine day may be read.
+
+If the collector cannot complete daily processing, that day is recorded as
+missing. The study must not later reconstruct that day's signal or portfolio
+event.
+
+## 20. Persistence and restart
+
+The activation manifest and daily checkpoints are persisted append-only. At
+minimum, each activation or checkpoint record fixes:
+
+```text
+activation_manifest_sha256
+previous_checkpoint_sha256
+current_checkpoint_sha256
+last_completed_engine_day
+arm_a_state_sha256
+arm_b_state_sha256
+candidate_snapshot_sha256
+price_snapshot_sha256
+collector_commit
+```
+
+A restart may resume only from the last normally completed checkpoint. Duplicate
+processing of an engine day, partial reuse of an incomplete checkpoint, and any
+state sharing between arms fail closed.
+
+```text
+duplicate_engine_day_processing=BLOCKED
+checkpoint_hash_mismatch=BLOCKED
+partial_day_commit=BLOCKED
+```
+
+## 21. Evaluation cutoff and trailing exits
+
+The first day on which the formal evaluation conditions are satisfied, or the
+24-calendar-month upper-limit day when the conditions have not been satisfied,
+is fixed as `signal_cutoff_date`.
+
+After D0 processing on `signal_cutoff_date`, no new signal is queued. Positions
+queued or filled before the cutoff continue through their frozen D10 exit and
+proceeds release. Forward collection continues until those terminal events are
+complete, but no new signal is generated during that trailing period.
+
+```text
+signals_after_cutoff=0
+new_entries_from_post_cutoff_signals=0
+pre_cutoff_positions_follow_frozen_D10_exit=true
+formal_evaluation_requires_terminal_state=true
+```
+
+Gate 5 formal evaluation occurs only after every position, pending order, and
+pending proceeds record in both arms is terminal.
+
+If, at the 24-calendar-month cutoff, either arm has fewer than 30 `CLOSED`
+trades, performance gates are not evaluated and the verdict is:
+
+```text
+V7_FORWARD_CAPACITY_INCONCLUSIVE_INSUFFICIENT_TRADES
+```
+
+A data-integrity or safety violation still takes precedence and produces
+`V7_FORWARD_CAPACITY_BLOCKED`.
+
+## 22. Activation manifest
+
+Gate 4 fixes one immutable activation manifest with these required fields:
+
+```text
+design_commit
+implementation_commit
+collector_commit
+activation_authorization_utc
+activation_boundary_first_jpx_trading_date
+calendar_source
+calendar_version
+data_source
+data_source_schema
+acquisition_window_jst
+universe_csv_sha
+ticker_list_sha
+arm_a_parameters_sha256
+arm_b_parameters_sha256
+shared_rules_sha256
+output_root
+```
+
+The activation manifest is created and fixed only at Gate 4. It is not created
+by this design correction. Once created, it cannot be changed. Any required
+change after activation requires blocking the study and preregistering a new
+study.
+
+## 23. Design acceptance checks
+
+This correction preserves the existing hypothesis, two arms, all common
+conditions, study periods, nine gates, and verdict definitions. The following
+machine-readable acceptance checks are explicit:
+
+```text
+single_changed_parameter=max_open_positions
+historical_seed_data=false
+warmup=252 collected observations
+calendar_independent_of_ticker_availability=true
+first_snapshot_canonical=true
+revision_changes_study_state=false
+event_phase_order_frozen=true
+terminal_state_required=true
+activation_status=NOT_ACTIVATED
+```
+
+No activation manifest is created, no activation boundary is selected, and no
+collector, candidate engine, paper engine, evaluation, or artifact generator
+is run by this correction.
