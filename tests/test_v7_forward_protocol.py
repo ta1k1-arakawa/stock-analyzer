@@ -30,6 +30,7 @@ def seed_rows(ticker: str = "AAA", count: int = 252) -> list[dict]:
             "raw_high": 101.0,
             "raw_low": 99.0,
             "raw_close": 100.0,
+            "adj_close": 100.0,
             "raw_volume": 1000,
         }
         for index in range(count)

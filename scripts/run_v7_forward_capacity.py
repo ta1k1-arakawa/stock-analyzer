@@ -82,6 +82,7 @@ def _synthetic_seed_rows(count: int = 252) -> list[dict[str, Any]]:
                 "raw_high": 101.0,
                 "raw_low": 99.0,
                 "raw_close": 100.0,
+                "adj_close": 100.0,
                 "raw_volume": 1000,
             })
     return rows
@@ -269,6 +270,7 @@ def gate3_synthetic_fixture() -> dict[str, Any]:
                 "raw_high": price + 2.0,
                 "raw_low": price - 2.0,
                 "raw_close": price,
+                "adj_close": price,
                 "raw_volume": 100000.0,
             })
     return {

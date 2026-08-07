@@ -48,6 +48,7 @@ def synthetic_inputs():
                 "raw_high": price + 2.0,
                 "raw_low": price - 2.0,
                 "raw_close": price,
+                "adj_close": price,
                 "raw_volume": 100000.0,
             })
     return {

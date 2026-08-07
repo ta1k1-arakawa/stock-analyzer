@@ -50,6 +50,7 @@ SEED_REQUIRED_FIELDS = (
     "raw_high",
     "raw_low",
     "raw_close",
+    "adj_close",
     "raw_volume",
 )
 SEED_CANONICAL_COLUMNS = (
@@ -59,6 +60,7 @@ SEED_CANONICAL_COLUMNS = (
     "raw_high",
     "raw_low",
     "raw_close",
+    "adj_close",
     "raw_volume",
 )
 
@@ -211,12 +213,14 @@ def validate_seed_rows(
         if key in seen:
             raise ProtocolBlocked("DUPLICATE_TICKER_DATE")
         seen.add(key)
-        for field_name in ("raw_open", "raw_high", "raw_low", "raw_close", "raw_volume"):
+        for field_name in ("raw_open", "raw_high", "raw_low", "raw_close", "adj_close", "raw_volume"):
             value = row[field_name]
             if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
-                raise ProtocolBlocked("SEED_NONFINITE_OHLCV")
+                reason = "SEED_NONFINITE_ADJ_CLOSE" if field_name == "adj_close" else "SEED_NONFINITE_OHLCV"
+                raise ProtocolBlocked(reason)
             if field_name != "raw_volume" and float(value) <= 0:
-                raise ProtocolBlocked("SEED_NONPOSITIVE_PRICE")
+                reason = "SEED_NONPOSITIVE_ADJ_CLOSE" if field_name == "adj_close" else "SEED_NONPOSITIVE_PRICE"
+                raise ProtocolBlocked(reason)
             if field_name == "raw_volume" and float(value) < 0:
                 raise ProtocolBlocked("SEED_NEGATIVE_VOLUME")
         valid_rows.append(row)
