@@ -46,10 +46,10 @@ def manifest_for(seed_result):
     variant = V7EngineParameters.capacity_3()
     return {
         "mode": "DRY_RUN_ONLY",
-        "design_commit": "3bf0fde7ca4c5745b9233d980eea8d2c26438ba8",
+        "design_commit": "e3e1367efd913b601a70328a815d88c20af6d147",
         "implementation_commit": "1" * 40,
         "collector_commit": "2" * 40,
-        "activation_authorization_utc": "2026-08-07T03:00:00Z",
+        "activation_authorization_utc": "2026-08-07T04:00:00Z",
         "activation_boundary_first_jpx_trading_date": "2026-08-10",
         "calendar_source": "synthetic",
         "calendar_version": "synthetic-v1",
@@ -65,7 +65,7 @@ def manifest_for(seed_result):
         "output_root": "synthetic-only",
         "seed_data_source": "synthetic",
         "seed_data_schema": "seed-v1",
-        "seed_acquisition_utc": "2026-08-07T02:00:00Z",
+        "seed_acquisition_utc": "2026-08-07T03:00:00Z",
         "seed_cutoff_trading_date": seed_result["seed_cutoff_trading_date"],
         "seed_ticker_count": seed_result["ticker_count"],
         "seed_row_count": seed_result["row_count"],

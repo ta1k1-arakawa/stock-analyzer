@@ -37,8 +37,8 @@ except ImportError:
     )
 
 
-DESIGN_COMMIT = "3bf0fde7ca4c5745b9233d980eea8d2c26438ba8"
-DESIGN_PREREGISTRATION_UTC = "2026-08-07T01:43:28Z"
+DESIGN_COMMIT = "e3e1367efd913b601a70328a815d88c20af6d147"
+DESIGN_PREREGISTRATION_UTC = "2026-08-07T02:48:27Z"
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 CHECKPOINT_FILENAME_RE = re.compile(r"^checkpoint-(\d{4}-\d{2}-\d{2})\.json$")
