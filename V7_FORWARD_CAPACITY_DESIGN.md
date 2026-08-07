@@ -722,3 +722,230 @@ evaluation
 A material defect in the seed blocks the study. The seed must not be corrected
 in place and the study must not continue with a replacement seed. Any
 continuation requires a new preregistration.
+
+## 27. Forward D0 candidate causality boundary
+
+The forward candidate generator is a causal D0-only process. Its feature and
+market-gate inputs are limited to the immutable feature seed and canonical
+forward observations appended through the current engine day.
+
+```text
+candidate_engine_mode=FORWARD_CAUSAL_D0_ONLY
+candidate_feature_latest_allowed_date=engine_day
+market_gate_latest_allowed_date=engine_day
+future_candidate_price_access_allowed=false
+future_candidate_volume_access_allowed=false
+future_split_access_allowed=false
+```
+
+At D0, the generator must not read or test the existence of D1 or D10 raw
+prices, ticker rows, future split events, future suspension or delisting
+status, or any date after `engine_day`. D1 and D10 dates are assigned only by
+the fixed JPX study calendar:
+
+```text
+entry_attempt_date=next JPX study calendar day after D0
+planned_exit_date=tenth JPX study calendar day after D0
+```
+
+D0 candidate generation must complete normally even when future D1 and D10
+price rows do not yet exist.
+
+## 28. Forward candidate parity with frozen V6-A-R2
+
+Feature, market-gate, eligibility, and ranking rules remain frozen V6-A-R2
+rules. The forward-safe generator removes only future-availability and future
+split checks from D0 processing; no other rule may change. A complete no-split
+local fixture must satisfy:
+
+```text
+forward_D0_candidate_keys == frozen_V6_candidate_keys
+forward_D0_ranks == frozen_V6_ranks
+forward_D0_feature_values == frozen_V6_feature_values
+forward_market_gate == frozen_V6_market_gate
+```
+
+The comparison uses the same D0-or-earlier price history, fixed universe,
+calendar, and split history through D0. D1/D10 price values are not inputs to
+candidate parity.
+
+## 29. Forward split policy
+
+Splits effective on or before D0 may be used by the frozen adjustment logic.
+Splits after D0 must not be known to or used by candidate generation.
+
+If a canonical effective split is confirmed after D0 and before phase 2 begins
+for a pending-order ticker, the order is audited as an ordinary skip:
+
+```text
+status=SKIPPED
+skip_reason=SPLIT_EFFECTIVE_BEFORE_ENTRY
+cash_mutation=0
+position_mutation=0
+```
+
+The prior candidate is not deleted or regenerated. If an effective split is
+confirmed after fill and on or before the planned D10 exit, the event is
+fatal:
+
+```text
+blocked_reason=OPEN_POSITION_SPLIT_SPANNING
+verdict=V7_FORWARD_CAPACITY_BLOCKED
+```
+
+The pre-split state must not be adjusted, rolled back, or used to delete the
+trade. If either arm has this condition, the entire study is blocked.
+
+If a later revision newly reveals a historical split, no candidate, order,
+trade, cash, position, or equity record is recomputed. A material split defect
+blocks the study as:
+
+```text
+blocked_reason=CANONICAL_SPLIT_DATA_DEFECT
+```
+
+## 30. Forward missing-data policy
+
+Missing data for an individual ticker never removes an engine day from the
+fixed study calendar.
+
+At D0, a ticker lacking a canonical row required for its feature or market-gate
+calculation is excluded from that day's candidates and audited without
+blocking the study:
+
+```text
+candidate_rejection_reason=D0_DATA_UNAVAILABLE
+study_blocked=false
+```
+
+The market-gate denominator remains the frozen V6-A-R2 denominator: only fixed
+universe tickers with the required history and computable values are included.
+
+At D1, a missing, nonfinite, or invalid canonical raw open for a pending order
+produces:
+
+```text
+status=SKIPPED
+skip_reason=ENTRY_DATA_UNAVAILABLE
+cash_mutation=0
+position_mutation=0
+```
+
+The missing D1 row is never backfilled later to reconstruct the entry.
+
+For an open position, a missing, nonfinite, or invalid planned D10 raw open is
+fatal:
+
+```text
+blocked_reason=PLANNED_EXIT_PRICE_UNAVAILABLE
+verdict=V7_FORWARD_CAPACITY_BLOCKED
+```
+
+No next-day price, prior close, interpolation, or later backfill may replace
+it. Likewise, if an open position lacks a valid canonical raw close for daily
+MTM equity:
+
+```text
+blocked_reason=OPEN_POSITION_MTM_PRICE_UNAVAILABLE
+verdict=V7_FORWARD_CAPACITY_BLOCKED
+```
+
+Book-cost equity alone cannot substitute for the missing MTM value.
+
+## 31. Immutable D0 ranking and event audit
+
+At D0, all currently eligible tickers are ranked by the frozen ranking rules
+and the top 20 are fixed in the candidate snapshot. D1 processing never
+re-ranks, promotes rank 21, or replaces a skipped top-20 candidate. Both arms
+consume the same immutable D0 top-20 snapshot.
+
+```text
+D0_top20_is_immutable=true
+D1_reranking_allowed=false
+outside_top20_replacement_allowed=false
+```
+
+The following events are auditable at minimum:
+
+```text
+D0_MARKET_GATE_COMPUTED
+D0_CANDIDATE_REJECTED
+D0_TOP20_FROZEN
+ORDER_QUEUED
+ENTRY_SKIPPED_DATA_UNAVAILABLE
+ENTRY_SKIPPED_SPLIT
+ENTRY_FILLED
+OPEN_POSITION_SPLIT_DETECTED
+D10_EXIT_BLOCKED_MISSING_PRICE
+MTM_BLOCKED_MISSING_PRICE
+```
+
+Each event contains at minimum `arm`, `engine_day`, `ticker`,
+`candidate_snapshot_sha256`, `price_snapshot_sha256`, `reason`, and
+`collector_commit`. A non-applicable field is explicit `null`. D0 candidate
+and market-gate events are stored once as shared-input audit records, together
+with the equal input hashes consumed by both arms.
+
+## 32. Additional safety and integrity counters
+
+The following counters are added to the existing safety requirements and must
+remain zero in both arms:
+
+```text
+future_candidate_data_access
+future_split_access
+open_position_split_spanning
+planned_exit_price_unavailable
+open_position_mtm_price_unavailable
+candidate_snapshot_rerank
+outside_top20_replacement
+```
+
+`D0_DATA_UNAVAILABLE`, `ENTRY_DATA_UNAVAILABLE`, and
+`SPLIT_EFFECTIVE_BEFORE_ENTRY` are ordinary audited skips, not safety
+violations. A skip that mutates cash, positions, proceeds, or prior candidates
+is a blocked integrity failure.
+
+## 33. Gate 3 collector dry-run cases
+
+Gate 3 dry run uses only local or synthetic fixtures in a temporary directory,
+which is removed at completion. It must verify at minimum:
+
+1. D0 candidate generation performs zero reads after `engine_day`.
+2. No-split candidate keys, ranks, and features match frozen V6-A-R2.
+3. Candidate generation succeeds when D1/D10 future rows are absent at D0.
+4. Missing D1 open produces `ENTRY_DATA_UNAVAILABLE` skip.
+5. A pre-entry split produces `SPLIT_EFFECTIVE_BEFORE_ENTRY` skip.
+6. A post-fill split blocks the study.
+7. Missing D10 open blocks the study.
+8. Missing open-position daily close blocks the study.
+9. A D1 skip does not promote rank 21.
+10. Both arms receive an identical frozen top-20 hash.
+11. Persisted pre-activation study events remain zero.
+12. Activation status remains `NOT_ACTIVATED`.
+
+## 34. Additional design acceptance checks
+
+The preceding hypothesis, arms, common portfolio rules, nine performance/data
+gates, duration rules, and verdict definitions remain unchanged. The added
+causal-boundary checks are:
+
+```text
+D0_candidate_future_reads=0
+D0_future_split_reads=0
+D1_D10_dates_from_fixed_calendar=true
+future_D1_D10_price_presence_required_at_D0=false
+forward_candidate_parity_required=true
+split_before_entry=SKIP
+split_after_fill=BLOCKED
+missing_D1_open=SKIP
+missing_D10_open=BLOCKED
+missing_open_position_close=BLOCKED
+D1_reranking=false
+outside_top20_replacement=false
+activation_status=NOT_ACTIVATED
+```
+
+This design correction does not implement or run source code, tests, a
+collector, network access, seed acquisition, activation, evaluation, or
+artifact generation.
