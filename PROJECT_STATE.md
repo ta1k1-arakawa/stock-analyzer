@@ -418,3 +418,53 @@ formal_run_started=false
 formal_result=NOT_RUN
 next_authorized_action=INDEPENDENT_GATE3_STATIC_REVIEW
 ```
+
+## V6-A-R2 formal static gate
+
+```text
+V6-A-R2 implementation_status=GATE3_STATIC_REVIEW_PASS
+independent_gate3_static_review=PASS
+accepted_engine_commit=548288f9e16739fe0bff2d21996a7c53274f3e54
+accepted_candidate_key_sha256=4c550c8635a192fc4d60a753d8ac77ca9f992dc62bad3f36f19ef7512c29e818
+accepted_formal_evaluator_commit=ae6e70921e0883f6f06f5fc6c1f94bc38fd48d47
+
+single_read_only_preparation_path=PASS
+candidate_generation_per_formal_command=1
+training_cache_loads_per_formal_command=1
+evaluation_cache_loads_per_formal_command=1
+final_four_artifact_two_pass_check=PASS
+formal_progress_counters=PASS
+
+causal_tests=28
+preflight_tests=24
+formal_tests=18
+dedicated_tests=70
+isolated_full_suite_files=23
+isolated_full_suite_tests=363
+isolated_full_suite_failures=0
+
+single_implementation_bug_retry_used=true
+additional_implementation_retry_allowed=false
+formal_attempt_limit=1
+formal_attempts_used=0
+formal_attempts_remaining=1
+formal_run_started=false
+portfolio_simulation_started=false
+formal_artifacts_written=0
+formal_result=NOT_RUN
+scientific_hypothesis_tested=false
+deployment_allowed=false
+
+next_authorized_action=HUMAN_AUTHORIZE_ONE_SHOT_FORMAL_EVALUATION
+formal_confirmation=V6_A_R2_ONE_SHOT_EXPLORATORY_EVALUATION
+```
+
+Independent Gate 3 review accepted the causal engine, fixed candidate
+set, single read-only preparation path, formal metrics and gates,
+terminal-state checks, repository and output guards, measured progress
+counters, atomic four-artifact writer, and complete final-artifact
+two-pass comparison.
+
+No real-cache portfolio simulation or formal evaluation has started.
+The one preregistered formal attempt remains available and requires a
+separate human authorization.
