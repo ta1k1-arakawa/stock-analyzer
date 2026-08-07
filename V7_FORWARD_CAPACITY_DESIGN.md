@@ -405,31 +405,67 @@ requested_date > engine_day => fail closed
 A violation of lineage, phase order, or the price read guard is a causal-safety
 failure and forces `V7_FORWARD_CAPACITY_BLOCKED`.
 
-## 16. Forward-only warm-up
+## 16. Immutable historical feature seed and forward-only study events
 
-Historical cache, existing V6 cache, past candidates, and past portfolio state
-remain prohibited. Only daily snapshots collected after activation are eligible
-for feature history.
+Historical portfolio state, historical candidate generation, historical signal
+generation, historical orders, historical trades, historical profit, and
+historical evaluation remain prohibited. A separately defined immutable seed is
+permitted only to initialize candidate and market-gate feature history.
 
 ```text
-historical_seed_data_allowed=false
-historical_feature_backfill_allowed=false
-pre_activation_price_rows_used_by_candidate_engine=0
-warmup_required_trading_observations=252
-signals_during_warmup=0
+historical_feature_seed_allowed=true
+historical_feature_seed_role=FEATURE_INITIALIZATION_ONLY
+historical_candidate_generation_allowed=false
+historical_signal_generation_allowed=false
+historical_order_generation_allowed=false
+historical_portfolio_replay_allowed=false
+historical_profit_calculation_allowed=false
+
+seed_acquisition_must_occur_after_preregistration=true
+seed_cutoff_before_activation_boundary=true
+seed_required_valid_observations_per_ticker=252
+seed_shared_identically_between_arms=true
+seed_manifest_immutable_after_activation=true
+seed_snapshot_replacement_allowed=false
+seed_revision_recomputes_study_state=false
+
+pre_activation_candidates=0
+pre_activation_signals=0
+pre_activation_orders=0
+pre_activation_trades=0
+pre_activation_equity_rows=0
 ```
 
-Each ticker remains ineligible until it has 252 valid trading observations
-collected append-only after the activation boundary. No signal is generated for
-that ticker during warm-up. The 12-calendar-month and 24-calendar-month clocks
-still start at activation, exactly as specified in this design. The study accepts
-that warm-up may result in insufficient trade counts and does not extend the
-period afterward.
+The seed is used only for initial candidate-feature and market-gate-feature
+history. Candidate selection, ranking, portfolio simulation, orders, fills,
+profit/loss, and evaluation must not be run over the seed period. Formal V7
+observations begin only at the activation boundary.
 
-The market-breadth denominator follows the existing frozen V6-A-R2 rule: it
-uses only fixed-universe tickers with the required history available by that
-day and for which the breadth calculation is computable. Ticker eligibility
-and breadth-denominator membership are auditable per engine day.
+For each ticker, the seed contains only the latest 252 valid trading
+observations before activation:
+
+```text
+seed_max_trading_date < activation_boundary_first_jpx_trading_date
+```
+
+Activation-day or post-activation prices must not enter the seed. If a ticker
+has fewer than 252 valid observations before activation, it is ineligible at
+activation. It may become eligible only after adding valid forward observations
+collected after activation. Missing historical seed observations may not be
+retrieved after activation.
+
+```text
+post_activation_seed_backfill_allowed=false
+```
+
+The 12-calendar-month and 24-calendar-month clocks still start at activation,
+exactly as specified in this design. The study accepts that a ticker's delayed
+eligibility can reduce trade counts; the study period is not extended afterward.
+
+The market-breadth denominator continues to follow the frozen V6-A-R2 rule: it
+uses only fixed-universe tickers with the required history available by that day
+and for which the breadth calculation is computable. Seed and forward-history
+eligibility are auditable per engine day.
 
 ## 17. Fixed study calendar and activation inputs
 
@@ -580,10 +616,15 @@ machine-readable acceptance checks are explicit:
 
 ```text
 single_changed_parameter=max_open_positions
-historical_seed_data=false
-warmup=252 collected observations
+historical_feature_seed=true
+seed_feature_initialization_only=true
+historical_candidate_generation=false
+historical_portfolio_replay=false
+pre_activation_study_events=0
+seed_shared_between_arms=true
+seed_immutable_after_activation=true
 calendar_independent_of_ticker_availability=true
-first_snapshot_canonical=true
+first_forward_snapshot_canonical=true
 revision_changes_study_state=false
 event_phase_order_frozen=true
 terminal_state_required=true
@@ -593,3 +634,91 @@ activation_status=NOT_ACTIVATED
 No activation manifest is created, no activation boundary is selected, and no
 collector, candidate engine, paper engine, evaluation, or artifact generator
 is run by this correction.
+
+## 24. Historical feature seed cutoff and activation manifest
+
+Gate 3 dry run must validate the seed creation procedure without activating the
+study or generating study events. Gate 4 fixes the seed inputs and hashes in
+the immutable activation manifest. The seed is acquired only after this
+preregistration and before the activation boundary.
+
+The seed-related activation-manifest fields are:
+
+```text
+seed_data_source
+seed_data_schema
+seed_acquisition_utc
+seed_cutoff_trading_date
+seed_ticker_count
+seed_row_count
+seed_payload_manifest_sha256
+seed_canonical_csv_sha256
+seed_generation_commit
+seed_validation_result
+```
+
+The ticker-level seed manifest contains at minimum:
+
+```text
+ticker
+first_seed_trading_date
+last_seed_trading_date
+valid_observation_count
+ticker_payload_sha256
+eligibility_at_activation
+```
+
+A missing or mismatched seed manifest, canonical seed, or ticker hash blocks
+activation. The seed is not created, acquired, or read by this design change.
+
+## 25. Seed identity, arm identity, and forward boundary
+
+Both arms use exactly the same seed, candidate snapshot, and market-gate
+snapshot. These are required data-integrity checks, not additional performance
+gates:
+
+```text
+arm_seed_hash_equal=true
+arm_candidate_input_hash_equal=true
+arm_market_gate_input_hash_equal=true
+```
+
+Any mismatch produces:
+
+```text
+V7_FORWARD_CAPACITY_BLOCKED
+```
+
+The study clock and signal boundary are fixed as follows:
+
+```text
+study_clock_start=activation_boundary_first_jpx_trading_date
+signals_allowed_from_activation_boundary=true
+```
+
+Signal generation for a ticker is permitted only after that ticker has 252 valid
+observations available from the immutable pre-activation seed plus valid
+forward observations. D0 candidates, D1 entries, D10 exits, cash, positions,
+and equity record only events after the activation boundary. Seed rows never
+become portfolio or evaluation events.
+
+## 26. Canonical seed and correction policy
+
+The seed approved at Gate 4 is canonical. Activation-time data corrections must
+not change it. A correction value may be stored as a separate audit revision,
+but revisions must not change any of:
+
+```text
+candidate
+market gate
+order
+trade
+cash
+position
+equity
+evaluation
+```
+
+A material defect in the seed blocks the study. The seed must not be corrected
+in place and the study must not continue with a replacement seed. Any
+continuation requires a new preregistration.
