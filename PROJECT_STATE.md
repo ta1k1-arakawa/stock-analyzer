@@ -468,3 +468,98 @@ two-pass comparison.
 No real-cache portfolio simulation or formal evaluation has started.
 The one preregistered formal attempt remains available and requires a
 separate human authorization.
+
+## V6-A-R2 one-shot formal result
+
+```text
+V6-A-R2 formal_execution_status=COMPLETE
+formal_result=V6_A_BREAKOUT_BASELINE_EXPLORATORY_NOT_PROMISING
+formal_command_executions=1
+formal_attempt_consumed=true
+formal_attempts_used=1
+formal_attempts_remaining=0
+formal_run_started=true
+portfolio_simulation_started=true
+formal_artifacts_written=4
+scientific_hypothesis_tested=true
+scientific_hypothesis_supported=false
+deployment_allowed=false
+do_not_rerun=true
+post_result_code_correction_allowed=false
+same_data_parameter_tuning_allowed=false
+
+repository_commit=4be04b96e1bf2dea702b93bc493172836602a6bf
+accepted_candidate_key_sha256=4c550c8635a192fc4d60a753d8ac77ca9f992dc62bad3f36f19ef7512c29e818
+accepted_candidate_count=608
+signal_day_count=346
+yearly_candidate_counts=109,107,63,118,87,124
+market_gate_pass_days=691
+market_gate_blocked_days=774
+
+trade_rows=608
+closed_trades=132
+skipped_trades=476
+candidate_audit_rows=204769
+daily_equity_rows=1457
+
+aggregate_net_profit=93503.80047546465
+aggregate_ending_equity_equivalent=493503.80047546467
+aggregate_filled_trade_count=132
+aggregate_win_rate=53.78787878787879
+aggregate_profit_factor=1.3422746366162215
+aggregate_mtm_maximum_drawdown=14.94765934733312
+aggregate_book_cost_maximum_drawdown=12.60949971711853
+aggregate_monthly_win_rate=56.86274509803921
+top5_positive_profit_share=0.39230516029250667
+maximum_industry_positive_profit_share=0.16026347744024602
+
+year_2020_net_profit=29435.288070221017
+year_2021_net_profit=-47277.44467529284
+year_2022_net_profit=-10602.281980743279
+year_2023_net_profit=12595.335263672063
+year_2024_net_profit=49483.706409607155
+year_2025_net_profit=59869.19738800054
+positive_years=4
+
+v5b_net_profit_difference=-29032.35661941841
+v5b_profit_factor_difference=0.22842320947527672
+v5b_mtm_dd_difference=-11.834906622658368
+v5b_filled_trade_difference=-437
+v5b_positive_year_count_difference=1
+
+passed_gates=18
+total_gates=20
+failed_gate_1=net_profit_beats_v5b
+failed_gate_2=years_beating_v5b_at_least_4
+two_pass_byte_identical=true
+all_safety_counters_zero=true
+
+skip_MAX_OPEN_POSITIONS=373
+skip_DUPLICATE_TICKER_OPEN=62
+skip_SAME_INDUSTRY_OPEN=29
+skip_ENTRY_GAP_TOO_HIGH=9
+skip_CASH_RESERVE=2
+skip_CAPITAL_LIMIT=1
+
+summary_sha256=58EE0C43BF9558D24F021E7AFE441E535139AF5AF80D15BDCEEFE360EDE24C4A
+trades_sha256=A2D84ABBE280ACE0930A59B16BDD605F631FFC0B544ABA0378E09C9CACD25D68
+candidates_sha256=B66FA8A567582DB6E56B8D851F2A3A902A46AC3D155D1F4DE0696006C2F76AB6
+daily_equity_sha256=5F6F4A2A9D65C1CE459400AE78CFB801EBA127E6EACD32538B1BEA4EB3545A30
+
+next_authorized_action=HUMAN_REVIEW_NEW_PREREGISTERED_DIRECTION
+```
+
+The one-shot formal evaluation completed successfully and consumed the
+only preregistered formal attempt. Candidate provenance, causal safety
+counters, terminal-state checks, and final four-artifact two-pass
+determinism all passed.
+
+V6-A-R2 produced positive aggregate profit, profit factor above 1.34,
+four positive years, and materially lower drawdown than V5-B. It passed
+18 of 20 preregistered gates. The formal verdict remains NOT_PROMISING
+because aggregate net profit did not exceed V5-B and yearly profit
+exceeded V5-B in only three of six years.
+
+The result must not be rerun, corrected after observation, or tuned on
+the same evaluation data. The V6-A-R2 hypothesis was tested but was not
+supported under its frozen comparative acceptance criteria.
