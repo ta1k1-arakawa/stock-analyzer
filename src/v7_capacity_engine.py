@@ -43,6 +43,13 @@ SAFETY_COUNTER_NAMES = (
     "historical_backfill",
     "snapshot_rewrite",
     "cross_arm_state_leakage",
+    "future_candidate_data_access",
+    "future_split_access",
+    "open_position_split_spanning",
+    "planned_exit_price_unavailable",
+    "open_position_mtm_price_unavailable",
+    "candidate_snapshot_rerank",
+    "outside_top20_replacement",
 )
 
 DERIVED_SAFETY_COUNTER_NAMES = (
@@ -62,6 +69,13 @@ STICKY_SAFETY_COUNTER_NAMES = (
     "snapshot_rewrite",
     "cross_arm_state_leakage",
     "D0_state_mutation",
+    "future_candidate_data_access",
+    "future_split_access",
+    "open_position_split_spanning",
+    "planned_exit_price_unavailable",
+    "open_position_mtm_price_unavailable",
+    "candidate_snapshot_rerank",
+    "outside_top20_replacement",
 )
 
 SKIP_REASONS = (
@@ -71,6 +85,8 @@ SKIP_REASONS = (
     "CASH_RESERVE",
     "CAPITAL_LIMIT",
     "ENTRY_GAP_TOO_HIGH",
+    "ENTRY_DATA_UNAVAILABLE",
+    "SPLIT_EFFECTIVE_BEFORE_ENTRY",
 )
 
 
@@ -190,6 +206,14 @@ def read_price(
     if field in {"Open", "Close", "High", "Low"} and float(value) <= 0:
         raise ValueError("NONPOSITIVE_PRICE")
     return float(value)
+
+
+class V7StudyBlocked(RuntimeError):
+    """Fail-closed forward-study boundary violation."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = str(reason)
+        super().__init__(self.reason)
 
 
 @dataclass(frozen=True)
@@ -323,6 +347,7 @@ class CausalEventEngine:
         calendar: Sequence[str],
         candidates: Sequence[Mapping[str, Any]],
         parameters: V7EngineParameters | None = None,
+        split_events_by_day: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         self.frames = copy.deepcopy(frames)
         self.calendar = tuple(calendar)
@@ -333,6 +358,7 @@ class CausalEventEngine:
             raise ValueError("COMMON_CALENDAR_NOT_SORTED")
         self._calendar_index = {day: index for index, day in enumerate(self.calendar)}
         self.parameters = parameters or V7EngineParameters.control()
+        self.split_events_by_day = split_events_by_day or {}
         self.state = EngineState(available_cash=float(self.parameters.starting_cash))
         self.candidates = [dict(row) for row in candidates]
         validate_candidate_schema(self.calendar, self.candidates)
@@ -341,6 +367,12 @@ class CausalEventEngine:
         self._candidate_ranks = {(str(row["signal_date"]), int(row["rank"])) for row in self.candidates}
         self._safety = {name: 0 for name in SAFETY_COUNTER_NAMES}
         self._skip_reason_counts = {name: 0 for name in SKIP_REASONS}
+
+    def _split_tickers_for_day(self, day: str) -> set[str]:
+        return {
+            str(ticker).strip().upper()
+            for ticker in self.split_events_by_day.get(day, ())
+        }
 
     def record_safety_violation(self, name: str, count: int = 1) -> None:
         """Record an immutable-study safety violation through the narrow API."""
@@ -434,14 +466,59 @@ class CausalEventEngine:
     def phase2_attempt_entries(self, day: str) -> None:
         orders = list(self.state.pending_orders_by_entry_date.pop(day, []))
         orders.sort(key=lambda order: (order.rank, order.ticker))
+        split_tickers = self._split_tickers_for_day(day)
         for order in orders:
             ledger = self._ensure_ledger(order)
             cash_before = self.state.available_cash
             position_count_before = len(self.state.open_positions)
+            if order.ticker.strip().upper() in split_tickers:
+                self._skip_reason_counts["SPLIT_EFFECTIVE_BEFORE_ENTRY"] += 1
+                ledger.update({
+                    "status": "SKIPPED",
+                    "skip_reason": "SPLIT_EFFECTIVE_BEFORE_ENTRY",
+                    "entry_state_transition_date": day,
+                    "cash_before_entry": cash_before,
+                    "cash_after_entry": self.state.available_cash,
+                    "position_count_before_entry": position_count_before,
+                    "position_count_after_entry": len(self.state.open_positions),
+                })
+                self.state.event_audit.append({
+                    "event": "ENTRY_SKIPPED",
+                    "date": day,
+                    "order_id": order.order_id,
+                    "reason": "SPLIT_EFFECTIVE_BEFORE_ENTRY",
+                })
+                continue
             signal_close = self.read_engine_price(order.ticker, order.signal_date, "Close", day)
             if not math.isclose(signal_close, order.signal_raw_close, rel_tol=0.0, abs_tol=1e-12):
                 raise ValueError("CANDIDATE_SIGNAL_CLOSE_MISMATCH")
-            raw_open = self.read_engine_price(order.ticker, day, "Open", day)
+            try:
+                raw_open = self.read_engine_price(order.ticker, day, "Open", day)
+            except ValueError as error:
+                if str(error) not in {
+                    "DATE_NOT_FOUND",
+                    "FIELD_NOT_FOUND",
+                    "NONFINITE_PRICE",
+                    "NONPOSITIVE_PRICE",
+                }:
+                    raise
+                self._skip_reason_counts["ENTRY_DATA_UNAVAILABLE"] += 1
+                ledger.update({
+                    "status": "SKIPPED",
+                    "skip_reason": "ENTRY_DATA_UNAVAILABLE",
+                    "entry_state_transition_date": day,
+                    "cash_before_entry": cash_before,
+                    "cash_after_entry": self.state.available_cash,
+                    "position_count_before_entry": position_count_before,
+                    "position_count_after_entry": len(self.state.open_positions),
+                })
+                self.state.event_audit.append({
+                    "event": "ENTRY_SKIPPED",
+                    "date": day,
+                    "order_id": order.order_id,
+                    "reason": "ENTRY_DATA_UNAVAILABLE",
+                })
+                continue
             tickers = {position.ticker for position in self.state.open_positions}
             industries = {position.industry for position in self.state.open_positions}
             reason: str | None = None
@@ -527,6 +604,21 @@ class CausalEventEngine:
             if self.state.available_cash < 0:
                 self._safety["negative_cash"] += 1
 
+    def phase2b_check_open_position_splits(self, day: str) -> None:
+        split_tickers = self._split_tickers_for_day(day)
+        for position in list(self.state.open_positions):
+            if position.ticker.strip().upper() not in split_tickers:
+                continue
+            self.record_safety_violation("open_position_split_spanning")
+            self.state.event_audit.append({
+                "event": "OPEN_POSITION_SPLIT_DETECTED",
+                "date": day,
+                "order_id": position.order_id,
+                "ticker": position.ticker,
+                "planned_exit_date": position.planned_exit_date,
+            })
+            raise V7StudyBlocked("OPEN_POSITION_SPLIT_SPANNING")
+
     def phase3_execute_exits(self, day: str) -> None:
         exits = [
             position for position in self.state.open_positions
@@ -535,7 +627,24 @@ class CausalEventEngine:
         for position in exits:
             next_day = self._next_day(day)
             cash_before_exit = self.state.available_cash
-            raw_open = self.read_engine_price(position.ticker, day, "Open", day)
+            try:
+                raw_open = self.read_engine_price(position.ticker, day, "Open", day)
+            except ValueError as error:
+                if str(error) not in {
+                    "DATE_NOT_FOUND",
+                    "FIELD_NOT_FOUND",
+                    "NONFINITE_PRICE",
+                    "NONPOSITIVE_PRICE",
+                }:
+                    raise
+                self.record_safety_violation("planned_exit_price_unavailable")
+                self.state.event_audit.append({
+                    "event": "D10_EXIT_BLOCKED_MISSING_PRICE",
+                    "date": day,
+                    "order_id": position.order_id,
+                    "ticker": position.ticker,
+                })
+                raise V7StudyBlocked("PLANNED_EXIT_PRICE_UNAVAILABLE")
             exit_price = raw_open * (1.0 - self.parameters.exit_slippage)
             proceeds = exit_price * position.quantity
             self.state.open_positions.remove(position)
@@ -578,7 +687,23 @@ class CausalEventEngine:
         )
         mtm = self.state.available_cash + pending_total
         for position in self.state.open_positions:
-            close = self.read_engine_price(position.ticker, day, "Close", day)
+            try:
+                close = self.read_engine_price(position.ticker, day, "Close", day)
+            except ValueError as error:
+                if str(error) not in {
+                    "DATE_NOT_FOUND",
+                    "FIELD_NOT_FOUND",
+                    "NONFINITE_PRICE",
+                    "NONPOSITIVE_PRICE",
+                }:
+                    raise
+                self.record_safety_violation("open_position_mtm_price_unavailable")
+                self.state.event_audit.append({
+                    "event": "MTM_BLOCKED_MISSING_PRICE",
+                    "date": day,
+                    "ticker": position.ticker,
+                })
+                raise V7StudyBlocked("OPEN_POSITION_MTM_PRICE_UNAVAILABLE")
             mtm += close * position.quantity
         self.state.daily_equity.append({
             "date": day,
@@ -637,6 +762,7 @@ class CausalEventEngine:
         self.state.engine_day = day
         self.phase1_release_proceeds(day)
         self.phase2_attempt_entries(day)
+        self.phase2b_check_open_position_splits(day)
         self.phase3_execute_exits(day)
         self.phase4_record_equity(day)
         self.phase5_queue_signals(day)

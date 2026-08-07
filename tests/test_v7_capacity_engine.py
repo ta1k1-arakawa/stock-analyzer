@@ -8,6 +8,7 @@ import pytest
 from src.v6_a_r2_causal_breakout import CausalEventEngine as V6Engine
 from src.v7_capacity_engine import (
     CausalEventEngine as V7Engine,
+    V7StudyBlocked,
     V7EngineParameters,
     validate_single_parameter_difference,
 )
@@ -309,3 +310,181 @@ def test_v7_state_snapshot_contains_all_arm_state_components():
         "event_audit",
         "safety_counters",
     } <= set(snapshot)
+
+
+@pytest.mark.parametrize("open_value", ["MISSING", float("nan"), 0.0])
+def test_missing_or_invalid_d1_open_is_entry_data_unavailable(open_value):
+    days = calendar(12)
+    frames = frames_for(days, ("AAA",))
+    if open_value == "MISSING":
+        del frames["AAA"][days[1]]["Open"]
+    else:
+        frames["AAA"][days[1]]["Open"] = open_value
+    engine = V7Engine(frames, days, [candidate(days, "AAA", "TECH", 1)])
+    engine.run()
+    row = engine.state.completed_trades[0]
+    assert row["status"] == "SKIPPED"
+    assert row["skip_reason"] == "ENTRY_DATA_UNAVAILABLE"
+    assert row["entry_price"] is None
+    assert row["entry_cost"] is None
+    assert engine.safety_counters()["planned_exit_price_unavailable"] == 0
+
+
+def test_d1_missing_skip_preserves_cash_positions_and_proceeds():
+    days = calendar(12)
+    frames = frames_for(days, ("AAA",))
+    del frames["AAA"][days[1]]["Open"]
+    engine = V7Engine(frames, days, [candidate(days, "AAA", "TECH", 1)])
+    engine.process_day(days[0])
+    before = (
+        engine.state.available_cash,
+        list(engine.state.open_positions),
+        dict(engine.state.pending_proceeds_by_available_date),
+    )
+    engine.process_day(days[1])
+    after = (
+        engine.state.available_cash,
+        list(engine.state.open_positions),
+        dict(engine.state.pending_proceeds_by_available_date),
+    )
+    assert before == after
+    assert engine.skip_reason_counts()["ENTRY_DATA_UNAVAILABLE"] == 1
+    assert engine.safety_counters()["open_position_split_spanning"] == 0
+
+
+def test_d0_signal_close_integrity_error_is_not_entry_data_skip():
+    days = calendar(12)
+    frames = frames_for(days, ("AAA",))
+    del frames["AAA"][days[0]]["Close"]
+    engine = V7Engine(frames, days, [candidate(days, "AAA", "TECH", 1)])
+    engine.process_day(days[0])
+    with pytest.raises(ValueError, match="FIELD_NOT_FOUND"):
+        engine.process_day(days[1])
+    assert engine.skip_reason_counts()["ENTRY_DATA_UNAVAILABLE"] == 0
+
+
+def test_split_effective_on_d1_skips_without_safety_violation():
+    days = calendar(12)
+    frames = frames_for(days, ("AAA",))
+    engine = V7Engine(
+        frames, days, [candidate(days, "AAA", "TECH", 1)],
+        split_events_by_day={days[1]: ["AAA"]},
+    )
+    engine.process_day(days[0])
+    before = engine.state.available_cash
+    engine.process_day(days[1])
+    row = engine.state.completed_trades[0]
+    assert row["status"] == "SKIPPED"
+    assert row["skip_reason"] == "SPLIT_EFFECTIVE_BEFORE_ENTRY"
+    assert row["cash_before_entry"] == row["cash_after_entry"] == before
+    assert row["position_count_before_entry"] == row["position_count_after_entry"] == 0
+    assert engine.state.open_positions == []
+    assert engine.state.pending_proceeds_by_available_date == {}
+    assert engine.safety_counters()["open_position_split_spanning"] == 0
+
+
+def test_future_split_date_does_not_affect_current_entry():
+    days = calendar(12)
+    engine = V7Engine(
+        frames_for(days, ("AAA",)), days, [candidate(days, "AAA", "TECH", 1)],
+        split_events_by_day={days[5]: ["AAA"]},
+    )
+    engine.process_day(days[0])
+    engine.process_day(days[1])
+    assert engine.state.completed_trades[0]["status"] == "FILLED"
+    assert engine.state.open_positions[0].ticker == "AAA"
+    assert engine.safety_counters()["future_split_access"] == 0
+
+
+def test_split_after_fill_blocks_before_later_phases():
+    days = calendar(12)
+    engine = V7Engine(
+        frames_for(days, ("AAA",)), days, [candidate(days, "AAA", "TECH", 1)],
+        split_events_by_day={days[2]: ["AAA"]},
+    )
+    engine.process_day(days[0])
+    engine.process_day(days[1])
+    with pytest.raises(V7StudyBlocked, match="OPEN_POSITION_SPLIT_SPANNING") as error:
+        engine.process_day(days[2])
+    assert error.value.reason == "OPEN_POSITION_SPLIT_SPANNING"
+    assert any(event["event"] == "OPEN_POSITION_SPLIT_DETECTED" for event in engine.state.event_audit)
+    assert not any(event["event"] == "EXIT_EXECUTED" and event["date"] == days[2] for event in engine.state.event_audit)
+    assert not any(row["date"] == days[2] for row in engine.state.daily_equity)
+    assert not any(event["event"] == "ORDER_QUEUED" and event["date"] == days[2] for event in engine.state.event_audit)
+    assert engine.safety_counters()["open_position_split_spanning"] == 1
+
+
+def test_split_effective_exactly_d10_blocks_before_exit():
+    days = calendar(12)
+    engine = V7Engine(
+        frames_for(days, ("AAA",)), days, [candidate(days, "AAA", "TECH", 1)],
+        split_events_by_day={days[10]: ["AAA"]},
+    )
+    for day in days[:10]:
+        engine.process_day(day)
+    with pytest.raises(V7StudyBlocked, match="OPEN_POSITION_SPLIT_SPANNING"):
+        engine.process_day(days[10])
+    assert engine.state.open_positions
+    assert engine.state.completed_trades[0]["status"] == "FILLED"
+    assert not any(event["event"] == "EXIT_EXECUTED" for event in engine.state.event_audit)
+
+
+def test_missing_d10_open_blocks_without_position_or_ledger_mutation():
+    days = calendar(12)
+    frames = frames_for(days, ("AAA",))
+    del frames["AAA"][days[10]]["Open"]
+    engine = V7Engine(frames, days, [candidate(days, "AAA", "TECH", 1)])
+    for day in days[:10]:
+        engine.process_day(day)
+    before_position = list(engine.state.open_positions)
+    before_cash = engine.state.available_cash
+    with pytest.raises(V7StudyBlocked, match="PLANNED_EXIT_PRICE_UNAVAILABLE") as error:
+        engine.process_day(days[10])
+    assert error.value.reason == "PLANNED_EXIT_PRICE_UNAVAILABLE"
+    assert engine.state.open_positions == before_position
+    assert engine.state.available_cash == before_cash
+    assert engine.state.pending_proceeds_by_available_date == {}
+    assert engine.state.completed_trades[0]["status"] == "FILLED"
+    assert any(event["event"] == "D10_EXIT_BLOCKED_MISSING_PRICE" for event in engine.state.event_audit)
+    assert not any(row["date"] == days[10] for row in engine.state.daily_equity)
+    assert engine.safety_counters()["planned_exit_price_unavailable"] == 1
+
+
+def test_missing_open_position_mtm_close_blocks_without_equity_append():
+    days = calendar(12)
+    frames = frames_for(days, ("AAA",))
+    del frames["AAA"][days[2]]["Close"]
+    engine = V7Engine(frames, days, [candidate(days, "AAA", "TECH", 1)])
+    engine.process_day(days[0])
+    engine.process_day(days[1])
+    before_position = list(engine.state.open_positions)
+    before_cash = engine.state.available_cash
+    before_proceeds = dict(engine.state.pending_proceeds_by_available_date)
+    with pytest.raises(V7StudyBlocked, match="OPEN_POSITION_MTM_PRICE_UNAVAILABLE") as error:
+        engine.process_day(days[2])
+    assert error.value.reason == "OPEN_POSITION_MTM_PRICE_UNAVAILABLE"
+    assert engine.state.open_positions == before_position
+    assert engine.state.available_cash == before_cash
+    assert engine.state.pending_proceeds_by_available_date == before_proceeds
+    assert not any(row["date"] == days[2] for row in engine.state.daily_equity)
+    assert not any(event["event"] == "ORDER_QUEUED" and event["date"] == days[2] for event in engine.state.event_audit)
+    assert any(event["event"] == "MTM_BLOCKED_MISSING_PRICE" for event in engine.state.event_audit)
+    assert engine.safety_counters()["open_position_mtm_price_unavailable"] == 1
+
+
+def test_new_sticky_safety_counters_survive_refresh_and_snapshot():
+    days = calendar(12)
+    engine = V7Engine(frames_for(days, ("AAA",)), days, [])
+    names = (
+        "future_candidate_data_access", "future_split_access",
+        "open_position_split_spanning", "planned_exit_price_unavailable",
+        "open_position_mtm_price_unavailable", "candidate_snapshot_rerank",
+        "outside_top20_replacement",
+    )
+    for name in names:
+        engine.record_safety_violation(name)
+    engine.safety_counters()
+    engine.state_snapshot()
+    engine._refresh_safety_counters()
+    counters = engine.safety_counters()
+    assert all(counters[name] == 1 for name in names)
