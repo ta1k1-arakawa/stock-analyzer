@@ -437,8 +437,11 @@ class DualArmStudy:
             self.control is not self.variant
             and self.control.state is not self.variant.state
             and self.control.state.open_positions is not self.variant.state.open_positions
+            and self.control.state.pending_orders_by_entry_date is not self.variant.state.pending_orders_by_entry_date
+            and self.control.state.pending_proceeds_by_available_date is not self.variant.state.pending_proceeds_by_available_date
             and self.control.state.event_audit is not self.variant.state.event_audit
             and self.control.state.completed_trades is not self.variant.state.completed_trades
+            and self.control.state.daily_equity is not self.variant.state.daily_equity
         )
 
     def state_snapshots(self) -> dict[str, dict[str, Any]]:
@@ -458,13 +461,26 @@ def create_dual_arm_study(
     variant_input_hashes: ArmInputHashes,
     control_parameters: V7EngineParameters | None = None,
     variant_parameters: V7EngineParameters | None = None,
+    split_events_by_day: Mapping[str, Sequence[str]] | None = None,
 ) -> DualArmStudy:
     control = control_parameters or V7EngineParameters.control()
     variant = variant_parameters or V7EngineParameters.capacity_3()
     validate_single_parameter_difference(control, variant)
     return DualArmStudy(
-        CausalEventEngine(copy.deepcopy(frames), tuple(calendar), copy.deepcopy(candidates), control),
-        CausalEventEngine(copy.deepcopy(frames), tuple(calendar), copy.deepcopy(candidates), variant),
+        CausalEventEngine(
+            copy.deepcopy(frames),
+            tuple(calendar),
+            copy.deepcopy(candidates),
+            control,
+            split_events_by_day=copy.deepcopy(split_events_by_day),
+        ),
+        CausalEventEngine(
+            copy.deepcopy(frames),
+            tuple(calendar),
+            copy.deepcopy(candidates),
+            variant,
+            split_events_by_day=copy.deepcopy(split_events_by_day),
+        ),
         control_input_hashes,
         variant_input_hashes,
     )

@@ -250,6 +250,39 @@ def test_dual_arm_state_identity_mutation_isolation_and_hash_guards():
         DualArmStudy(shared, shared, hashes, hashes)
 
 
+def test_dual_arm_split_mapping_is_deepcopied_and_default_is_compatible():
+    calendar, frames, candidates = synthetic_forward_fixture()
+    hashes = ArmInputHashes("a" * 64, "b" * 64, "c" * 64, "d" * 64)
+    split_events = {calendar[1]: ["AAA"]}
+    study = create_dual_arm_study(
+        frames, calendar, candidates, hashes, hashes,
+        split_events_by_day=split_events,
+    )
+    assert study.control.split_events_by_day == split_events
+    assert study.variant.split_events_by_day == split_events
+    assert study.control.split_events_by_day is not study.variant.split_events_by_day
+    study.control.split_events_by_day[calendar[1]].append("BBB")
+    assert study.variant.split_events_by_day[calendar[1]] == ["AAA"]
+
+    default_study = create_dual_arm_study(frames, calendar, candidates, hashes, hashes)
+    assert default_study.control.split_events_by_day == {}
+    assert default_study.variant.split_events_by_day == {}
+
+
+def test_dual_arm_split_mapping_is_independent_during_execution():
+    calendar, frames, candidates = synthetic_forward_fixture()
+    hashes = ArmInputHashes("a" * 64, "b" * 64, "c" * 64, "d" * 64)
+    split_events = {calendar[1]: ["AAA"]}
+    study = create_dual_arm_study(
+        frames, calendar, candidates, hashes, hashes,
+        split_events_by_day=split_events,
+    )
+    assert study.control.split_events_by_day is not split_events
+    assert study.variant.split_events_by_day is not split_events
+    study.control.split_events_by_day[calendar[1]][0] = "MUTATED"
+    assert study.variant.split_events_by_day[calendar[1]] == ["AAA"]
+
+
 def test_capacity_scenario_uses_equal_inputs_and_only_parameter_difference_in_audit():
     calendar, frames, candidates = synthetic_forward_fixture()
     hashes = ArmInputHashes("a" * 64, "b" * 64, "c" * 64, "d" * 64)
