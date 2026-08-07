@@ -49,8 +49,8 @@ def manifest_for(seed_result):
         "design_commit": "3bf0fde7ca4c5745b9233d980eea8d2c26438ba8",
         "implementation_commit": "1" * 40,
         "collector_commit": "2" * 40,
-        "activation_authorization_utc": "2019-01-01T00:00:00Z",
-        "activation_boundary_first_jpx_trading_date": "2019-01-01",
+        "activation_authorization_utc": "2026-08-07T03:00:00Z",
+        "activation_boundary_first_jpx_trading_date": "2026-08-10",
         "calendar_source": "synthetic",
         "calendar_version": "synthetic-v1",
         "calendar_timezone": "Asia/Tokyo",
@@ -65,7 +65,7 @@ def manifest_for(seed_result):
         "output_root": "synthetic-only",
         "seed_data_source": "synthetic",
         "seed_data_schema": "seed-v1",
-        "seed_acquisition_utc": "2018-12-01T00:00:00Z",
+        "seed_acquisition_utc": "2026-08-07T02:00:00Z",
         "seed_cutoff_trading_date": seed_result["seed_cutoff_trading_date"],
         "seed_ticker_count": seed_result["ticker_count"],
         "seed_row_count": seed_result["row_count"],
@@ -200,6 +200,39 @@ def test_manifest_rejects_parameter_difference_and_seed_hash_mismatch():
         validate_activation_manifest(bad, seed_validation=seed_result)
 
 
+def test_manifest_requires_strict_utc_preregistration_seed_activation_order():
+    seed_result = full_seed_result()
+    base = manifest_for(seed_result)
+    assert validate_activation_manifest(base, seed_validation=seed_result)["status"] == "PASS"
+    with pytest.raises(ProtocolBlocked, match="PREREGISTRATION"):
+        validate_activation_manifest(
+            {**base, "seed_acquisition_utc": "2026-08-07T01:43:27Z"},
+            seed_validation=seed_result,
+        )
+    with pytest.raises(ProtocolBlocked, match="ACTIVATION_TIME_ORDER"):
+        validate_activation_manifest(
+            {**base, "activation_authorization_utc": "2026-08-07T02:00:00Z"},
+            seed_validation=seed_result,
+        )
+    with pytest.raises(ProtocolBlocked, match="AWARE_UTC"):
+        validate_activation_manifest(
+            {**base, "seed_acquisition_utc": "2026-08-07T02:00:00"},
+            seed_validation=seed_result,
+        )
+    with pytest.raises(ProtocolBlocked, match="AWARE_UTC"):
+        validate_activation_manifest(
+            {**base, "seed_acquisition_utc": "2026-08-07T11:00:00+09:00"},
+            seed_validation=seed_result,
+        )
+
+
+def test_manifest_requires_validated_seed_cutoff_equality():
+    seed_result = full_seed_result()
+    manifest = {**manifest_for(seed_result), "seed_cutoff_trading_date": "2018-09-01"}
+    with pytest.raises(ProtocolBlocked, match="SEED_CUTOFF_MISMATCH"):
+        validate_activation_manifest(manifest, seed_validation=seed_result)
+
+
 def test_dual_arm_state_identity_mutation_isolation_and_hash_guards():
     calendar, frames, candidates = synthetic_forward_fixture()
     hashes = ArmInputHashes("a" * 64, "b" * 64, "c" * 64, "d" * 64)
@@ -239,6 +272,56 @@ def test_checkpoint_first_second_chain_restart_and_duplicate_guard(tmp_path):
     assert writer.restart_from_last_checkpoint()["last_completed_engine_day"] == "2020-01-03"
     with pytest.raises(ProtocolBlocked, match="DUPLICATE_ENGINE_DAY"):
         writer.write_complete(**checkpoint_values(second["current_checkpoint_sha256"], "2020-01-03"))
+
+
+def test_checkpoint_requires_strictly_increasing_day_and_no_new_file_on_failure(tmp_path):
+    writer = CheckpointWriter(tmp_path)
+    first = writer.write_complete(**checkpoint_values())
+    before = sorted(Path(tmp_path).glob("checkpoint-*.json"))
+    with pytest.raises(ProtocolBlocked, match="ENGINE_DAY_NOT_INCREASING"):
+        writer.write_complete(**checkpoint_values(first["current_checkpoint_sha256"], "2020-01-01"))
+    assert sorted(Path(tmp_path).glob("checkpoint-*.json")) == before
+
+
+@pytest.mark.parametrize(
+    "field,value,pattern",
+    [
+        ("arm_a_state_sha256", "bad", "SHA_INVALID"),
+        ("candidate_snapshot_sha256", "bad", "SHA_INVALID"),
+        ("collector_commit", "bad", "COMMIT_INVALID"),
+    ],
+)
+def test_checkpoint_field_validation_fails_before_final_write(tmp_path, field, value, pattern):
+    writer = CheckpointWriter(tmp_path)
+    values = checkpoint_values()
+    values[field] = value
+    with pytest.raises(ProtocolBlocked, match=pattern):
+        writer.write_complete(**values)
+    assert not list(Path(tmp_path).glob("checkpoint-*.json"))
+
+
+def test_checkpoint_filename_date_mismatch_is_rejected_on_read(tmp_path):
+    writer = CheckpointWriter(tmp_path)
+    first = writer.write_complete(**checkpoint_values())
+    path = Path(tmp_path) / "checkpoint-2020-01-02.json"
+    renamed = Path(tmp_path) / "checkpoint-2020-01-03.json"
+    path.rename(renamed)
+    with pytest.raises(ProtocolBlocked, match="FILENAME_DATE_MISMATCH"):
+        writer.load_last_complete()
+
+
+def test_checkpoint_three_day_chain_and_tampered_previous_hash_are_blocked(tmp_path):
+    writer = CheckpointWriter(tmp_path)
+    first = writer.write_complete(**checkpoint_values())
+    second = writer.write_complete(**checkpoint_values(first["current_checkpoint_sha256"], "2020-01-03"))
+    third = writer.write_complete(**checkpoint_values(second["current_checkpoint_sha256"], "2020-01-04"))
+    assert writer.restart_from_last_checkpoint()["current_checkpoint_sha256"] == third["current_checkpoint_sha256"]
+    path = Path(tmp_path) / "checkpoint-2020-01-04.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["previous_checkpoint_sha256"] = "f" * 64
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ProtocolBlocked, match="CHECKPOINT_HASH_MISMATCH"):
+        writer.load_last_complete()
 
 
 def test_checkpoint_previous_hash_mismatch_and_partial_staging_fail_closed(tmp_path):

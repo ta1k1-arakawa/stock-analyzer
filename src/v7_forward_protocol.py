@@ -17,7 +17,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -38,8 +38,10 @@ except ImportError:
 
 
 DESIGN_COMMIT = "3bf0fde7ca4c5745b9233d980eea8d2c26438ba8"
+DESIGN_PREREGISTRATION_UTC = "2026-08-07T01:43:28Z"
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+CHECKPOINT_FILENAME_RE = re.compile(r"^checkpoint-(\d{4}-\d{2}-\d{2})\.json$")
 
 SEED_REQUIRED_FIELDS = (
     "ticker",
@@ -119,6 +121,18 @@ def _parse_date(value: str) -> datetime:
         raise ProtocolBlocked("INVALID_DATE") from error
     if parsed.strftime("%Y-%m-%d") != value:
         raise ProtocolBlocked("INVALID_DATE")
+    return parsed
+
+
+def _parse_utc_timestamp(value: Any, field_name: str) -> datetime:
+    if not isinstance(value, str):
+        raise ProtocolBlocked("UTC_TIMESTAMP_INVALID:" + field_name)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ProtocolBlocked("UTC_TIMESTAMP_INVALID:" + field_name) from error
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ProtocolBlocked("UTC_TIMESTAMP_MUST_BE_AWARE_UTC:" + field_name)
     return parsed
 
 
@@ -289,6 +303,19 @@ def validate_activation_manifest(
         raise ProtocolBlocked("MANIFEST_MODE_NOT_DRY_RUN_ONLY")
     if manifest["design_commit"] != expected_design_commit:
         raise ProtocolBlocked("DESIGN_COMMIT_MISMATCH")
+    preregistration = _parse_utc_timestamp(
+        DESIGN_PREREGISTRATION_UTC, "design_preregistration"
+    )
+    seed_acquisition = _parse_utc_timestamp(
+        manifest["seed_acquisition_utc"], "seed_acquisition_utc"
+    )
+    activation_authorization = _parse_utc_timestamp(
+        manifest["activation_authorization_utc"], "activation_authorization_utc"
+    )
+    if not preregistration < seed_acquisition:
+        raise ProtocolBlocked("SEED_ACQUISITION_NOT_AFTER_PREREGISTRATION")
+    if not seed_acquisition < activation_authorization:
+        raise ProtocolBlocked("ACTIVATION_TIME_ORDER_INVALID")
     for key in (
         "implementation_commit",
         "collector_commit",
@@ -336,6 +363,10 @@ def validate_activation_manifest(
     if seed_validation is not None:
         if seed_validation.get("seed_validation_result") != "PASS":
             raise ProtocolBlocked("SEED_VALIDATION_FAILURE")
+        if manifest["seed_cutoff_trading_date"] != seed_validation.get(
+            "seed_cutoff_trading_date"
+        ):
+            raise ProtocolBlocked("SEED_CUTOFF_MISMATCH")
         for key in ("seed_canonical_sha256", "seed_payload_manifest_sha256"):
             manifest_key = (
                 "seed_canonical_csv_sha256"
@@ -479,10 +510,29 @@ class CheckpointWriter:
             raise ProtocolBlocked("CHECKPOINT_READ_FAILED") from error
         if set(record) != set(CHECKPOINT_FIELDS):
             raise ProtocolBlocked("CHECKPOINT_SCHEMA_INVALID")
+        match = CHECKPOINT_FILENAME_RE.fullmatch(path.name)
+        if match is None:
+            raise ProtocolBlocked("CHECKPOINT_FILENAME_INVALID")
+        if record.get("last_completed_engine_day") != match.group(1):
+            raise ProtocolBlocked("CHECKPOINT_FILENAME_DATE_MISMATCH")
         if record["status"] != "COMPLETE":
             raise ProtocolBlocked("PARTIAL_CHECKPOINT_BLOCKED")
-        if not _valid_sha(record["current_checkpoint_sha256"]):
-            raise ProtocolBlocked("CHECKPOINT_HASH_INVALID")
+        for key in (
+            "current_checkpoint_sha256",
+            "arm_a_state_sha256",
+            "arm_b_state_sha256",
+            "candidate_snapshot_sha256",
+            "price_snapshot_sha256",
+        ):
+            if not _valid_sha(record[key]):
+                raise ProtocolBlocked("CHECKPOINT_SHA_INVALID:" + key)
+        if record["previous_checkpoint_sha256"] is not None and not _valid_sha(
+            record["previous_checkpoint_sha256"]
+        ):
+            raise ProtocolBlocked("CHECKPOINT_SHA_INVALID:previous_checkpoint_sha256")
+        if not _valid_commit(record["collector_commit"]):
+            raise ProtocolBlocked("CHECKPOINT_COMMIT_INVALID")
+        _parse_date(record["last_completed_engine_day"])
         expected = sha256_bytes(canonical_json_bytes(self._canonical_body(record)))
         if expected != record["current_checkpoint_sha256"]:
             raise ProtocolBlocked("CHECKPOINT_HASH_MISMATCH")
@@ -491,9 +541,14 @@ class CheckpointWriter:
     def _verified_records(self) -> list[dict[str, Any]]:
         records = [self._verify_record(path) for path in self._files()]
         previous = None
+        previous_day = None
         for record in records:
             if record["previous_checkpoint_sha256"] != previous:
                 raise ProtocolBlocked("CHECKPOINT_PREVIOUS_HASH_MISMATCH")
+            current_day = _parse_date(record["last_completed_engine_day"])
+            if previous_day is not None and current_day <= previous_day:
+                raise ProtocolBlocked("CHECKPOINT_ENGINE_DAY_NOT_INCREASING")
+            previous_day = current_day
             previous = record["current_checkpoint_sha256"]
         return records
 
@@ -514,9 +569,27 @@ class CheckpointWriter:
             raise ProtocolBlocked("CHECKPOINT_PREVIOUS_HASH_MISMATCH")
         day = str(values["last_completed_engine_day"])
         _parse_date(day)
+        for key in (
+            "arm_a_state_sha256",
+            "arm_b_state_sha256",
+            "candidate_snapshot_sha256",
+            "price_snapshot_sha256",
+        ):
+            if not _valid_sha(values[key]):
+                raise ProtocolBlocked("CHECKPOINT_SHA_INVALID:" + key)
+        if not _valid_commit(values["collector_commit"]):
+            raise ProtocolBlocked("CHECKPOINT_COMMIT_INVALID")
+        if values["previous_checkpoint_sha256"] is not None and not _valid_sha(
+            values["previous_checkpoint_sha256"]
+        ):
+            raise ProtocolBlocked("CHECKPOINT_SHA_INVALID:previous_checkpoint_sha256")
         final_path = self.root / f"checkpoint-{day}.json"
         if final_path.exists():
             raise ProtocolBlocked("DUPLICATE_ENGINE_DAY_PROCESSING")
+        if records and _parse_date(day) <= _parse_date(
+            records[-1]["last_completed_engine_day"]
+        ):
+            raise ProtocolBlocked("CHECKPOINT_ENGINE_DAY_NOT_INCREASING")
         body = {
             key: values[key]
             for key in CHECKPOINT_FIELDS

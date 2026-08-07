@@ -25,9 +25,9 @@ def frames_for(days: list[str], tickers: tuple[str, ...]) -> dict:
     }
 
 
-def candidate(days, ticker, industry, rank, signal_index=0, exit_index=10):
+def candidate(days, ticker, industry, rank, signal_index=0, exit_index=10, signal_year=None):
     return {
-        "signal_year": 2020,
+        "signal_year": int(signal_year if signal_year is not None else days[signal_index][:4]),
         "signal_date": days[signal_index],
         "ticker": ticker,
         "industry": industry,
@@ -93,6 +93,32 @@ def test_control_matches_v6_multiple_event_scenarios():
     assert normalized_state(v7) == normalized_state(v6)
     assert v7.legacy_safety_counters() == v6.safety_counters()
     assert v7.state_snapshot()["safety_counters"]["max_position_violation"] == 0
+
+
+@pytest.mark.parametrize("year", [2026, 2027])
+def test_forward_year_candidate_queues_fills_and_d10_exits(year):
+    start = date(year, 1, 2)
+    days = [(start + timedelta(days=index)).isoformat() for index in range(12)]
+    frames = frames_for(days, ("AAA",))
+    engine = V7Engine(
+        frames,
+        days,
+        [candidate(days, "AAA", "TECH", 1, signal_year=year)],
+        V7EngineParameters.control(),
+    ).run()
+    assert any(event["event"] == "ORDER_QUEUED" for event in engine.state.event_audit)
+    assert engine.state.completed_trades[0]["status"] == "CLOSED"
+    assert engine.state.completed_trades[0]["exit_execution_date"] == days[10]
+
+
+def test_signal_year_must_match_signal_date_year():
+    days = [
+        (date(2026, 1, 2) + timedelta(days=index)).isoformat()
+        for index in range(12)
+    ]
+    row = candidate(days, "AAA", "TECH", 1, signal_year=2027)
+    with pytest.raises(ValueError, match="SIGNAL_YEAR_MISMATCH"):
+        V7Engine(frames_for(days, ("AAA",)), days, [row], V7EngineParameters.control())
 
 
 @pytest.mark.parametrize("scenario", ["gap", "duplicate_ticker", "same_industry"])
@@ -212,6 +238,28 @@ def test_future_price_read_fails_closed_and_counts_safety():
     with pytest.raises(ValueError, match="FUTURE_PRICE_ACCESS"):
         engine.read_engine_price("AAA", days[1], "Open", days[0])
     assert engine.safety_counters()["future_price_access"] == 1
+
+
+def test_sticky_safety_counters_persist_across_refresh_and_snapshot():
+    days = calendar(12)
+    engine = V7Engine(frames_for(days, ("AAA",)), days, [], V7EngineParameters.control())
+    for name in ("historical_backfill", "snapshot_rewrite", "cross_arm_state_leakage"):
+        engine.record_safety_violation(name)
+    assert engine.safety_counters()["historical_backfill"] == 1
+    assert engine.state_snapshot()["safety_counters"]["snapshot_rewrite"] == 1
+    engine._refresh_safety_counters()
+    assert engine.safety_counters()["cross_arm_state_leakage"] == 1
+
+
+@pytest.mark.parametrize(
+    "name,count",
+    [("unknown", 1), ("historical_backfill", 0), ("snapshot_rewrite", -1), ("D0_state_mutation", True), ("future_price_access", 1)],
+)
+def test_sticky_safety_record_api_rejects_invalid_requests(name, count):
+    days = calendar(12)
+    engine = V7Engine(frames_for(days, ("AAA",)), days, [], V7EngineParameters.control())
+    with pytest.raises(ValueError):
+        engine.record_safety_violation(name, count)
 
 
 def test_d0_only_queues_order_and_does_not_mutate_portfolio_state():

@@ -45,6 +45,25 @@ SAFETY_COUNTER_NAMES = (
     "cross_arm_state_leakage",
 )
 
+DERIVED_SAFETY_COUNTER_NAMES = (
+    "future_price_access",
+    "negative_cash",
+    "same_day_proceeds_reuse",
+    "duplicate_order",
+    "duplicate_ticker_open",
+    "same_industry_overlap",
+    "max_position_violation",
+    "cash_reserve_violation",
+    "capital_limit_violation",
+)
+
+STICKY_SAFETY_COUNTER_NAMES = (
+    "historical_backfill",
+    "snapshot_rewrite",
+    "cross_arm_state_leakage",
+    "D0_state_mutation",
+)
+
 SKIP_REASONS = (
     "MAX_OPEN_POSITIONS",
     "DUPLICATE_TICKER_OPEN",
@@ -268,8 +287,6 @@ def _require_candidate(row: Mapping[str, Any], calendar: Sequence[str]) -> None:
         raise ValueError("ENTRY_DATE_NOT_NEXT_COMMON_CALENDAR_DAY")
     if index[planned] != index[signal] + 10:
         raise ValueError("EXIT_DATE_NOT_TENTH_COMMON_CALENDAR_DAY")
-    if int(row["signal_year"]) == 2026:
-        raise ValueError("SIGNAL_2026_PROHIBITED")
     if int(row["signal_year"]) != int(signal[:4]):
         raise ValueError("SIGNAL_YEAR_MISMATCH")
     if not isinstance(row["signal_raw_close"], (int, float)) or not math.isfinite(float(row["signal_raw_close"])):
@@ -324,6 +341,14 @@ class CausalEventEngine:
         self._candidate_ranks = {(str(row["signal_date"]), int(row["rank"])) for row in self.candidates}
         self._safety = {name: 0 for name in SAFETY_COUNTER_NAMES}
         self._skip_reason_counts = {name: 0 for name in SKIP_REASONS}
+
+    def record_safety_violation(self, name: str, count: int = 1) -> None:
+        """Record an immutable-study safety violation through the narrow API."""
+        if name not in STICKY_SAFETY_COUNTER_NAMES:
+            raise ValueError("STICKY_SAFETY_COUNTER_NAME_INVALID")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            raise ValueError("SAFETY_VIOLATION_COUNT_INVALID")
+        self._safety[name] += count
 
     def _ledger(self, order: PendingOrder) -> dict[str, Any]:
         return {
@@ -605,7 +630,7 @@ class CausalEventEngine:
             })
         after = self._phase5_snapshot()
         if before != after:
-            self._safety["D0_state_mutation"] += 1
+            self.record_safety_violation("D0_state_mutation")
             raise AssertionError("D0_PHASE5_STATE_MUTATION")
 
     def process_day(self, day: str) -> None:
@@ -624,9 +649,7 @@ class CausalEventEngine:
         return self
 
     def _refresh_safety_counters(self) -> None:
-        for name in SAFETY_COUNTER_NAMES:
-            if name in {"future_price_access", "D0_state_mutation"}:
-                continue
+        for name in DERIVED_SAFETY_COUNTER_NAMES:
             self._safety[name] = 0
         order_ids = [row["order_id"] for row in self.state.completed_trades]
         self._safety["duplicate_order"] = len(order_ids) - len(set(order_ids))
