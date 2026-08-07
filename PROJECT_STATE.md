@@ -563,3 +563,93 @@ exceeded V5-B in only three of six years.
 The result must not be rerun, corrected after observation, or tuned on
 the same evaluation data. The V6-A-R2 hypothesis was tested but was not
 supported under its frozen comparative acceptance criteria.
+
+## V7 Forward Capacity Gate 1-2 state
+
+V7 study_name=V7_FORWARD_CAPACITY
+study_type=FORWARD_ONLY_EXPLORATORY_PAPER_STUDY
+
+design_commit=3bf0fde7ca4c5745b9233d980eea8d2c26438ba8
+initial_implementation_commit=6aaf49e50d8fbe7da8c0718158b35841892a6d09
+accepted_gate2_implementation_commit=c9406a5631e6aa9e89fdac00fd820fb321711e7f
+
+gate1_design_review=PASS
+gate2_implementation_review=PASS
+gate2_boundary_correction_count=1
+
+control_arm=CONTROL
+control_max_open_positions=2
+variant_arm=CAPACITY_3
+variant_max_open_positions=3
+single_changed_parameter=max_open_positions
+
+control_parity_with_v6=PASS
+event_phase_order=PASS
+future_price_guard=PASS
+D0_mutation_guard=PASS
+arm_state_independence=PASS
+arm_input_hash_equality_guards=PASS
+
+forward_signal_2026_supported=true
+forward_signal_2027_supported=true
+signal_year_consistency_guard=PASS
+
+historical_feature_seed_allowed=true
+historical_feature_seed_role=FEATURE_INITIALIZATION_ONLY
+historical_candidate_generation_allowed=false
+historical_portfolio_replay_allowed=false
+pre_activation_study_events=0
+post_activation_seed_backfill_allowed=false
+
+manifest_mode=DRY_RUN_ONLY
+sticky_safety_counters=PASS
+seed_utc_ordering_guard=PASS
+seed_cutoff_equality_guard=PASS
+checkpoint_hash_chain=PASS
+checkpoint_engine_day_monotonicity=PASS
+checkpoint_filename_date_guard=PASS
+checkpoint_partial_commit_guard=PASS
+checkpoint_restart_rule=LAST_COMPLETE_ONLY
+
+engine_tests=25
+protocol_tests=33
+dedicated_tests=58
+isolated_full_suite_files=25
+isolated_full_suite_tests=421
+isolated_full_suite_failures=0
+synthetic_golden=PASS
+synthetic_golden_byte_identical=true
+gate2_static_check=PASS
+
+activation_status=NOT_ACTIVATED
+activation_boundary=NOT_SET
+activation_manifest_created=false
+forward_collector_implemented=false
+gate3_dry_run_started=false
+
+network_requests=0
+seed_acquisition_started=false
+real_data_read=false
+historical_cache_read=false
+historical_replay=false
+portfolio_simulation_started=false
+formal_evaluation_started=false
+real_artifacts_written=0
+real_orders_allowed=false
+deployment_allowed=false
+
+next_authorized_action=HUMAN_AUTHORIZE_GATE3_FORWARD_COLLECTOR_DRY_RUN_IMPLEMENTATION
+
+V7 Gate 1 and Gate 2 are complete. The preregistered design and the
+offline causal core have passed independent review.
+
+The accepted implementation preserves V6-A-R2 CONTROL semantics while
+parameterizing only max_open_positions for the CAPACITY_3 arm. Forward
+signal years are not artificially restricted. Sticky safety violations,
+manifest time ordering, seed cutoff identity, and append-only checkpoint
+boundaries are fail-closed.
+
+The study is not activated. No activation boundary, activation manifest,
+collector, seed package, forward observation, candidate, order, trade,
+equity row, or formal result exists. Gate 3 requires separate human
+authorization.
