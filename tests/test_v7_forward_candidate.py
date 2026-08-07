@@ -156,6 +156,38 @@ def test_candidate_and_market_price_hashes_are_deterministic(fixture):
     assert first["price_snapshot_sha256"] == second["price_snapshot_sha256"]
 
 
+def test_hashes_are_deterministic_under_ticker_dictionary_and_universe_order(fixture):
+    original_frames = {ticker: frame.copy() for ticker, frame in fixture["forward_frames"].items()}
+    original_splits = {ticker: set(values) for ticker, values in fixture["splits"].items()}
+    original_universe = fixture["universe"].copy()
+    first = generate_forward_candidates_for_day(
+        original_frames,
+        original_universe,
+        original_splits,
+        fixture["calendar"],
+        fixture["engine_day"],
+        COLLECTOR_COMMIT,
+    )
+
+    reversed_frames = {ticker: original_frames[ticker] for ticker in reversed(list(original_frames))}
+    reversed_splits = {ticker: original_splits[ticker] for ticker in reversed(list(original_splits))}
+    reversed_universe = original_universe.iloc[::-1].copy()
+    second = generate_forward_candidates_for_day(
+        reversed_frames,
+        reversed_universe,
+        reversed_splits,
+        fixture["calendar"],
+        fixture["engine_day"],
+        COLLECTOR_COMMIT,
+    )
+
+    assert first["candidate_snapshot_sha256"] == second["candidate_snapshot_sha256"]
+    assert first["market_gate_snapshot_sha256"] == second["market_gate_snapshot_sha256"]
+    assert first["price_snapshot_sha256"] == second["price_snapshot_sha256"]
+    assert first["accepted_top20"] == second["accepted_top20"]
+    assert first["market_gate"] == second["market_gate"]
+
+
 def test_d0_data_unavailable_is_audited_not_study_blocked(fixture):
     frames = dict(fixture["forward_frames"])
     frames.pop("T000")
