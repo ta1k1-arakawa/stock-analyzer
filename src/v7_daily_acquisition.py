@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -84,9 +85,27 @@ MANIFEST_FIELDS = (
     "activation_created",
 )
 
+PAYLOAD_MANIFEST_RECORD_FIELDS = (
+    "ticker",
+    "status",
+    "payload_sha256",
+    "byte_count",
+    "valid_price_row_count",
+    "invalid_price_row_count",
+    "split_event_count",
+    "canonical_d0_row_sha256",
+    "canonical_engine_day_split_sha256",
+    "missing_reason",
+)
+
 STATUS_VALID_D0 = "VALID_D0"
 STATUS_AUDITED_MISSING = "AUDITED_MISSING"
 REASON_D0_DATA_UNAVAILABLE = "D0_DATA_UNAVAILABLE"
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _valid_sha256(value: Any) -> bool:
+    return isinstance(value, str) and bool(SHA256_RE.fullmatch(value))
 
 
 class V7DailyAcquisitionBlocked(RuntimeError):
@@ -171,8 +190,24 @@ def require_engine_day_trading(calendar: CalendarSnapshot, engine_day: str) -> N
 # ---------------------------------------------------------------------------
 
 
+def _series_has_no_observation(section: Mapping[str, Any] | None, name: str) -> bool:
+    if section is None:
+        return True
+    value = section.get(name)
+    if value is None:
+        return True
+    if isinstance(value, list):
+        return len(value) == 0
+    return False
+
+
 def classify_missing_timestamp_payload(payload_bytes: bytes, expected_ticker: str) -> bool:
-    """Return True only for a transport-successful response with a null/empty timestamp series."""
+    """Return True only for a transport-successful response with a null/empty timestamp
+    series AND no real price observation anywhere in the quote/adjclose indicator arrays.
+    A payload carrying actual open/high/low/close/volume/adjclose values alongside an
+    empty timestamp array is a parser inconsistency, not an audited D0 absence, and must
+    fall through to a hard BLOCK.
+    """
     try:
         payload = json.loads(payload_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -196,11 +231,36 @@ def classify_missing_timestamp_payload(payload_bytes: bytes, expected_ticker: st
     if symbol != expected_ticker:
         return False
     timestamps = result.get("timestamp")
-    if timestamps is None:
-        return True
-    if isinstance(timestamps, list) and len(timestamps) == 0:
-        return True
-    return False
+    timestamp_empty = timestamps is None or (isinstance(timestamps, list) and len(timestamps) == 0)
+    if not timestamp_empty:
+        return False
+
+    indicators = result.get("indicators")
+    if indicators is not None and not isinstance(indicators, Mapping):
+        return False
+    quote_section: Mapping[str, Any] | None = None
+    adjclose_section: Mapping[str, Any] | None = None
+    if isinstance(indicators, Mapping):
+        quote = indicators.get("quote")
+        if quote is not None:
+            if not isinstance(quote, list) or len(quote) == 0:
+                return False
+            if not isinstance(quote[0], Mapping):
+                return False
+            quote_section = quote[0]
+        adjclose = indicators.get("adjclose")
+        if adjclose is not None:
+            if not isinstance(adjclose, list) or len(adjclose) == 0:
+                return False
+            if not isinstance(adjclose[0], Mapping):
+                return False
+            adjclose_section = adjclose[0]
+    for name in ("open", "high", "low", "close", "volume"):
+        if not _series_has_no_observation(quote_section, name):
+            return False
+    if not _series_has_no_observation(adjclose_section, "adjclose"):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -520,8 +580,16 @@ def verify_daily_acquisition_bundle(
     engine_day: str,
     expected_calendar_commit: str,
     expected_collector_commit: str,
+    universe_csv: str | os.PathLike[str],
 ) -> dict[str, Any]:
     _parse_date(engine_day, "engine_day")
+    expected_request_end_exclusive = (date.fromisoformat(engine_day) + timedelta(days=1)).isoformat()
+    try:
+        universe = validate_universe_file(universe_csv)
+    except V7SeedAcquisitionBlocked as error:
+        raise V7DailyAcquisitionBlocked("UNIVERSE_VALIDATION_FAILED:" + error.reason) from error
+    universe_tickers = universe["tickers"]
+
     acquisitions_root = Path(root) / ACQUISITIONS_DIRNAME
     if not acquisitions_root.is_dir():
         raise V7DailyAcquisitionBlocked("ACQUISITION_DAY_NOT_FOUND")
@@ -544,22 +612,62 @@ def verify_daily_acquisition_bundle(
         raise V7DailyAcquisitionBlocked("MANIFEST_ENGINE_DAY_MISMATCH")
     if manifest["calendar_commit"] != expected_calendar_commit:
         raise V7DailyAcquisitionBlocked("CALENDAR_COMMIT_MISMATCH")
+    if manifest["calendar_definition_version"] != CALENDAR_DEFINITION_VERSION:
+        raise V7DailyAcquisitionBlocked("CALENDAR_DEFINITION_VERSION_MISMATCH")
     if manifest["collector_commit"] != expected_collector_commit:
         raise V7DailyAcquisitionBlocked("COLLECTOR_COMMIT_MISMATCH")
-    if manifest["ticker_count"] != EXPECTED_TICKER_COUNT:
+    if manifest["data_source"] != DATA_SOURCE:
+        raise V7DailyAcquisitionBlocked("DATA_SOURCE_MISMATCH")
+    if manifest["data_source_host"] != DATA_SOURCE_HOST:
+        raise V7DailyAcquisitionBlocked("DATA_SOURCE_HOST_MISMATCH")
+    if manifest["request_start"] != engine_day:
+        raise V7DailyAcquisitionBlocked("REQUEST_START_MISMATCH")
+    if manifest["request_end_exclusive"] != expected_request_end_exclusive:
+        raise V7DailyAcquisitionBlocked("REQUEST_END_EXCLUSIVE_MISMATCH")
+    if manifest["universe_csv_sha256"] != universe["universe_csv_sha256"]:
+        raise V7DailyAcquisitionBlocked("UNIVERSE_CSV_SHA_MISMATCH")
+    if manifest["ticker_list_sha256"] != universe["ticker_list_sha256"]:
+        raise V7DailyAcquisitionBlocked("TICKER_LIST_SHA_MISMATCH")
+    if manifest["ticker_count"] != EXPECTED_TICKER_COUNT or universe["ticker_count"] != EXPECTED_TICKER_COUNT:
         raise V7DailyAcquisitionBlocked("TICKER_COUNT_MISMATCH")
     if manifest["request_count"] != EXPECTED_TICKER_COUNT:
         raise V7DailyAcquisitionBlocked("REQUEST_COUNT_MISMATCH")
     if manifest["retry_count"] != 0:
         raise V7DailyAcquisitionBlocked("RETRY_COUNT_INVALID")
+    if manifest["http_429_count"] != 0:
+        raise V7DailyAcquisitionBlocked("HTTP_429_COUNT_INVALID")
+    if manifest["success_transport_count"] != EXPECTED_TICKER_COUNT:
+        raise V7DailyAcquisitionBlocked("SUCCESS_TRANSPORT_COUNT_INVALID")
+    for field in (
+        "candidate_generation_started",
+        "portfolio_processing_started",
+        "profit_calculation_started",
+        "formal_evaluation_started",
+    ):
+        if manifest[field] != 0:
+            raise V7DailyAcquisitionBlocked("DOWNSTREAM_PROCESSING_FLAG_INVALID:" + field)
+    if manifest["activation_created"] is not False:
+        raise V7DailyAcquisitionBlocked("ACTIVATION_CREATED_FLAG_INVALID")
 
     payload_manifest = manifest["payload_manifest"]
     if not isinstance(payload_manifest, list) or len(payload_manifest) != EXPECTED_TICKER_COUNT:
         raise V7DailyAcquisitionBlocked("PAYLOAD_MANIFEST_COUNT_MISMATCH")
 
+    for record in payload_manifest:
+        if not isinstance(record, Mapping) or set(record) != set(PAYLOAD_MANIFEST_RECORD_FIELDS):
+            raise V7DailyAcquisitionBlocked("PAYLOAD_MANIFEST_RECORD_SCHEMA_INVALID:" + str(record.get("ticker")))
+        if not _valid_sha256(record["payload_sha256"]):
+            raise V7DailyAcquisitionBlocked("PAYLOAD_MANIFEST_SHA_INVALID:" + record["ticker"])
+        if record["canonical_d0_row_sha256"] is not None and not _valid_sha256(record["canonical_d0_row_sha256"]):
+            raise V7DailyAcquisitionBlocked("PAYLOAD_MANIFEST_SHA_INVALID:" + record["ticker"])
+        if not _valid_sha256(record["canonical_engine_day_split_sha256"]):
+            raise V7DailyAcquisitionBlocked("PAYLOAD_MANIFEST_SHA_INVALID:" + record["ticker"])
+
     manifest_tickers = [record["ticker"] for record in payload_manifest]
     if len(set(manifest_tickers)) != EXPECTED_TICKER_COUNT:
         raise V7DailyAcquisitionBlocked("PAYLOAD_MANIFEST_TICKER_DUPLICATE")
+    if manifest_tickers != universe_tickers:
+        raise V7DailyAcquisitionBlocked("PAYLOAD_MANIFEST_TICKER_ORDER_MISMATCH")
     raw_files = {entry.name for entry in (day_dir / RAW_DIRNAME).iterdir()}
     expected_raw_files = {ticker + ".json" for ticker in manifest_tickers}
     if raw_files != expected_raw_files:
@@ -567,8 +675,10 @@ def verify_daily_acquisition_bundle(
 
     valid_tickers: set[str] = set()
     missing_tickers: set[str] = set()
+    records_by_ticker: dict[str, Mapping[str, Any]] = {}
     for record in payload_manifest:
         ticker = record["ticker"]
+        records_by_ticker[ticker] = record
         raw_bytes = (day_dir / RAW_DIRNAME / (ticker + ".json")).read_bytes()
         if sha256_bytes(raw_bytes) != record["payload_sha256"]:
             raise V7DailyAcquisitionBlocked("RAW_SHA_MISMATCH:" + ticker)
@@ -598,8 +708,15 @@ def verify_daily_acquisition_bundle(
     if {row["ticker"] for row in price_snapshot} != valid_tickers:
         raise V7DailyAcquisitionBlocked("PRICE_SNAPSHOT_TICKER_MISMATCH")
     for row in price_snapshot:
+        ticker = row["ticker"]
         if row["trading_date"] != engine_day:
-            raise V7DailyAcquisitionBlocked("PRICE_SNAPSHOT_DATE_MISMATCH:" + row["ticker"])
+            raise V7DailyAcquisitionBlocked("PRICE_SNAPSHOT_DATE_MISMATCH:" + ticker)
+        record = records_by_ticker[ticker]
+        if row["payload_sha256"] != record["payload_sha256"]:
+            raise V7DailyAcquisitionBlocked("PRICE_SNAPSHOT_PAYLOAD_SHA_MISMATCH:" + ticker)
+        canonical_row = {field: row[field] for field in FRAME_FIELDS}
+        if canonical_sha256(canonical_row) != record["canonical_d0_row_sha256"]:
+            raise V7DailyAcquisitionBlocked("CANONICAL_D0_ROW_HASH_MISMATCH:" + ticker)
 
     missing_snapshot = _read_json(day_dir / MISSING_SNAPSHOT_FILENAME)
     if sha256_bytes(canonical_json_bytes(missing_snapshot)) != manifest["missing_snapshot_sha256"]:
@@ -618,6 +735,14 @@ def verify_daily_acquisition_bundle(
             raise V7DailyAcquisitionBlocked("SPLIT_SNAPSHOT_DATE_MISMATCH:" + row["ticker"])
     if len(split_snapshot) != manifest["split_event_count"]:
         raise V7DailyAcquisitionBlocked("SPLIT_EVENT_COUNT_MISMATCH")
+
+    splits_by_ticker: dict[str, list[dict[str, Any]]] = {ticker: [] for ticker in manifest_tickers}
+    for row in split_snapshot:
+        splits_by_ticker[row["ticker"]].append(dict(row))
+    for ticker, record in records_by_ticker.items():
+        recomputed = canonical_sha256(splits_by_ticker[ticker])
+        if recomputed != record["canonical_engine_day_split_sha256"]:
+            raise V7DailyAcquisitionBlocked("SPLIT_PROVENANCE_HASH_MISMATCH:" + ticker)
 
     payload_manifest_bytes = canonical_json_bytes(payload_manifest)
     if sha256_bytes(payload_manifest_bytes) != manifest["payload_manifest_sha256"]:
@@ -643,6 +768,7 @@ __all__ = [
     "MANIFEST_FIELDS",
     "MIN_REQUEST_INTERVAL_SECONDS",
     "MODE",
+    "PAYLOAD_MANIFEST_RECORD_FIELDS",
     "REASON_D0_DATA_UNAVAILABLE",
     "SCHEMA_VERSION",
     "STATUS_AUDITED_MISSING",

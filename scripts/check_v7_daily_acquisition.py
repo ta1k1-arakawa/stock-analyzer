@@ -118,7 +118,7 @@ def run_synthetic_acquisition_test() -> dict[str, Any]:
             sleep_fn=sleep_fn,
         )
         verification = verify_daily_acquisition_bundle(
-            temporary, ENGINE_DAY, CALENDAR_COMMIT, COLLECTOR_COMMIT
+            temporary, ENGINE_DAY, CALENDAR_COMMIT, COLLECTOR_COMMIT, UNIVERSE_CSV
         )
 
     tickers = _universe_tickers()

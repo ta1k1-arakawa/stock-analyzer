@@ -698,11 +698,19 @@ def test_previous_complete_day_unchanged_after_later_failure(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def _verify(tmp_path, *, engine_day=ENGINE_DAY, calendar_commit=None, collector_commit=None, universe_csv=UNIVERSE):
+    return daily.verify_daily_acquisition_bundle(
+        tmp_path,
+        engine_day,
+        calendar_commit if calendar_commit is not None else daily.CALENDAR_COMMIT,
+        collector_commit if collector_commit is not None else daily.COLLECTOR_COMMIT,
+        universe_csv,
+    )
+
+
 def test_verify_passes_on_clean_bundle(tmp_path):
     _run(tmp_path)
-    result = daily.verify_daily_acquisition_bundle(
-        tmp_path, ENGINE_DAY, daily.CALENDAR_COMMIT, daily.COLLECTOR_COMMIT
-    )
+    result = _verify(tmp_path)
     assert result["status"] == "PASS"
     assert result["valid_d0_count"] == 300
 
@@ -712,7 +720,7 @@ def test_verify_detects_price_snapshot_tamper(tmp_path):
     day_dir = _final_dir(tmp_path)
     (day_dir / "price_snapshot.json").write_text("[]", encoding="utf-8")
     with pytest.raises(daily.V7DailyAcquisitionBlocked, match="PRICE_SNAPSHOT_HASH_MISMATCH"):
-        daily.verify_daily_acquisition_bundle(tmp_path, ENGINE_DAY, daily.CALENDAR_COMMIT, daily.COLLECTOR_COMMIT)
+        _verify(tmp_path)
 
 
 def test_verify_detects_missing_snapshot_tamper(tmp_path):
@@ -723,7 +731,7 @@ def test_verify_detects_missing_snapshot_tamper(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(daily.V7DailyAcquisitionBlocked, match="MISSING_SNAPSHOT_HASH_MISMATCH"):
-        daily.verify_daily_acquisition_bundle(tmp_path, ENGINE_DAY, daily.CALENDAR_COMMIT, daily.COLLECTOR_COMMIT)
+        _verify(tmp_path)
 
 
 def test_verify_detects_split_snapshot_tamper(tmp_path):
@@ -734,7 +742,7 @@ def test_verify_detects_split_snapshot_tamper(tmp_path):
     day_dir = _final_dir(tmp_path)
     (day_dir / "split_snapshot.json").write_text("[]", encoding="utf-8")
     with pytest.raises(daily.V7DailyAcquisitionBlocked, match="SPLIT_SNAPSHOT_HASH_MISMATCH"):
-        daily.verify_daily_acquisition_bundle(tmp_path, ENGINE_DAY, daily.CALENDAR_COMMIT, daily.COLLECTOR_COMMIT)
+        _verify(tmp_path)
 
 
 def test_verify_detects_raw_hash_tamper(tmp_path):
@@ -743,7 +751,7 @@ def test_verify_detects_raw_hash_tamper(tmp_path):
     ticker = manifest["payload_manifest"][0]["ticker"]
     (day_dir / "raw" / (ticker + ".json")).write_bytes(valid_payload(ticker, open_=999.0))
     with pytest.raises(daily.V7DailyAcquisitionBlocked, match="RAW_SHA_MISMATCH"):
-        daily.verify_daily_acquisition_bundle(tmp_path, ENGINE_DAY, daily.CALENDAR_COMMIT, daily.COLLECTOR_COMMIT)
+        _verify(tmp_path)
 
 
 def test_verify_detects_raw_byte_tamper(tmp_path):
@@ -753,7 +761,7 @@ def test_verify_detects_raw_byte_tamper(tmp_path):
     raw_path = day_dir / "raw" / (ticker + ".json")
     raw_path.write_bytes(raw_path.read_bytes() + b" ")
     with pytest.raises(daily.V7DailyAcquisitionBlocked, match="RAW_SHA_MISMATCH|RAW_BYTE_COUNT_MISMATCH"):
-        daily.verify_daily_acquisition_bundle(tmp_path, ENGINE_DAY, daily.CALENDAR_COMMIT, daily.COLLECTOR_COMMIT)
+        _verify(tmp_path)
 
 
 def test_verify_detects_payload_manifest_tamper(tmp_path):
@@ -764,19 +772,19 @@ def test_verify_detects_payload_manifest_tamper(tmp_path):
     record["payload_manifest"][0]["split_event_count"] = record["payload_manifest"][0]["split_event_count"] + 1
     manifest_path.write_text(daily.canonical_json_bytes(record).decode("utf-8"), encoding="utf-8")
     with pytest.raises(daily.V7DailyAcquisitionBlocked, match="PAYLOAD_MANIFEST_HASH_MISMATCH"):
-        daily.verify_daily_acquisition_bundle(tmp_path, ENGINE_DAY, daily.CALENDAR_COMMIT, daily.COLLECTOR_COMMIT)
+        _verify(tmp_path)
 
 
 def test_verify_detects_calendar_commit_mismatch(tmp_path):
     _run(tmp_path)
     with pytest.raises(daily.V7DailyAcquisitionBlocked, match="CALENDAR_COMMIT_MISMATCH"):
-        daily.verify_daily_acquisition_bundle(tmp_path, ENGINE_DAY, "f" * 40, daily.COLLECTOR_COMMIT)
+        _verify(tmp_path, calendar_commit="f" * 40)
 
 
 def test_verify_detects_collector_commit_mismatch(tmp_path):
     _run(tmp_path)
     with pytest.raises(daily.V7DailyAcquisitionBlocked, match="COLLECTOR_COMMIT_MISMATCH"):
-        daily.verify_daily_acquisition_bundle(tmp_path, ENGINE_DAY, daily.CALENDAR_COMMIT, "f" * 40)
+        _verify(tmp_path, collector_commit="f" * 40)
 
 
 def test_verify_detects_staging_remnant(tmp_path):
@@ -784,7 +792,7 @@ def test_verify_detects_staging_remnant(tmp_path):
     acquisitions_root = Path(tmp_path) / daily.ACQUISITIONS_DIRNAME
     (acquisitions_root / f"{NEXT_DAY}.staging-remnant").mkdir()
     with pytest.raises(daily.V7DailyAcquisitionBlocked, match="PARTIAL_ACQUISITION_COMMIT"):
-        daily.verify_daily_acquisition_bundle(tmp_path, ENGINE_DAY, daily.CALENDAR_COMMIT, daily.COLLECTOR_COMMIT)
+        _verify(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -833,3 +841,321 @@ def test_manifest_identity_constants(tmp_path):
 def test_real_urlopen_not_invoked_directly(tmp_path):
     with pytest.raises(AssertionError, match="real urlopen executed"):
         urllib.request.urlopen("https://example.com")
+
+
+# ---------------------------------------------------------------------------
+# FIX A: verifier universe binding (order, sha, ticker-list) and manifest invariants
+# ---------------------------------------------------------------------------
+
+
+def _write_manifest(day_dir: Path, manifest: dict) -> None:
+    (day_dir / daily.MANIFEST_FILENAME).write_bytes(daily.canonical_json_bytes(manifest))
+
+
+def _load_manifest(day_dir: Path) -> dict:
+    return json.loads((day_dir / daily.MANIFEST_FILENAME).read_text(encoding="utf-8"))
+
+
+def test_verify_detects_payload_manifest_reordered_same_ticker_set(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["payload_manifest"][0], manifest["payload_manifest"][1] = (
+        manifest["payload_manifest"][1],
+        manifest["payload_manifest"][0],
+    )
+    manifest["payload_manifest_sha256"] = daily.sha256_bytes(daily.canonical_json_bytes(manifest["payload_manifest"]))
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="PAYLOAD_MANIFEST_TICKER_ORDER_MISMATCH"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_wrong_universe_csv_sha(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["universe_csv_sha256"] = "f" * 64
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="UNIVERSE_CSV_SHA_MISMATCH"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_wrong_ticker_list_sha(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["ticker_list_sha256"] = "f" * 64
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="TICKER_LIST_SHA_MISMATCH"):
+        _verify(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# FIX B: strict empty-timestamp classifier tests
+# ---------------------------------------------------------------------------
+
+
+def _payload_with_open(ticker: str, *, timestamp) -> bytes:
+    result = {
+        "meta": {"symbol": ticker + ".T"},
+        "timestamp": timestamp,
+        "indicators": {
+            "quote": [{"open": [100.0], "high": [], "low": [], "close": [], "volume": []}],
+            "adjclose": [{"adjclose": []}],
+        },
+    }
+    return json.dumps({"chart": {"error": None, "result": [result]}}).encode("utf-8")
+
+
+def _payload_with_adjclose(ticker: str, *, timestamp) -> bytes:
+    result = {
+        "meta": {"symbol": ticker + ".T"},
+        "timestamp": timestamp,
+        "indicators": {
+            "quote": [{"open": [], "high": [], "low": [], "close": [], "volume": []}],
+            "adjclose": [{"adjclose": [100.0]}],
+        },
+    }
+    return json.dumps({"chart": {"error": None, "result": [result]}}).encode("utf-8")
+
+
+def test_timestamp_empty_with_nonempty_open_is_hard_blocked():
+    payload = _payload_with_open("AAAA", timestamp=[])
+    assert daily.classify_missing_timestamp_payload(payload, "AAAA") is False
+
+
+def test_timestamp_null_with_nonempty_adjclose_is_hard_blocked():
+    payload = _payload_with_adjclose("AAAA", timestamp=None)
+    assert daily.classify_missing_timestamp_payload(payload, "AAAA") is False
+
+
+def test_timestamp_empty_with_all_indicator_arrays_empty_is_audited_missing():
+    payload = empty_timestamp_payload("AAAA")
+    assert daily.classify_missing_timestamp_payload(payload, "AAAA") is True
+
+
+def test_timestamp_empty_with_nonempty_open_blocks_full_acquisition(tmp_path):
+    ticker = TICKERS[50]
+    payloads = {t: valid_payload(t) for t in TICKERS}
+    payloads[ticker] = _payload_with_open(ticker, timestamp=[])
+    opener = FakeOpener(payloads)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="TICKER_" + ticker):
+        _run(tmp_path, opener=opener)
+    _assert_no_publish_and_no_remnant(tmp_path)
+
+
+def test_timestamp_null_with_nonempty_adjclose_blocks_full_acquisition(tmp_path):
+    ticker = TICKERS[51]
+    payloads = {t: valid_payload(t) for t in TICKERS}
+    payloads[ticker] = _payload_with_adjclose(ticker, timestamp=None)
+    opener = FakeOpener(payloads)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="TICKER_" + ticker):
+        _run(tmp_path, opener=opener)
+    _assert_no_publish_and_no_remnant(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# FIX C: payload -> snapshot provenance cross-check (top-level snapshot hash
+# is recomputed to match the tamper, so only the provenance chain catches it)
+# ---------------------------------------------------------------------------
+
+
+def test_verify_detects_canonical_d0_row_mutation_with_recomputed_snapshot_hash(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    price_snapshot = json.loads((day_dir / daily.PRICE_SNAPSHOT_FILENAME).read_text(encoding="utf-8"))
+    price_snapshot[0]["raw_open"] = price_snapshot[0]["raw_open"] + 1.0
+    price_bytes = daily.canonical_json_bytes(price_snapshot)
+    (day_dir / daily.PRICE_SNAPSHOT_FILENAME).write_bytes(price_bytes)
+    manifest = _load_manifest(day_dir)
+    manifest["price_snapshot_sha256"] = daily.sha256_bytes(price_bytes)
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="CANONICAL_D0_ROW_HASH_MISMATCH"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_price_payload_sha_mutation_with_recomputed_snapshot_hash(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    price_snapshot = json.loads((day_dir / daily.PRICE_SNAPSHOT_FILENAME).read_text(encoding="utf-8"))
+    price_snapshot[0]["payload_sha256"] = "e" * 64
+    price_bytes = daily.canonical_json_bytes(price_snapshot)
+    (day_dir / daily.PRICE_SNAPSHOT_FILENAME).write_bytes(price_bytes)
+    manifest = _load_manifest(day_dir)
+    manifest["price_snapshot_sha256"] = daily.sha256_bytes(price_bytes)
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="PRICE_SNAPSHOT_PAYLOAD_SHA_MISMATCH"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_split_row_mutation_with_recomputed_snapshot_hash(tmp_path):
+    ticker = TICKERS[0]
+    payloads = {t: valid_payload(t) for t in TICKERS}
+    payloads[ticker] = valid_payload_with_split(ticker)
+    _run(tmp_path, opener=FakeOpener(payloads))
+    day_dir = _final_dir(tmp_path)
+    split_snapshot = json.loads((day_dir / daily.SPLIT_SNAPSHOT_FILENAME).read_text(encoding="utf-8"))
+    split_snapshot[0]["numerator"] = split_snapshot[0]["numerator"] + 1
+    split_bytes = daily.canonical_json_bytes(split_snapshot)
+    (day_dir / daily.SPLIT_SNAPSHOT_FILENAME).write_bytes(split_bytes)
+    manifest = _load_manifest(day_dir)
+    manifest["split_snapshot_sha256"] = daily.sha256_bytes(split_bytes)
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="SPLIT_PROVENANCE_HASH_MISMATCH"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_manifest_split_hash_mismatch_without_touching_split_file(tmp_path):
+    ticker = TICKERS[0]
+    payloads = {t: valid_payload(t) for t in TICKERS}
+    payloads[ticker] = valid_payload_with_split(ticker)
+    _run(tmp_path, opener=FakeOpener(payloads))
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    for record in manifest["payload_manifest"]:
+        if record["ticker"] == ticker:
+            record["canonical_engine_day_split_sha256"] = daily.canonical_sha256([])
+            break
+    manifest["payload_manifest_sha256"] = daily.sha256_bytes(daily.canonical_json_bytes(manifest["payload_manifest"]))
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="SPLIT_PROVENANCE_HASH_MISMATCH"):
+        _verify(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Additional manifest invariants
+# ---------------------------------------------------------------------------
+
+
+def test_verify_detects_request_window_tamper(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["request_end_exclusive"] = "2026-08-12"
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="REQUEST_END_EXCLUSIVE_MISMATCH"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_request_start_tamper(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["request_start"] = "2026-08-09"
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="REQUEST_START_MISMATCH"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_success_transport_count_tamper(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["success_transport_count"] = 299
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="SUCCESS_TRANSPORT_COUNT_INVALID"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_nonzero_http_429_count(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["http_429_count"] = 1
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="HTTP_429_COUNT_INVALID"):
+        _verify(tmp_path)
+
+
+@pytest.mark.parametrize("field", [
+    "candidate_generation_started",
+    "portfolio_processing_started",
+    "profit_calculation_started",
+    "formal_evaluation_started",
+])
+def test_verify_detects_nonzero_downstream_activity_flag(tmp_path, field):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest[field] = 1
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="DOWNSTREAM_PROCESSING_FLAG_INVALID"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_activation_created_flag_true(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["activation_created"] = True
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="ACTIVATION_CREATED_FLAG_INVALID"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_calendar_definition_version_tamper(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["calendar_definition_version"] = "WRONG_VERSION"
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="CALENDAR_DEFINITION_VERSION_MISMATCH"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_data_source_tamper(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["data_source"] = "Other Source"
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="DATA_SOURCE_MISMATCH"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_data_source_host_tamper(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["data_source_host"] = "evil.example.com"
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="DATA_SOURCE_HOST_MISMATCH"):
+        _verify(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# Payload manifest record schema strictness
+# ---------------------------------------------------------------------------
+
+
+def test_verify_detects_payload_record_unknown_field(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["payload_manifest"][0]["extra_field"] = "x"
+    manifest["payload_manifest_sha256"] = daily.sha256_bytes(daily.canonical_json_bytes(manifest["payload_manifest"]))
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="PAYLOAD_MANIFEST_RECORD_SCHEMA_INVALID"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_payload_record_missing_field(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    del manifest["payload_manifest"][0]["split_event_count"]
+    manifest["payload_manifest_sha256"] = daily.sha256_bytes(daily.canonical_json_bytes(manifest["payload_manifest"]))
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="PAYLOAD_MANIFEST_RECORD_SCHEMA_INVALID"):
+        _verify(tmp_path)
+
+
+def test_verify_detects_payload_record_invalid_sha_format(tmp_path):
+    _run(tmp_path)
+    day_dir = _final_dir(tmp_path)
+    manifest = _load_manifest(day_dir)
+    manifest["payload_manifest"][0]["payload_sha256"] = "not-a-sha"
+    manifest["payload_manifest_sha256"] = daily.sha256_bytes(daily.canonical_json_bytes(manifest["payload_manifest"]))
+    _write_manifest(day_dir, manifest)
+    with pytest.raises(daily.V7DailyAcquisitionBlocked, match="PAYLOAD_MANIFEST_SHA_INVALID"):
+        _verify(tmp_path)
