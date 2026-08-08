@@ -1,0 +1,57 @@
+{
+  "baseline_commit": "2975e3375c615052bd3a1ab2e5a24e723e94c46b",
+  "candidate_commit": "94b016575d49436bd4017a21a1de252ab0d95834",
+  "config_hash": "4ae7585cf39d362f61758a9aca3ff198089bed4de2d6545e4978d6d44811ef90",
+  "coordinate_evaluations": 1800,
+  "coordinate_passes": 3,
+  "max_drawdown": -123801.98571775,
+  "max_drawdown_percent": -41.26732857,
+  "monthly_win_rate": 35.71428571,
+  "periods": {
+    "reference_from": "2025-04-01",
+    "reference_to": "2026-05-20",
+    "research_from": "2020-01-01",
+    "research_to": "2025-03-31"
+  },
+  "portfolio_settings": {
+    "lot_size": 1,
+    "max_open_positions": 1,
+    "max_position_percent": 100.0
+  },
+  "profit": -110765.79826181,
+  "profit_by_stock": {
+    "1570": -22167.0653516,
+    "4188": 5693.6772882,
+    "4689": 2374.12786016,
+    "5020": 5194.84053178,
+    "7211": -43389.29000366,
+    "7267": 3515.02384153,
+    "8306": -56506.22508081,
+    "9432": -5480.88734741
+  },
+  "seed": 42,
+  "selection_status": "PASS",
+  "skipped_by_reason": {
+    "SKIPPED_MAX_OPEN_POSITIONS": 486,
+    "SKIPPED_NO_FUTURE_DATA": 1
+  },
+  "snapshot_hash": "788f37b6724d34f236977815ec6283af638e71fbafefa3dd9bc0f20d83764c2c",
+  "snapshot_id": "yahoo-jp-adjusted-2020-01-01-2026-05-20-788f37b6724d",
+  "trades": 140,
+  "validation_failed_check_count": 0,
+  "validation_failed_checks": [],
+  "validation_max_stock_profit_share": 22.88501636,
+  "validation_min_fold_profit": 71912.41577929,
+  "validation_month_win_rate": 94.73684211,
+  "validation_positive_folds": 3,
+  "validation_skip_counts": {
+    "SKIPPED_MAX_OPEN_POSITIONS": 541,
+    "SKIPPED_NO_FUTURE_DATA": 12
+  },
+  "validation_total_profit": 295772.95163845,
+  "validation_trade_count": 178,
+  "validation_worst_max_drawdown_percent": 14.24665152,
+  "win_rate": 42.14285714,
+  "working_tree_diff_hash": "0660d39d9d0f6adf67081b78d80aaec3b2a92bfe654441487b084b149ed8b4e8",
+  "working_tree_dirty": true
+}

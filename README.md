@@ -71,6 +71,24 @@ Slack 通知が不要な場合、`.env` がなくても予測処理自体は実�
 python backtest.py
 ```
 
+利益改善の反復中は、研究検証だけを表示するブラインドモードを使用します。
+
+```bash
+python backtest.py --mode loop-validation
+```
+
+このモードは価格アクセスを2020-01-01〜2025-03-31に制限し、研究内テスト診断と参考期間評価を実行しません。出力は `data/loop_validation_results/summary.json` の検証ポートフォリオ指標だけです。通常の `python backtest.py` は従来どおりfull診断を行います。
+
+検収時は追跡済み成果物を上書きせず、一時ディレクトリを指定できます。
+
+```bash
+python backtest.py --mode loop-validation --output-dir <temporary-loop-output>
+python backtest.py --mode full --output-dir <temporary-full-output>
+python compare_evaluators.py --candidate-results <temporary-full-output> --output <temporary-comparison-output>
+```
+
+`config_hash`はBOMを除去し、CRLFとCRをLFへ正規化したUTF-8内容をSHA-256化する`utf8-normalized-lf-v1`方式です。比較ランナーはcleanな現在のHEADとfull成果物の`candidate_commit`が一致しない場合に停止します。
+
 AIモデルを学習します。
 
 ```bash
@@ -142,6 +160,27 @@ GitHub Actions で Slack 通知を使う場合は、リポジトリの Secrets �
 | `log/` | 実行ログ |
 
 ## 開発メモ
+
+### 固定OHLCVベンチマーク
+
+評価用価格は `data/benchmark/ohlcv/<銘柄コード>.csv` に固定し、`manifest.json` のSHA-256で検証します。通常は再生成しません。明示的に更新するときだけ外部通信を許可して次を実行します。
+
+```bash
+python scripts/generate_benchmark.py
+python scripts/validate_benchmark.py
+```
+
+固定データの利用側は `FixedOHLCVLoader` を使用します。CSV不足、期間・列・日付・ハッシュの不整合は即時エラーになり、Yahoo Financeへフォールバックしません。
+
+### 固定baseline比較
+
+detached HEADかつcleanなbaseline worktreeを、固定OHLCVだけで比較します。baselineのファイルは変更せず、外部通信が発生した場合は失敗します。
+
+```bash
+python compare_evaluators.py --baseline-worktree ../stock-analyzer-baseline
+```
+
+結果は `data/backtest_comparison/` に保存されます。`run_metadata.json` だけが実行日時を含み、それ以外は同一入力に対して決定的です。この比較は診断専用であり、参考期間の結果をルール選択へ戻してはいけません。
 
 - データ取得は Yahoo Finance の chart API を使っています。
 - 日本株コードは `8306` のように指定し、内部で `8306.T` に変換されます。

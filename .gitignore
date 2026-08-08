@@ -4,3 +4,8 @@ log/
 __pycache__
 .env
 *.pkl
+# v3 free prototype raw/cache data must stay outside Git.
+data/free_prototype_raw/
+free-prototype-cache/
+*.yfinance.raw.json
+*.jpx.raw.xls

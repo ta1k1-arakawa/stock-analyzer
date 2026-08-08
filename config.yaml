@@ -109,4 +109,11 @@ backtest_settings:
   max_drawdown_percent: 15.0
   min_month_win_rate: 50.0
   max_single_month_profit_share: 70.0
+  max_stock_profit_share: 70.0
   result_path: "data/backtest_selection.yaml"
+
+# Fixed-snapshot portfolio evaluation only.  Daily train.py remains independent.
+portfolio_settings:
+  lot_size: 1
+  max_position_percent: 100.0
+  max_open_positions: 1
