@@ -727,3 +727,272 @@ def test_module_has_no_network_imports():
 def test_module_never_writes_activation_manifest():
     text = Path(operations.__file__).read_text(encoding="utf-8")
     assert "write_activation_manifest_once" not in text
+
+
+# ---------------------------------------------------------------------------
+# No-historical-backfill: current-JST-date binding (NONE state only)
+# ---------------------------------------------------------------------------
+
+
+def test_require_current_jst_date_matches_engine_day_exact_match_passes():
+    operations.require_current_jst_date_matches_engine_day(within_window_clock(BOUNDARY), BOUNDARY)
+
+
+def test_require_current_jst_date_matches_engine_day_mismatch_blocked():
+    with pytest.raises(operations.V7ForwardOperationsBlocked) as excinfo:
+        operations.require_current_jst_date_matches_engine_day(within_window_clock(ENGINE_DAYS[1]), BOUNDARY)
+    assert excinfo.value.reason == "ENGINE_DAY_NOT_CURRENT_JST_DATE"
+
+
+def test_require_current_jst_date_matches_engine_day_naive_clock_blocked():
+    with pytest.raises(operations.V7ForwardOperationsBlocked) as excinfo:
+        operations.require_current_jst_date_matches_engine_day(datetime(2026, 8, 10, 8, 30), BOUNDARY)
+    assert excinfo.value.reason == "OPERATIONS_CLOCK_INVALID"
+
+
+def test_none_state_matching_jst_date_within_window_passes(tmp_path, seed_fixture, monkeypatch):
+    patch_candidates(monkeypatch)
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    manifest_path, manifest = build_manifest(seed_fixture, durable_root)
+    opener = fake_opener_for(BOUNDARY, 0)
+    result = run_day(
+        {"durable_root": durable_root, "manifest_path": manifest_path}, seed_fixture, BOUNDARY, 0,
+        opener=opener, clock=lambda: within_window_clock(BOUNDARY),
+    )
+    assert result["status"] == "PASS"
+    assert len(opener.calls) > 0
+
+
+def test_none_state_past_engine_day_current_date_mismatch_blocked(tmp_path, seed_fixture):
+    """Acquisition window is open, but engine_day is a stale, already-past
+    day relative to the clock's current JST date -- must BLOCK before any
+    acquisition, never fetch it from Yahoo."""
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    manifest_path, manifest = build_manifest(seed_fixture, durable_root)
+    opener = fake_opener_for(BOUNDARY, 0)
+    later_day = ENGINE_DAYS[1]
+    with pytest.raises(operations.V7ForwardOperationsBlocked) as excinfo:
+        run_day(
+            {"durable_root": durable_root, "manifest_path": manifest_path}, seed_fixture, BOUNDARY, 0,
+            opener=opener, clock=lambda: within_window_clock(later_day),
+        )
+    assert excinfo.value.reason == "ENGINE_DAY_NOT_CURRENT_JST_DATE"
+    assert opener.calls == []
+
+
+def test_none_state_future_engine_day_current_date_mismatch_blocked_pre_network(tmp_path, seed_fixture):
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    later_day = ENGINE_DAYS[1]
+    manifest_path, manifest = build_manifest(seed_fixture, durable_root)
+    opener = fake_opener_for(later_day, 0)
+    with pytest.raises(operations.V7ForwardOperationsBlocked) as excinfo:
+        run_day(
+            {"durable_root": durable_root, "manifest_path": manifest_path}, seed_fixture, later_day, 0,
+            opener=opener, clock=lambda: within_window_clock(BOUNDARY),
+        )
+    assert excinfo.value.reason == "ENGINE_DAY_NOT_CURRENT_JST_DATE"
+    assert opener.calls == []
+
+
+def test_complete_day_reverified_from_different_date_clock_already_committed(committed_env, seed_fixture):
+    opener = fake_opener_for(BOUNDARY, 0)
+    off_day = ENGINE_DAYS[5]
+    result = run_day(
+        committed_env, seed_fixture, BOUNDARY, 0,
+        opener=opener, clock=lambda: within_window_clock(off_day),
+    )
+    assert result["status"] == "ALREADY_COMMITTED"
+    assert opener.calls == []
+
+
+def test_complete_day_reverified_outside_acquisition_window_already_committed(committed_env, seed_fixture):
+    opener = fake_opener_for(BOUNDARY, 0)
+    result = run_day(
+        committed_env, seed_fixture, BOUNDARY, 0,
+        opener=opener, clock=lambda: within_window_clock(BOUNDARY, hour=23, minute=59),
+    )
+    assert result["status"] == "ALREADY_COMMITTED"
+    assert opener.calls == []
+
+
+def test_complete_state_never_calls_clock(committed_env, seed_fixture):
+    """COMPLETE re-verification must not depend on the clock at all -- neither
+    the JST-date gate nor the acquisition-window gate applies to it."""
+
+    def raising_clock():
+        raise AssertionError("clock must not be called for an already-COMPLETE engine day")
+
+    result = run_day(committed_env, seed_fixture, BOUNDARY, 0, clock=raising_clock)
+    assert result["status"] == "ALREADY_COMMITTED"
+
+
+# ---------------------------------------------------------------------------
+# Per-engine-day cross-process exclusive lock
+# ---------------------------------------------------------------------------
+
+
+def test_preexisting_lock_blocks_run(tmp_path, seed_fixture):
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    manifest_path, manifest = build_manifest(seed_fixture, durable_root)
+    lock_dir = durable_root / operations.LOCK_DIRNAME
+    lock_dir.mkdir()
+    (lock_dir / f"{BOUNDARY}.lock").mkdir()
+    opener = fake_opener_for(BOUNDARY, 0)
+    with pytest.raises(operations.V7ForwardOperationsBlocked) as excinfo:
+        run_day(
+            {"durable_root": durable_root, "manifest_path": manifest_path}, seed_fixture, BOUNDARY, 0,
+            opener=opener,
+        )
+    assert excinfo.value.reason == "ENGINE_DAY_LOCK_HELD"
+    assert opener.calls == []
+
+
+def test_second_lock_acquisition_while_held_blocks(tmp_path):
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    with operations._EngineDayLock(durable_root, BOUNDARY):
+        with pytest.raises(operations.V7ForwardOperationsBlocked) as excinfo:
+            with operations._EngineDayLock(durable_root, BOUNDARY):
+                pass
+    assert excinfo.value.reason == "ENGINE_DAY_LOCK_HELD"
+    # Released on normal exit of the outer lock's own "with" block.
+    lock_path = durable_root / operations.LOCK_DIRNAME / f"{BOUNDARY}.lock"
+    assert not lock_path.exists()
+
+
+def test_lock_released_after_partial_state_block(tmp_path, seed_fixture):
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    manifest_path, manifest = build_manifest(seed_fixture, durable_root)
+    (durable_root / "acquisitions" / BOUNDARY).mkdir(parents=True)
+    with pytest.raises(operations.V7ForwardOperationsBlocked) as excinfo:
+        run_day({"durable_root": durable_root, "manifest_path": manifest_path}, seed_fixture, BOUNDARY, 0)
+    assert excinfo.value.reason == "PARTIAL_ENGINE_DAY_STATE"
+    lock_path = durable_root / operations.LOCK_DIRNAME / f"{BOUNDARY}.lock"
+    assert not lock_path.exists()
+
+
+def test_lock_released_after_uncaught_exception_and_retry_succeeds(tmp_path, seed_fixture, monkeypatch):
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    manifest_path, manifest = build_manifest(seed_fixture, durable_root)
+    env = {"durable_root": durable_root, "manifest_path": manifest_path}
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("synthetic failure inside the critical section")
+
+    monkeypatch.setattr(operations, "acquire_daily_bundle", boom)
+    with pytest.raises(RuntimeError):
+        run_day(env, seed_fixture, BOUNDARY, 0)
+
+    lock_path = durable_root / operations.LOCK_DIRNAME / f"{BOUNDARY}.lock"
+    assert not lock_path.exists()
+
+    monkeypatch.undo()
+    patch_candidates(monkeypatch)
+    result = run_day(env, seed_fixture, BOUNDARY, 0)
+    assert result["status"] == "PASS"
+
+
+def test_stale_lock_not_auto_removed_regardless_of_age(tmp_path, seed_fixture):
+    import os as os_module
+    import time as time_module
+
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    manifest_path, manifest = build_manifest(seed_fixture, durable_root)
+    lock_dir = durable_root / operations.LOCK_DIRNAME
+    lock_dir.mkdir()
+    stale_lock = lock_dir / f"{BOUNDARY}.lock"
+    stale_lock.mkdir()
+    old_time = time_module.time() - 86400 * 365
+    os_module.utime(stale_lock, (old_time, old_time))
+
+    with pytest.raises(operations.V7ForwardOperationsBlocked) as excinfo:
+        run_day({"durable_root": durable_root, "manifest_path": manifest_path}, seed_fixture, BOUNDARY, 0)
+    assert excinfo.value.reason == "ENGINE_DAY_LOCK_HELD"
+    # A year-old timestamp must not make this module treat the lock as
+    # expired -- only a human clearing it by hand can unblock it.
+    assert stale_lock.is_dir()
+
+
+def test_locks_for_different_engine_days_are_independent(tmp_path, seed_fixture, monkeypatch):
+    """A lock manufactured for one engine_day must not block processing of a
+    different engine_day, and must remain held (independently) afterward.
+    (process_forward_day requires the first-ever day in a fresh study root
+    to be the activation boundary, so day1 is processed for real first, and
+    the manufactured lock is placed on day1 itself -- proving it does not
+    leak into the lock for day2.)"""
+    patch_candidates(monkeypatch)
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    manifest_path, manifest = build_manifest(seed_fixture, durable_root)
+    env = {"durable_root": durable_root, "manifest_path": manifest_path}
+
+    day1 = BOUNDARY
+    day2 = ENGINE_DAYS[1]
+    result_1 = run_day(env, seed_fixture, day1, 0)
+    assert result_1["status"] == "PASS"
+
+    lock_dir = durable_root / operations.LOCK_DIRNAME
+    (lock_dir / f"{day1}.lock").mkdir()
+
+    result_2 = run_day(env, seed_fixture, day2, 1)
+    assert result_2["status"] == "PASS"
+
+    with pytest.raises(operations.V7ForwardOperationsBlocked) as excinfo:
+        run_day(env, seed_fixture, day1, 0)
+    assert excinfo.value.reason == "ENGINE_DAY_LOCK_HELD"
+
+
+def test_concurrent_runners_same_day_at_most_one_enters_acquisition(tmp_path, seed_fixture, monkeypatch):
+    """Two threads racing run_forward_operations_day for the SAME engine_day
+    against the SAME durable root: only one may ever touch the acquisition
+    opener.  The other must either see the lock already held (a genuine
+    race) or, if fully serialized, find the day already COMPLETE -- either
+    way it must never itself perform a fresh acquisition."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    patch_candidates(monkeypatch)
+    durable_root = tmp_path / "durable"
+    durable_root.mkdir()
+    manifest_path, manifest = build_manifest(seed_fixture, durable_root)
+    env = {"durable_root": durable_root, "manifest_path": manifest_path}
+
+    opener_a = fake_opener_for(BOUNDARY, 0)
+    opener_b = fake_opener_for(BOUNDARY, 0)
+    barrier = threading.Barrier(2)
+
+    def attempt(opener):
+        barrier.wait()
+        try:
+            return run_day(env, seed_fixture, BOUNDARY, 0, opener=opener)
+        except operations.V7ForwardOperationsBlocked as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_a = pool.submit(attempt, opener_a)
+        future_b = pool.submit(attempt, opener_b)
+        result_a = future_a.result(timeout=180)
+        result_b = future_b.result(timeout=180)
+
+    results = [result_a, result_b]
+    successes = [r for r in results if isinstance(r, dict) and r["status"] == "PASS"]
+    already_or_blocked = [
+        r for r in results
+        if (isinstance(r, dict) and r["status"] == "ALREADY_COMMITTED")
+        or isinstance(r, operations.V7ForwardOperationsBlocked)
+    ]
+    assert len(successes) == 1
+    assert len(already_or_blocked) == 1
+    other = already_or_blocked[0]
+    if isinstance(other, operations.V7ForwardOperationsBlocked):
+        assert other.reason == "ENGINE_DAY_LOCK_HELD"
+
+    called_openers = [o for o in (opener_a, opener_b) if o.calls]
+    assert len(called_openers) == 1

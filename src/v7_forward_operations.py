@@ -18,6 +18,24 @@ network request itself -- every network-capable call is the caller-supplied
 ``opener`` threaded straight through to ``v7_daily_acquisition``.  It never
 computes or exposes profit, drawdown, profit factor, win rate, or any arm
 performance comparison.
+
+Before it ever calls the acquisition opener, this module also enforces two
+safety properties that belong to *this* orchestration layer rather than to
+any of the primitives it calls:
+
+* the engine_day being freshly acquired must equal the current JST calendar
+  date -- forward-only means no fetching a stale, already-past day just
+  because it happens to fall on/after the activation boundary; and
+* a per-(durable_root, engine_day) cross-process exclusive lock (an atomic
+  directory create under ``.v7_forward_operations_locks/``) is held across
+  the whole state-probe-through-persist critical section, so two runner
+  processes racing on the same engine_day can never both observe "nothing
+  acquired yet" and both start acquiring.  A pre-existing lock is always
+  treated as held -- this module never inspects its age or removes it.
+
+That lock metadata is the one piece of durable-root filesystem mutation this
+module performs directly; every study artifact (acquisitions/, days/) is
+still written exclusively by the lower-layer modules it calls.
 """
 
 from __future__ import annotations
@@ -196,6 +214,20 @@ def require_within_acquisition_window(now_utc: datetime, acquisition_window_jst:
         raise _blocked("ACQUISITION_WINDOW_NOT_OPEN")
 
 
+def require_current_jst_date_matches_engine_day(now_utc: datetime, engine_day: str) -> None:
+    """No-historical-backfill guard for a *fresh* acquisition only.
+
+    A COMPLETE day is re-verified (never re-acquired) regardless of when or
+    from what day it is re-checked, so this must only ever be called on the
+    NONE-state path, immediately before the acquisition opener is touched.
+    """
+    if not isinstance(now_utc, datetime) or now_utc.tzinfo is None or now_utc.utcoffset() != timedelta(0):
+        raise _blocked("OPERATIONS_CLOCK_INVALID")
+    current_jst_date = now_utc.astimezone(JST).date().isoformat()
+    if current_jst_date != engine_day:
+        raise _blocked("ENGINE_DAY_NOT_CURRENT_JST_DATE")
+
+
 # ---------------------------------------------------------------------------
 # Engine-day state probe (idempotence / atomicity)
 # ---------------------------------------------------------------------------
@@ -216,6 +248,50 @@ def probe_engine_day_state(durable_root: str | os.PathLike[str], engine_day: str
     if acquisition_exists or forward_exists:
         return "PARTIAL"
     return "NONE"
+
+
+# ---------------------------------------------------------------------------
+# Per-engine-day cross-process exclusive lock
+# ---------------------------------------------------------------------------
+
+LOCK_DIRNAME = ".v7_forward_operations_locks"
+
+
+class _EngineDayLock:
+    """Atomic per-(durable_root, engine_day) exclusive lock.
+
+    Directory creation (``os.mkdir``) is atomic on every filesystem this
+    project targets: exactly one competing creator succeeds, the rest get
+    ``FileExistsError``.  A pre-existing lock directory -- whether held by a
+    live process or abandoned by a crashed one -- is always treated as held.
+    Nothing here inspects its age or removes it; only a human clearing it by
+    hand can unblock a stale lock.  Cleanup on our own exit is best-effort
+    (a release failure must never mask the real result/exception).
+    """
+
+    def __init__(self, durable_root: str | os.PathLike[str], engine_day: str) -> None:
+        self._path = Path(durable_root) / LOCK_DIRNAME / f"{engine_day}.lock"
+        self._held = False
+
+    def __enter__(self) -> "_EngineDayLock":
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._path.mkdir()
+        except FileExistsError as error:
+            raise _blocked("ENGINE_DAY_LOCK_HELD") from error
+        except OSError as error:
+            raise _blocked("ENGINE_DAY_LOCK_ACQUIRE_FAILED:" + str(error)) from error
+        self._held = True
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        if self._held:
+            try:
+                self._path.rmdir()
+            except OSError:
+                pass
+            self._held = False
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -252,23 +328,96 @@ def run_forward_operations_day(
     )
     durable_root = require_durable_output_root(durable_output_root, manifest, repository_root)
     require_engine_day_ready(engine_day, manifest, calendar_path)
-    require_within_acquisition_window(clock(), manifest["acquisition_window_jst"])
 
     activation_context = build_processing_activation_context(manifest)
-    state = probe_engine_day_state(durable_root, engine_day)
 
-    if state == "PARTIAL":
-        raise _blocked("PARTIAL_ENGINE_DAY_STATE")
+    with _EngineDayLock(durable_root, engine_day):
+        state = probe_engine_day_state(durable_root, engine_day)
 
-    if state == "COMPLETE":
+        if state == "PARTIAL":
+            raise _blocked("PARTIAL_ENGINE_DAY_STATE")
+
+        if state == "COMPLETE":
+            # Re-verification only: no network, no mutation, so neither the
+            # current JST date nor the acquisition window applies here.
+            try:
+                verify_daily_acquisition_bundle(
+                    durable_root, engine_day, EXPECTED_CALENDAR_COMMIT, EXPECTED_COLLECTOR_COMMIT, universe_csv
+                )
+            except V7DailyAcquisitionBlocked as error:
+                raise _blocked("ACQUISITION_VERIFICATION_FAILED:" + error.reason) from error
+            try:
+                verification = verify_processed_forward_day(
+                    study_root=durable_root,
+                    engine_day=engine_day,
+                    universe_csv=universe_csv,
+                    activation_context=activation_context,
+                )
+            except V7ForwardDayProcessingBlocked as error:
+                raise _blocked("PROCESSING_VERIFICATION_FAILED:" + error.reason) from error
+            return {
+                "status": "ALREADY_COMMITTED",
+                "engine_day": engine_day,
+                "activation_manifest_verified": True,
+                "acquisition_verified": True,
+                "processing_verified": True,
+                "persistence_verified": True,
+                "already_committed": True,
+                "accepted_candidate_count": verification["accepted_candidate_count"],
+                "valid_d0_count": verification["valid_d0_count"],
+                "missing_d0_count": verification["missing_d0_count"],
+                "control": None,
+                "variant": None,
+            }
+
+        # state == "NONE": a fresh acquisition is about to happen -- gate it
+        # on "today" before the opener is ever touched (no historical
+        # backfill), then confirm the acquisition window, then run the
+        # pipeline exactly once.
+        now_utc = clock()
+        require_current_jst_date_matches_engine_day(now_utc, engine_day)
+        require_within_acquisition_window(now_utc, manifest["acquisition_window_jst"])
+
+        try:
+            acquire_daily_bundle(
+                output_root=durable_root,
+                universe_csv=universe_csv,
+                calendar_snapshot=calendar_path,
+                engine_day=engine_day,
+                opener=opener,
+                clock=clock,
+                monotonic_clock=monotonic_clock,
+                sleep_fn=sleep_fn,
+            )
+        except V7DailyAcquisitionBlocked as error:
+            raise _blocked("ACQUISITION_FAILED:" + error.reason) from error
+
         try:
             verify_daily_acquisition_bundle(
                 durable_root, engine_day, EXPECTED_CALENDAR_COMMIT, EXPECTED_COLLECTOR_COMMIT, universe_csv
             )
         except V7DailyAcquisitionBlocked as error:
             raise _blocked("ACQUISITION_VERIFICATION_FAILED:" + error.reason) from error
+
         try:
-            verification = verify_processed_forward_day(
+            rows, _raw = read_seed_csv_rows(seed_csv)
+        except V7ActivationManifestBlocked as error:
+            raise _blocked("SEED_READ_FAILED:" + error.reason) from error
+
+        try:
+            summary = process_forward_day(
+                study_root=durable_root,
+                engine_day=engine_day,
+                universe_csv=universe_csv,
+                calendar_snapshot=calendar_path,
+                seed_rows=rows,
+                activation_context=activation_context,
+            )
+        except V7ForwardDayProcessingBlocked as error:
+            raise _blocked("PROCESSING_FAILED:" + error.reason) from error
+
+        try:
+            verify_processed_forward_day(
                 study_root=durable_root,
                 engine_day=engine_day,
                 universe_csv=universe_csv,
@@ -276,93 +425,32 @@ def run_forward_operations_day(
             )
         except V7ForwardDayProcessingBlocked as error:
             raise _blocked("PROCESSING_VERIFICATION_FAILED:" + error.reason) from error
+
         return {
-            "status": "ALREADY_COMMITTED",
+            "status": "PASS",
             "engine_day": engine_day,
             "activation_manifest_verified": True,
             "acquisition_verified": True,
             "processing_verified": True,
             "persistence_verified": True,
-            "already_committed": True,
-            "accepted_candidate_count": verification["accepted_candidate_count"],
-            "valid_d0_count": verification["valid_d0_count"],
-            "missing_d0_count": verification["missing_d0_count"],
-            "control": None,
-            "variant": None,
+            "already_committed": False,
+            "accepted_candidate_count": summary["accepted_candidate_count"],
+            "valid_d0_count": summary["valid_d0_count"],
+            "missing_d0_count": summary["missing_d0_count"],
+            "control": summary["control"],
+            "variant": summary["variant"],
         }
-
-    # state == "NONE": run the pipeline exactly once.
-    try:
-        acquire_daily_bundle(
-            output_root=durable_root,
-            universe_csv=universe_csv,
-            calendar_snapshot=calendar_path,
-            engine_day=engine_day,
-            opener=opener,
-            clock=clock,
-            monotonic_clock=monotonic_clock,
-            sleep_fn=sleep_fn,
-        )
-    except V7DailyAcquisitionBlocked as error:
-        raise _blocked("ACQUISITION_FAILED:" + error.reason) from error
-
-    try:
-        verify_daily_acquisition_bundle(
-            durable_root, engine_day, EXPECTED_CALENDAR_COMMIT, EXPECTED_COLLECTOR_COMMIT, universe_csv
-        )
-    except V7DailyAcquisitionBlocked as error:
-        raise _blocked("ACQUISITION_VERIFICATION_FAILED:" + error.reason) from error
-
-    try:
-        rows, _raw = read_seed_csv_rows(seed_csv)
-    except V7ActivationManifestBlocked as error:
-        raise _blocked("SEED_READ_FAILED:" + error.reason) from error
-
-    try:
-        summary = process_forward_day(
-            study_root=durable_root,
-            engine_day=engine_day,
-            universe_csv=universe_csv,
-            calendar_snapshot=calendar_path,
-            seed_rows=rows,
-            activation_context=activation_context,
-        )
-    except V7ForwardDayProcessingBlocked as error:
-        raise _blocked("PROCESSING_FAILED:" + error.reason) from error
-
-    try:
-        verify_processed_forward_day(
-            study_root=durable_root,
-            engine_day=engine_day,
-            universe_csv=universe_csv,
-            activation_context=activation_context,
-        )
-    except V7ForwardDayProcessingBlocked as error:
-        raise _blocked("PROCESSING_VERIFICATION_FAILED:" + error.reason) from error
-
-    return {
-        "status": "PASS",
-        "engine_day": engine_day,
-        "activation_manifest_verified": True,
-        "acquisition_verified": True,
-        "processing_verified": True,
-        "persistence_verified": True,
-        "already_committed": False,
-        "accepted_candidate_count": summary["accepted_candidate_count"],
-        "valid_d0_count": summary["valid_d0_count"],
-        "missing_d0_count": summary["missing_d0_count"],
-        "control": summary["control"],
-        "variant": summary["variant"],
-    }
 
 
 __all__ = [
     "EXPECTED_CALENDAR_COMMIT",
     "EXPECTED_COLLECTOR_COMMIT",
+    "LOCK_DIRNAME",
     "V7ForwardOperationsBlocked",
     "build_processing_activation_context",
     "load_and_verify_activation_manifest",
     "probe_engine_day_state",
+    "require_current_jst_date_matches_engine_day",
     "require_durable_output_root",
     "require_engine_day_ready",
     "require_within_acquisition_window",

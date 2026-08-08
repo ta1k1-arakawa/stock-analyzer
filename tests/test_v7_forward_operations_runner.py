@@ -226,10 +226,15 @@ def test_module_reuses_accepted_primitives_without_reimplementation():
         assert primitive in text, primitive
 
 
-def test_module_only_write_function_is_none() -> None:
-    """This module must never itself write study artifacts to disk; all
-    durable writes happen inside the already-accepted lower-layer modules
-    it orchestrates (acquire_daily_bundle / ForwardStudyStore.write_day)."""
+def test_module_never_writes_study_artifacts() -> None:
+    """This module must never itself write *study artifacts* to disk; all
+    durable study-artifact writes happen inside the already-accepted
+    lower-layer modules it orchestrates (acquire_daily_bundle /
+    ForwardStudyStore.write_day).  The one filesystem mutation this module is
+    explicitly permitted to perform directly is its own per-engine-day
+    operations lock directory (mkdir/rmdir under LOCK_DIRNAME) -- that is
+    orchestration metadata, not study-artifact data, and it never writes
+    file bytes, only creates/removes an empty directory."""
     tree = ast.parse(Path(operations.__file__).read_text(encoding="utf-8"))
     writers: set[str] = set()
     for node in ast.walk(tree):
@@ -237,12 +242,39 @@ def test_module_only_write_function_is_none() -> None:
             continue
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr in {
-            "write_bytes", "write_text", "mkdir", "unlink", "fsync", "replace",
+            "write_bytes", "write_text", "unlink", "fsync", "replace",
         }:
             writers.add(func.attr)
         elif isinstance(func, ast.Name) and func.id == "open":
             writers.add("open")
     assert writers == set()
+
+
+def test_module_mkdir_and_rmdir_calls_are_only_on_the_lock_path() -> None:
+    """mkdir/rmdir are permitted, but only as attribute calls on the lock's
+    own ``self._path`` (directly or via its ``.parent``) inside _EngineDayLock."""
+    tree = ast.parse(Path(operations.__file__).read_text(encoding="utf-8"))
+    lock_class = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "_EngineDayLock"
+    )
+    lock_class_node_ids = {id(node) for node in ast.walk(lock_class)}
+    lock_class_calls = {
+        node.func.attr
+        for node in ast.walk(lock_class)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"mkdir", "rmdir"}
+    }
+    assert lock_class_calls == {"mkdir", "rmdir"}
+
+    outside_calls = [
+        node.func.attr
+        for node in ast.walk(tree)
+        if id(node) not in lock_class_node_ids
+        and isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"mkdir", "rmdir"}
+    ]
+    assert outside_calls == []
 
 
 def test_frozen_commit_constants_match_lower_layers():
