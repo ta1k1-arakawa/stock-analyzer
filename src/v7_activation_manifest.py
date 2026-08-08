@@ -361,6 +361,30 @@ def _output_root_filesystem_path(value: str) -> tuple[Any, Any] | None:
     return None
 
 
+def _explicit_repository_root_flavor(repository_root: Any) -> tuple[Any, str] | None:
+    """Classify a repository_root *string* as an unambiguous POSIX or Windows
+    path by its literal syntax, independent of the host OS.
+
+    A concrete ``pathlib.Path`` (the normal caller shape -- e.g. the real
+    checkout root) is deliberately excluded here and returned as ``None``:
+    those are host-native by construction, so ``validate_output_root`` still
+    resolves them through the real filesystem for full symlink/`..`
+    normalization safety.  Only a bare string that syntactically declares a
+    specific flavor (a leading "/" for POSIX, a drive letter or UNC prefix
+    for Windows) is treated as that flavor's ``PurePath`` verbatim -- such a
+    string can never be meaningfully resolved against *this* host anyway
+    (e.g. a synthetic Windows repository root supplied while running on
+    Linux CI), so lexical containment is the only sound comparison.
+    """
+    if isinstance(repository_root, Path) or not isinstance(repository_root, str):
+        return None
+    if WINDOWS_ABSOLUTE_RE.match(repository_root) or repository_root.startswith("\\\\"):
+        return PureWindowsPath, repository_root
+    if repository_root.startswith("/"):
+        return PurePosixPath, repository_root
+    return None
+
+
 def validate_output_root(value: Any, repository_root: str | os.PathLike[str]) -> str:
     if not isinstance(value, str) or not value.strip():
         raise _blocked("OUTPUT_ROOT_INVALID")
@@ -375,12 +399,22 @@ def validate_output_root(value: Any, repository_root: str | os.PathLike[str]) ->
     if resolved is None:
         return value
     path_class, output_path = resolved
-    if path_class is PureWindowsPath:
-        # Compare using Windows path semantics regardless of host OS, so a
-        # Windows-style output_root is checked against a Windows-style
-        # repository_root even when this validator itself runs on POSIX
-        # (e.g. in CI): PureWindowsPath never touches the real filesystem,
-        # so no host-native resolve() is needed or wanted here.
+
+    explicit_repository = _explicit_repository_root_flavor(repository_root)
+    if explicit_repository is not None and explicit_repository[0] is path_class:
+        # repository_root's own literal syntax already declares the same
+        # flavor as output_root: compare lexically via PurePath, with no
+        # host-native resolve() -- this is what keeps the result identical
+        # on a POSIX host and a Windows host for the same two strings.
+        repository_pure = path_class(explicit_repository[1])
+        if path_class is PureWindowsPath and not repository_pure.is_absolute():
+            return value
+    elif path_class is PureWindowsPath:
+        # Windows-flavored output_root, but repository_root wasn't an
+        # explicit Windows-style string (e.g. it's a real Path object from
+        # a POSIX host): compare as a Windows path directly.
+        # PureWindowsPath never touches the real filesystem, so this is
+        # still host-independent and safe.
         repository_pure = PureWindowsPath(str(repository_root))
         if not repository_pure.is_absolute():
             return value

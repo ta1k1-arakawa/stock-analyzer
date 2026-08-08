@@ -578,6 +578,53 @@ def test_posix_file_uri_behavior_unchanged_by_windows_fix():
     assert excinfo.value.reason == "OUTPUT_ROOT_INSIDE_SOURCE_REPOSITORY"
 
 
+POSIX_REPOSITORY_ROOT = "/repo"
+
+
+@pytest.mark.parametrize("value", [
+    "file:///repo",
+    "file:///repo/data",
+    "/repo/data",
+])
+def test_posix_containment_is_host_independent_blocked(value):
+    """These must BLOCK identically whether this validator runs on a POSIX
+    or a Windows host -- the whole point of this fix is that repository_root
+    is compared by its own declared syntax, not by feeding it through the
+    *host's* native path resolver."""
+    with pytest.raises(V7ActivationManifestBlocked) as excinfo:
+        validate_output_root(value, POSIX_REPOSITORY_ROOT)
+    assert excinfo.value.reason == "OUTPUT_ROOT_INSIDE_SOURCE_REPOSITORY"
+
+
+@pytest.mark.parametrize("value", [
+    "file:///elsewhere",
+    "/elsewhere",
+])
+def test_posix_containment_is_host_independent_passes(value):
+    assert validate_output_root(value, POSIX_REPOSITORY_ROOT) == value
+
+
+def test_posix_string_repository_root_is_not_resolved_against_real_cwd():
+    """A synthetic POSIX-style repository_root string must be compared
+    lexically, not turned into a host-native resolved path -- otherwise a
+    string like "/repo" silently becomes e.g. "C:\\repo" on Windows or an
+    unrelated cwd-relative path, defeating containment entirely."""
+    from src.v7_activation_manifest import _explicit_repository_root_flavor
+    from pathlib import PurePosixPath
+
+    assert _explicit_repository_root_flavor("/repo") == (PurePosixPath, "/repo")
+
+
+def test_real_path_repository_root_still_uses_host_resolution(tmp_path):
+    """A genuine pathlib.Path (the normal caller shape) keeps the original
+    resolve()-based safety -- only explicit foreign-flavor strings bypass it."""
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    with pytest.raises(V7ActivationManifestBlocked) as excinfo:
+        validate_output_root(str((nested / "study").resolve()), tmp_path)
+    assert excinfo.value.reason == "OUTPUT_ROOT_INSIDE_SOURCE_REPOSITORY"
+
+
 def test_non_file_uri_still_passes_through_unchanged():
     assert validate_output_root("s3://v7-forward-study/root", WINDOWS_REPOSITORY_ROOT) == (
         "s3://v7-forward-study/root"
