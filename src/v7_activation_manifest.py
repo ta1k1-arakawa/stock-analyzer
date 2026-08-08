@@ -192,6 +192,10 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 WINDOW_RE = re.compile(r"^(\d{2}):(\d{2})-(\d{2}):(\d{2}) Asia/Tokyo$")
 URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+# Matches the drive-letter remainder of a `file://` URI in either the
+# canonical three-slash form (`file:///C:/...`, leading "/" consumed here)
+# or the common two-slash form (`file://C:/...`, no leading "/").
+FILE_URI_WINDOWS_DRIVE_RE = re.compile(r"^/?(?P<drive>[A-Za-z]):(?P<rest>.*)$")
 
 WINDOW_EARLIEST_START_MINUTES = 15 * 60 + 30
 WINDOW_LATEST_END_MINUTES = 23 * 60 + 59
@@ -337,6 +341,16 @@ def _output_root_filesystem_path(value: str) -> tuple[Any, Any] | None:
     if URI_RE.match(value):
         if value.lower().startswith("file://"):
             remainder = value[len("file://"):]
+            drive_match = FILE_URI_WINDOWS_DRIVE_RE.match(remainder)
+            if drive_match is not None:
+                rest = drive_match.group("rest")
+                # A bare "C:foo" (no separator after the colon) is a
+                # drive-relative reference, not an absolute filesystem path;
+                # leave it as an opaque URI rather than guessing at intent.
+                if rest and not rest.startswith(("/", "\\")):
+                    return None
+                windows_value = drive_match.group("drive") + ":" + (rest or "\\")
+                return PureWindowsPath, PureWindowsPath(windows_value)
             if remainder.startswith("/"):
                 return PurePosixPath, PurePosixPath(remainder)
         return None
@@ -361,16 +375,21 @@ def validate_output_root(value: Any, repository_root: str | os.PathLike[str]) ->
     if resolved is None:
         return value
     path_class, output_path = resolved
-    try:
-        repository = Path(repository_root).resolve()
-    except OSError as error:
-        raise _blocked("REPOSITORY_ROOT_INVALID") from error
-    if path_class is PurePosixPath:
-        repository_pure = PurePosixPath(repository.as_posix())
-    else:
-        repository_pure = PureWindowsPath(str(repository))
+    if path_class is PureWindowsPath:
+        # Compare using Windows path semantics regardless of host OS, so a
+        # Windows-style output_root is checked against a Windows-style
+        # repository_root even when this validator itself runs on POSIX
+        # (e.g. in CI): PureWindowsPath never touches the real filesystem,
+        # so no host-native resolve() is needed or wanted here.
+        repository_pure = PureWindowsPath(str(repository_root))
         if not repository_pure.is_absolute():
             return value
+    else:
+        try:
+            repository = Path(repository_root).resolve()
+        except OSError as error:
+            raise _blocked("REPOSITORY_ROOT_INVALID") from error
+        repository_pure = PurePosixPath(repository.as_posix())
     if output_path == repository_pure or output_path.is_relative_to(repository_pure):
         raise _blocked("OUTPUT_ROOT_INSIDE_SOURCE_REPOSITORY")
     return value

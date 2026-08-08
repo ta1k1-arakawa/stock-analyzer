@@ -515,6 +515,83 @@ def test_output_root_file_uri_inside_repository_blocked():
     assert excinfo.value.reason == "OUTPUT_ROOT_INSIDE_SOURCE_REPOSITORY"
 
 
+# ---------------------------------------------------------------------------
+# Windows file:// URI containment (cross-platform: exercised on any host OS,
+# since PureWindowsPath never touches the real filesystem)
+# ---------------------------------------------------------------------------
+
+
+WINDOWS_REPOSITORY_ROOT = r"C:\repo"
+
+
+@pytest.mark.parametrize("value", [
+    r"C:\repo\data",
+    "file:///C:/repo",
+    "file:///C:/repo/data",
+    "file://C:/repo",
+    "file://C:/repo/data",
+    "file:///c:/repo/data",
+])
+def test_windows_file_uri_inside_repository_blocked(value):
+    with pytest.raises(V7ActivationManifestBlocked) as excinfo:
+        validate_output_root(value, WINDOWS_REPOSITORY_ROOT)
+    assert excinfo.value.reason == "OUTPUT_ROOT_INSIDE_SOURCE_REPOSITORY"
+
+
+def test_windows_file_uri_exact_repository_root_blocked():
+    with pytest.raises(V7ActivationManifestBlocked) as excinfo:
+        validate_output_root("file:///C:/repo", WINDOWS_REPOSITORY_ROOT)
+    assert excinfo.value.reason == "OUTPUT_ROOT_INSIDE_SOURCE_REPOSITORY"
+
+
+@pytest.mark.parametrize("value", [
+    r"D:\v7-study",
+    "file:///D:/v7-study",
+    "file://D:/v7-study",
+])
+def test_windows_file_uri_outside_repository_passes(value):
+    assert validate_output_root(value, WINDOWS_REPOSITORY_ROOT) == value
+
+
+def test_windows_file_uri_sibling_directory_not_blocked():
+    # "C:\repository-archive" is not inside "C:\repo" despite sharing a prefix.
+    assert (
+        validate_output_root(r"C:\repository-archive\output", WINDOWS_REPOSITORY_ROOT)
+        == r"C:\repository-archive\output"
+    )
+
+
+def test_windows_drive_letter_case_does_not_bypass_containment():
+    with pytest.raises(V7ActivationManifestBlocked) as excinfo:
+        validate_output_root("file:///c:/repo/data", r"c:\repo")
+    assert excinfo.value.reason == "OUTPUT_ROOT_INSIDE_SOURCE_REPOSITORY"
+    with pytest.raises(V7ActivationManifestBlocked) as excinfo:
+        validate_output_root("file:///C:/repo/data", r"c:\repo")
+    assert excinfo.value.reason == "OUTPUT_ROOT_INSIDE_SOURCE_REPOSITORY"
+
+
+def test_posix_file_uri_behavior_unchanged_by_windows_fix():
+    value = "file:///repo/data"
+    assert validate_output_root(value, "/elsewhere") == value
+    with pytest.raises(V7ActivationManifestBlocked) as excinfo:
+        validate_output_root(value, "/repo")
+    assert excinfo.value.reason == "OUTPUT_ROOT_INSIDE_SOURCE_REPOSITORY"
+
+
+def test_non_file_uri_still_passes_through_unchanged():
+    assert validate_output_root("s3://v7-forward-study/root", WINDOWS_REPOSITORY_ROOT) == (
+        "s3://v7-forward-study/root"
+    )
+
+
+def test_manifest_windows_output_root_inside_repo_blocked(fixture, candidate):
+    tampered = {**candidate, "output_root": r"file://C:/repo/study-output"}
+    tampered["manifest_sha256"] = compute_manifest_sha256(tampered)
+    with pytest.raises(V7ActivationManifestBlocked) as excinfo:
+        full_validate(fixture, tampered, repository_root=WINDOWS_REPOSITORY_ROOT)
+    assert excinfo.value.reason == "OUTPUT_ROOT_INSIDE_SOURCE_REPOSITORY"
+
+
 def test_manifest_output_root_inside_repo_blocked(fixture, candidate):
     tampered = {**candidate, "output_root": str((REPO_ROOT / "tmp-study").resolve())}
     with pytest.raises(V7ActivationManifestBlocked) as excinfo:
