@@ -29,7 +29,8 @@
   },
 
   "static_implementation": {
-    "commit": "172f35d1fa747ffb4acb006a0f59c36700cd53a3",
+    "code_commit": "172f35d1fa747ffb4acb006a0f59c36700cd53a3",
+    "commit_meaning": "Latest code-and-test remediation commit; documentation-only synchronization commits are intentionally not represented here. Verify current remote HEAD separately before acting.",
     "verdict": "V8_SECOND_CRITICAL_REMEDIATION_PENDING_REVIEW",
     "files": [
       "src/v8_partition.py",
