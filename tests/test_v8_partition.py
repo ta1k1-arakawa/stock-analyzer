@@ -193,6 +193,27 @@ def test_source_provenance_fields_present_and_correct(v4_fixture, t0_codes, fres
     assert manifest["p_hist_end"] == "2025-12-31"
 
 
+def test_source_only_preflight_returns_source_and_t0_audit_without_allocating(
+    v4_fixture, t0_codes, fresh_codes, monkeypatch
+):
+    frame = build_frame(t0_codes, fresh_codes)
+    kwargs = build_kwargs(v4_fixture, frame)
+    kwargs.pop("clock")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("allocate_fresh_blocks reached")
+
+    monkeypatch.setattr(partition, "allocate_fresh_blocks", forbidden)
+    result = partition.verify_partition_source_preflight(**kwargs)
+
+    assert result["source_reproduction_status"] == "PASS"
+    assert result["t0_reproduction_status"] == "PASS"
+    assert result["eligible_ticker_count"] == BLOCK_SIZE * 4 + 20
+    assert result["t0_ticker_list_sha256"] == _ticker_list_sha(t0_codes)
+    assert "block_assignments" not in result
+    assert not any(key.startswith("t1_") or key.startswith("t2_") or key.startswith("t3_") for key in result)
+
+
 # ---------------------------------------------------------------------------
 # Fail-closed BLOCKs
 # ---------------------------------------------------------------------------

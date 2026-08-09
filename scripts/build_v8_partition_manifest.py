@@ -1,4 +1,4 @@
-"""V8 partition manifest builder CLI: synthetic check and production path.
+"""V8 partition manifest builder CLI: synthetic check and production paths.
 
 Two entirely separate code paths, selected by mutually exclusive flags:
 
@@ -20,6 +20,11 @@ Two entirely separate code paths, selected by mutually exclusive flags:
   repository, write-once) and an explicit ``--confirmation`` string, and
   persists nothing but the resulting manifest -- the raw JPX bytes
   themselves are never written anywhere, in this repository or otherwise.
+
+* ``--production-source-preflight`` -- fetches the official JPX listing and
+  verifies source/T0 reproduction only. It never allocates blocks, writes a
+  partition manifest, or calls Yahoo. This is the separately authorized
+  source-reproduction human gate.
 
 No bypass flag of any kind exists for either mode: there is no
 ``--skip-source-hash``, ``--force``, or ``--ignore-parity``.
@@ -49,6 +54,7 @@ from src.v8_partition import (
     preflight_partition_manifest_output,
     read_partition_manifest,
     resolve_verified_production_git_commit,
+    verify_partition_source_preflight,
     write_partition_manifest_once,
 )
 
@@ -60,6 +66,7 @@ JPX_SOURCE_HOST = "www.jpx.co.jp"
 DATA_LINK_PATTERN = re.compile(r'href=["\']([^"\']*data_j\.xls)["\']', re.IGNORECASE)
 PRODUCTION_USER_AGENT = "V8-Partition-Builder/1.0"
 PRODUCTION_CONFIRMATION = "V8_PRODUCTION_PARTITION_BUILD"
+PRODUCTION_SOURCE_PREFLIGHT_CONFIRMATION = "V8_PRODUCTION_JPX_SOURCE_PREFLIGHT"
 V4_MANIFEST_PATH = ROOT / "V4_UNIVERSE_MANIFEST.json"
 V4_UNIVERSE_CSV_PATH = ROOT / "V4_UNIVERSE.csv"
 
@@ -325,6 +332,55 @@ def _utc_clock() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _run_production_source_preflight_with_dependencies(
+    *,
+    opener: Callable[[Any], Any],
+    parse_source_table: Callable[[bytes], Any],
+    v4_manifest_path: Path,
+    v4_universe_csv_path: Path,
+    clock: Callable[[], datetime],
+    repository_root: Path,
+    git_commit_resolver: Callable[[Path], str],
+) -> dict[str, Any]:
+    """PRIVATE TEST SEAM ONLY -- source/T0 verification without publication.
+
+    The Git check intentionally precedes the first JPX request. The raw
+    source bytes exist only in memory and are passed to the source-only
+    verifier, whose result contains no fresh-block assignments.
+    """
+    implementation_git_commit = git_commit_resolver(repository_root)
+    raw_source_bytes, source_url = _fetch_jpx_source_with_opener(opener=opener)
+    fetched_at = clock()
+    return verify_partition_source_preflight(
+        raw_source_bytes=raw_source_bytes,
+        parse_source_table=parse_source_table,
+        v4_manifest_path=v4_manifest_path,
+        v4_universe_csv_path=v4_universe_csv_path,
+        source_url=source_url,
+        source_acquisition_utc=fetched_at,
+        partition_implementation_git_commit=implementation_git_commit,
+    )
+
+
+def run_production_source_preflight() -> dict[str, Any]:
+    """Run the canonical real-source/T0 preflight with no caller overrides.
+
+    This public boundary intentionally accepts no arguments. Operators must
+    perform ``git fetch origin`` immediately before invoking the CLI; the
+    resolver then proves clean ``HEAD == origin/v8-partition-acquisition``
+    before the strict JPX transport is allowed to issue its first request.
+    """
+    return _run_production_source_preflight_with_dependencies(
+        opener=_default_trusted_jpx_opener,
+        parse_source_table=default_parse_source_table,
+        v4_manifest_path=V4_MANIFEST_PATH,
+        v4_universe_csv_path=V4_UNIVERSE_CSV_PATH,
+        clock=_utc_clock,
+        repository_root=ROOT,
+        git_commit_resolver=resolve_verified_production_git_commit,
+    )
+
+
 def _run_production_partition_build_with_dependencies(
     *,
     output_path: Path,
@@ -387,6 +443,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--synthetic-test", action="store_true")
     mode.add_argument("--production-build-manifest", action="store_true")
+    mode.add_argument("--production-source-preflight", action="store_true")
     parser.add_argument("--output-path", default=None)
     parser.add_argument("--confirmation", default=None)
     return parser
@@ -399,6 +456,30 @@ def main(argv: list[str] | None = None) -> int:
     if args.synthetic_test:
         result = run_synthetic_partition_test()
         print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
+        return 0
+
+    if args.production_source_preflight:
+        if args.output_path:
+            parser.error("--production-source-preflight does not accept --output-path")
+        if not args.confirmation:
+            parser.error("--production-source-preflight requires --confirmation")
+        if args.confirmation != PRODUCTION_SOURCE_PREFLIGHT_CONFIRMATION:
+            print(json.dumps({"status": "BLOCKED", "reason": "CONFIRMATION_MISMATCH"}, sort_keys=True))
+            return 2
+        try:
+            result = run_production_source_preflight()
+        except V8PartitionBlocked as error:
+            print(json.dumps({"status": "BLOCKED", "reason": error.reason}, sort_keys=True))
+            return 2
+        summary = {
+            "status": "PASS",
+            "mode": "PRODUCTION_SOURCE_PREFLIGHT",
+            **result,
+            "real_partition_created": False,
+            "real_block_assignments_created": False,
+            "partition_manifest_written": False,
+        }
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2))
         return 0
 
     # --production-build-manifest

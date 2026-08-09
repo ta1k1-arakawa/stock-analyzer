@@ -366,6 +366,100 @@ def verify_t0_reproduction(
     return t0_tickers
 
 
+def _source_preflight_core(
+    *,
+    raw_source_bytes: bytes,
+    parse_source_table: Callable[[bytes], Any],
+    v4_manifest_path: str | os.PathLike[str],
+    v4_universe_csv_path: str | os.PathLike[str],
+    source_url: str,
+    source_acquisition_utc: datetime,
+    partition_implementation_git_commit: str,
+    block_size: int = BLOCK_SIZE,
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Run only source/T0 reproduction and return private continuation data.
+
+    The two ticker lists returned after the public result are intentionally
+    private continuation data for the full manifest builder.  The public
+    ``verify_partition_source_preflight`` wrapper discards them, so a
+    source-only run cannot expose or construct fresh-block assignments.
+    """
+    implementation_git_commit = require_git_commit(partition_implementation_git_commit)
+    if not isinstance(raw_source_bytes, (bytes, bytearray)):
+        raise V8PartitionBlocked("RAW_SOURCE_BYTES_INVALID")
+    raw_bytes = bytes(raw_source_bytes)
+    v4_provenance = load_v4_provenance(v4_manifest_path)
+
+    committed_csv_bytes = load_v4_universe_csv_bytes(v4_universe_csv_path)
+    if sha256_bytes(committed_csv_bytes) != v4_provenance["universe_csv_sha256"]:
+        raise V8PartitionBlocked("V4_UNIVERSE_CSV_PROVENANCE_MISMATCH")
+
+    source_raw_sha256 = sha256_bytes(raw_bytes)
+    expected = v4_provenance["raw_file_sha256"]
+    if source_raw_sha256 != expected:
+        raise V8PartitionBlocked("V8_PARTITION_SOURCE_NOT_REPRODUCIBLE")
+
+    frame = parse_source_table(raw_bytes)
+    eligible_rows, _reasons = parse_eligible_universe(frame)
+    if not eligible_rows:
+        raise V8PartitionBlocked("V8_ELIGIBLE_UNIVERSE_EMPTY")
+
+    ordered_codes = canonical_order([row["code"] for row in eligible_rows])
+    rows_by_code = {row["code"]: row for row in eligible_rows}
+    if len(rows_by_code) != len(eligible_rows):
+        raise V8PartitionBlocked("V8_ELIGIBLE_LIST_DUPLICATE_TICKER")
+    eligible_rows_ordered = [rows_by_code[code] for code in ordered_codes]
+    t0_tickers = verify_t0_reproduction(eligible_rows_ordered, v4_provenance, block_size=block_size)
+    acquired = _utc_timestamp(source_acquisition_utc, "source_acquisition_utc")
+
+    result = {
+        "source_reproduction_status": "PASS",
+        "t0_reproduction_status": "PASS",
+        "source_url": source_url,
+        "source_host": v4_provenance["source_host"],
+        "source_raw_sha256": source_raw_sha256,
+        "expected_source_raw_sha256": expected,
+        "source_raw_byte_count": len(raw_bytes),
+        "source_acquisition_utc": _timestamp_text(acquired),
+        "eligible_ticker_count": len(ordered_codes),
+        "eligible_ticker_list_sha256": _ticker_list_sha(ordered_codes),
+        "t0_ticker_list_sha256": _ticker_list_sha(t0_tickers),
+        "partition_implementation_git_commit": implementation_git_commit,
+    }
+    return result, ordered_codes, t0_tickers
+
+
+def verify_partition_source_preflight(
+    *,
+    raw_source_bytes: bytes,
+    parse_source_table: Callable[[bytes], Any],
+    v4_manifest_path: str | os.PathLike[str],
+    v4_universe_csv_path: str | os.PathLike[str],
+    source_url: str,
+    source_acquisition_utc: datetime,
+    partition_implementation_git_commit: str,
+    block_size: int = BLOCK_SIZE,
+) -> dict[str, Any]:
+    """Verify official-source and T0 reproduction without partition allocation.
+
+    This is the source-only human-gate primitive.  It validates raw bytes,
+    V4 provenance, canonical eligible-universe reconstruction, ordering, and
+    T0 reproduction, then returns audit metadata.  It never calls
+    ``allocate_fresh_blocks`` and never constructs T1/T2/T3/T_spare data.
+    """
+    result, _ordered_codes, _t0_tickers = _source_preflight_core(
+        raw_source_bytes=raw_source_bytes,
+        parse_source_table=parse_source_table,
+        v4_manifest_path=v4_manifest_path,
+        v4_universe_csv_path=v4_universe_csv_path,
+        source_url=source_url,
+        source_acquisition_utc=source_acquisition_utc,
+        partition_implementation_git_commit=partition_implementation_git_commit,
+        block_size=block_size,
+    )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Fresh block allocation
 # ---------------------------------------------------------------------------
@@ -497,38 +591,21 @@ def build_partition_manifest(
     if the reconstructed universe's first 300 tickers do not byte-reproduce
     ``V4_UNIVERSE.csv``. Neither failure writes anything.
     """
-    implementation_git_commit = require_git_commit(partition_implementation_git_commit)
-    if not isinstance(raw_source_bytes, (bytes, bytearray)):
-        raise V8PartitionBlocked("RAW_SOURCE_BYTES_INVALID")
-    raw_bytes = bytes(raw_source_bytes)
+    source_result, ordered_codes, t0_tickers = _source_preflight_core(
+        raw_source_bytes=raw_source_bytes,
+        parse_source_table=parse_source_table,
+        v4_manifest_path=v4_manifest_path,
+        v4_universe_csv_path=v4_universe_csv_path,
+        source_url=source_url,
+        source_acquisition_utc=source_acquisition_utc,
+        partition_implementation_git_commit=partition_implementation_git_commit,
+        block_size=block_size,
+    )
+    implementation_git_commit = source_result["partition_implementation_git_commit"]
+    source_raw_sha256 = source_result["source_raw_sha256"]
+    expected = source_result["expected_source_raw_sha256"]
     v4_provenance = load_v4_provenance(v4_manifest_path)
-
-    # Repository self-consistency: the committed V4_UNIVERSE.csv must itself
-    # hash to the value V4_UNIVERSE_MANIFEST.json claims for it, independent
-    # of anything this run reconstructs. A mismatch here means the two
-    # already-committed files disagree with each other and nothing downstream
-    # can be trusted.
-    committed_csv_bytes = load_v4_universe_csv_bytes(v4_universe_csv_path)
-    if sha256_bytes(committed_csv_bytes) != v4_provenance["universe_csv_sha256"]:
-        raise V8PartitionBlocked("V4_UNIVERSE_CSV_PROVENANCE_MISMATCH")
-
-    source_raw_sha256 = sha256_bytes(raw_bytes)
-    expected = v4_provenance["raw_file_sha256"]
-    if source_raw_sha256 != expected:
-        raise V8PartitionBlocked("V8_PARTITION_SOURCE_NOT_REPRODUCIBLE")
-
-    frame = parse_source_table(raw_bytes)
-    eligible_rows, _reasons = parse_eligible_universe(frame)
-    if not eligible_rows:
-        raise V8PartitionBlocked("V8_ELIGIBLE_UNIVERSE_EMPTY")
-
-    ordered_codes = canonical_order([row["code"] for row in eligible_rows])
-    rows_by_code = {row["code"]: row for row in eligible_rows}
-    if len(rows_by_code) != len(eligible_rows):
-        raise V8PartitionBlocked("V8_ELIGIBLE_LIST_DUPLICATE_TICKER")
-    eligible_rows_ordered = [rows_by_code[code] for code in ordered_codes]
-
-    t0_tickers = verify_t0_reproduction(eligible_rows_ordered, v4_provenance, block_size=block_size)
+    raw_bytes = bytes(raw_source_bytes)
     blocks = allocate_fresh_blocks(ordered_codes, t0_tickers, block_size=block_size)
 
     legacy_list = sorted(LEGACY_EXPOSED_TICKERS_OUTSIDE_T0)
@@ -685,6 +762,7 @@ __all__ = [
     "require_absolute_output_path_outside_repository",
     "sha256_bytes",
     "ticker_list_sha256",
+    "verify_partition_source_preflight",
     "verify_t0_reproduction",
     "write_partition_manifest_once",
 ]

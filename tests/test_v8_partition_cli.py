@@ -62,11 +62,10 @@ def _cli_option_names() -> set[str]:
 
 
 def test_cli_has_exactly_the_authorized_options():
-    """--synthetic-test (unchanged) plus the production path's three flags:
-    a mode flag and the two arguments production mode requires
-    (--output-path, --confirmation). No other option exists."""
+    """The three mutually-exclusive modes plus their shared arguments."""
     assert _cli_option_names() == {
-        "--synthetic-test", "--production-build-manifest", "--output-path", "--confirmation",
+        "--synthetic-test", "--production-build-manifest", "--production-source-preflight",
+        "--output-path", "--confirmation",
     }
 
 
@@ -112,6 +111,14 @@ def test_cli_subprocess_rejects_both_modes_together():
     assert result.returncode != 0
 
 
+def test_cli_subprocess_rejects_source_preflight_with_partition_build():
+    result = subprocess.run(
+        [PYTHON, str(SCRIPT), "--production-source-preflight", "--production-build-manifest"],
+        cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode != 0
+
+
 def test_cli_subprocess_production_missing_args_errors_before_any_network(tmp_path):
     """--production-build-manifest without --output-path/--confirmation must
     fail via argparse before main() ever calls the fetch function -- a real
@@ -139,6 +146,26 @@ def test_cli_subprocess_production_wrong_confirmation_blocks_before_any_network(
     payload = json.loads(result.stdout)
     assert payload == {"status": "BLOCKED", "reason": "CONFIRMATION_MISMATCH"}
     assert not output_path.exists()
+
+
+def test_cli_source_preflight_wrong_confirmation_blocks_before_any_network(monkeypatch):
+    def forbidden():
+        raise AssertionError("source preflight runner reached")
+
+    monkeypatch.setattr(cli, "run_production_source_preflight", forbidden)
+    result = cli.main([
+        "--production-source-preflight", "--confirmation", "WRONG_CONFIRMATION",
+    ])
+    assert result == 2
+
+
+def test_cli_source_preflight_requires_confirmation_before_any_network():
+    result = subprocess.run(
+        [PYTHON, str(SCRIPT), "--production-source-preflight"],
+        cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 def test_cli_leaves_no_manifest_in_repository():
@@ -311,6 +338,151 @@ def _private_test_seam_kwargs(fixture, output_path, opener):
         repository_root=ROOT,
         git_commit_resolver=cli.resolve_verified_production_git_commit,
     )
+
+
+def _private_source_preflight_seam_kwargs(fixture, opener):
+    """PRIVATE TEST SEAM ONLY -- source/T0 path, never a public override."""
+    return dict(
+        opener=opener,
+        parse_source_table=lambda _raw: fixture["frame"],
+        v4_manifest_path=fixture["manifest_path"],
+        v4_universe_csv_path=fixture["universe_csv_path"],
+        clock=lambda: datetime(2026, 8, 9, tzinfo=timezone.utc),
+        repository_root=ROOT,
+        git_commit_resolver=cli.resolve_verified_production_git_commit,
+    )
+
+
+def test_source_preflight_public_runner_signature_has_no_inputs():
+    signature = inspect.signature(cli.run_production_source_preflight)
+    assert tuple(signature.parameters) == ()
+
+
+@pytest.mark.parametrize("override_name, override_value", (
+    ("opener", lambda _request: None),
+    ("parse_source_table", lambda _raw: None),
+    ("v4_manifest_path", Path("fake-manifest.json")),
+    ("v4_universe_csv_path", Path("fake-universe.csv")),
+    ("clock", lambda: datetime(2026, 8, 9, tzinfo=timezone.utc)),
+    ("repository_root", ROOT),
+    ("git_commit_resolver", lambda _root: "a" * 40),
+    ("source_url", "https://evil.example/source.xls"),
+    ("raw_source_bytes", b"fake"),
+))
+def test_source_preflight_public_runner_rejects_dependency_overrides(override_name, override_value):
+    with pytest.raises(TypeError):
+        cli.run_production_source_preflight(**{override_name: override_value})
+
+
+def test_source_preflight_public_runner_wires_canonical_dependencies(monkeypatch):
+    captured = {}
+
+    def fake_private_helper(**kwargs):
+        captured.update(kwargs)
+        return {"source_reproduction_status": "PASS", "t0_reproduction_status": "PASS"}
+
+    monkeypatch.setattr(cli, "_run_production_source_preflight_with_dependencies", fake_private_helper)
+    result = cli.run_production_source_preflight()
+
+    assert result["source_reproduction_status"] == "PASS"
+    assert captured == {
+        "opener": cli._default_trusted_jpx_opener,
+        "parse_source_table": cli.default_parse_source_table,
+        "v4_manifest_path": cli.V4_MANIFEST_PATH,
+        "v4_universe_csv_path": cli.V4_UNIVERSE_CSV_PATH,
+        "clock": cli._utc_clock,
+        "repository_root": cli.ROOT,
+        "git_commit_resolver": cli.resolve_verified_production_git_commit,
+    }
+
+
+def test_source_preflight_valid_source_t0_passes_without_partition_artifact(
+    tmp_path, production_fixture, monkeypatch
+):
+    allocation_calls = []
+    write_calls = []
+
+    def forbidden_allocate(*args, **kwargs):
+        allocation_calls.append((args, kwargs))
+        raise AssertionError("allocate_fresh_blocks reached")
+
+    def forbidden_write(*args, **kwargs):
+        write_calls.append((args, kwargs))
+        raise AssertionError("write_partition_manifest_once reached")
+
+    monkeypatch.setattr(partition, "allocate_fresh_blocks", forbidden_allocate)
+    monkeypatch.setattr(cli, "write_partition_manifest_once", forbidden_write)
+    opener = FakeJpxOpener(production_fixture["xls_bytes"])
+
+    result = cli._run_production_source_preflight_with_dependencies(
+        **_private_source_preflight_seam_kwargs(production_fixture, opener)
+    )
+
+    assert result["source_reproduction_status"] == "PASS"
+    assert result["t0_reproduction_status"] == "PASS"
+    assert result["source_raw_byte_count"] == len(production_fixture["xls_bytes"])
+    assert result["eligible_ticker_count"] == len(production_fixture["frame"])
+    assert result["t0_ticker_list_sha256"]
+    assert set(result).isdisjoint({
+        "t1_ticker_list_sha256", "t2_ticker_list_sha256", "t3_ticker_list_sha256",
+        "t_spare_ticker_list_sha256", "block_assignments",
+    })
+    assert opener.calls == [cli.JPX_PAGE, "https://www.jpx.co.jp/files/data_j.xls"]
+    assert allocation_calls == []
+    assert write_calls == []
+    assert not (tmp_path / "partition_manifest.json").exists()
+
+
+def test_source_preflight_wrong_source_hash_blocks_before_parse_or_artifact(
+    tmp_path, production_fixture
+):
+    parse_calls = []
+
+    def parser(_raw):
+        parse_calls.append(True)
+        return production_fixture["frame"]
+
+    kwargs = _private_source_preflight_seam_kwargs(
+        production_fixture, FakeJpxOpener(b"WRONG_BYTES_DO_NOT_MATCH")
+    )
+    kwargs["parse_source_table"] = parser
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli._run_production_source_preflight_with_dependencies(**kwargs)
+    assert excinfo.value.reason == "V8_PARTITION_SOURCE_NOT_REPRODUCIBLE"
+    assert parse_calls == []
+    assert not (tmp_path / "partition_manifest.json").exists()
+
+
+def test_source_preflight_wrong_t0_blocks_without_partition_artifact(production_fixture, tmp_path):
+    tampered_frame = production_fixture["frame"].copy()
+    market_column = tampered_frame.columns[2]
+    tampered_frame.loc[0, market_column] = tampered_frame.loc[len(tampered_frame) - 1, market_column]
+    fixture = dict(production_fixture, frame=tampered_frame)
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli._run_production_source_preflight_with_dependencies(
+            **_private_source_preflight_seam_kwargs(
+                fixture, FakeJpxOpener(production_fixture["xls_bytes"])
+            )
+        )
+    assert excinfo.value.reason == "V8_T0_REPRODUCTION_MISMATCH"
+    assert not (tmp_path / "partition_manifest.json").exists()
+
+
+@pytest.mark.parametrize("git_reason", (
+    "PRODUCTION_GIT_WORKTREE_DIRTY",
+    "PRODUCTION_GIT_HEAD_NOT_ORIGIN",
+))
+def test_source_preflight_git_failure_blocks_before_jpx(git_reason, production_fixture):
+    def blocked(_):
+        raise partition.V8PartitionBlocked(git_reason)
+
+    opener = FakeJpxOpener(production_fixture["xls_bytes"])
+    kwargs = _private_source_preflight_seam_kwargs(production_fixture, opener)
+    kwargs["git_commit_resolver"] = blocked
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli._run_production_source_preflight_with_dependencies(**kwargs)
+    assert excinfo.value.reason == git_reason
+    assert opener.calls == []
 
 
 def test_production_public_runner_signature_exposes_output_path_only():
