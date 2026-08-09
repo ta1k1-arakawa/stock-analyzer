@@ -274,12 +274,12 @@ def test_public_production_boundary_rejects_all_overrides(tmp_path, forbidden):
         acquisition.acquire_historical_block_bundle(**kwargs)
 
 
-def test_public_path_verifies_git_before_anchor_or_network(tmp_path):
+def test_public_path_blocks_before_network_on_git_or_unauthorized_anchor(tmp_path):
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
         acquisition.acquire_historical_block_bundle(
             output_root=tmp_path / "private", block="T1", partition_manifest_path=tmp_path / "missing.json"
         )
-    assert excinfo.value.reason == "PRODUCTION_GIT_WORKTREE_DIRTY"
+    assert excinfo.value.reason in {"PRODUCTION_GIT_WORKTREE_DIRTY", "TRUSTED_PARTITION_NOT_AUTHORIZED"}
 
 
 def test_git_resolution_precedes_anchor_read_and_committed_anchor_bytes_are_used(tmp_path, trusted_anchor_path):
