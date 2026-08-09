@@ -634,8 +634,15 @@ def read_partition_manifest(path: str | os.PathLike[str]) -> dict[str, Any]:
         raw = manifest_path.read_bytes()
     except OSError as error:
         raise V8PartitionBlocked("PARTITION_MANIFEST_READ_FAILED") from error
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise V8PartitionBlocked("PARTITION_MANIFEST_DUPLICATE_KEY")
+            result[key] = value
+        return result
     try:
-        manifest = json.loads(raw.decode("utf-8"))
+        manifest = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise V8PartitionBlocked("PARTITION_MANIFEST_INVALID_JSON") from error
     if not isinstance(manifest, Mapping) or set(manifest) != set(MANIFEST_FIELDS):
@@ -644,6 +651,7 @@ def read_partition_manifest(path: str | os.PathLike[str]) -> dict[str, Any]:
     recomputed = canonical_sha256({k: v for k, v in manifest.items() if k != "manifest_sha256"})
     if stated != recomputed:
         raise V8PartitionBlocked("MANIFEST_SHA_MISMATCH")
+    require_git_commit(manifest["partition_implementation_git_commit"])
     return dict(manifest)
 
 

@@ -14,7 +14,6 @@ import argparse
 import json
 import sys
 import tempfile
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -215,42 +214,22 @@ def run_synthetic_acquisition_test() -> dict[str, Any]:
     }
 
 
-def _utc_clock() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def run_production_acquisition(
     *,
     block: str,
     partition_manifest_path: Path,
     output_root: Path,
-    opener: Any = urllib.request.urlopen,
-    clock: Any = _utc_clock,
-    implementation_git_commit_resolver: Any = None,
-    monotonic_clock: Any = None,
-    sleep_fn: Any = None,
 ) -> dict[str, Any]:
-    """Run one manifest-bound production acquisition without CLI overrides.
+    """Run one manifest-bound production acquisition without dependencies.
 
     The public acquisition API owns all manifest, identity, ticker, hash,
-    provenance, storage, and block validation. Optional injected callables are
-    for fake-only tests; the CLI never exposes them as user inputs.
+    provenance, storage, frozen date, transport, and block validation.
     """
-    kwargs: dict[str, Any] = {
-        "output_root": output_root,
-        "repository_root": ROOT,
-        "block": block,
-        "partition_manifest_path": partition_manifest_path,
-        "opener": opener,
-        "clock": clock,
-    }
-    if implementation_git_commit_resolver is not None:
-        kwargs["implementation_git_commit_resolver"] = implementation_git_commit_resolver
-    if monotonic_clock is not None:
-        kwargs["monotonic_clock"] = monotonic_clock
-    if sleep_fn is not None:
-        kwargs["sleep_fn"] = sleep_fn
-    manifest = acquire_historical_block_bundle(**kwargs)
+    manifest = acquire_historical_block_bundle(
+        output_root=output_root,
+        block=block,
+        partition_manifest_path=partition_manifest_path,
+    )
     return {
         "status": "PASS",
         "mode": "PRODUCTION",

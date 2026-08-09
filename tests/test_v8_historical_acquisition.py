@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import inspect
 import urllib.request
 from datetime import datetime, timezone
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -50,12 +52,11 @@ def write_trusted_partition_anchor(
     }))
 
 
-@pytest.fixture(autouse=True)
-def test_trusted_partition_anchor(monkeypatch, tmp_path):
-    anchor_path = tmp_path / "V8_TRUSTED_PARTITION.json"
-    monkeypatch.setattr(acquisition, "TRUSTED_PARTITION_ANCHOR_PATH", anchor_path)
-    write_trusted_partition_anchor(anchor_path)
-    yield
+@pytest.fixture
+def trusted_anchor_path(tmp_path) -> Path:
+    path = tmp_path / "V8_TRUSTED_PARTITION.json"
+    write_trusted_partition_anchor(path)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +165,16 @@ def _tickers(start: int) -> list[str]:
     return [f"{code:04d}" for code in range(start, start + 300)]
 
 
-def write_partition_manifest(path: Path, *, t1=None, t2=None, mutation=None) -> dict:
+def write_partition_manifest(
+    path: Path,
+    *,
+    t1=None,
+    t2=None,
+    mutation=None,
+    source_reproduction_status: str = "PASS",
+    source_url: str = "https://www.jpx.co.jp/synthetic/data_j.xls",
+    source_host: str = "www.jpx.co.jp",
+) -> dict:
     """Persist a self-hash-verified synthetic partition fixture."""
     blocks = {"T0": _tickers(4000), "T1": list(t1 or _tickers(1000)), "T2": list(t2 or _tickers(2000)),
               "T3": _tickers(3000), "T_spare": _tickers(5000)}
@@ -174,13 +184,13 @@ def write_partition_manifest(path: Path, *, t1=None, t2=None, mutation=None) -> 
         "design_commit": partition.DESIGN_COMMIT,
         "partition_implementation_git_commit": SYNTHETIC_IMPLEMENTATION_GIT_COMMIT,
         "created_utc": "2026-08-09T00:00:00Z",
-        "source_url": "https://example.invalid/jpx",
-        "source_host": "example.invalid",
+        "source_url": source_url,
+        "source_host": source_host,
         "source_acquisition_utc": "2026-08-09T00:00:00Z",
         "source_raw_sha256": "0" * 64,
         "source_raw_byte_count": 0,
         "expected_v4_source_raw_sha256": "0" * 64,
-        "source_reproduction_status": "SYNTHETIC",
+        "source_reproduction_status": source_reproduction_status,
         "eligible_ticker_count": 1500,
         "eligible_ticker_list_sha256": partition.ticker_list_sha256(sum((blocks[key] for key in blocks), [])),
         "deterministic_ordering_rule": partition.DETERMINISTIC_ORDERING_RULE,
@@ -205,22 +215,35 @@ def write_partition_manifest(path: Path, *, t1=None, t2=None, mutation=None) -> 
     manifest["manifest_sha256"] = partition.canonical_sha256(manifest)
     assert set(manifest) == set(partition.MANIFEST_FIELDS)
     path.write_bytes(partition.canonical_json_bytes(manifest))
-    write_trusted_partition_anchor(acquisition.TRUSTED_PARTITION_ANCHOR_PATH, manifest=manifest)
     return manifest
 
 
-def bound_acquire_kwargs(output_root, partition_manifest_path, block, opener, *, resolver=None):
+def bound_acquire_kwargs(
+    output_root,
+    partition_manifest_path,
+    block,
+    opener,
+    trusted_anchor_path,
+    *,
+    resolver=None,
+):
     return {
         "output_root": output_root,
-        "repository_root": ROOT,
         "partition_manifest_path": partition_manifest_path,
         "block": block,
         "opener": opener,
         "clock": clock_stub,
-        "implementation_git_commit_resolver": resolver or (lambda _: SYNTHETIC_IMPLEMENTATION_GIT_COMMIT),
+        "git_commit_resolver": resolver or (lambda: SYNTHETIC_IMPLEMENTATION_GIT_COMMIT),
+        "git_anchor_reader": lambda _: acquisition._read_trusted_partition_anchor_bytes(
+            trusted_anchor_path.read_bytes()
+        ),
         "monotonic_clock": lambda: 0.0,
         "sleep_fn": lambda _: None,
     }
+
+
+def acquire_with_test_dependencies(**kwargs):
+    return acquisition._acquire_production_historical_block_bundle_with_dependencies(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -228,101 +251,237 @@ def bound_acquire_kwargs(output_root, partition_manifest_path, block, opener, *,
 # ---------------------------------------------------------------------------
 
 
-def test_unauthorized_canonical_trust_anchor_blocks_before_network(tmp_path):
-    partition_path = tmp_path / "synthetic-partition.json"
-    write_partition_manifest(partition_path)
-    write_trusted_partition_anchor(acquisition.TRUSTED_PARTITION_ANCHOR_PATH)
-    opener = default_opener()
+def test_public_production_signature_has_only_required_inputs():
+    assert tuple(inspect.signature(acquisition.acquire_historical_block_bundle).parameters) == (
+        "output_root", "block", "partition_manifest_path"
+    )
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    ("repository_root", "implementation_git_commit_resolver", "request_start", "request_end_exclusive",
+     "opener", "clock", "monotonic_clock", "sleep_fn", "trusted_partition_path",
+     "trusted_manifest_sha", "trusted_implementation_sha"),
+)
+def test_public_production_boundary_rejects_all_overrides(tmp_path, forbidden):
+    kwargs = {
+        "output_root": tmp_path / "private",
+        "block": "T1",
+        "partition_manifest_path": tmp_path / "partition.json",
+        forbidden: "override",
+    }
+    with pytest.raises(TypeError):
+        acquisition.acquire_historical_block_bundle(**kwargs)
+
+
+def test_public_path_verifies_git_before_anchor_or_network(tmp_path):
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
         acquisition.acquire_historical_block_bundle(
-            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
+            output_root=tmp_path / "private", block="T1", partition_manifest_path=tmp_path / "missing.json"
         )
+    assert excinfo.value.reason == "PRODUCTION_GIT_WORKTREE_DIRTY"
+
+
+def test_git_resolution_precedes_anchor_read_and_committed_anchor_bytes_are_used(tmp_path, trusted_anchor_path):
+    partition_path = tmp_path / "partition.json"
+    expected = write_partition_manifest(partition_path)
+    write_trusted_partition_anchor(trusted_anchor_path, manifest=expected)
+    events: list[str] = []
+    opener = default_opener()
+
+    def resolve() -> str:
+        events.append("git")
+        return SYNTHETIC_IMPLEMENTATION_GIT_COMMIT
+
+    def anchor_reader(commit: str):
+        events.append("anchor:" + commit)
+        return acquisition._read_trusted_partition_anchor_bytes(trusted_anchor_path.read_bytes())
+
+    manifest = acquire_with_test_dependencies(**{
+        **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener, trusted_anchor_path),
+        "git_commit_resolver": resolve,
+        "git_anchor_reader": anchor_reader,
+    })
+    assert events == ["git", "anchor:" + SYNTHETIC_IMPLEMENTATION_GIT_COMMIT]
+    assert opener.calls == expected["block_assignments"]["T1"]
+    assert manifest["request_start"] == acquisition.REQUEST_START
+    assert manifest["request_end_exclusive"] == acquisition.REQUEST_END_EXCLUSIVE
+
+
+def test_git_show_anchor_reader_uses_verified_head_object(monkeypatch):
+    anchor_bytes = partition.canonical_json_bytes({
+        "schema_version": acquisition.TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION,
+        "study_name": partition.STUDY_NAME,
+        "design_commit": partition.DESIGN_COMMIT,
+        "authorization_status": "NOT_AUTHORIZED",
+        "authorized_partition_manifest_sha256": None,
+        "authorized_partition_implementation_git_commit": None,
+        "authorization_note": "committed bytes only",
+    })
+
+    class Result:
+        returncode = 0
+        stdout = anchor_bytes
+
+    observed: list[list[str]] = []
+
+    def fake_run(command, **_):
+        observed.append(command)
+        return Result()
+
+    monkeypatch.setattr(acquisition.subprocess, "run", fake_run)
+    anchor = acquisition._read_trusted_partition_anchor_from_verified_head("a" * 40)
+    assert anchor["authorization_status"] == "NOT_AUTHORIZED"
+    assert observed == [[
+        "git", "-C", str(acquisition.CANONICAL_REPOSITORY_ROOT), "show",
+        "a" * 40 + ":V8_TRUSTED_PARTITION.json",
+    ]]
+
+
+def test_worktree_anchor_difference_cannot_replace_committed_anchor_bytes(tmp_path, trusted_anchor_path):
+    partition_path = tmp_path / "partition.json"
+    manifest = write_partition_manifest(partition_path)
+    write_trusted_partition_anchor(trusted_anchor_path, manifest=manifest)
+    committed_anchor_bytes = trusted_anchor_path.read_bytes()
+    trusted_anchor_path.write_text("{not the committed anchor", encoding="utf-8")
+    opener = default_opener()
+    result = acquire_with_test_dependencies(**{
+        **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener, trusted_anchor_path),
+        "git_anchor_reader": lambda _: acquisition._read_trusted_partition_anchor_bytes(committed_anchor_bytes),
+    })
+    assert result["partition_manifest_sha256"] == manifest["manifest_sha256"]
+    assert opener.calls == manifest["block_assignments"]["T1"]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ("PRODUCTION_GIT_WORKTREE_DIRTY", "PRODUCTION_GIT_HEAD_UNAVAILABLE",
+     "PRODUCTION_GIT_ORIGIN_REF_UNAVAILABLE", "PRODUCTION_GIT_HEAD_NOT_ORIGIN"),
+)
+def test_acquisition_git_provenance_failure_blocks_before_anchor_or_network(tmp_path, trusted_anchor_path, reason):
+    partition_path = tmp_path / "partition.json"
+    manifest = write_partition_manifest(partition_path)
+    write_trusted_partition_anchor(trusted_anchor_path, manifest=manifest)
+    opener = default_opener()
+    anchor_read = False
+
+    def unavailable():
+        raise acquisition.V8HistoricalAcquisitionBlocked(reason)
+
+    def should_not_read(_: str):
+        nonlocal anchor_read
+        anchor_read = True
+        raise AssertionError("anchor read after failed Git verification")
+
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquire_with_test_dependencies(**{
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener, trusted_anchor_path),
+            "git_commit_resolver": unavailable,
+            "git_anchor_reader": should_not_read,
+        })
+    assert excinfo.value.reason == reason
+    assert anchor_read is False
+    assert opener.calls == []
+
+
+def test_unauthorized_anchor_blocks_before_network(tmp_path, trusted_anchor_path):
+    partition_path = tmp_path / "partition.json"
+    write_partition_manifest(partition_path)
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquire_with_test_dependencies(**bound_acquire_kwargs(
+            tmp_path / "private", partition_path, "T1", opener, trusted_anchor_path
+        ))
     assert excinfo.value.reason == "TRUSTED_PARTITION_NOT_AUTHORIZED"
     assert opener.calls == []
 
 
-def test_self_hashed_arbitrary_manifest_cannot_reach_network_without_authorization(tmp_path):
-    partition_path = tmp_path / "forged-300-ticker-partition.json"
-    forged = write_partition_manifest(partition_path, t1=_tickers(6000), t2=_tickers(7000))
-    assert partition.read_partition_manifest(partition_path)["manifest_sha256"] == forged["manifest_sha256"]
-    write_trusted_partition_anchor(acquisition.TRUSTED_PARTITION_ANCHOR_PATH)
-    opener = default_opener()
-    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        acquisition.acquire_historical_block_bundle(
-            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
-        )
-    assert opener.calls == []
-
-
-def test_trust_anchor_manifest_sha_mismatch_blocks_before_network(tmp_path):
-    partition_path = tmp_path / "partition.json"
-    manifest = write_partition_manifest(partition_path)
-    write_trusted_partition_anchor(
-        acquisition.TRUSTED_PARTITION_ANCHOR_PATH,
-        manifest=manifest,
-        manifest_sha256="0" * 64,
+def test_authorized_synthetic_manifest_blocks_before_network(tmp_path, trusted_anchor_path):
+    partition_path = tmp_path / "synthetic.json"
+    manifest = write_partition_manifest(
+        partition_path,
+        source_reproduction_status="SYNTHETIC",
+        source_url="https://example.invalid/data_j.xls",
+        source_host="example.invalid",
     )
+    write_trusted_partition_anchor(trusted_anchor_path, manifest=manifest)
     opener = default_opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(
-            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
-        )
-    assert excinfo.value.reason == "TRUSTED_PARTITION_MANIFEST_SHA_MISMATCH"
+        acquire_with_test_dependencies(**bound_acquire_kwargs(
+            tmp_path / "private", partition_path, "T1", opener, trusted_anchor_path
+        ))
+    assert excinfo.value.reason == "PARTITION_MANIFEST_SOURCE_REPRODUCTION_NOT_PASS"
     assert opener.calls == []
 
 
-def test_trust_anchor_partition_implementation_mismatch_blocks_before_network(tmp_path):
+@pytest.mark.parametrize(
+    ("source_url", "source_host", "reason"),
+    (
+        ("https://example.invalid/data_j.xls", "example.invalid", "PARTITION_MANIFEST_SOURCE_HOST_MISMATCH"),
+        ("http://www.jpx.co.jp/data_j.xls", "www.jpx.co.jp", "PARTITION_MANIFEST_SOURCE_ORIGIN_INVALID"),
+        ("https://user@www.jpx.co.jp/data_j.xls", "www.jpx.co.jp", "PARTITION_MANIFEST_SOURCE_ORIGIN_INVALID"),
+        ("https://www.jpx.co.jp:444/data_j.xls", "www.jpx.co.jp", "PARTITION_MANIFEST_SOURCE_ORIGIN_INVALID"),
+    ),
+)
+def test_authorized_manifest_requires_exact_jpx_metadata(
+    tmp_path, trusted_anchor_path, source_url, source_host, reason
+):
     partition_path = tmp_path / "partition.json"
-    manifest = write_partition_manifest(partition_path)
-    write_trusted_partition_anchor(
-        acquisition.TRUSTED_PARTITION_ANCHOR_PATH,
-        manifest=manifest,
-        implementation_git_commit="b" * 40,
-    )
+    manifest = write_partition_manifest(partition_path, source_url=source_url, source_host=source_host)
+    write_trusted_partition_anchor(trusted_anchor_path, manifest=manifest)
     opener = default_opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(
-            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
-        )
-    assert excinfo.value.reason == "TRUSTED_PARTITION_IMPLEMENTATION_GIT_COMMIT_MISMATCH"
+        acquire_with_test_dependencies(**bound_acquire_kwargs(
+            tmp_path / "private", partition_path, "T1", opener, trusted_anchor_path
+        ))
+    assert excinfo.value.reason == reason
     assert opener.calls == []
 
 
-def test_tampered_trust_anchor_blocks_before_network(tmp_path):
+def test_trust_anchor_manifest_sha_and_commit_mismatch_block_before_network(tmp_path, trusted_anchor_path):
+    partition_path = tmp_path / "partition.json"
+    manifest = write_partition_manifest(partition_path)
+    opener = default_opener()
+    for field, value, reason in (
+        ("manifest_sha256", "0" * 64, "TRUSTED_PARTITION_MANIFEST_SHA_MISMATCH"),
+        ("implementation_git_commit", "b" * 40, "TRUSTED_PARTITION_IMPLEMENTATION_GIT_COMMIT_MISMATCH"),
+    ):
+        write_trusted_partition_anchor(trusted_anchor_path, manifest=manifest, **{field: value})
+        with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+            acquire_with_test_dependencies(**bound_acquire_kwargs(
+                tmp_path / ("private-" + field), partition_path, "T1", opener, trusted_anchor_path
+            ))
+        assert excinfo.value.reason == reason
+    assert opener.calls == []
+
+
+def test_duplicate_anchor_json_key_blocks_before_network(tmp_path, trusted_anchor_path):
     partition_path = tmp_path / "partition.json"
     write_partition_manifest(partition_path)
-    acquisition.TRUSTED_PARTITION_ANCHOR_PATH.write_text("{not json", encoding="utf-8")
+    trusted_anchor_path.write_text(
+        '{"schema_version":"V8_TRUSTED_PARTITION_V1","schema_version":"V8_TRUSTED_PARTITION_V1"}',
+        encoding="utf-8",
+    )
     opener = default_opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(
-            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
-        )
-    assert excinfo.value.reason == "TRUSTED_PARTITION_ANCHOR_INVALID_JSON"
+        acquire_with_test_dependencies(**bound_acquire_kwargs(
+            tmp_path / "private", partition_path, "T1", opener, trusted_anchor_path
+        ))
+    assert excinfo.value.reason == "TRUSTED_PARTITION_ANCHOR_DUPLICATE_KEY"
     assert opener.calls == []
 
 
-def test_validated_partition_binding_reaches_fake_t1_transport(tmp_path):
+def test_validated_partition_binding_reaches_fake_t1_and_t2_transport(tmp_path, trusted_anchor_path):
     partition_path = tmp_path / "partition.json"
     expected = write_partition_manifest(partition_path)
-    opener = default_opener()
-    manifest = acquisition.acquire_historical_block_bundle(
-        **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
-    )
-    assert opener.calls == expected["block_assignments"]["T1"]
-    assert manifest["partition_manifest_sha256"] == expected["manifest_sha256"]
-    assert manifest["implementation_git_commit"] == SYNTHETIC_IMPLEMENTATION_GIT_COMMIT
-
-
-def test_validated_partition_binding_reaches_fake_t2_transport(tmp_path):
-    partition_path = tmp_path / "partition.json"
-    expected = write_partition_manifest(partition_path)
-    opener = default_opener()
-    manifest = acquisition.acquire_historical_block_bundle(
-        **bound_acquire_kwargs(tmp_path / "private", partition_path, "T2", opener)
-    )
-    assert opener.calls == expected["block_assignments"]["T2"]
-    assert manifest["partition_manifest_sha256"] == expected["manifest_sha256"]
-    assert manifest["sealed"] is True
+    write_trusted_partition_anchor(trusted_anchor_path, manifest=expected)
+    for block in ("T1", "T2"):
+        opener = default_opener()
+        manifest = acquire_with_test_dependencies(**bound_acquire_kwargs(
+            tmp_path / ("private-" + block), partition_path, block, opener, trusted_anchor_path
+        ))
+        assert opener.calls == expected["block_assignments"][block]
+        assert manifest["partition_manifest_sha256"] == expected["manifest_sha256"]
 
 
 @pytest.mark.parametrize(
@@ -337,95 +496,102 @@ def test_validated_partition_binding_reaches_fake_t2_transport(tmp_path):
         ("ticker_hash_mismatch", "T1", lambda value: value.__setitem__("t1_ticker_list_sha256", "0" * 64), None, None),
     ],
 )
-def test_invalid_partition_binding_blocks_before_network(tmp_path, label, block, mutation, t1, t2):
+def test_invalid_partition_binding_blocks_before_network(
+    tmp_path, trusted_anchor_path, label, block, mutation, t1, t2
+):
     partition_path = tmp_path / f"{label}.json"
-    write_partition_manifest(partition_path, t1=t1, t2=t2, mutation=mutation)
+    manifest = write_partition_manifest(partition_path, t1=t1, t2=t2, mutation=mutation)
+    write_trusted_partition_anchor(trusted_anchor_path, manifest=manifest)
     opener = default_opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        acquisition.acquire_historical_block_bundle(
-            **bound_acquire_kwargs(tmp_path / "private", partition_path, block, opener)
+        acquire_with_test_dependencies(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, block, opener, trusted_anchor_path)
         )
     assert opener.calls == []
 
 
-def test_tampered_partition_self_hash_blocks_before_network(tmp_path):
+def test_tampered_partition_self_hash_blocks_before_network(tmp_path, trusted_anchor_path):
     partition_path = tmp_path / "partition.json"
     manifest = write_partition_manifest(partition_path)
+    write_trusted_partition_anchor(trusted_anchor_path, manifest=manifest)
     manifest["study_name"] = "TAMPERED"
     partition_path.write_bytes(partition.canonical_json_bytes(manifest))
     opener = default_opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(
-            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
+        acquire_with_test_dependencies(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener, trusted_anchor_path)
         )
     assert excinfo.value.reason == "MANIFEST_SHA_MISMATCH"
     assert opener.calls == []
 
 
-def test_missing_partition_manifest_blocks_before_network(tmp_path):
+def test_missing_partition_manifest_blocks_before_network(tmp_path, trusted_anchor_path):
     write_trusted_partition_anchor(
-        acquisition.TRUSTED_PARTITION_ANCHOR_PATH,
+        trusted_anchor_path,
         authorization_status="AUTHORIZED",
         manifest_sha256="0" * 64,
         implementation_git_commit=SYNTHETIC_IMPLEMENTATION_GIT_COMMIT,
     )
     opener = default_opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(
-            **bound_acquire_kwargs(tmp_path / "private", tmp_path / "missing.json", "T1", opener)
+        acquire_with_test_dependencies(
+            **bound_acquire_kwargs(
+                tmp_path / "private", tmp_path / "missing.json", "T1", opener, trusted_anchor_path
+            )
         )
     assert excinfo.value.reason == "PARTITION_MANIFEST_READ_FAILED"
     assert opener.calls == []
 
 
 @pytest.mark.parametrize("block", ("T3", "UNKNOWN"))
-def test_prohibited_or_unknown_block_blocks_before_network(tmp_path, block):
+def test_prohibited_or_unknown_block_blocks_before_network(tmp_path, trusted_anchor_path, block):
     partition_path = tmp_path / "partition.json"
-    write_partition_manifest(partition_path)
+    manifest = write_partition_manifest(partition_path)
+    write_trusted_partition_anchor(trusted_anchor_path, manifest=manifest)
     opener = default_opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        acquisition.acquire_historical_block_bundle(
-            **bound_acquire_kwargs(tmp_path / "private", partition_path, block, opener)
+        acquire_with_test_dependencies(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, block, opener, trusted_anchor_path)
         )
     assert opener.calls == []
 
 
 def test_caller_cannot_spoof_partition_hash_or_substitute_tickers(tmp_path):
     partition_path = tmp_path / "partition.json"
-    write_partition_manifest(partition_path)
-    opener = default_opener()
-    kwargs = bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
-    with pytest.raises(TypeError):
-        acquisition.acquire_historical_block_bundle(**kwargs, partition_manifest_sha256="0" * 64)
-    with pytest.raises(TypeError):
-        acquisition.acquire_historical_block_bundle(**kwargs, tickers=["9999"])
-    with pytest.raises(TypeError):
-        acquisition.acquire_historical_block_bundle(**kwargs, trusted_partition_anchor_path=tmp_path / "other.json")
-    assert opener.calls == []
+    for forbidden in ("partition_manifest_sha256", "tickers", "trusted_partition_anchor_path"):
+        with pytest.raises(TypeError):
+            acquisition.acquire_historical_block_bundle(
+                output_root=tmp_path / "private", block="T1", partition_manifest_path=partition_path,
+                **{forbidden: "override"},
+            )
 
 
-def test_implementation_provenance_failure_blocks_before_network(tmp_path):
+def test_implementation_provenance_failure_blocks_before_network(tmp_path, trusted_anchor_path):
     partition_path = tmp_path / "partition.json"
-    write_partition_manifest(partition_path)
+    manifest = write_partition_manifest(partition_path)
+    write_trusted_partition_anchor(trusted_anchor_path, manifest=manifest)
     opener = default_opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        acquisition.acquire_historical_block_bundle(
-            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener, resolver=lambda _: "not-a-sha")
+        acquire_with_test_dependencies(
+            **bound_acquire_kwargs(
+                tmp_path / "private", partition_path, "T1", opener, trusted_anchor_path, resolver=lambda: "not-a-sha"
+            )
         )
     assert opener.calls == []
 
 
-def test_implementation_provenance_unavailable_blocks_before_network(tmp_path):
+def test_implementation_provenance_unavailable_blocks_before_network(tmp_path, trusted_anchor_path):
     partition_path = tmp_path / "partition.json"
-    write_partition_manifest(partition_path)
+    manifest = write_partition_manifest(partition_path)
+    write_trusted_partition_anchor(trusted_anchor_path, manifest=manifest)
     opener = default_opener()
 
-    def unavailable(_):
+    def unavailable():
         raise acquisition.V8HistoricalAcquisitionBlocked("IMPLEMENTATION_GIT_COMMIT_UNAVAILABLE")
 
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        acquisition.acquire_historical_block_bundle(
-            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener, resolver=unavailable)
+        acquire_with_test_dependencies(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener, trusted_anchor_path, resolver=unavailable)
         )
     assert opener.calls == []
 
@@ -500,7 +666,36 @@ def test_wrong_response_host_blocks(tmp_path):
     opener = FakeOpener(lambda t: synthetic_payload(t, DEFAULT_DATES), host="evil.example.com")
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
         acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
-    assert "RESPONSE_HOST_MISMATCH" in excinfo.value.reason
+    assert "V8_YAHOO_SOURCE_ORIGIN_INVALID" in excinfo.value.reason
+
+
+def test_trusted_yahoo_initial_request_and_standard_port_are_permitted():
+    assert acquisition._require_trusted_yahoo_url(
+        "https://query1.finance.yahoo.com/v8/finance/chart/1001.T"
+    ).startswith("https://")
+    assert acquisition._require_trusted_yahoo_url(
+        "https://query1.finance.yahoo.com:443/v8/finance/chart/1001.T"
+    ).startswith("https://")
+
+
+@pytest.mark.parametrize("url", (
+    "https://attacker.example/chart/1001.T",
+    "http://query1.finance.yahoo.com/chart/1001.T",
+    "https://query1.finance.yahoo.com:444/chart/1001.T",
+    "https://user@query1.finance.yahoo.com/chart/1001.T",
+))
+def test_yahoo_redirect_rejected_before_off_origin_request(url):
+    handler = acquisition._TrustedYahooRedirectHandler()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        handler.redirect_request(
+            urllib.request.Request("https://query1.finance.yahoo.com/v8/finance/chart/1001.T"),
+            None,
+            302,
+            "Found",
+            Message(),
+            url,
+        )
+    assert excinfo.value.reason == "V8_YAHOO_SOURCE_ORIGIN_INVALID"
 
 
 def test_symbol_mismatch_blocks(tmp_path):

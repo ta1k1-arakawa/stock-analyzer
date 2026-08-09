@@ -437,6 +437,29 @@ def test_read_partition_manifest_rejects_schema_drift(tmp_path):
     assert excinfo.value.reason == "MANIFEST_SCHEMA_INVALID"
 
 
+def test_read_partition_manifest_rejects_invalid_partition_implementation_commit(
+    tmp_path, v4_fixture, t0_codes, fresh_codes
+):
+    manifest = partition.build_partition_manifest(**build_kwargs(v4_fixture, build_frame(t0_codes, fresh_codes)))
+    manifest["partition_implementation_git_commit"] = "not-a-sha"
+    manifest["manifest_sha256"] = partition.canonical_sha256({
+        key: value for key, value in manifest.items() if key != "manifest_sha256"
+    })
+    path = tmp_path / "invalid-commit.json"
+    path.write_bytes(partition.canonical_json_bytes(manifest))
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        partition.read_partition_manifest(path)
+    assert excinfo.value.reason == "IMPLEMENTATION_GIT_COMMIT_INVALID"
+
+
+def test_read_partition_manifest_rejects_duplicate_json_key(tmp_path):
+    path = tmp_path / "duplicate.json"
+    path.write_text('{"schema_version":"A","schema_version":"B"}', encoding="utf-8")
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        partition.read_partition_manifest(path)
+    assert excinfo.value.reason == "PARTITION_MANIFEST_DUPLICATE_KEY"
+
+
 # ---------------------------------------------------------------------------
 # Static safety
 # ---------------------------------------------------------------------------

@@ -435,9 +435,16 @@ def test_trusted_jpx_same_host_redirect_is_permitted():
     assert redirected.full_url == "https://www.jpx.co.jp/files/data_j.xls"
 
 
+def test_trusted_jpx_explicit_standard_https_port_is_permitted():
+    assert cli._require_trusted_jpx_url("https://www.jpx.co.jp:443/files/data_j.xls").startswith("https://")
+
+
 @pytest.mark.parametrize("redirect_url", (
     "https://attacker.example/data_j.xls",
     "http://www.jpx.co.jp/files/data_j.xls",
+    "https://www.jpx.co.jp:444/files/data_j.xls",
+    "https://user@www.jpx.co.jp/files/data_j.xls",
+    "https://user:pass@www.jpx.co.jp/files/data_j.xls",
 ))
 def test_trusted_jpx_redirect_rejected_before_off_host_request(redirect_url):
     handler = cli.TrustedJpxRedirectHandler()

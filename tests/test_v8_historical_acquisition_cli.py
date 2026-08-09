@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import subprocess
 import sys
 import urllib.request
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from scripts import acquire_v8_historical as cli
 from src import v8_historical_acquisition as acquisition
-from src import v8_partition as partition
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "acquire_v8_historical.py"
@@ -25,29 +24,6 @@ def no_real_urlopen(monkeypatch):
         raise AssertionError("real urlopen executed")
 
     monkeypatch.setattr(urllib.request, "urlopen", forbidden)
-    yield
-
-
-def write_trusted_partition_anchor(path: Path, *, manifest: dict | None = None) -> None:
-    authorized = manifest is not None
-    path.write_bytes(partition.canonical_json_bytes({
-        "schema_version": acquisition.TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION,
-        "study_name": partition.STUDY_NAME,
-        "design_commit": partition.DESIGN_COMMIT,
-        "authorization_status": "AUTHORIZED" if authorized else "NOT_AUTHORIZED",
-        "authorized_partition_manifest_sha256": manifest["manifest_sha256"] if manifest else None,
-        "authorized_partition_implementation_git_commit": (
-            manifest["partition_implementation_git_commit"] if manifest else None
-        ),
-        "authorization_note": "test-only anchor",
-    }))
-
-
-@pytest.fixture(autouse=True)
-def test_trusted_partition_anchor(monkeypatch, tmp_path):
-    anchor_path = tmp_path / "V8_TRUSTED_PARTITION.json"
-    monkeypatch.setattr(acquisition, "TRUSTED_PARTITION_ANCHOR_PATH", anchor_path)
-    write_trusted_partition_anchor(anchor_path)
     yield
 
 
@@ -113,55 +89,6 @@ def test_cli_subprocess_rejects_unknown_option():
     assert result.returncode != 0
 
 
-def _tickers(start: int) -> list[str]:
-    return [f"{code:04d}" for code in range(start, start + 300)]
-
-
-def write_partition_manifest(path: Path, *, mutation=None) -> dict:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    blocks = {"T0": _tickers(4000), "T1": _tickers(1000), "T2": _tickers(2000),
-              "T3": _tickers(3000), "T_spare": _tickers(5000)}
-    manifest = {
-        "schema_version": partition.SCHEMA_VERSION, "study_name": partition.STUDY_NAME,
-        "design_commit": partition.DESIGN_COMMIT, "created_utc": "2026-08-09T00:00:00Z",
-        "partition_implementation_git_commit": "a" * 40,
-        "source_url": "https://example.invalid/jpx", "source_host": "example.invalid",
-        "source_acquisition_utc": "2026-08-09T00:00:00Z", "source_raw_sha256": "0" * 64,
-        "source_raw_byte_count": 0, "expected_v4_source_raw_sha256": "0" * 64,
-        "source_reproduction_status": "SYNTHETIC", "eligible_ticker_count": 1500,
-        "eligible_ticker_list_sha256": partition.ticker_list_sha256(sum((blocks[key] for key in blocks), [])),
-        "deterministic_ordering_rule": partition.DETERMINISTIC_ORDERING_RULE,
-        "t0_ticker_list_sha256": partition.ticker_list_sha256(blocks["T0"]),
-        "t1_ticker_list_sha256": partition.ticker_list_sha256(blocks["T1"]),
-        "t2_ticker_list_sha256": partition.ticker_list_sha256(blocks["T2"]),
-        "t3_ticker_list_sha256": partition.ticker_list_sha256(blocks["T3"]),
-        "t_spare_ticker_list_sha256": partition.ticker_list_sha256(blocks["T_spare"]),
-        "legacy_exclude_list": [], "legacy_exclude_list_sha256": partition.ticker_list_sha256([]),
-        "block_sizes": {key: len(value) for key, value in blocks.items()}, "block_assignments": blocks,
-        "p_hist_start": partition.P_HIST_START, "p_hist_end": partition.P_HIST_END,
-        "t1_role": partition.T1_ROLE, "t2_role": partition.T2_ROLE, "t3_role": partition.T3_ROLE,
-        "t3_price_acquisition_authorized": False,
-    }
-    if mutation:
-        mutation(manifest)
-    manifest["manifest_sha256"] = partition.canonical_sha256(manifest)
-    path.write_bytes(partition.canonical_json_bytes(manifest))
-    write_trusted_partition_anchor(acquisition.TRUSTED_PARTITION_ANCHOR_PATH, manifest=manifest)
-    return manifest
-
-
-def production_kwargs(tmp_path, block="T1", *, mutation=None):
-    partition_path = tmp_path / "partition.json"
-    manifest = write_partition_manifest(partition_path, mutation=mutation)
-    opener = cli.FakeYahooOpener(base_price=1000.0)
-    return manifest, opener, {
-        "block": block, "partition_manifest_path": partition_path, "output_root": tmp_path / "private",
-        "opener": opener, "clock": lambda: datetime(2026, 8, 9, tzinfo=timezone.utc),
-        "implementation_git_commit_resolver": lambda _: "a" * 40,
-        "monotonic_clock": lambda: 0.0, "sleep_fn": lambda _: None,
-    }
-
-
 def test_cli_modes_are_mutually_exclusive():
     with pytest.raises(SystemExit):
         cli.main(["--synthetic-test", "--production-acquire"])
@@ -192,61 +119,48 @@ def test_production_cli_invalid_block_blocks_before_runner(monkeypatch, capsys, 
     assert json.loads(capsys.readouterr().out)["status"] == "BLOCKED"
 
 
-@pytest.mark.parametrize("block, role, sealed", (("T1", "VALIDATION", False), ("T2", "SEALED_HOLDOUT", True)))
-def test_production_runner_reaches_only_fake_transport(tmp_path, block, role, sealed):
-    manifest, opener, kwargs = production_kwargs(tmp_path, block)
-    result = cli.run_production_acquisition(**kwargs)
-    assert opener.calls == manifest["block_assignments"][block]
-    assert result["role"] == role and result["sealed"] is sealed
-    assert result["partition_manifest_sha256"] == manifest["manifest_sha256"]
+def test_production_runner_signature_has_only_required_inputs():
+    assert tuple(inspect.signature(cli.run_production_acquisition).parameters) == (
+        "block", "partition_manifest_path", "output_root"
+    )
 
 
-def test_production_runner_unauthorized_trust_anchor_blocks_before_network(tmp_path):
-    _, opener, kwargs = production_kwargs(tmp_path)
-    write_trusted_partition_anchor(acquisition.TRUSTED_PARTITION_ANCHOR_PATH)
-    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        cli.run_production_acquisition(**kwargs)
-    assert excinfo.value.reason == "TRUSTED_PARTITION_NOT_AUTHORIZED"
-    assert opener.calls == []
+def test_production_runner_delegates_only_to_hardened_public_api(monkeypatch, tmp_path):
+    observed: dict[str, object] = {}
+
+    def fake_public_api(**kwargs):
+        observed.update(kwargs)
+        return {
+            "block": "T2", "role": "SEALED_HOLDOUT", "sealed": True,
+            "partition_manifest_sha256": "a" * 64, "implementation_git_commit": "b" * 40,
+        }
+
+    monkeypatch.setattr(cli, "acquire_historical_block_bundle", fake_public_api)
+    result = cli.run_production_acquisition(
+        block="T2", partition_manifest_path=tmp_path / "partition.json", output_root=tmp_path / "private"
+    )
+    assert observed == {
+        "output_root": tmp_path / "private", "block": "T2", "partition_manifest_path": tmp_path / "partition.json"
+    }
+    assert result["role"] == "SEALED_HOLDOUT" and result["sealed"] is True
 
 
-@pytest.mark.parametrize("mutation", (
-    lambda value: value.__setitem__("study_name", "WRONG"),
-    lambda value: value.__setitem__("t1_ticker_list_sha256", "0" * 64),
-))
-def test_production_runner_binding_failure_blocks_before_network(tmp_path, mutation):
-    _, opener, kwargs = production_kwargs(tmp_path, mutation=mutation)
-    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        cli.run_production_acquisition(**kwargs)
-    assert opener.calls == []
+def test_cli_valid_production_invocation_passes_only_required_runner_inputs(monkeypatch, capsys):
+    observed: dict[str, object] = {}
 
+    def fake_runner(**kwargs):
+        observed.update(kwargs)
+        return {"status": "PASS"}
 
-def test_production_runner_storage_and_provenance_fail_closed(tmp_path):
-    _, opener, kwargs = production_kwargs(tmp_path)
-    kwargs["output_root"] = Path("relative-private")
-    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        cli.run_production_acquisition(**kwargs)
-    assert opener.calls == []
-    _, opener, kwargs = production_kwargs(tmp_path / "git-dirty")
-
-    def dirty_git(_):
-        raise acquisition.V8HistoricalAcquisitionBlocked("PRODUCTION_GIT_WORKTREE_DIRTY")
-
-    kwargs["implementation_git_commit_resolver"] = dirty_git
-    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        cli.run_production_acquisition(**kwargs)
-    assert excinfo.value.reason == "PRODUCTION_GIT_WORKTREE_DIRTY"
-    assert opener.calls == []
-    _, opener, kwargs = production_kwargs(tmp_path / "inside-repository")
-    kwargs["output_root"] = ROOT / "would-be-private-v8-storage"
-    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        cli.run_production_acquisition(**kwargs)
-    assert opener.calls == []
-    _, opener, kwargs = production_kwargs(tmp_path / "provenance")
-    kwargs["implementation_git_commit_resolver"] = lambda _: "invalid"
-    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        cli.run_production_acquisition(**kwargs)
-    assert opener.calls == []
+    monkeypatch.setattr(cli, "run_production_acquisition", fake_runner)
+    assert cli.main([
+        "--production-acquire", "--block", "T1", "--partition-manifest", "C:/partition.json",
+        "--output-root", "C:/private", "--confirmation", "V8_PRODUCTION_ACQUIRE_T1",
+    ]) == 0
+    assert observed == {
+        "block": "T1", "partition_manifest_path": Path("C:/partition.json"), "output_root": Path("C:/private")
+    }
+    assert json.loads(capsys.readouterr().out)["status"] == "PASS"
 
 
 @pytest.mark.slow

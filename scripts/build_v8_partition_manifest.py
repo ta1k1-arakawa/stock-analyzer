@@ -239,8 +239,18 @@ def default_parse_source_table(raw_bytes: bytes) -> Any:
 def _require_trusted_jpx_url(value: object) -> str:
     if not isinstance(value, str):
         raise V8PartitionBlocked("V8_PARTITION_SOURCE_FINAL_URL_INVALID")
-    parsed = urllib.parse.urlparse(value)
-    if parsed.scheme != "https" or parsed.hostname != JPX_SOURCE_HOST:
+    try:
+        parsed = urllib.parse.urlparse(value)
+        port = parsed.port
+    except ValueError as error:
+        raise V8PartitionBlocked("V8_PARTITION_SOURCE_HOST_INVALID") from error
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != JPX_SOURCE_HOST
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
         raise V8PartitionBlocked("V8_PARTITION_SOURCE_HOST_INVALID")
     return value
 
@@ -255,6 +265,7 @@ class TrustedJpxRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def _default_trusted_jpx_opener(request: Any) -> Any:
     """Default production opener with pre-request redirect host enforcement."""
+    _require_trusted_jpx_url(getattr(request, "full_url", None))
     opener = urllib.request.build_opener(TrustedJpxRedirectHandler())
     return opener.open(request)
 

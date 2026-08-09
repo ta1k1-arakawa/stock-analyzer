@@ -31,8 +31,11 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
+import urllib.parse
+import urllib.request
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -86,7 +89,7 @@ SEALED_FILENAME = "SEALED.json"
 # the public acquisition API nor its CLI accepts a caller-selected path,
 # expected SHA, or registry override.
 CANONICAL_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-TRUSTED_PARTITION_ANCHOR_PATH = CANONICAL_REPOSITORY_ROOT / "V8_TRUSTED_PARTITION.json"
+TRUSTED_PARTITION_ANCHOR_GIT_PATH = "V8_TRUSTED_PARTITION.json"
 TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION = "V8_TRUSTED_PARTITION_V1"
 TRUSTED_PARTITION_ANCHOR_FIELDS = (
     "schema_version",
@@ -192,16 +195,36 @@ def _require_implementation_git_commit(value: object) -> str:
     return value
 
 
-def _read_trusted_partition_anchor(path: Path) -> dict[str, Any]:
-    """Read the Git-tracked production trust anchor with exact schema checks."""
+def _strict_json_object(raw: bytes, *, invalid_reason: str, duplicate_reason: str) -> dict[str, Any]:
+    """Parse a JSON object while rejecting duplicate keys.
+
+    The trusted-anchor and persisted-manifest formats are reviewed by humans
+    as well as machines.  Standard ``json.loads`` silently keeps the final
+    duplicate value, which would make those two views ambiguous.
+    """
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise V8HistoricalAcquisitionBlocked(duplicate_reason)
+            result[key] = value
+        return result
     try:
-        raw = path.read_bytes()
-    except OSError as error:
-        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_READ_FAILED") from error
-    try:
-        anchor = json.loads(raw.decode("utf-8"))
+        parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_INVALID_JSON") from error
+        raise V8HistoricalAcquisitionBlocked(invalid_reason) from error
+    if not isinstance(parsed, dict):
+        raise V8HistoricalAcquisitionBlocked(invalid_reason)
+    return parsed
+
+
+def _read_trusted_partition_anchor_bytes(raw: bytes) -> dict[str, Any]:
+    """Validate the Git-object bytes which are the production trust root."""
+    anchor = _strict_json_object(
+        raw,
+        invalid_reason="TRUSTED_PARTITION_ANCHOR_INVALID_JSON",
+        duplicate_reason="TRUSTED_PARTITION_ANCHOR_DUPLICATE_KEY",
+    )
     if not isinstance(anchor, Mapping) or set(anchor) != set(TRUSTED_PARTITION_ANCHOR_FIELDS):
         raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_SCHEMA_INVALID")
     if anchor["schema_version"] != TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION:
@@ -231,14 +254,97 @@ def _read_trusted_partition_anchor(path: Path) -> dict[str, Any]:
     return dict(anchor)
 
 
+def _read_trusted_partition_anchor_from_verified_head(verified_head: str) -> dict[str, Any]:
+    """Load the anchor from the verified ``HEAD`` object, never its worktree path."""
+    commit = _require_implementation_git_commit(verified_head)
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(CANONICAL_REPOSITORY_ROOT),
+                "show",
+                commit + ":" + TRUSTED_PARTITION_ANCHOR_GIT_PATH,
+            ],
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_GIT_READ_FAILED") from error
+    if result.returncode != 0:
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_GIT_READ_FAILED")
+    return _read_trusted_partition_anchor_bytes(result.stdout)
+
+
+def _resolve_verified_canonical_production_git_commit() -> str:
+    """Resolve the only repository whose production state V8 may trust."""
+    return _default_implementation_git_commit_resolver(CANONICAL_REPOSITORY_ROOT)
+
+
+def _require_exact_origin(
+    value: object,
+    *,
+    hostname: str,
+    invalid_reason: str,
+) -> str:
+    if not isinstance(value, str):
+        raise V8HistoricalAcquisitionBlocked(invalid_reason)
+    try:
+        parsed = urllib.parse.urlparse(value)
+        port = parsed.port
+    except ValueError as error:
+        raise V8HistoricalAcquisitionBlocked(invalid_reason) from error
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise V8HistoricalAcquisitionBlocked(invalid_reason)
+    return value
+
+
+def _require_trusted_yahoo_url(value: object) -> str:
+    return _require_exact_origin(
+        value,
+        hostname=HOST,
+        invalid_reason="V8_YAHOO_SOURCE_ORIGIN_INVALID",
+    )
+
+
+class _TrustedYahooRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject an off-origin redirect before urllib sends that request."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        _require_trusted_yahoo_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _default_trusted_yahoo_opener(request_obj: Any) -> Any:
+    """Production Yahoo opener with exact-origin initial/redirect enforcement."""
+    _require_trusted_yahoo_url(getattr(request_obj, "full_url", None))
+    opener = urllib.request.build_opener(_TrustedYahooRedirectHandler())
+    return opener.open(request_obj)
+
+
+def _require_trusted_yahoo_response_url(response: Any) -> None:
+    response_url = getattr(response, "url", None)
+    if response_url is None:
+        geturl = getattr(response, "geturl", None)
+        response_url = geturl() if callable(geturl) else None
+    _require_trusted_yahoo_url(response_url)
+
+
 def _validated_partition_binding(
     partition_manifest_path: str | os.PathLike[str],
     block: str,
+    anchor: Mapping[str, Any],
 ) -> tuple[tuple[str, ...], str]:
     """Read and validate the sole permitted production acquisition inputs."""
     if block not in ALLOWED_ACQUISITION_BLOCKS:
         raise V8HistoricalAcquisitionBlocked("V8_BLOCK_ACQUISITION_PROHIBITED:" + str(block))
-    anchor = _read_trusted_partition_anchor(TRUSTED_PARTITION_ANCHOR_PATH)
     if anchor["authorization_status"] != "AUTHORIZED":
         raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_NOT_AUTHORIZED")
     try:
@@ -267,6 +373,15 @@ def _validated_partition_binding(
         raise V8HistoricalAcquisitionBlocked("PARTITION_MANIFEST_STUDY_NAME_MISMATCH")
     if partition_manifest["design_commit"] != DESIGN_COMMIT:
         raise V8HistoricalAcquisitionBlocked("PARTITION_MANIFEST_DESIGN_COMMIT_MISMATCH")
+    if partition_manifest["source_reproduction_status"] != "PASS":
+        raise V8HistoricalAcquisitionBlocked("PARTITION_MANIFEST_SOURCE_REPRODUCTION_NOT_PASS")
+    if partition_manifest["source_host"] != "www.jpx.co.jp":
+        raise V8HistoricalAcquisitionBlocked("PARTITION_MANIFEST_SOURCE_HOST_MISMATCH")
+    _require_exact_origin(
+        partition_manifest["source_url"],
+        hostname="www.jpx.co.jp",
+        invalid_reason="PARTITION_MANIFEST_SOURCE_ORIGIN_INVALID",
+    )
 
     assignments = partition_manifest["block_assignments"]
     if not isinstance(assignments, Mapping) or block not in assignments:
@@ -385,30 +500,54 @@ def _write_bytes(path: Path, value: bytes) -> None:
 def acquire_historical_block_bundle(
     *,
     output_root: str | os.PathLike[str],
-    repository_root: str | os.PathLike[str],
     block: str,
     partition_manifest_path: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Acquire one verified manifest-assigned T1/T2 block in production.
+
+    This is the sole public production boundary. It deliberately accepts only
+    the external private output location, block, and persisted partition
+    manifest. Repository identity, Git provenance, trust-anchor bytes,
+    frozen dates, clocks, and transport are canonical internals.
+    """
+    return _acquire_production_historical_block_bundle_with_dependencies(
+        output_root=output_root,
+        block=block,
+        partition_manifest_path=partition_manifest_path,
+        git_commit_resolver=_resolve_verified_canonical_production_git_commit,
+        git_anchor_reader=_read_trusted_partition_anchor_from_verified_head,
+        opener=_default_trusted_yahoo_opener,
+        clock=lambda: datetime.now(timezone.utc),
+        monotonic_clock=time.monotonic,
+        sleep_fn=time.sleep,
+    )
+
+
+def _acquire_production_historical_block_bundle_with_dependencies(
+    *,
+    output_root: str | os.PathLike[str],
+    block: str,
+    partition_manifest_path: str | os.PathLike[str],
+    git_commit_resolver: Callable[[], str],
+    git_anchor_reader: Callable[[str], Mapping[str, Any]],
     opener: Callable[[Any], Any],
     clock: Callable[[], datetime],
-    implementation_git_commit_resolver: Callable[[Path], str] = _default_implementation_git_commit_resolver,
     monotonic_clock: Callable[[], float] = time.monotonic,
     sleep_fn: Callable[[float], None] = time.sleep,
-    request_start: str = REQUEST_START,
-    request_end_exclusive: str = REQUEST_END_EXCLUSIVE,
 ) -> dict[str, Any]:
-    """Acquire one verified manifest-assigned T1/T2 block.
-
-    Tickers and the partition manifest hash are deliberately absent from this
-    public interface: both are derived only after ``read_partition_manifest``
-    has verified the persisted manifest's self-hash and identity.
-    """
-    tickers, partition_manifest_sha256 = _validated_partition_binding(partition_manifest_path, block)
-    implementation_git_commit = _require_implementation_git_commit(
-        implementation_git_commit_resolver(Path(repository_root))
+    """Private fake-only seam for exercising production call ordering."""
+    implementation_git_commit = _require_implementation_git_commit(git_commit_resolver())
+    anchor = git_anchor_reader(implementation_git_commit)
+    if not isinstance(anchor, Mapping):
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_SCHEMA_INVALID")
+    tickers, partition_manifest_sha256 = _validated_partition_binding(
+        partition_manifest_path,
+        block,
+        anchor,
     )
     return _acquire_historical_block_bundle_with_validated_inputs(
         output_root=output_root,
-        repository_root=repository_root,
+        repository_root=CANONICAL_REPOSITORY_ROOT,
         block=block,
         tickers=tickers,
         partition_manifest_sha256=partition_manifest_sha256,
@@ -417,8 +556,8 @@ def acquire_historical_block_bundle(
         clock=clock,
         monotonic_clock=monotonic_clock,
         sleep_fn=sleep_fn,
-        request_start=request_start,
-        request_end_exclusive=request_end_exclusive,
+        request_start=REQUEST_START,
+        request_end_exclusive=REQUEST_END_EXCLUSIVE,
     )
 
 
@@ -503,7 +642,16 @@ def _acquire_historical_block_bundle_with_validated_inputs(
             capture = bytearray()
 
             def recording_opener(request_obj: Any, *, _capture: bytearray = capture) -> Any:
-                return _RecordingResponse(opener(request_obj), _capture)
+                _require_trusted_yahoo_url(getattr(request_obj, "full_url", None))
+                response = opener(request_obj)
+                try:
+                    _require_trusted_yahoo_response_url(response)
+                except BaseException:
+                    close = getattr(response, "close", None)
+                    if callable(close):
+                        close()
+                    raise
+                return _RecordingResponse(response, _capture)
 
             request_count += 1
             try:
