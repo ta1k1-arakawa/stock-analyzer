@@ -1,0 +1,154 @@
+{
+  "schema_version": "V8_STATE_SNAPSHOT_V1",
+  "study": "V8_HISTORICAL_RESEARCH",
+  "repository": "ta1k1-arakawa/stock-analyzer",
+  "state_basis_commit": "c5848ced1a5c800f384cb7b86fb642e5c748c2c2",
+  "active_branch": "v8-partition-acquisition",
+  "state_basis_note": "This snapshot describes the repository AT state_basis_commit. It is not a claim about current remote HEAD -- always re-check git ls-remote before acting.",
+
+  "design_commit": "c414d3191cba356734d7ed08bdf1abc7d51fc384",
+  "design_branch": "v8-historical-research-design",
+  "design_frozen": true,
+  "design_status": "HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION",
+
+  "current_phase": "PRODUCTION_ACQUISITION_HARDENING_PENDING",
+
+  "human_gates": {
+    "new_strategy_family_accepted": true,
+    "design_frozen_10_decisions_applied": true,
+    "v8_t1_t2_acquisition_and_partition_approved": true,
+    "real_jpx_source_fetch_authorized": false,
+    "real_t1_acquisition_authorized": false,
+    "real_t2_acquisition_authorized": false,
+    "t3_acquisition_authorized": false,
+    "layer_a_search_authorized": false,
+    "layer_b_validation_authorized": false,
+    "layer_c_evaluation_authorized": false,
+    "prospective_forward_study_authorized": false,
+    "real_money_deployment_authorized": false
+  },
+
+  "static_implementation": {
+    "commit": "c5848ced1a5c800f384cb7b86fb642e5c748c2c2",
+    "verdict": "V8_PARTITION_ACQUISITION_STATIC_PASS",
+    "files": [
+      "src/v8_partition.py",
+      "src/v8_historical_acquisition.py",
+      "scripts/build_v8_partition_manifest.py",
+      "scripts/acquire_v8_historical.py",
+      "tests/test_v8_partition.py",
+      "tests/test_v8_partition_cli.py",
+      "tests/test_v8_historical_acquisition.py",
+      "tests/test_v8_historical_acquisition_cli.py"
+    ],
+    "test_count": 106,
+    "tests_passing": true,
+    "cli_flags": {
+      "build_v8_partition_manifest.py": ["--synthetic-test"],
+      "acquire_v8_historical.py": ["--synthetic-test"]
+    },
+    "production_runner_exists": false,
+    "acquisition_bound_to_validated_partition_manifest": false
+  },
+
+  "partition": {
+    "real_partition_manifest_exists": false,
+    "real_jpx_source_fetched": false,
+    "block_size_frozen": 300,
+    "p_hist_start": "2016-04-01",
+    "p_hist_end": "2025-12-31",
+    "legacy_exposed_tickers_excluded_count": 7
+  },
+
+  "T1": {
+    "role": "VALIDATION",
+    "raw_data_acquired": false,
+    "ticker_count_frozen": 300,
+    "max_validation_access": 1,
+    "validation_access_count": null,
+    "layer_b_opened": false
+  },
+
+  "T2": {
+    "role": "SEALED_HOLDOUT",
+    "raw_data_acquired": false,
+    "ticker_count_frozen": 300,
+    "sealed": null,
+    "research_access_authorized": null,
+    "opened_for_research": false,
+    "sealed_holdout_access_count": null,
+    "frozen_final_candidate_count_required": 1,
+    "guard_verified_in_synthetic_tests": true
+  },
+
+  "T3": {
+    "role": "SEALED_RESERVE",
+    "raw_data_acquired": false,
+    "ticker_count_frozen": 300,
+    "acquisition_unconditionally_blocked": true,
+    "release_requires_separate_human_gate": true
+  },
+
+  "v7_isolation": {
+    "canonical_v7_branch": "v7-forward-capacity-gate3-dry-run",
+    "canonical_v7_branch_sha": "fec1b85c2e6deb89b8c5d4fa31ff1ae58a62edbc",
+    "v7_files_modified_by_v8": false,
+    "v7_artifacts_modified_by_v8": false,
+    "v7_forward_observations_read_by_v8": false,
+    "v7_interim_results_used_in_v8_selection": false,
+    "v8_results_used_to_alter_v7": false,
+    "v7_modules_reused_read_only": ["src.v7_yahoo_collector"],
+    "v7_modules_reused_functions": ["fetch_chart_once", "canonical_ticker", "FRAME_FIELDS", "HOST", "V7YahooCollectorBlocked"],
+    "isolation_weakened": false
+  },
+
+  "production_blockers": [
+    {
+      "id": "FINDING_1",
+      "title": "No production runner exists",
+      "detail": "scripts/build_v8_partition_manifest.py and scripts/acquire_v8_historical.py each expose only --synthetic-test. No real JPX fetch, real partition creation, or real Yahoo T1/T2 acquisition path exists yet.",
+      "blocks": "any real network call",
+      "resolved": false
+    },
+    {
+      "id": "FINDING_2",
+      "title": "Acquisition not bound to a validated partition manifest",
+      "severity": "CRITICAL",
+      "detail": "acquire_historical_block_bundle() accepts block, tickers, and partition_manifest_sha256 as independent caller-supplied arguments. It does not itself read an actual partition manifest, verify its self-hash, verify schema_version/study_name/design_commit, restrict tickers to block_assignments[block], verify exact 300-ticker count and ticker_list_sha256 match, or derive partition_manifest_sha256 from the real manifest.",
+      "required_checks_before_first_network_request": [
+        "read_partition_manifest(path) with self-hash verification",
+        "verify schema_version, study_name, design_commit",
+        "requested block is exactly T1 or T2",
+        "tickers sourced only from partition_manifest.block_assignments[block], never from CLI/user input",
+        "ticker_count == 300 exactly",
+        "computed ticker_list_sha256 matches manifest.t1_ticker_list_sha256 or t2_ticker_list_sha256",
+        "acquisition_manifest.partition_manifest_sha256 derived from the verified real manifest, never passed freely",
+        "T3 continues to unconditionally BLOCK"
+      ],
+      "fail_closed_requirement": "NETWORK_ACCESS_BEFORE_BLOCK = 0",
+      "additional_future_work": "record the V8 implementation git commit that performed a real acquisition as production provenance",
+      "resolved": false
+    }
+  ],
+
+  "next_action": "IMPLEMENT_PRODUCTION_PARTITION_AND_ACQUISITION_RUNNER + BIND_ACQUISITION_TO_VALIDATED_PARTITION_MANIFEST + ADD_IMPLEMENTATION_COMMIT_PROVENANCE",
+
+  "source_of_truth_priority": [
+    "immutable/raw acquisition manifests and their hashes (once they exist)",
+    "V8_STATE.json",
+    "V8_PROJECT_STATE.md",
+    "V8_HISTORICAL_RESEARCH_DESIGN.md",
+    "V8_DATA_EXPOSURE_AUDIT.md",
+    "actual code and tests at a verified Git SHA",
+    "chat history / model memory (lowest priority, never authoritative)"
+  ],
+
+  "network_requests": 0,
+  "real_data_acquired": false,
+  "backtests": 0,
+  "models_fitted": 0,
+  "profit_calculated": 0,
+  "parameter_search": 0,
+  "real_orders_allowed": false,
+  "deployment_allowed": false
+}
