@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 from collections import Counter
@@ -47,10 +48,14 @@ from src.v7_yahoo_collector import (
 )
 
 from src.v8_partition import (
+    BLOCK_SIZE,
     DESIGN_COMMIT,
+    SCHEMA_VERSION as PARTITION_MANIFEST_SCHEMA_VERSION,
     STUDY_NAME,
     V8PartitionBlocked,
+    read_partition_manifest,
     require_absolute_output_path_outside_repository,
+    ticker_list_sha256,
 )
 
 SCHEMA_VERSION = "V8_HISTORICAL_ACQUISITION_V1"
@@ -81,6 +86,7 @@ ACQUISITION_MANIFEST_FIELDS = (
     "schema_version",
     "study_name",
     "design_commit",
+    "implementation_git_commit",
     "partition_manifest_sha256",
     "block",
     "role",
@@ -154,6 +160,81 @@ def canonical_sha256(value: Any) -> str:
 
 def _ticker_list_sha(tickers: Sequence[str]) -> str:
     return sha256_bytes(("\n".join(tickers) + "\n").encode("utf-8"))
+
+
+def _default_implementation_git_commit_resolver(repository_root: Path) -> str:
+    """Resolve the checked-out implementation revision without network I/O."""
+    try:
+        clean = subprocess.run(
+            ["git", "-C", str(repository_root), "status", "--porcelain"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+        resolved = subprocess.run(
+            ["git", "-C", str(repository_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise V8HistoricalAcquisitionBlocked("IMPLEMENTATION_GIT_COMMIT_UNAVAILABLE") from error
+    if clean.returncode != 0 or clean.stdout.strip():
+        raise V8HistoricalAcquisitionBlocked("IMPLEMENTATION_GIT_COMMIT_UNAVAILABLE")
+    if resolved.returncode != 0:
+        raise V8HistoricalAcquisitionBlocked("IMPLEMENTATION_GIT_COMMIT_UNAVAILABLE")
+    return resolved.stdout.strip()
+
+
+def _require_implementation_git_commit(value: object) -> str:
+    if not isinstance(value, str) or len(value) != 40 or any(char not in "0123456789abcdef" for char in value):
+        raise V8HistoricalAcquisitionBlocked("IMPLEMENTATION_GIT_COMMIT_INVALID")
+    return value
+
+
+def _validated_partition_binding(
+    partition_manifest_path: str | os.PathLike[str],
+    block: str,
+) -> tuple[tuple[str, ...], str]:
+    """Read and validate the sole permitted production acquisition inputs."""
+    if block not in ALLOWED_ACQUISITION_BLOCKS:
+        raise V8HistoricalAcquisitionBlocked("V8_BLOCK_ACQUISITION_PROHIBITED:" + str(block))
+    try:
+        partition_manifest = read_partition_manifest(partition_manifest_path)
+    except V8PartitionBlocked as error:
+        raise V8HistoricalAcquisitionBlocked(error.reason) from error
+
+    if partition_manifest["schema_version"] != PARTITION_MANIFEST_SCHEMA_VERSION:
+        raise V8HistoricalAcquisitionBlocked("PARTITION_MANIFEST_SCHEMA_VERSION_MISMATCH")
+    if partition_manifest["study_name"] != STUDY_NAME:
+        raise V8HistoricalAcquisitionBlocked("PARTITION_MANIFEST_STUDY_NAME_MISMATCH")
+    if partition_manifest["design_commit"] != DESIGN_COMMIT:
+        raise V8HistoricalAcquisitionBlocked("PARTITION_MANIFEST_DESIGN_COMMIT_MISMATCH")
+
+    assignments = partition_manifest["block_assignments"]
+    if not isinstance(assignments, Mapping) or block not in assignments:
+        raise V8HistoricalAcquisitionBlocked("PARTITION_BLOCK_ASSIGNMENT_MISSING:" + block)
+    assignment = assignments[block]
+    if not isinstance(assignment, list):
+        raise V8HistoricalAcquisitionBlocked("PARTITION_BLOCK_ASSIGNMENT_INVALID:" + block)
+    tickers = tuple(assignment)
+    if BLOCK_SIZE != 300 or len(tickers) != 300:
+        raise V8HistoricalAcquisitionBlocked("PARTITION_TICKER_COUNT_INVALID:" + block)
+
+    expected_hash_field = {"T1": "t1_ticker_list_sha256", "T2": "t2_ticker_list_sha256"}[block]
+    if ticker_list_sha256(tickers) != partition_manifest[expected_hash_field]:
+        raise V8HistoricalAcquisitionBlocked("PARTITION_TICKER_LIST_SHA_MISMATCH:" + block)
+
+    partition_manifest_sha256 = partition_manifest["manifest_sha256"]
+    if (
+        not isinstance(partition_manifest_sha256, str)
+        or len(partition_manifest_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in partition_manifest_sha256)
+    ):
+        raise V8HistoricalAcquisitionBlocked("PARTITION_MANIFEST_SHA_INVALID")
+    return tickers, partition_manifest_sha256
 
 
 def _parse_date(value: object, field: str) -> date:
@@ -258,8 +339,49 @@ def acquire_historical_block_bundle(
     output_root: str | os.PathLike[str],
     repository_root: str | os.PathLike[str],
     block: str,
+    partition_manifest_path: str | os.PathLike[str],
+    opener: Callable[[Any], Any],
+    clock: Callable[[], datetime],
+    implementation_git_commit_resolver: Callable[[Path], str] = _default_implementation_git_commit_resolver,
+    monotonic_clock: Callable[[], float] = time.monotonic,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    request_start: str = REQUEST_START,
+    request_end_exclusive: str = REQUEST_END_EXCLUSIVE,
+) -> dict[str, Any]:
+    """Acquire one verified manifest-assigned T1/T2 block.
+
+    Tickers and the partition manifest hash are deliberately absent from this
+    public interface: both are derived only after ``read_partition_manifest``
+    has verified the persisted manifest's self-hash and identity.
+    """
+    tickers, partition_manifest_sha256 = _validated_partition_binding(partition_manifest_path, block)
+    implementation_git_commit = _require_implementation_git_commit(
+        implementation_git_commit_resolver(Path(repository_root))
+    )
+    return _acquire_historical_block_bundle_with_validated_inputs(
+        output_root=output_root,
+        repository_root=repository_root,
+        block=block,
+        tickers=tickers,
+        partition_manifest_sha256=partition_manifest_sha256,
+        implementation_git_commit=implementation_git_commit,
+        opener=opener,
+        clock=clock,
+        monotonic_clock=monotonic_clock,
+        sleep_fn=sleep_fn,
+        request_start=request_start,
+        request_end_exclusive=request_end_exclusive,
+    )
+
+
+def _acquire_historical_block_bundle_with_validated_inputs(
+    *,
+    output_root: str | os.PathLike[str],
+    repository_root: str | os.PathLike[str],
+    block: str,
     tickers: Sequence[str],
     partition_manifest_sha256: str,
+    implementation_git_commit: str,
     opener: Callable[[Any], Any],
     clock: Callable[[], datetime],
     monotonic_clock: Callable[[], float] = time.monotonic,
@@ -267,7 +389,7 @@ def acquire_historical_block_bundle(
     request_start: str = REQUEST_START,
     request_end_exclusive: str = REQUEST_END_EXCLUSIVE,
 ) -> dict[str, Any]:
-    """Acquire and atomically publish one block's raw historical OHLCV bundle.
+    """Acquire and atomically publish validated block inputs' raw OHLCV bundle.
 
     ``block`` must be exactly ``"T1"`` or ``"T2"``. Any other value --
     including ``"T3"`` -- is rejected before any network access. Every row
@@ -401,6 +523,7 @@ def acquire_historical_block_bundle(
             "schema_version": SCHEMA_VERSION,
             "study_name": STUDY_NAME,
             "design_commit": DESIGN_COMMIT,
+            "implementation_git_commit": implementation_git_commit,
             "partition_manifest_sha256": partition_manifest_sha256,
             "block": block,
             "role": BLOCK_ROLE[block],

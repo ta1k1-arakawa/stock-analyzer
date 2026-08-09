@@ -9,9 +9,10 @@ from typing import Any
 import pytest
 
 from src import v8_historical_acquisition as acquisition
+from src import v8_partition as partition
 
 ROOT = Path(__file__).resolve().parents[1]
-SYNTHETIC_PARTITION_MANIFEST_SHA256 = "s" * 64
+SYNTHETIC_IMPLEMENTATION_GIT_COMMIT = "a" * 40
 
 
 @pytest.fixture(autouse=True)
@@ -116,7 +117,8 @@ def acquire_kwargs(output_root, block, tickers, opener, *, sleep_state=None):
         repository_root=ROOT,
         block=block,
         tickers=tickers,
-        partition_manifest_sha256=SYNTHETIC_PARTITION_MANIFEST_SHA256,
+        partition_manifest_sha256="s" * 64,
+        implementation_git_commit=SYNTHETIC_IMPLEMENTATION_GIT_COMMIT,
         opener=opener,
         clock=clock_stub,
         monotonic_clock=lambda: state["now"],
@@ -124,14 +126,201 @@ def acquire_kwargs(output_root, block, tickers, opener, *, sleep_state=None):
     )
 
 
+def _tickers(start: int) -> list[str]:
+    return [f"{code:04d}" for code in range(start, start + 300)]
+
+
+def write_partition_manifest(path: Path, *, t1=None, t2=None, mutation=None) -> dict:
+    """Persist a self-hash-verified synthetic partition fixture."""
+    blocks = {"T0": _tickers(4000), "T1": list(t1 or _tickers(1000)), "T2": list(t2 or _tickers(2000)),
+              "T3": _tickers(3000), "T_spare": _tickers(5000)}
+    manifest = {
+        "schema_version": partition.SCHEMA_VERSION,
+        "study_name": partition.STUDY_NAME,
+        "design_commit": partition.DESIGN_COMMIT,
+        "created_utc": "2026-08-09T00:00:00Z",
+        "source_url": "https://example.invalid/jpx",
+        "source_host": "example.invalid",
+        "source_acquisition_utc": "2026-08-09T00:00:00Z",
+        "source_raw_sha256": "0" * 64,
+        "source_raw_byte_count": 0,
+        "expected_v4_source_raw_sha256": "0" * 64,
+        "source_reproduction_status": "SYNTHETIC",
+        "eligible_ticker_count": 1500,
+        "eligible_ticker_list_sha256": partition.ticker_list_sha256(sum((blocks[key] for key in blocks), [])),
+        "deterministic_ordering_rule": partition.DETERMINISTIC_ORDERING_RULE,
+        "t0_ticker_list_sha256": partition.ticker_list_sha256(blocks["T0"]),
+        "t1_ticker_list_sha256": partition.ticker_list_sha256(blocks["T1"]),
+        "t2_ticker_list_sha256": partition.ticker_list_sha256(blocks["T2"]),
+        "t3_ticker_list_sha256": partition.ticker_list_sha256(blocks["T3"]),
+        "t_spare_ticker_list_sha256": partition.ticker_list_sha256(blocks["T_spare"]),
+        "legacy_exclude_list": [],
+        "legacy_exclude_list_sha256": partition.ticker_list_sha256([]),
+        "block_sizes": {key: len(value) for key, value in blocks.items()},
+        "block_assignments": blocks,
+        "p_hist_start": partition.P_HIST_START,
+        "p_hist_end": partition.P_HIST_END,
+        "t1_role": partition.T1_ROLE,
+        "t2_role": partition.T2_ROLE,
+        "t3_role": partition.T3_ROLE,
+        "t3_price_acquisition_authorized": False,
+    }
+    if mutation is not None:
+        mutation(manifest)
+    manifest["manifest_sha256"] = partition.canonical_sha256(manifest)
+    assert set(manifest) == set(partition.MANIFEST_FIELDS)
+    path.write_bytes(partition.canonical_json_bytes(manifest))
+    return manifest
+
+
+def bound_acquire_kwargs(output_root, partition_manifest_path, block, opener, *, resolver=None):
+    return {
+        "output_root": output_root,
+        "repository_root": ROOT,
+        "partition_manifest_path": partition_manifest_path,
+        "block": block,
+        "opener": opener,
+        "clock": clock_stub,
+        "implementation_git_commit_resolver": resolver or (lambda _: SYNTHETIC_IMPLEMENTATION_GIT_COMMIT),
+        "monotonic_clock": lambda: 0.0,
+        "sleep_fn": lambda _: None,
+    }
+
+
 # ---------------------------------------------------------------------------
-# T1 / T2 allowed, T3 prohibited
+# Validated partition binding
+# ---------------------------------------------------------------------------
+
+
+def test_validated_partition_binding_reaches_fake_t1_transport(tmp_path):
+    partition_path = tmp_path / "partition.json"
+    expected = write_partition_manifest(partition_path)
+    opener = default_opener()
+    manifest = acquisition.acquire_historical_block_bundle(
+        **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
+    )
+    assert opener.calls == expected["block_assignments"]["T1"]
+    assert manifest["partition_manifest_sha256"] == expected["manifest_sha256"]
+    assert manifest["implementation_git_commit"] == SYNTHETIC_IMPLEMENTATION_GIT_COMMIT
+
+
+def test_validated_partition_binding_reaches_fake_t2_transport(tmp_path):
+    partition_path = tmp_path / "partition.json"
+    expected = write_partition_manifest(partition_path)
+    opener = default_opener()
+    manifest = acquisition.acquire_historical_block_bundle(
+        **bound_acquire_kwargs(tmp_path / "private", partition_path, "T2", opener)
+    )
+    assert opener.calls == expected["block_assignments"]["T2"]
+    assert manifest["partition_manifest_sha256"] == expected["manifest_sha256"]
+    assert manifest["sealed"] is True
+
+
+@pytest.mark.parametrize(
+    ("label", "block", "mutation", "t1", "t2"),
+    [
+        ("wrong_schema", "T1", lambda value: value.__setitem__("schema_version", "WRONG"), None, None),
+        ("wrong_study", "T1", lambda value: value.__setitem__("study_name", "WRONG"), None, None),
+        ("wrong_design", "T1", lambda value: value.__setitem__("design_commit", "0" * 40), None, None),
+        ("missing_assignment", "T1", lambda value: value.__setitem__("block_assignments", {}), None, None),
+        ("299_tickers", "T1", None, _tickers(1000)[:-1], None),
+        ("301_tickers", "T1", None, _tickers(1000) + ["1300"], None),
+        ("ticker_hash_mismatch", "T1", lambda value: value.__setitem__("t1_ticker_list_sha256", "0" * 64), None, None),
+    ],
+)
+def test_invalid_partition_binding_blocks_before_network(tmp_path, label, block, mutation, t1, t2):
+    partition_path = tmp_path / f"{label}.json"
+    write_partition_manifest(partition_path, t1=t1, t2=t2, mutation=mutation)
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
+        acquisition.acquire_historical_block_bundle(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, block, opener)
+        )
+    assert opener.calls == []
+
+
+def test_tampered_partition_self_hash_blocks_before_network(tmp_path):
+    partition_path = tmp_path / "partition.json"
+    manifest = write_partition_manifest(partition_path)
+    manifest["study_name"] = "TAMPERED"
+    partition_path.write_bytes(partition.canonical_json_bytes(manifest))
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition.acquire_historical_block_bundle(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
+        )
+    assert excinfo.value.reason == "MANIFEST_SHA_MISMATCH"
+    assert opener.calls == []
+
+
+def test_missing_partition_manifest_blocks_before_network(tmp_path):
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition.acquire_historical_block_bundle(
+            **bound_acquire_kwargs(tmp_path / "private", tmp_path / "missing.json", "T1", opener)
+        )
+    assert excinfo.value.reason == "PARTITION_MANIFEST_READ_FAILED"
+    assert opener.calls == []
+
+
+@pytest.mark.parametrize("block", ("T3", "UNKNOWN"))
+def test_prohibited_or_unknown_block_blocks_before_network(tmp_path, block):
+    partition_path = tmp_path / "partition.json"
+    write_partition_manifest(partition_path)
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
+        acquisition.acquire_historical_block_bundle(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, block, opener)
+        )
+    assert opener.calls == []
+
+
+def test_caller_cannot_spoof_partition_hash_or_substitute_tickers(tmp_path):
+    partition_path = tmp_path / "partition.json"
+    write_partition_manifest(partition_path)
+    opener = default_opener()
+    kwargs = bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
+    with pytest.raises(TypeError):
+        acquisition.acquire_historical_block_bundle(**kwargs, partition_manifest_sha256="0" * 64)
+    with pytest.raises(TypeError):
+        acquisition.acquire_historical_block_bundle(**kwargs, tickers=["9999"])
+    assert opener.calls == []
+
+
+def test_implementation_provenance_failure_blocks_before_network(tmp_path):
+    partition_path = tmp_path / "partition.json"
+    write_partition_manifest(partition_path)
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
+        acquisition.acquire_historical_block_bundle(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener, resolver=lambda _: "not-a-sha")
+        )
+    assert opener.calls == []
+
+
+def test_implementation_provenance_unavailable_blocks_before_network(tmp_path):
+    partition_path = tmp_path / "partition.json"
+    write_partition_manifest(partition_path)
+    opener = default_opener()
+
+    def unavailable(_):
+        raise acquisition.V8HistoricalAcquisitionBlocked("IMPLEMENTATION_GIT_COMMIT_UNAVAILABLE")
+
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
+        acquisition.acquire_historical_block_bundle(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener, resolver=unavailable)
+        )
+    assert opener.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Raw transport regression (private validated-input helper)
 # ---------------------------------------------------------------------------
 
 
 def test_t1_acquisition_allowed_and_manifest_shape(tmp_path):
     opener = default_opener()
-    manifest = acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001", "1002"], opener))
+    manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001", "1002"], opener))
     assert set(manifest) == set(acquisition.ACQUISITION_MANIFEST_FIELDS)
     assert manifest["block"] == "T1"
     assert manifest["role"] == "VALIDATION"
@@ -143,7 +332,7 @@ def test_t1_acquisition_allowed_and_manifest_shape(tmp_path):
 
 def test_t2_acquisition_allowed_and_sealed(tmp_path):
     opener = default_opener()
-    manifest = acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T2", ["2001", "2002"], opener))
+    manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T2", ["2001", "2002"], opener))
     assert manifest["block"] == "T2"
     assert manifest["role"] == "SEALED_HOLDOUT"
     assert manifest["status"] == "RAW_ACQUIRED_SEALED"
@@ -153,7 +342,7 @@ def test_t2_acquisition_allowed_and_sealed(tmp_path):
 
 def test_t2_publishes_sealed_json(tmp_path):
     opener = default_opener()
-    acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T2", ["2001"], opener))
+    acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T2", ["2001"], opener))
     sealed_path = tmp_path / "root" / acquisition.ACQUISITIONS_DIRNAME / "T2" / acquisition.SEALED_FILENAME
     assert sealed_path.exists()
     record = json.loads(sealed_path.read_bytes())
@@ -163,7 +352,7 @@ def test_t2_publishes_sealed_json(tmp_path):
 
 def test_t1_does_not_publish_sealed_json(tmp_path):
     opener = default_opener()
-    acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+    acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     sealed_path = tmp_path / "root" / acquisition.ACQUISITIONS_DIRNAME / "T1" / acquisition.SEALED_FILENAME
     assert not sealed_path.exists()
 
@@ -171,7 +360,7 @@ def test_t1_does_not_publish_sealed_json(tmp_path):
 def test_t3_acquisition_always_blocked(tmp_path):
     opener = default_opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T3", ["3001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T3", ["3001"], opener))
     assert excinfo.value.reason.startswith("V8_BLOCK_ACQUISITION_PROHIBITED")
     assert opener.calls == []
 
@@ -180,7 +369,7 @@ def test_t3_acquisition_always_blocked(tmp_path):
 def test_only_t1_and_t2_are_ever_accepted(tmp_path, block):
     opener = default_opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", block, ["1001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", block, ["1001"], opener))
     assert excinfo.value.reason.startswith("V8_BLOCK_ACQUISITION_PROHIBITED")
     assert opener.calls == []
 
@@ -193,21 +382,21 @@ def test_only_t1_and_t2_are_ever_accepted(tmp_path, block):
 def test_wrong_response_host_blocks(tmp_path):
     opener = FakeOpener(lambda t: synthetic_payload(t, DEFAULT_DATES), host="evil.example.com")
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     assert "RESPONSE_HOST_MISMATCH" in excinfo.value.reason
 
 
 def test_symbol_mismatch_blocks(tmp_path):
     opener = FakeOpener(lambda t: synthetic_payload(t, DEFAULT_DATES, symbol_override="9999"))
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     assert "SYMBOL_MISMATCH" in excinfo.value.reason
 
 
 def test_malformed_ohlcv_blocks(tmp_path):
     opener = FakeOpener(lambda t: synthetic_payload(t, DEFAULT_DATES, bad_row_index=0))
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     assert excinfo.value.reason.startswith("MALFORMED_OHLCV")
 
 
@@ -235,21 +424,21 @@ def test_nonfinite_data_blocks(tmp_path):
 
     opener = FakeOpener(payload)
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     assert excinfo.value.reason.startswith("MALFORMED_OHLCV")
 
 
 def test_duplicate_timestamp_blocks(tmp_path):
     opener = FakeOpener(lambda t: synthetic_payload(t, DEFAULT_DATES, duplicate=True))
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
 
 
 def test_out_of_range_rows_block(tmp_path):
     out_of_range_dates = [(2015, 12, 31)]  # before REQUEST_START
     opener = FakeOpener(lambda t: synthetic_payload(t, out_of_range_dates))
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     assert "OUT_OF_REQUEST_WINDOW" in excinfo.value.reason
 
 
@@ -266,14 +455,14 @@ def test_http_error_blocks_and_counts_429(tmp_path):
 
     opener = Http429Opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     assert "HTTP_STATUS_429" in excinfo.value.reason
 
 
 def test_empty_timestamp_response_blocks(tmp_path):
     opener = FakeOpener(lambda t: synthetic_payload(t, [], empty=True))
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +472,7 @@ def test_empty_timestamp_response_blocks(tmp_path):
 
 def test_payload_manifest_records_exact_raw_sha(tmp_path):
     opener = default_opener()
-    manifest = acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+    manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     record = manifest["payload_manifest"][0]
     raw_path = tmp_path / "root" / acquisition.ACQUISITIONS_DIRNAME / "T1" / acquisition.RAW_DIRNAME / "1001.json"
     raw_bytes = raw_path.read_bytes()
@@ -295,7 +484,7 @@ def test_payload_manifest_records_exact_raw_sha(tmp_path):
 
 def test_atomic_publish_no_staging_left_behind(tmp_path):
     opener = default_opener()
-    acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+    acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     acquisitions_root = tmp_path / "root" / acquisition.ACQUISITIONS_DIRNAME
     remaining = {entry.name for entry in acquisitions_root.iterdir()}
     assert remaining == {"T1"}
@@ -304,7 +493,7 @@ def test_atomic_publish_no_staging_left_behind(tmp_path):
 def test_atomic_publish_removes_staging_on_failure(tmp_path):
     opener = FakeOpener(lambda t: synthetic_payload(t, DEFAULT_DATES, bad_row_index=0))
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     acquisitions_root = tmp_path / "root" / acquisition.ACQUISITIONS_DIRNAME
     if acquisitions_root.exists():
         remaining = {entry.name for entry in acquisitions_root.iterdir()}
@@ -313,9 +502,9 @@ def test_atomic_publish_removes_staging_on_failure(tmp_path):
 
 def test_overwrite_of_existing_final_bundle_blocked(tmp_path):
     opener = default_opener()
-    acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+    acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], default_opener()))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], default_opener()))
     assert excinfo.value.reason.startswith("V8_ACQUISITION_ALREADY_EXISTS")
 
 
@@ -323,7 +512,7 @@ def test_output_root_inside_repository_blocked(tmp_path):
     opener = default_opener()
     inside_repo = ROOT / "tmp-v8-acquisition-test-root"
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(inside_repo, "T1", ["1001"], opener))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(inside_repo, "T1", ["1001"], opener))
     assert excinfo.value.reason == "OUTPUT_PATH_INSIDE_SOURCE_REPOSITORY"
     assert not inside_repo.exists()
 
@@ -342,9 +531,10 @@ def test_rate_limit_spacing_at_least_two_seconds(tmp_path):
         sleep_calls.append(seconds)
         state["now"] += seconds
 
-    manifest = acquisition.acquire_historical_block_bundle(
+    manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(
         output_root=tmp_path / "root", repository_root=ROOT, block="T1",
-        tickers=["1001", "1002", "1003"], partition_manifest_sha256=SYNTHETIC_PARTITION_MANIFEST_SHA256,
+        tickers=["1001", "1002", "1003"], partition_manifest_sha256="s" * 64,
+        implementation_git_commit=SYNTHETIC_IMPLEMENTATION_GIT_COMMIT,
         opener=opener, clock=clock_stub, monotonic_clock=lambda: state["now"], sleep_fn=sleep_fn,
     )
     assert len(sleep_calls) == 2  # 3 tickers -> 2 gaps
@@ -355,7 +545,7 @@ def test_rate_limit_spacing_at_least_two_seconds(tmp_path):
 def test_exactly_one_request_per_ticker(tmp_path):
     opener = default_opener()
     tickers = ["1001", "1002", "1003", "1004"]
-    manifest = acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", tickers, opener))
+    manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", tickers, opener))
     assert opener.calls == tickers
     assert manifest["request_count"] == len(tickers)
     assert manifest["success_transport_count"] == len(tickers)
@@ -377,7 +567,7 @@ def test_retry_count_always_zero_even_after_a_later_error(tmp_path):
             return FakeResponse(payload, url=f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}.T")
 
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
-        acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001", "1002", "1003"], RaisingOpener()))
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001", "1002", "1003"], RaisingOpener()))
     assert calls == ["1001", "1002"]  # stopped at first failure, never retried, never reached 1003
 
 
@@ -392,7 +582,7 @@ def test_no_parallel_path_calls_are_strictly_sequential(tmp_path):
             order.append("end:" + ticker)
             return FakeResponse(payload, url=f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}.T")
 
-    acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001", "1002"], SequentialTrackingOpener()))
+    acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001", "1002"], SequentialTrackingOpener()))
     assert order == ["start:1001", "end:1001", "start:1002", "end:1002"]
 
 
@@ -403,7 +593,7 @@ def test_no_parallel_path_calls_are_strictly_sequential(tmp_path):
 
 def test_t1_validation_access_count_remains_zero(tmp_path):
     opener = default_opener()
-    manifest = acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+    manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     assert manifest["validation_access_count"] == 0
     assert manifest["feature_computation_count"] == 0
     assert manifest["outcome_access_count"] == 0
@@ -411,7 +601,7 @@ def test_t1_validation_access_count_remains_zero(tmp_path):
 
 def test_t2_seal_counters_remain_zero(tmp_path):
     opener = default_opener()
-    manifest = acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T2", ["2001"], opener))
+    manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T2", ["2001"], opener))
     assert manifest["feature_computation_count"] == 0
     assert manifest["outcome_access_count"] == 0
     assert manifest["sealed_holdout_access_count"] == 0
@@ -419,7 +609,7 @@ def test_t2_seal_counters_remain_zero(tmp_path):
 
 def test_no_feature_or_profit_fields_in_manifest(tmp_path):
     opener = default_opener()
-    manifest = acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+    manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     text = json.dumps(manifest, default=str).lower()
     for token in (
         "return_", "moving_average", "realized_volatility", "signal_",
@@ -430,7 +620,7 @@ def test_no_feature_or_profit_fields_in_manifest(tmp_path):
 
 def test_no_raw_price_values_in_manifest(tmp_path):
     opener = default_opener()
-    manifest = acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+    manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     text = json.dumps(manifest, default=str)
     assert "1000.0" not in text
     assert "1002.0" not in text
@@ -438,7 +628,7 @@ def test_no_raw_price_values_in_manifest(tmp_path):
 
 def test_read_acquisition_manifest_matches_written(tmp_path):
     opener = default_opener()
-    written = acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+    written = acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     reread = acquisition.read_acquisition_manifest(tmp_path / "root", "T1")
     assert reread == written
 
@@ -460,7 +650,7 @@ GUARD_FUNCTIONS = (
 @pytest.mark.parametrize("guard", GUARD_FUNCTIONS, ids=[fn.__name__ for fn in GUARD_FUNCTIONS])
 def test_guard_blocks_sealed_t2_for_every_operation(tmp_path, guard):
     opener = default_opener()
-    acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T2", ["2001"], opener))
+    acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T2", ["2001"], opener))
     manifest = acquisition.read_acquisition_manifest(tmp_path / "root", "T2")
     with pytest.raises(acquisition.V8SealedHoldoutBlocked) as excinfo:
         guard(manifest)
@@ -470,7 +660,7 @@ def test_guard_blocks_sealed_t2_for_every_operation(tmp_path, guard):
 @pytest.mark.parametrize("guard", GUARD_FUNCTIONS, ids=[fn.__name__ for fn in GUARD_FUNCTIONS])
 def test_guard_blocks_unauthorized_t1_for_every_operation(tmp_path, guard):
     opener = default_opener()
-    acquisition.acquire_historical_block_bundle(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
+    acquisition._acquire_historical_block_bundle_with_validated_inputs(**acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener))
     manifest = acquisition.read_acquisition_manifest(tmp_path / "root", "T1")
     with pytest.raises(acquisition.V8SealedHoldoutBlocked) as excinfo:
         guard(manifest)

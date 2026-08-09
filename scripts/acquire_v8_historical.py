@@ -29,7 +29,7 @@ from src.v8_historical_acquisition import (
     REQUEST_START,
     V8HistoricalAcquisitionBlocked,
     V8SealedHoldoutBlocked,
-    acquire_historical_block_bundle,
+    _acquire_historical_block_bundle_with_validated_inputs,
     open_for_backtest,
     open_for_candidate_generation,
     open_for_feature_generation,
@@ -41,6 +41,7 @@ from src.v8_historical_acquisition import (
 T1_TICKERS = ("9101", "9102", "9103")
 T2_TICKERS = ("9201", "9202", "9203")
 SYNTHETIC_PARTITION_MANIFEST_SHA256 = "s" * 64  # not a real partition manifest
+SYNTHETIC_IMPLEMENTATION_GIT_COMMIT = "a" * 40
 
 
 def _epoch(year: int, month: int, day: int) -> int:
@@ -110,12 +111,13 @@ def run_synthetic_acquisition_test() -> dict[str, Any]:
             fake_clock_state["now"] += seconds
 
         opener_t1 = FakeYahooOpener(base_price=1000.0)
-        manifest_t1 = acquire_historical_block_bundle(
+        manifest_t1 = _acquire_historical_block_bundle_with_validated_inputs(
             output_root=output_root,
             repository_root=ROOT,
             block="T1",
             tickers=T1_TICKERS,
             partition_manifest_sha256=SYNTHETIC_PARTITION_MANIFEST_SHA256,
+            implementation_git_commit=SYNTHETIC_IMPLEMENTATION_GIT_COMMIT,
             opener=opener_t1,
             clock=lambda: datetime(2026, 8, 9, tzinfo=timezone.utc),
             monotonic_clock=lambda: fake_clock_state["now"],
@@ -127,12 +129,13 @@ def run_synthetic_acquisition_test() -> dict[str, Any]:
             raise AssertionError("T1_VALIDATION_ACCESS_COUNT_NOT_ZERO")
 
         opener_t2 = FakeYahooOpener(base_price=2000.0)
-        manifest_t2 = acquire_historical_block_bundle(
+        manifest_t2 = _acquire_historical_block_bundle_with_validated_inputs(
             output_root=output_root,
             repository_root=ROOT,
             block="T2",
             tickers=T2_TICKERS,
             partition_manifest_sha256=SYNTHETIC_PARTITION_MANIFEST_SHA256,
+            implementation_git_commit=SYNTHETIC_IMPLEMENTATION_GIT_COMMIT,
             opener=opener_t2,
             clock=lambda: datetime(2026, 8, 9, tzinfo=timezone.utc),
             monotonic_clock=lambda: fake_clock_state["now"],
@@ -146,12 +149,13 @@ def run_synthetic_acquisition_test() -> dict[str, Any]:
         # T3 acquisition must always BLOCK, with no bypass.
         t3_blocked = False
         try:
-            acquire_historical_block_bundle(
+            _acquire_historical_block_bundle_with_validated_inputs(
                 output_root=output_root,
                 repository_root=ROOT,
                 block="T3",
                 tickers=("9301",),
                 partition_manifest_sha256=SYNTHETIC_PARTITION_MANIFEST_SHA256,
+                implementation_git_commit=SYNTHETIC_IMPLEMENTATION_GIT_COMMIT,
                 opener=FakeYahooOpener(base_price=3000.0),
                 clock=lambda: datetime(2026, 8, 9, tzinfo=timezone.utc),
             )

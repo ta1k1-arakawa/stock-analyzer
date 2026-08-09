@@ -150,6 +150,15 @@ def _ticker_list_sha(tickers: Sequence[str]) -> str:
     return sha256_bytes(("\n".join(tickers) + "\n").encode("utf-8"))
 
 
+def ticker_list_sha256(tickers: Sequence[str]) -> str:
+    """Return the frozen V8 canonical ticker-list SHA-256.
+
+    This public wrapper is the single authoritative reusable implementation
+    for consumers that need to verify a persisted partition assignment.
+    """
+    return _ticker_list_sha(tickers)
+
+
 # ---------------------------------------------------------------------------
 # Official V4 provenance (read, never re-hardcoded)
 # ---------------------------------------------------------------------------
@@ -570,6 +579,7 @@ __all__ = [
     "read_partition_manifest",
     "require_absolute_output_path_outside_repository",
     "sha256_bytes",
+    "ticker_list_sha256",
     "verify_t0_reproduction",
     "write_partition_manifest_once",
 ]
