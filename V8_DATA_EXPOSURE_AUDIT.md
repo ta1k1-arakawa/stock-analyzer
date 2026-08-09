@@ -621,3 +621,75 @@ fresh_certified=0
 
 `fresh_certified=0` is intentional. This audit certifies nothing as fresh; it
 only identifies candidates and the confirmation each would require.
+
+---
+
+## Appendix A — Human design review note (append-only, 2026-08-09)
+
+```text
+note_type=APPEND_ONLY_REVIEW_NOTE
+note_date=2026-08-09
+audit_findings_modified=false
+audit_classifications_modified=false
+audit_tables_modified=false
+```
+
+**No audit fact, classification, table, hash or `UNKNOWN_EXPOSURE` entry above
+has been changed by this note.** Sections 0–10 stand exactly as originally
+recorded. This appendix records only how the human design review of
+2026-08-09 disposed of the candidates this audit identified, so that a later
+reader can see which findings were acted on and which were deferred.
+
+### A.1 Disposition of the `POTENTIALLY_FRESH_HISTORICAL` candidates
+
+| Candidate | Audit §  | Disposition in frozen V8 design |
+|---|---|---|
+| F-1 — cross-sectional, ~2,808–2,815 never-acquired eligible codes | §6.1 | **Adopted** as the basis of the fresh layers. Cut into `T1` (validation, 300), `T2` (sealed holdout, 300), `T3` (reserve, 300, unused in initial V8), `T_spare` (remainder) |
+| F-2 — pre-2015 history | §6.2 | **Deferred.** Not acquired for initial V8. May later be acquired for Layer A regime expansion only, under a separate human gate |
+| F-3 — 2026-01-31 → 2026-08-07 | §6.3 | **Not used**, consistent with the audit's own "not recommended as a sealed holdout" |
+
+`fresh_certified` remains **0**. Adopting F-1 as the basis for `T1`/`T2` is a
+design allocation, not a freshness certification; §6.4's confirmation steps
+still apply in full before any block is treated as a holdout.
+
+### A.2 Audit findings promoted into binding design constraints
+
+Three findings became hard constraints rather than advisory notes:
+
+1. **§1.2 / §2.1 — the complete eligible-3,115 ticker list is not committed.**
+   The frozen design makes this a BLOCK condition: if exact source-list
+   reproducibility cannot be demonstrated when the partition manifest is built,
+   the work stops and no block assignment is written.
+2. **§2.1 note 2 — only `4188` of the eight legacy codes is inside `T0`.** The
+   other seven are excluded from `T1`, `T2`, `T3` and `T_spare` by an explicit
+   exclude list recorded in the partition manifest.
+3. **§6.1 limit 1 and §9 finding 5 — fresh tickers do not remove survivorship
+   bias.** The frozen design constrains the permitted meaning of a sealed-holdout
+   PASS and enumerates prohibited claim phrasings.
+
+### A.3 Spans confirmed unused by initial V8
+
+Initial V8 uses `P_hist = 2016-04-01 → 2025-12-31` only. Consequently these
+audited spans are **not** consumed by initial V8:
+
+```text
+pre_2015_used_by_initial_v8=false
+2026-01-31..2026-08-07_used_by_initial_v8=false
+v7_forward_window_2026-08-08_onward_used_by_initial_v8=false
+v7_feature_seed_span_used_by_initial_v8=false
+```
+
+The V7 feature-seed overlap identified in audit §3.9 and §8 therefore does not
+arise in initial V8. Should a future V8 phase use any of these spans, the
+shared-lineage disclosure requirement of audit §8 applies unchanged.
+
+### A.4 Unchanged
+
+```text
+unknown_exposure_items=7               # unchanged, all still treated as contaminated
+contamination_classifications=unchanged
+project_research_conclusion_modified=false
+past_verdicts_reopened=false
+v7_artifacts_modified=false
+network_requests=0
+```
