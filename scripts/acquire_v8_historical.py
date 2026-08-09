@@ -1,13 +1,11 @@
-"""Synthetic-only V8 raw historical acquisition check.
+"""V8 raw historical acquisition CLI: synthetic check and production runner.
 
-This CLI has no real-network, real-output-root, or real-partition option,
-and no bypass flag of any kind (no ``--skip-source-hash``, ``--force``,
-``--ignore-parity``, or similar). It builds a fully local synthetic ticker
-fixture and OHLCV payload generator in a temporary workspace, drives the
-production T1 and T2 acquisition paths with a fake opener (zero real HTTP
-requests), proves T3 acquisition is unconditionally rejected, and proves the
-T2 sealed-holdout access guard blocks every official research entry point.
-It never touches the real Yahoo host or any real private V8 storage.
+``--synthetic-test`` is unchanged and uses only local fixtures. The mutually
+exclusive ``--production-acquire`` path requires block, persisted partition
+manifest, private output root, and a block-specific confirmation. It delegates
+all integrity, provenance, storage, and T1/T2 enforcement to the public
+manifest-bound acquisition API; it exposes no ticker, hash, date, retry, host,
+T3, or seal-bypass override. Tests inject a fake opener and never contact Yahoo.
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ import argparse
 import json
 import sys
 import tempfile
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,7 @@ from src.v8_historical_acquisition import (
     V8HistoricalAcquisitionBlocked,
     V8SealedHoldoutBlocked,
     _acquire_historical_block_bundle_with_validated_inputs,
+    acquire_historical_block_bundle,
     open_for_backtest,
     open_for_candidate_generation,
     open_for_feature_generation,
@@ -42,6 +42,10 @@ T1_TICKERS = ("9101", "9102", "9103")
 T2_TICKERS = ("9201", "9202", "9203")
 SYNTHETIC_PARTITION_MANIFEST_SHA256 = "s" * 64  # not a real partition manifest
 SYNTHETIC_IMPLEMENTATION_GIT_COMMIT = "a" * 40
+PRODUCTION_CONFIRMATIONS = {
+    "T1": "V8_PRODUCTION_ACQUIRE_T1",
+    "T2": "V8_PRODUCTION_ACQUIRE_T2",
+}
 
 
 def _epoch(year: int, month: int, day: int) -> int:
@@ -211,11 +215,94 @@ def run_synthetic_acquisition_test() -> dict[str, Any]:
     }
 
 
+def _utc_clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def run_production_acquisition(
+    *,
+    block: str,
+    partition_manifest_path: Path,
+    output_root: Path,
+    opener: Any = urllib.request.urlopen,
+    clock: Any = _utc_clock,
+    implementation_git_commit_resolver: Any = None,
+    monotonic_clock: Any = None,
+    sleep_fn: Any = None,
+) -> dict[str, Any]:
+    """Run one manifest-bound production acquisition without CLI overrides.
+
+    The public acquisition API owns all manifest, identity, ticker, hash,
+    provenance, storage, and block validation. Optional injected callables are
+    for fake-only tests; the CLI never exposes them as user inputs.
+    """
+    kwargs: dict[str, Any] = {
+        "output_root": output_root,
+        "repository_root": ROOT,
+        "block": block,
+        "partition_manifest_path": partition_manifest_path,
+        "opener": opener,
+        "clock": clock,
+    }
+    if implementation_git_commit_resolver is not None:
+        kwargs["implementation_git_commit_resolver"] = implementation_git_commit_resolver
+    if monotonic_clock is not None:
+        kwargs["monotonic_clock"] = monotonic_clock
+    if sleep_fn is not None:
+        kwargs["sleep_fn"] = sleep_fn
+    manifest = acquire_historical_block_bundle(**kwargs)
+    return {
+        "status": "PASS",
+        "mode": "PRODUCTION",
+        "block": manifest["block"],
+        "role": manifest["role"],
+        "acquisition_manifest_path": str(
+            Path(output_root) / "acquisitions" / manifest["block"] / "acquisition_manifest.json"
+        ),
+        "partition_manifest_sha256": manifest["partition_manifest_sha256"],
+        "implementation_git_commit": manifest["implementation_git_commit"],
+        "sealed": manifest["sealed"],
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="V8 historical acquisition CLI")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--synthetic-test", action="store_true")
+    mode.add_argument("--production-acquire", action="store_true")
+    parser.add_argument("--block", default=None)
+    parser.add_argument("--partition-manifest", default=None)
+    parser.add_argument("--output-root", default=None)
+    parser.add_argument("--confirmation", default=None)
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="V8 historical acquisition synthetic-only check")
-    parser.add_argument("--synthetic-test", action="store_true", required=True)
-    parser.parse_args(argv)
-    result = run_synthetic_acquisition_test()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.synthetic_test:
+        result = run_synthetic_acquisition_test()
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
+        return 0
+
+    if not args.block or not args.partition_manifest or not args.output_root or not args.confirmation:
+        parser.error("--production-acquire requires --block, --partition-manifest, --output-root, and --confirmation")
+    expected_confirmation = PRODUCTION_CONFIRMATIONS.get(args.block)
+    if expected_confirmation is None:
+        print(json.dumps({"status": "BLOCKED", "reason": "V8_BLOCK_ACQUISITION_PROHIBITED:" + args.block}, sort_keys=True))
+        return 2
+    if args.confirmation != expected_confirmation:
+        print(json.dumps({"status": "BLOCKED", "reason": "CONFIRMATION_MISMATCH"}, sort_keys=True))
+        return 2
+    try:
+        result = run_production_acquisition(
+            block=args.block,
+            partition_manifest_path=Path(args.partition_manifest),
+            output_root=Path(args.output_root),
+        )
+    except V8HistoricalAcquisitionBlocked as error:
+        print(json.dumps({"status": "BLOCKED", "reason": error.reason}, sort_keys=True))
+        return 2
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
     return 0
 

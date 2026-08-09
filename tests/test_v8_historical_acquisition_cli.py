@@ -5,12 +5,14 @@ import json
 import subprocess
 import sys
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from scripts import acquire_v8_historical as cli
 from src import v8_historical_acquisition as acquisition
+from src import v8_partition as partition
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "acquire_v8_historical.py"
@@ -36,7 +38,7 @@ def synthetic_result():
 # ---------------------------------------------------------------------------
 
 
-def test_cli_has_exactly_one_authorized_option():
+def _cli_options() -> set[str]:
     tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
     options = {
         node.args[0].value
@@ -49,28 +51,27 @@ def test_cli_has_exactly_one_authorized_option():
         and isinstance(node.args[0].value, str)
         and node.args[0].value.startswith("--")
     }
-    assert options == {"--synthetic-test"}
+    return options
 
 
-def test_cli_has_no_partition_flag_or_bypass_flag():
+def test_cli_has_exactly_authorized_options():
+    assert _cli_options() == {
+        "--synthetic-test", "--production-acquire", "--block",
+        "--partition-manifest", "--output-root", "--confirmation",
+    }
+
+
+def test_cli_has_no_ticker_or_bypass_override():
     """Checks actual add_argument() calls via AST, not raw source text --
     this file's own docstring names the forbidden flags as examples of what
     must NOT exist, so a substring search over the whole source would false-
     positive on its own documentation."""
-    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
-    options = {
-        node.args[0].value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "add_argument"
-        and node.args
-        and isinstance(node.args[0], ast.Constant)
-        and isinstance(node.args[0].value, str)
-    }
+    options = _cli_options()
     for flag in (
-        "--partition", "--skip-source-hash", "--force", "--ignore-parity",
-        "--real", "--output-root", "--network", "--all",
+        "--tickers", "--ticker-file", "--ticker-list", "--partition-manifest-sha",
+        "--implementation-git-commit", "--yahoo-host", "--request-start", "--request-end",
+        "--retry-count", "--force", "--override", "--allow-t3", "--open-t2", "--unseal",
+        "--authorize-research-access", "--skip-source-hash", "--ignore-parity", "--network", "--all",
     ):
         assert flag not in options
 
@@ -86,6 +87,121 @@ def test_cli_subprocess_rejects_unknown_option():
         [PYTHON, str(SCRIPT), "--partition", "T3"], cwd=str(ROOT), capture_output=True, text=True, timeout=120
     )
     assert result.returncode != 0
+
+
+def _tickers(start: int) -> list[str]:
+    return [f"{code:04d}" for code in range(start, start + 300)]
+
+
+def write_partition_manifest(path: Path, *, mutation=None) -> dict:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    blocks = {"T0": _tickers(4000), "T1": _tickers(1000), "T2": _tickers(2000),
+              "T3": _tickers(3000), "T_spare": _tickers(5000)}
+    manifest = {
+        "schema_version": partition.SCHEMA_VERSION, "study_name": partition.STUDY_NAME,
+        "design_commit": partition.DESIGN_COMMIT, "created_utc": "2026-08-09T00:00:00Z",
+        "source_url": "https://example.invalid/jpx", "source_host": "example.invalid",
+        "source_acquisition_utc": "2026-08-09T00:00:00Z", "source_raw_sha256": "0" * 64,
+        "source_raw_byte_count": 0, "expected_v4_source_raw_sha256": "0" * 64,
+        "source_reproduction_status": "SYNTHETIC", "eligible_ticker_count": 1500,
+        "eligible_ticker_list_sha256": partition.ticker_list_sha256(sum((blocks[key] for key in blocks), [])),
+        "deterministic_ordering_rule": partition.DETERMINISTIC_ORDERING_RULE,
+        "t0_ticker_list_sha256": partition.ticker_list_sha256(blocks["T0"]),
+        "t1_ticker_list_sha256": partition.ticker_list_sha256(blocks["T1"]),
+        "t2_ticker_list_sha256": partition.ticker_list_sha256(blocks["T2"]),
+        "t3_ticker_list_sha256": partition.ticker_list_sha256(blocks["T3"]),
+        "t_spare_ticker_list_sha256": partition.ticker_list_sha256(blocks["T_spare"]),
+        "legacy_exclude_list": [], "legacy_exclude_list_sha256": partition.ticker_list_sha256([]),
+        "block_sizes": {key: len(value) for key, value in blocks.items()}, "block_assignments": blocks,
+        "p_hist_start": partition.P_HIST_START, "p_hist_end": partition.P_HIST_END,
+        "t1_role": partition.T1_ROLE, "t2_role": partition.T2_ROLE, "t3_role": partition.T3_ROLE,
+        "t3_price_acquisition_authorized": False,
+    }
+    if mutation:
+        mutation(manifest)
+    manifest["manifest_sha256"] = partition.canonical_sha256(manifest)
+    path.write_bytes(partition.canonical_json_bytes(manifest))
+    return manifest
+
+
+def production_kwargs(tmp_path, block="T1", *, mutation=None):
+    partition_path = tmp_path / "partition.json"
+    manifest = write_partition_manifest(partition_path, mutation=mutation)
+    opener = cli.FakeYahooOpener(base_price=1000.0)
+    return manifest, opener, {
+        "block": block, "partition_manifest_path": partition_path, "output_root": tmp_path / "private",
+        "opener": opener, "clock": lambda: datetime(2026, 8, 9, tzinfo=timezone.utc),
+        "implementation_git_commit_resolver": lambda _: "a" * 40,
+        "monotonic_clock": lambda: 0.0, "sleep_fn": lambda _: None,
+    }
+
+
+def test_cli_modes_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        cli.main(["--synthetic-test", "--production-acquire"])
+
+
+@pytest.mark.parametrize("args", (
+    ["--production-acquire"],
+    ["--production-acquire", "--block", "T1"],
+    ["--production-acquire", "--block", "T1", "--partition-manifest", "C:/missing.json"],
+    ["--production-acquire", "--block", "T1", "--partition-manifest", "C:/missing.json", "--output-root", "C:/private"],
+))
+def test_production_cli_requires_all_inputs_before_runner(monkeypatch, args):
+    monkeypatch.setattr(cli, "run_production_acquisition", lambda **_: pytest.fail("runner reached"))
+    with pytest.raises(SystemExit):
+        cli.main(args)
+
+
+def test_production_cli_wrong_confirmation_blocks_before_runner(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "run_production_acquisition", lambda **_: pytest.fail("runner reached"))
+    assert cli.main(["--production-acquire", "--block", "T1", "--partition-manifest", "C:/x", "--output-root", "C:/y", "--confirmation", "WRONG"]) == 2
+    assert json.loads(capsys.readouterr().out) == {"reason": "CONFIRMATION_MISMATCH", "status": "BLOCKED"}
+
+
+@pytest.mark.parametrize("block", ("T3", "UNKNOWN"))
+def test_production_cli_invalid_block_blocks_before_runner(monkeypatch, capsys, block):
+    monkeypatch.setattr(cli, "run_production_acquisition", lambda **_: pytest.fail("runner reached"))
+    assert cli.main(["--production-acquire", "--block", block, "--partition-manifest", "C:/x", "--output-root", "C:/y", "--confirmation", "anything"]) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "BLOCKED"
+
+
+@pytest.mark.parametrize("block, role, sealed", (("T1", "VALIDATION", False), ("T2", "SEALED_HOLDOUT", True)))
+def test_production_runner_reaches_only_fake_transport(tmp_path, block, role, sealed):
+    manifest, opener, kwargs = production_kwargs(tmp_path, block)
+    result = cli.run_production_acquisition(**kwargs)
+    assert opener.calls == manifest["block_assignments"][block]
+    assert result["role"] == role and result["sealed"] is sealed
+    assert result["partition_manifest_sha256"] == manifest["manifest_sha256"]
+
+
+@pytest.mark.parametrize("mutation", (
+    lambda value: value.__setitem__("study_name", "WRONG"),
+    lambda value: value.__setitem__("t1_ticker_list_sha256", "0" * 64),
+))
+def test_production_runner_binding_failure_blocks_before_network(tmp_path, mutation):
+    _, opener, kwargs = production_kwargs(tmp_path, mutation=mutation)
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
+        cli.run_production_acquisition(**kwargs)
+    assert opener.calls == []
+
+
+def test_production_runner_storage_and_provenance_fail_closed(tmp_path):
+    _, opener, kwargs = production_kwargs(tmp_path)
+    kwargs["output_root"] = Path("relative-private")
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
+        cli.run_production_acquisition(**kwargs)
+    assert opener.calls == []
+    _, opener, kwargs = production_kwargs(tmp_path / "inside-repository")
+    kwargs["output_root"] = ROOT / "would-be-private-v8-storage"
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
+        cli.run_production_acquisition(**kwargs)
+    assert opener.calls == []
+    _, opener, kwargs = production_kwargs(tmp_path / "provenance")
+    kwargs["implementation_git_commit_resolver"] = lambda _: "invalid"
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
+        cli.run_production_acquisition(**kwargs)
+    assert opener.calls == []
 
 
 @pytest.mark.slow
