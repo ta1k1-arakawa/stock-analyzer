@@ -29,9 +29,9 @@
   },
 
   "static_implementation": {
-    "code_commit": "172f35d1fa747ffb4acb006a0f59c36700cd53a3",
+    "code_commit": "297cb8aa599a74bd9a09953ce7acae10c9cfec95",
     "commit_meaning": "Latest code-and-test remediation commit; documentation-only synchronization commits are intentionally not represented here. Verify current remote HEAD separately before acting.",
-    "verdict": "V8_SECOND_CRITICAL_REMEDIATION_PENDING_REVIEW",
+    "verdict": "V8_PARTITION_PRODUCTION_BOUNDARY_REMEDIATION_PENDING_REVIEW",
     "files": [
       "src/v8_partition.py",
       "src/v8_historical_acquisition.py",
@@ -43,13 +43,14 @@
       "tests/test_v8_historical_acquisition_cli.py",
       "V8_TRUSTED_PARTITION.json"
     ],
-    "test_count": 199,
+    "test_count": 206,
     "tests_passing": true,
     "cli_flags": {
       "build_v8_partition_manifest.py": ["--synthetic-test", "--production-build-manifest", "--output-path", "--confirmation"],
       "acquire_v8_historical.py": ["--synthetic-test", "--production-acquire", "--block", "--partition-manifest", "--output-root", "--confirmation"]
     },
     "production_partition_runner_exists": true,
+    "partition_public_dependency_injection": "CLOSED_PENDING_REVIEW",
     "production_acquisition_runner_exists": true,
     "acquisition_bound_to_validated_partition_manifest": true,
     "implementation_commit_provenance": true,
@@ -120,7 +121,7 @@
     {
       "id": "FINDING_1",
       "title": "Production partition and acquisition runners implemented",
-      "detail": "The production partition-manifest runner is implemented as --production-build-manifest and the production acquisition runner is implemented as --production-acquire. Previous independent reviews BLOCKed the paths; the second remediation hardens the public acquisition boundary, Git-HEAD trust-anchor read, fixed dates, and exact JPX/Yahoo origins. It awaits independent retest.",
+      "detail": "The production partition-manifest runner is implemented as --production-build-manifest and the production acquisition runner is implemented as --production-acquire. Previous independent reviews BLOCKed the paths; the latest remediation closes public partition dependency injection so its public runner accepts only output_path, while the second remediation hardens the acquisition boundary, Git-HEAD trust-anchor read, fixed dates, and exact JPX/Yahoo origins. It awaits independent retest.",
       "blocks": "independent critical review retest before any real network authorization",
       "resolved": true
     },

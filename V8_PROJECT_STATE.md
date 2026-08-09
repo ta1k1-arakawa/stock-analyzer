@@ -35,6 +35,7 @@ authorized.
 | 8 | Fail-closed production acquisition CLI/runner | `53c951d4e0dfc9cce92e38a223d74636406c6cce` | Finding 1 resolved; 149 V8 tests passing, fake-only |
 | 9 | First critical-review remediation: trusted partition anchor, GitHub-ref provenance, JPX preflight/redirect hardening, atomic no-overwrite publication | `53556e7fdbaf6f08d72fc216122a25a475dd6c7c` | implementation pending independent retest; fake-only |
 | 10 | Second critical-review remediation: fixed public acquisition boundary, Git-HEAD anchor bytes, fixed dates, production partition metadata checks, and exact JPX/Yahoo origins | `172f35d1fa747ffb4acb006a0f59c36700cd53a3` | implementation pending independent retest; 199 fake-only tests passing |
+| 11 | Partition production public-boundary remediation: public runner accepts only `output_path`; fake opener/parser/V4/clock dependencies are private test seams | `297cb8aa599a74bd9a09953ce7acae10c9cfec95` | `CLOSED_PENDING_REVIEW`; 206 fake-only V8 tests passing |
 
 ## Human approvals
 
@@ -62,7 +63,7 @@ v8_design_frozen_commit = c414d3191cba356734d7ed08bdf1abc7d51fc384
 
 v8_implementation_branch = v8-partition-acquisition
 v8_pre_remediation_implementation_commit = 53c951d4e0dfc9cce92e38a223d74636406c6cce
-v8_current_remediation_state = 172f35d1fa747ffb4acb006a0f59c36700cd53a3 (second remediation; verify current remote HEAD before acting)
+v8_current_remediation_state = 297cb8aa599a74bd9a09953ce7acae10c9cfec95 (partition public-boundary remediation; verify current remote HEAD before acting)
 ```
 
 Verify current remote state with:
@@ -78,9 +79,9 @@ git ls-remote origin v7-forward-capacity-gate3-dry-run
 |---|---|
 | `src/v8_partition.py` | Reconstructs the eligible JPX universe, proves official-source and `T0` reproduction, records `partition_implementation_git_commit`, and atomically publishes a self-hash-verified manifest without replacement. Never imports any V7 module. |
 | `src/v8_historical_acquisition.py` | Raw-only OHLCV acquisition for `T1`/`T2` only. Its public production boundary accepts only output root, block, and persisted manifest path. Before transport it requires clean `HEAD == origin`, reads `V8_TRUSTED_PARTITION.json` bytes from that verified Git object, requires authorization, exact manifest/provenance/production-JPX metadata, identity/300-ticker/hash binding, fixed historical dates, and a strict Yahoo-origin opener. |
-| `scripts/build_v8_partition_manifest.py` | Synthetic CLI plus `--production-build-manifest`. Production requires confirmation, absolute external unused output, clean `HEAD == origin/v8-partition-acquisition`, trusted-host redirect enforcement, and source/T0 reproduction before publish; it has not been invoked with real JPX. |
+| `scripts/build_v8_partition_manifest.py` | Synthetic CLI plus `--production-build-manifest`. Its public production runner accepts only `output_path` and fixes JPX transport, parser, V4 paths, UTC clock, repository root, and Git resolver internally; fake dependencies are available only through a private test seam. Production requires confirmation, absolute external unused output, clean `HEAD == origin/v8-partition-acquisition`, trusted-host redirect enforcement, and source/T0 reproduction before publish; it has not been invoked with real JPX. |
 | `scripts/acquire_v8_historical.py` | Synthetic CLI plus implemented `--production-acquire` path. Production mode accepts only block, persisted partition manifest, private output root, and block-specific confirmation; neither CLI nor runner exposes transport, date, Git, repository-root, or trust-anchor overrides. |
-| `tests/test_v8_partition.py`, `tests/test_v8_partition_cli.py`, `tests/test_v8_historical_acquisition.py`, `tests/test_v8_historical_acquisition_cli.py` | 199 fake-only tests passing after the second remediation. Zero real JPX/Yahoo calls anywhere in the suite. |
+| `tests/test_v8_partition.py`, `tests/test_v8_partition_cli.py`, `tests/test_v8_historical_acquisition.py`, `tests/test_v8_historical_acquisition_cli.py` | 206 fake-only tests passing after the partition public-boundary remediation. Zero real JPX/Yahoo calls anywhere in the suite. |
 
 ## Data state
 
@@ -90,6 +91,7 @@ real_jpx_source_fetched = false
 private_v8_storage_location = NOT_YET_DEFINED
 requirements = absolute path; outside this repository; never committed
 trusted_partition_authorization = false
+partition_public_dependency_injection = CLOSED_PENDING_REVIEW
 ```
 
 ## T1 state

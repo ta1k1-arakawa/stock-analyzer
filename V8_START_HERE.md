@@ -75,6 +75,11 @@ models_fitted = 0
 profit_calculated = 0
 parameter_search = 0
 real_orders = 0
+partition_public_dependency_injection = CLOSED_PENDING_REVIEW
+trusted_partition_authorization = false
+real_jpx_authorization = false
+real_T1_authorization = false
+real_T2_authorization = false
 ```
 
 The production partition-manifest CLI is implemented in
@@ -84,6 +89,11 @@ created. The production acquisition CLI is now implemented in
 `scripts/acquire_v8_historical.py` as `--production-acquire`, with only a
 block, persisted partition manifest, private output root, and block-specific
 confirmation as inputs.
+
+`run_production_partition_build()` now accepts only `output_path`; it fixes
+JPX transport, parsing, V4 provenance, UTC clock, repository root, and Git
+provenance internally. Its dependency-injected implementation is a private
+fake-test seam only and remains `CLOSED_PENDING_REVIEW`.
 
 ## Immediate next action
 
