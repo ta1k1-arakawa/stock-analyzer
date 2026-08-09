@@ -29,8 +29,8 @@
   },
 
   "static_implementation": {
-    "commit": "53c951d4e0dfc9cce92e38a223d74636406c6cce",
-    "verdict": "V8_PARTITION_ACQUISITION_STATIC_PASS",
+    "commit": "172f35d1fa747ffb4acb006a0f59c36700cd53a3",
+    "verdict": "V8_SECOND_CRITICAL_REMEDIATION_PENDING_REVIEW",
     "files": [
       "src/v8_partition.py",
       "src/v8_historical_acquisition.py",
@@ -42,7 +42,7 @@
       "tests/test_v8_historical_acquisition_cli.py",
       "V8_TRUSTED_PARTITION.json"
     ],
-    "test_count": 169,
+    "test_count": 199,
     "tests_passing": true,
     "cli_flags": {
       "build_v8_partition_manifest.py": ["--synthetic-test", "--production-build-manifest", "--output-path", "--confirmation"],
@@ -56,7 +56,9 @@
     "production_git_head_must_match_local_origin_ref": true,
     "trusted_partition_anchor": "V8_TRUSTED_PARTITION.json",
     "trusted_partition_authorization": false,
-    "critical_review_remediation": "IMPLEMENTED_PENDING_REVIEW"
+    "critical_review_remediation": "IMPLEMENTED_PENDING_REVIEW",
+    "second_critical_review_remediation": "IMPLEMENTED_PENDING_REVIEW",
+    "production_operation_requires_git_fetch_origin_immediately_before_command": true
   },
 
   "partition": {
@@ -117,7 +119,7 @@
     {
       "id": "FINDING_1",
       "title": "Production partition and acquisition runners implemented",
-      "detail": "The production partition-manifest runner is implemented as --production-build-manifest and the production acquisition runner is implemented as --production-acquire. A previous independent critical review BLOCKed the paths; provenance, output preflight, redirect, write-once, and trusted-manifest remediation is implemented but awaits independent retest.",
+      "detail": "The production partition-manifest runner is implemented as --production-build-manifest and the production acquisition runner is implemented as --production-acquire. Previous independent reviews BLOCKed the paths; the second remediation hardens the public acquisition boundary, Git-HEAD trust-anchor read, fixed dates, and exact JPX/Yahoo origins. It awaits independent retest.",
       "blocks": "independent critical review retest before any real network authorization",
       "resolved": true
     },
@@ -125,9 +127,11 @@
       "id": "FINDING_2",
       "title": "Acquisition bound to a trusted, validated partition manifest",
       "severity": "CRITICAL",
-      "detail": "acquire_historical_block_bundle() first validates the canonical Git-tracked trust anchor and requires authorization, then reads a persisted self-hash-verified partition manifest whose SHA256 and partition_implementation_git_commit exactly match the anchor. It verifies schema_version/study_name/design_commit, accepts only T1/T2, sources tickers only from block_assignments[block], requires exactly 300 and the authoritative ticker-list SHA256, derives partition_manifest_sha256 from the verified manifest, unconditionally blocks T3, and records implementation_git_commit provenance.",
+      "detail": "acquire_historical_block_bundle() accepts only output_root, block, and partition_manifest_path. It first verifies the canonical repository clean/HEAD==local origin state, then reads V8_TRUSTED_PARTITION.json bytes from that verified Git HEAD, requires authorization, and validates a persisted self-hash-verified production partition manifest. Its SHA256 and partition_implementation_git_commit must exactly match the anchor; source reproduction must PASS and source metadata must be exact JPX HTTPS origin. It then verifies identity/T1-T2/300-ticker/hash binding and records canonical implementation_git_commit provenance.",
       "required_checks_before_first_network_request": [
-        "canonical V8_TRUSTED_PARTITION.json identity and authorization verification",
+        "git fetch origin completed by the operator immediately before the production command, with remote SHA recorded",
+        "canonical repository clean/HEAD==local origin verification",
+        "canonical V8_TRUSTED_PARTITION.json bytes loaded from the verified Git HEAD and authorization verification",
         "read_partition_manifest(path) with self-hash verification",
         "manifest SHA256 and partition implementation commit match the trusted anchor",
         "verify schema_version, study_name, design_commit",

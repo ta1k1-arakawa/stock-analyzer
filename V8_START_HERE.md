@@ -57,7 +57,7 @@ INDEPENDENT_CRITICAL_REVIEW_RETEST_PENDING
 ```text
 human_gate = V8_T1_T2_ACQUISITION_AND_PARTITION_APPROVED
 design_status = HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION  (design_commit c414d3191cba356734d7ed08bdf1abc7d51fc384)
-static_implementation_verdict = V8_PARTITION_ACQUISITION_REMEDIATION_PENDING_REVIEW
+static_implementation_verdict = V8_SECOND_CRITICAL_REMEDIATION_PENDING_REVIEW
 ```
 
 ## Current production status (do not contradict this)
@@ -97,7 +97,7 @@ form.
 
 ## Current blockers before any real network call
 
-1. **Previous independent critical review: BLOCK.** Its CRITICAL/HIGH/MEDIUM
+1. **Previous independent critical reviews: BLOCK.** The second CRITICAL/HIGH/MEDIUM
    remediation is implemented but not yet independently re-reviewed. Neither
    production runner may contact a real service.
 2. **Trusted partition authorization is false.** Production acquisition reads
@@ -105,9 +105,13 @@ form.
    manifest and blocks with `TRUSTED_PARTITION_NOT_AUTHORIZED` before Yahoo
    transport until a separate human gate pins a real manifest SHA and its
    partition implementation commit.
-3. **Git provenance is required.** Both production runners require a clean
-   checkout whose `HEAD` equals the locally fetched
-   `origin/v8-partition-acquisition` ref before network access.
+3. **Git provenance is required.** Immediately before every future real
+   production command, an operator must run `git fetch origin` successfully
+   and record the remote SHA and local `HEAD`. Both production runners then
+   require a clean checkout whose `HEAD` equals that locally fetched
+   `origin/v8-partition-acquisition` ref before network access. Acquisition
+   reads its trust anchor from the verified `HEAD` Git object, never from the
+   working-tree file.
 
 The next task is `INDEPENDENT_CRITICAL_REVIEW_RETEST` of both production paths. No
 real JPX or Yahoo request is authorized by implementation completion or review.

@@ -33,7 +33,8 @@ authorized.
 | 6 | Fail-closed production partition-manifest CLI | `23667bb855db405cf488755f0f166d91d8f75f32` | implemented; fake-only tests, no real request or manifest |
 | 7 | Acquisition binding to validated partition manifest + implementation provenance | `aea2cb40efaf15bb749ee8545b021d65c2c52821` | Finding 2 resolved; 136 V8 tests passing |
 | 8 | Fail-closed production acquisition CLI/runner | `53c951d4e0dfc9cce92e38a223d74636406c6cce` | Finding 1 resolved; 149 V8 tests passing, fake-only |
-| 9 | Critical-review remediation: trusted partition anchor, GitHub-ref provenance, JPX preflight/redirect hardening, atomic no-overwrite publication | current branch working state | implementation pending independent retest; fake-only |
+| 9 | First critical-review remediation: trusted partition anchor, GitHub-ref provenance, JPX preflight/redirect hardening, atomic no-overwrite publication | `53556e7fdbaf6f08d72fc216122a25a475dd6c7c` | implementation pending independent retest; fake-only |
+| 10 | Second critical-review remediation: fixed public acquisition boundary, Git-HEAD anchor bytes, fixed dates, production partition metadata checks, and exact JPX/Yahoo origins | `172f35d1fa747ffb4acb006a0f59c36700cd53a3` | implementation pending independent retest; 199 fake-only tests passing |
 
 ## Human approvals
 
@@ -61,7 +62,7 @@ v8_design_frozen_commit = c414d3191cba356734d7ed08bdf1abc7d51fc384
 
 v8_implementation_branch = v8-partition-acquisition
 v8_pre_remediation_implementation_commit = 53c951d4e0dfc9cce92e38a223d74636406c6cce
-v8_current_remediation_state = verify current remote HEAD before acting
+v8_current_remediation_state = 172f35d1fa747ffb4acb006a0f59c36700cd53a3 (second remediation; verify current remote HEAD before acting)
 ```
 
 Verify current remote state with:
@@ -76,10 +77,10 @@ git ls-remote origin v7-forward-capacity-gate3-dry-run
 | File | Role |
 |---|---|
 | `src/v8_partition.py` | Reconstructs the eligible JPX universe, proves official-source and `T0` reproduction, records `partition_implementation_git_commit`, and atomically publishes a self-hash-verified manifest without replacement. Never imports any V7 module. |
-| `src/v8_historical_acquisition.py` | Raw-only OHLCV acquisition for `T1`/`T2` only. Before transport, the public path requires the canonical Git-tracked `V8_TRUSTED_PARTITION.json` authorization and an exact match of both partition manifest SHA and partition implementation commit, then performs identity/300-ticker/hash checks and records acquisition `implementation_git_commit`. |
+| `src/v8_historical_acquisition.py` | Raw-only OHLCV acquisition for `T1`/`T2` only. Its public production boundary accepts only output root, block, and persisted manifest path. Before transport it requires clean `HEAD == origin`, reads `V8_TRUSTED_PARTITION.json` bytes from that verified Git object, requires authorization, exact manifest/provenance/production-JPX metadata, identity/300-ticker/hash binding, fixed historical dates, and a strict Yahoo-origin opener. |
 | `scripts/build_v8_partition_manifest.py` | Synthetic CLI plus `--production-build-manifest`. Production requires confirmation, absolute external unused output, clean `HEAD == origin/v8-partition-acquisition`, trusted-host redirect enforcement, and source/T0 reproduction before publish; it has not been invoked with real JPX. |
-| `scripts/acquire_v8_historical.py` | Synthetic CLI plus implemented `--production-acquire` path. Production mode accepts only block, persisted partition manifest, private output root, and block-specific confirmation; it delegates all binding, provenance, storage, and T1/T2 enforcement to the public acquisition API. |
-| `tests/test_v8_partition.py`, `tests/test_v8_partition_cli.py`, `tests/test_v8_historical_acquisition.py`, `tests/test_v8_historical_acquisition_cli.py` | 169 fake-only tests passing in the remediation working state. Zero real JPX/Yahoo calls anywhere in the suite. |
+| `scripts/acquire_v8_historical.py` | Synthetic CLI plus implemented `--production-acquire` path. Production mode accepts only block, persisted partition manifest, private output root, and block-specific confirmation; neither CLI nor runner exposes transport, date, Git, repository-root, or trust-anchor overrides. |
+| `tests/test_v8_partition.py`, `tests/test_v8_partition_cli.py`, `tests/test_v8_historical_acquisition.py`, `tests/test_v8_historical_acquisition_cli.py` | 199 fake-only tests passing after the second remediation. Zero real JPX/Yahoo calls anywhere in the suite. |
 
 ## Data state
 
@@ -143,12 +144,12 @@ of the already-accepted, generic Yahoo Chart transport in
 The production partition-manifest runner is implemented at
 `23667bb855db405cf488755f0f166d91d8f75f32`; it preserves the existing
 fail-closed source and T0 reproduction guards. The production acquisition
-runner is implemented at `53c951d4e0dfc9cce92e38a223d74636406c6cce` and
-delegates to the manifest-bound public acquisition API. The previous
-independent critical review BLOCKed the combined production path. Its
-remediation is implemented but Finding 1 must not be treated as review-passed
-until `INDEPENDENT_CRITICAL_REVIEW_RETEST` completes. Neither runner has been
-used against a real service, and no real manifest exists.
+runner is implemented at `53c951d4e0dfc9cce92e38a223d74636406c6cce`, then
+further hardened at `172f35d1fa747ffb4acb006a0f59c36700cd53a3`. Two
+independent critical reviews have BLOCKed the combined production path. The
+second remediation is implemented but Finding 1 must not be treated as
+review-passed until `INDEPENDENT_CRITICAL_REVIEW_RETEST` completes. Neither
+runner has been used against a real service, and no real manifest exists.
 
 ### Finding 2 — remediated pending independent retest
 
@@ -168,8 +169,11 @@ At `aea2cb40efaf15bb749ee8545b021d65c2c52821`, the public acquisition path:
 8. derives `partition_manifest_sha256` and records validated acquisition
    `implementation_git_commit` provenance.
 
-Every failed anchor, binding, or provenance check blocks before transport. The
-current fake-only V8 regression is 169 passed / 0 failed.
+Every failed Git, anchor, binding, provenance, or exact-origin check blocks
+before transport. Before any future real production command, an operator must
+run `git fetch origin` successfully and record the fetched remote SHA and
+local `HEAD`; code then verifies the local clean `HEAD == origin` state. The
+current fake-only V8 regression is 199 passed / 0 failed.
 
 ## Current ordered next steps
 
