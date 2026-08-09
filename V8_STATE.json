@@ -2,7 +2,7 @@
   "schema_version": "V8_STATE_SNAPSHOT_V1",
   "study": "V8_HISTORICAL_RESEARCH",
   "repository": "ta1k1-arakawa/stock-analyzer",
-  "state_basis_commit": "aea2cb40efaf15bb749ee8545b021d65c2c52821",
+  "state_basis_commit": "53c951d4e0dfc9cce92e38a223d74636406c6cce",
   "active_branch": "v8-partition-acquisition",
   "state_basis_note": "This snapshot describes the verified current implementation state at state_basis_commit; always re-check remote HEAD before acting.",
 
@@ -11,7 +11,7 @@
   "design_frozen": true,
   "design_status": "HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION",
 
-  "current_phase": "PRODUCTION_ACQUISITION_RUNNER_IMPLEMENTATION_PENDING",
+  "current_phase": "INDEPENDENT_CRITICAL_REVIEW_PENDING",
 
   "human_gates": {
     "new_strategy_family_accepted": true,
@@ -29,7 +29,7 @@
   },
 
   "static_implementation": {
-    "commit": "aea2cb40efaf15bb749ee8545b021d65c2c52821",
+    "commit": "53c951d4e0dfc9cce92e38a223d74636406c6cce",
     "verdict": "V8_PARTITION_ACQUISITION_STATIC_PASS",
     "files": [
       "src/v8_partition.py",
@@ -41,14 +41,14 @@
       "tests/test_v8_historical_acquisition.py",
       "tests/test_v8_historical_acquisition_cli.py"
     ],
-    "test_count": 136,
+    "test_count": 149,
     "tests_passing": true,
     "cli_flags": {
       "build_v8_partition_manifest.py": ["--synthetic-test", "--production-build-manifest", "--output-path", "--confirmation"],
-      "acquire_v8_historical.py": ["--synthetic-test"]
+      "acquire_v8_historical.py": ["--synthetic-test", "--production-acquire", "--block", "--partition-manifest", "--output-root", "--confirmation"]
     },
     "production_partition_runner_exists": true,
-    "production_acquisition_runner_exists": false,
+    "production_acquisition_runner_exists": true,
     "acquisition_bound_to_validated_partition_manifest": true,
     "implementation_commit_provenance": true
   },
@@ -109,10 +109,10 @@
   "production_blockers": [
     {
       "id": "FINDING_1",
-      "title": "Production acquisition runner not yet implemented",
-      "detail": "The production partition-manifest runner is implemented as --production-build-manifest. scripts/acquire_v8_historical.py remains synthetic-only; no production Yahoo T1/T2 acquisition runner exists yet.",
-      "blocks": "any real network call",
-      "resolved": "partially_resolved"
+      "title": "Production partition and acquisition runners implemented",
+      "detail": "The production partition-manifest runner is implemented as --production-build-manifest and the production acquisition runner is implemented as --production-acquire. Both remain unexercised against real services; no real network authorization is implied.",
+      "blocks": "independent critical review before any real network authorization",
+      "resolved": true
     },
     {
       "id": "FINDING_2",
@@ -135,7 +135,7 @@
     }
   ],
 
-  "next_action": "IMPLEMENT_PRODUCTION_ACQUISITION_RUNNER",
+  "next_action": "INDEPENDENT_CRITICAL_REVIEW",
 
   "source_of_truth_priority": [
     "immutable/raw acquisition manifests and their hashes (once they exist)",

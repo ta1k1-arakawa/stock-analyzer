@@ -9,7 +9,7 @@ not have to read the full 1000+ line design document before it can act.
 study = V8_HISTORICAL_RESEARCH
 repository = ta1k1-arakawa/stock-analyzer
 active_branch = v8-partition-acquisition
-state_basis_commit = aea2cb40efaf15bb749ee8545b021d65c2c52821
+state_basis_commit = 53c951d4e0dfc9cce92e38a223d74636406c6cce
 ```
 
 `state_basis_commit` is the commit this handoff package describes. It is
@@ -50,7 +50,7 @@ root. This has held for every V8 phase so far and must keep holding.**
 ## Current phase
 
 ```text
-PRODUCTION_ACQUISITION_RUNNER_IMPLEMENTATION_PENDING
+INDEPENDENT_CRITICAL_REVIEW_PENDING
 ```
 
 ## Last completed gate
@@ -58,7 +58,7 @@ PRODUCTION_ACQUISITION_RUNNER_IMPLEMENTATION_PENDING
 ```text
 human_gate = V8_T1_T2_ACQUISITION_AND_PARTITION_APPROVED
 design_status = HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION  (design_commit c414d3191cba356734d7ed08bdf1abc7d51fc384)
-static_implementation_verdict = V8_PARTITION_ACQUISITION_STATIC_PASS  (136 passed / 0 failed at aea2cb40efaf15bb749ee8545b021d65c2c52821)
+static_implementation_verdict = V8_PARTITION_ACQUISITION_STATIC_PASS  (149 passed / 0 failed at 53c951d4e0dfc9cce92e38a223d74636406c6cce)
 ```
 
 ## Current production status (do not contradict this)
@@ -81,13 +81,15 @@ real_orders = 0
 The production partition-manifest CLI is implemented in
 `scripts/build_v8_partition_manifest.py` as `--production-build-manifest`.
 It remains unused: no real JPX request or real partition manifest has been
-created. `scripts/acquire_v8_historical.py` remains synthetic-only; no
-production acquisition runner has been written.
+created. The production acquisition CLI is now implemented in
+`scripts/acquire_v8_historical.py` as `--production-acquire`, with only a
+block, persisted partition manifest, private output root, and block-specific
+confirmation as inputs.
 
 ## Immediate next action
 
 ```text
-IMPLEMENT_PRODUCTION_ACQUISITION_RUNNER
+INDEPENDENT_CRITICAL_REVIEW
 ```
 
 See `V8_PROJECT_STATE.md` → "Current ordered next steps" for the full requirement
@@ -96,19 +98,16 @@ form.
 
 ## Current blockers before any real network call
 
-1. **Finding 1 is partially resolved.** The production partition-manifest
-   runner is implemented, but the production acquisition runner remains
-   unimplemented and synthetic-only.
+1. **Finding 1 is resolved.** Both production runners are implemented, but
+   neither may be used against real services before independent critical review.
 2. **Finding 2 is resolved.** Acquisition is bound to a self-hash-verified,
    identity-verified partition manifest; only verified T1/T2 300-ticker
    assignments and their authoritative hashes are accepted, the manifest SHA
    is derived rather than supplied, `implementation_git_commit` is recorded,
    and T3 remains unconditionally blocked.
 
-The next implementation task is `IMPLEMENT_PRODUCTION_ACQUISITION_RUNNER`.
-It must use fake/mock transport during implementation and review, followed by
-static/synthetic regression and an independent critical review. No real JPX
-or Yahoo request is authorized by completing those steps.
+The next task is `INDEPENDENT_CRITICAL_REVIEW` of both production paths. No
+real JPX or Yahoo request is authorized by implementation completion or review.
 
 ## Historical blockers at c5848ced1a5c800f384cb7b86fb642e5c748c2c2
 
