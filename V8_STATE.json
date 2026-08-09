@@ -11,7 +11,7 @@
   "design_frozen": true,
   "design_status": "HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION",
 
-  "current_phase": "INDEPENDENT_CRITICAL_REVIEW_RETEST_PENDING",
+  "current_phase": "SOURCE_REPRODUCTION_PREFLIGHT_IMPLEMENTED_PENDING_REVIEW",
 
   "human_gates": {
     "new_strategy_family_accepted": true,
@@ -29,9 +29,9 @@
   },
 
   "static_implementation": {
-    "code_commit": "297cb8aa599a74bd9a09953ce7acae10c9cfec95",
-    "commit_meaning": "Latest code-and-test remediation commit; documentation-only synchronization commits are intentionally not represented here. Verify current remote HEAD separately before acting.",
-    "verdict": "V8_PARTITION_PRODUCTION_BOUNDARY_REMEDIATION_PENDING_REVIEW",
+    "code_commit": "38697c9ede51cac7bd500206d857ee585464996b",
+    "commit_meaning": "Source-only JPX/T0 preflight implementation and fake-only tests; pending independent review. Verify current remote HEAD separately before acting.",
+    "verdict": "SOURCE_REPRODUCTION_PREFLIGHT_IMPLEMENTED_PENDING_REVIEW",
     "files": [
       "src/v8_partition.py",
       "src/v8_historical_acquisition.py",
@@ -43,13 +43,16 @@
       "tests/test_v8_historical_acquisition_cli.py",
       "V8_TRUSTED_PARTITION.json"
     ],
-    "test_count": 206,
+    "test_count": 226,
     "tests_passing": true,
     "cli_flags": {
-      "build_v8_partition_manifest.py": ["--synthetic-test", "--production-build-manifest", "--output-path", "--confirmation"],
+      "build_v8_partition_manifest.py": ["--synthetic-test", "--production-build-manifest", "--production-source-preflight", "--output-path", "--confirmation"],
       "acquire_v8_historical.py": ["--synthetic-test", "--production-acquire", "--block", "--partition-manifest", "--output-root", "--confirmation"]
     },
     "production_partition_runner_exists": true,
+    "production_source_preflight_runner_exists": true,
+    "source_preflight_allocates_blocks": false,
+    "source_preflight_writes_partition_manifest": false,
     "partition_public_dependency_injection": "CLOSED_PENDING_REVIEW",
     "production_acquisition_runner_exists": true,
     "acquisition_bound_to_validated_partition_manifest": true,
@@ -150,7 +153,7 @@
     }
   ],
 
-  "next_action": "INDEPENDENT_CRITICAL_REVIEW_RETEST",
+  "next_action": "INDEPENDENT_SOURCE_PREFLIGHT_REVIEW",
 
   "source_of_truth_priority": [
     "immutable/raw acquisition manifests and their hashes (once they exist)",
