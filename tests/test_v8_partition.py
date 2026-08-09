@@ -107,6 +107,7 @@ def build_kwargs(v4_fixture, frame, *, raw_source_bytes=None):
         source_url="https://www.jpx.co.jp/synthetic/data_j.xls",
         source_acquisition_utc=datetime(2026, 8, 9, tzinfo=timezone.utc),
         clock=lambda: datetime(2026, 8, 9, 1, 0, 0, tzinfo=timezone.utc),
+        partition_implementation_git_commit="a" * 40,
         block_size=BLOCK_SIZE,
     )
 
@@ -186,6 +187,7 @@ def test_source_provenance_fields_present_and_correct(v4_fixture, t0_codes, fres
     assert manifest["source_raw_byte_count"] == len(v4_fixture["raw_source_bytes"])
     assert manifest["expected_v4_source_raw_sha256"] == manifest["source_raw_sha256"]
     assert manifest["design_commit"] == partition.DESIGN_COMMIT
+    assert manifest["partition_implementation_git_commit"] == "a" * 40
     assert manifest["study_name"] == partition.STUDY_NAME
     assert manifest["p_hist_start"] == "2016-04-01"
     assert manifest["p_hist_end"] == "2025-12-31"
@@ -330,6 +332,64 @@ def test_write_partition_manifest_once_rejects_overwrite(tmp_path, v4_fixture, t
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
         partition.write_partition_manifest_once(output_path, manifest, repository_root=ROOT)
     assert excinfo.value.reason == "PARTITION_MANIFEST_ALREADY_EXISTS"
+
+
+def test_write_partition_manifest_race_never_overwrites_existing_destination(
+    tmp_path, v4_fixture, t0_codes, fresh_codes, monkeypatch
+):
+    frame = build_frame(t0_codes, fresh_codes)
+    manifest = partition.build_partition_manifest(**build_kwargs(v4_fixture, frame))
+    output_path = tmp_path / "output" / "partition_manifest.json"
+    original_link = partition.os.link
+    competing_bytes = b"existing-formal-manifest-must-not-change"
+
+    def competing_publish(src, dst):
+        Path(dst).write_bytes(competing_bytes)
+        return original_link(src, dst)
+
+    monkeypatch.setattr(partition.os, "link", competing_publish)
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        partition.write_partition_manifest_once(output_path, manifest, repository_root=ROOT)
+    assert excinfo.value.reason == "PARTITION_MANIFEST_ALREADY_EXISTS"
+    assert output_path.read_bytes() == competing_bytes
+
+
+@pytest.mark.parametrize(
+    ("status", "head", "origin", "reason"),
+    [
+        (" M src/v8_partition.py\n", "a" * 40, "a" * 40, "PRODUCTION_GIT_WORKTREE_DIRTY"),
+        ("", None, "a" * 40, "PRODUCTION_GIT_HEAD_UNAVAILABLE"),
+        ("", "a" * 40, None, "PRODUCTION_GIT_ORIGIN_REF_UNAVAILABLE"),
+        ("", "a" * 40, "b" * 40, "PRODUCTION_GIT_HEAD_NOT_ORIGIN"),
+    ],
+)
+def test_production_git_provenance_blocks_invalid_local_state(monkeypatch, status, head, origin, reason):
+    class Result:
+        def __init__(self, returncode, stdout):
+            self.returncode = returncode
+            self.stdout = stdout
+
+    outcomes = iter((
+        Result(0, status),
+        Result(0 if head is not None else 1, (head or "") + "\n"),
+        Result(0 if origin is not None else 1, (origin or "") + "\n"),
+    ))
+    monkeypatch.setattr(partition.subprocess, "run", lambda *args, **kwargs: next(outcomes))
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        partition.resolve_verified_production_git_commit(ROOT)
+    assert excinfo.value.reason == reason
+
+
+def test_production_git_provenance_accepts_clean_matching_local_origin(monkeypatch):
+    class Result:
+        def __init__(self, stdout):
+            self.returncode = 0
+            self.stdout = stdout
+
+    expected = "a" * 40
+    outcomes = iter((Result(""), Result(expected + "\n"), Result(expected + "\n")))
+    monkeypatch.setattr(partition.subprocess, "run", lambda *args, **kwargs: next(outcomes))
+    assert partition.resolve_verified_production_git_commit(ROOT) == expected
 
 
 def test_write_partition_manifest_once_rejects_in_repo_output(v4_fixture, t0_codes, fresh_codes):

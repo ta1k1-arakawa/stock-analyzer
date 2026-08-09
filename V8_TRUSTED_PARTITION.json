@@ -1,0 +1,9 @@
+{
+  "schema_version": "V8_TRUSTED_PARTITION_V1",
+  "study_name": "V8_HISTORICAL_RESEARCH",
+  "design_commit": "c414d3191cba356734d7ed08bdf1abc7d51fc384",
+  "authorization_status": "NOT_AUTHORIZED",
+  "authorized_partition_manifest_sha256": null,
+  "authorized_partition_implementation_git_commit": null,
+  "authorization_note": "No real production partition exists. A separate human gate must verify and Git-pin the exact manifest SHA256 and partition implementation commit before any production Yahoo acquisition."
+}

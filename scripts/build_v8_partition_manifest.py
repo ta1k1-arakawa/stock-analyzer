@@ -46,7 +46,9 @@ if str(ROOT) not in sys.path:
 from src.v8_partition import (
     V8PartitionBlocked,
     build_partition_manifest,
+    preflight_partition_manifest_output,
     read_partition_manifest,
+    resolve_verified_production_git_commit,
     write_partition_manifest_once,
 )
 
@@ -162,6 +164,7 @@ def run_synthetic_partition_test() -> dict[str, Any]:
             source_url=SYNTHETIC_SOURCE_URL,
             source_acquisition_utc=datetime(2026, 8, 9, tzinfo=timezone.utc),
             clock=lambda: datetime(2026, 8, 9, 1, 0, 0, tzinfo=timezone.utc),
+            partition_implementation_git_commit="a" * 40,
             block_size=SYNTHETIC_BLOCK_SIZE,
         )
         if manifest["source_reproduction_status"] != "PASS":
@@ -191,6 +194,7 @@ def run_synthetic_partition_test() -> dict[str, Any]:
                 source_url=SYNTHETIC_SOURCE_URL,
                 source_acquisition_utc=datetime(2026, 8, 9, tzinfo=timezone.utc),
                 clock=lambda: datetime(2026, 8, 9, tzinfo=timezone.utc),
+                partition_implementation_git_commit="a" * 40,
                 block_size=SYNTHETIC_BLOCK_SIZE,
             )
             raise AssertionError("SOURCE_MISMATCH_NOT_BLOCKED")
@@ -232,7 +236,35 @@ def default_parse_source_table(raw_bytes: bytes) -> Any:
     return pd.read_excel(io.BytesIO(raw_bytes), dtype=str)
 
 
+def _require_trusted_jpx_url(value: object) -> str:
+    if not isinstance(value, str):
+        raise V8PartitionBlocked("V8_PARTITION_SOURCE_FINAL_URL_INVALID")
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme != "https" or parsed.hostname != JPX_SOURCE_HOST:
+        raise V8PartitionBlocked("V8_PARTITION_SOURCE_HOST_INVALID")
+    return value
+
+
+class TrustedJpxRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject a redirect before urllib issues an off-host request."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        _require_trusted_jpx_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _default_trusted_jpx_opener(request: Any) -> Any:
+    """Default production opener with pre-request redirect host enforcement."""
+    opener = urllib.request.build_opener(TrustedJpxRedirectHandler())
+    return opener.open(request)
+
+
 def _read_response(response: Any) -> bytes:
+    response_url = getattr(response, "url", None)
+    if response_url is None:
+        geturl = getattr(response, "geturl", None)
+        response_url = geturl() if callable(geturl) else None
+    _require_trusted_jpx_url(response_url)
     try:
         payload = response.read()
     finally:
@@ -245,7 +277,7 @@ def _read_response(response: Any) -> bytes:
 
 
 def fetch_real_jpx_source(
-    opener: Callable[[Any], Any] = urllib.request.urlopen,
+    opener: Callable[[Any], Any] = _default_trusted_jpx_opener,
 ) -> tuple[bytes, str]:
     """Fetch the official JPX listing page, resolve its ``data_j.xls`` link,
     and fetch that file's raw bytes.
@@ -266,9 +298,7 @@ def fetch_real_jpx_source(
     if not match:
         raise V8PartitionBlocked("V8_PARTITION_SOURCE_LINK_NOT_FOUND")
     source_url = urllib.parse.urljoin(JPX_PAGE, match.group(1))
-    parsed = urllib.parse.urlparse(source_url)
-    if parsed.scheme != "https" or parsed.hostname != JPX_SOURCE_HOST:
-        raise V8PartitionBlocked("V8_PARTITION_SOURCE_HOST_INVALID")
+    _require_trusted_jpx_url(source_url)
 
     xls_request = urllib.request.Request(source_url, headers={"User-Agent": PRODUCTION_USER_AGENT})
     try:
@@ -286,7 +316,7 @@ def _utc_clock() -> datetime:
 def run_production_partition_build(
     *,
     output_path: Path,
-    opener: Callable[[Any], Any] = urllib.request.urlopen,
+    opener: Callable[[Any], Any] = _default_trusted_jpx_opener,
     parse_source_table: Callable[[bytes], Any] = default_parse_source_table,
     v4_manifest_path: Path = V4_MANIFEST_PATH,
     v4_universe_csv_path: Path = V4_UNIVERSE_CSV_PATH,
@@ -303,6 +333,10 @@ def run_production_partition_build(
     never persisted anywhere by this function, in this repository or in the
     private output location -- only the resulting manifest is written.
     """
+    # These guards deliberately precede the first JPX request.
+    destination = preflight_partition_manifest_output(output_path, ROOT)
+    implementation_git_commit = resolve_verified_production_git_commit(ROOT)
+
     raw_source_bytes, source_url = fetch_real_jpx_source(opener=opener)
     fetched_at = clock()
 
@@ -314,8 +348,9 @@ def run_production_partition_build(
         source_url=source_url,
         source_acquisition_utc=fetched_at,
         clock=clock,
+        partition_implementation_git_commit=implementation_git_commit,
     )
-    written_path = write_partition_manifest_once(output_path, manifest, repository_root=ROOT)
+    written_path = write_partition_manifest_once(destination, manifest, repository_root=ROOT)
     return {"manifest": manifest, "written_path": written_path}
 
 

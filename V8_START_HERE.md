@@ -9,14 +9,13 @@ not have to read the full 1000+ line design document before it can act.
 study = V8_HISTORICAL_RESEARCH
 repository = ta1k1-arakawa/stock-analyzer
 active_branch = v8-partition-acquisition
-state_basis_commit = 53c951d4e0dfc9cce92e38a223d74636406c6cce
+pre_remediation_baseline_commit = 53c951d4e0dfc9cce92e38a223d74636406c6cce
 ```
 
-`state_basis_commit` is the commit this handoff package describes. It is
-**not** a claim about the current remote HEAD — always re-check the remote
-branch SHA yourself (`git ls-remote origin v8-partition-acquisition`) before
-acting. If the remote has moved past this commit, treat this handoff as a
-description of history up to this point, not of the present.
+The baseline commit predates the critical-review remediation described below.
+Always re-check the remote branch SHA yourself
+(`git ls-remote origin v8-partition-acquisition`) before acting; the current
+remote implementation, not a handoff SHA, is authoritative.
 
 ## Purpose
 
@@ -50,7 +49,7 @@ root. This has held for every V8 phase so far and must keep holding.**
 ## Current phase
 
 ```text
-INDEPENDENT_CRITICAL_REVIEW_PENDING
+INDEPENDENT_CRITICAL_REVIEW_RETEST_PENDING
 ```
 
 ## Last completed gate
@@ -58,7 +57,7 @@ INDEPENDENT_CRITICAL_REVIEW_PENDING
 ```text
 human_gate = V8_T1_T2_ACQUISITION_AND_PARTITION_APPROVED
 design_status = HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION  (design_commit c414d3191cba356734d7ed08bdf1abc7d51fc384)
-static_implementation_verdict = V8_PARTITION_ACQUISITION_STATIC_PASS  (149 passed / 0 failed at 53c951d4e0dfc9cce92e38a223d74636406c6cce)
+static_implementation_verdict = V8_PARTITION_ACQUISITION_REMEDIATION_PENDING_REVIEW
 ```
 
 ## Current production status (do not contradict this)
@@ -89,7 +88,7 @@ confirmation as inputs.
 ## Immediate next action
 
 ```text
-INDEPENDENT_CRITICAL_REVIEW
+INDEPENDENT_CRITICAL_REVIEW_RETEST
 ```
 
 See `V8_PROJECT_STATE.md` → "Current ordered next steps" for the full requirement
@@ -98,15 +97,19 @@ form.
 
 ## Current blockers before any real network call
 
-1. **Finding 1 is resolved.** Both production runners are implemented, but
-   neither may be used against real services before independent critical review.
-2. **Finding 2 is resolved.** Acquisition is bound to a self-hash-verified,
-   identity-verified partition manifest; only verified T1/T2 300-ticker
-   assignments and their authoritative hashes are accepted, the manifest SHA
-   is derived rather than supplied, `implementation_git_commit` is recorded,
-   and T3 remains unconditionally blocked.
+1. **Previous independent critical review: BLOCK.** Its CRITICAL/HIGH/MEDIUM
+   remediation is implemented but not yet independently re-reviewed. Neither
+   production runner may contact a real service.
+2. **Trusted partition authorization is false.** Production acquisition reads
+   the canonical Git-tracked `V8_TRUSTED_PARTITION.json` before the partition
+   manifest and blocks with `TRUSTED_PARTITION_NOT_AUTHORIZED` before Yahoo
+   transport until a separate human gate pins a real manifest SHA and its
+   partition implementation commit.
+3. **Git provenance is required.** Both production runners require a clean
+   checkout whose `HEAD` equals the locally fetched
+   `origin/v8-partition-acquisition` ref before network access.
 
-The next task is `INDEPENDENT_CRITICAL_REVIEW` of both production paths. No
+The next task is `INDEPENDENT_CRITICAL_REVIEW_RETEST` of both production paths. No
 real JPX or Yahoo request is authorized by implementation completion or review.
 
 ## Historical blockers at c5848ced1a5c800f384cb7b86fb642e5c748c2c2

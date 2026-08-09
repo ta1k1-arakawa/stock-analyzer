@@ -31,7 +31,6 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 import time
 from collections import Counter
@@ -55,6 +54,7 @@ from src.v8_partition import (
     V8PartitionBlocked,
     read_partition_manifest,
     require_absolute_output_path_outside_repository,
+    resolve_verified_production_git_commit,
     ticker_list_sha256,
 )
 
@@ -81,6 +81,22 @@ ACQUISITIONS_DIRNAME = "acquisitions"
 RAW_DIRNAME = "raw"
 MANIFEST_FILENAME = "acquisition_manifest.json"
 SEALED_FILENAME = "SEALED.json"
+
+# This is deliberately a repository-fixed production trust root.  Neither
+# the public acquisition API nor its CLI accepts a caller-selected path,
+# expected SHA, or registry override.
+CANONICAL_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+TRUSTED_PARTITION_ANCHOR_PATH = CANONICAL_REPOSITORY_ROOT / "V8_TRUSTED_PARTITION.json"
+TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION = "V8_TRUSTED_PARTITION_V1"
+TRUSTED_PARTITION_ANCHOR_FIELDS = (
+    "schema_version",
+    "study_name",
+    "design_commit",
+    "authorization_status",
+    "authorized_partition_manifest_sha256",
+    "authorized_partition_implementation_git_commit",
+    "authorization_note",
+)
 
 ACQUISITION_MANIFEST_FIELDS = (
     "schema_version",
@@ -163,35 +179,56 @@ def _ticker_list_sha(tickers: Sequence[str]) -> str:
 
 
 def _default_implementation_git_commit_resolver(repository_root: Path) -> str:
-    """Resolve the checked-out implementation revision without network I/O."""
+    """Resolve a clean checkout matching the local origin branch ref."""
     try:
-        clean = subprocess.run(
-            ["git", "-C", str(repository_root), "status", "--porcelain"],
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=10,
-        )
-        resolved = subprocess.run(
-            ["git", "-C", str(repository_root), "rev-parse", "HEAD"],
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        raise V8HistoricalAcquisitionBlocked("IMPLEMENTATION_GIT_COMMIT_UNAVAILABLE") from error
-    if clean.returncode != 0 or clean.stdout.strip():
-        raise V8HistoricalAcquisitionBlocked("IMPLEMENTATION_GIT_COMMIT_UNAVAILABLE")
-    if resolved.returncode != 0:
-        raise V8HistoricalAcquisitionBlocked("IMPLEMENTATION_GIT_COMMIT_UNAVAILABLE")
-    return resolved.stdout.strip()
+        return resolve_verified_production_git_commit(repository_root)
+    except V8PartitionBlocked as error:
+        raise V8HistoricalAcquisitionBlocked(error.reason) from error
 
 
 def _require_implementation_git_commit(value: object) -> str:
     if not isinstance(value, str) or len(value) != 40 or any(char not in "0123456789abcdef" for char in value):
         raise V8HistoricalAcquisitionBlocked("IMPLEMENTATION_GIT_COMMIT_INVALID")
     return value
+
+
+def _read_trusted_partition_anchor(path: Path) -> dict[str, Any]:
+    """Read the Git-tracked production trust anchor with exact schema checks."""
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_READ_FAILED") from error
+    try:
+        anchor = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_INVALID_JSON") from error
+    if not isinstance(anchor, Mapping) or set(anchor) != set(TRUSTED_PARTITION_ANCHOR_FIELDS):
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_SCHEMA_INVALID")
+    if anchor["schema_version"] != TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION:
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION_MISMATCH")
+    if anchor["study_name"] != STUDY_NAME:
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_STUDY_NAME_MISMATCH")
+    if anchor["design_commit"] != DESIGN_COMMIT:
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_ANCHOR_DESIGN_COMMIT_MISMATCH")
+    status = anchor["authorization_status"]
+    if status not in ("NOT_AUTHORIZED", "AUTHORIZED"):
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_AUTHORIZATION_STATUS_INVALID")
+    manifest_sha = anchor["authorized_partition_manifest_sha256"]
+    implementation_git_commit = anchor["authorized_partition_implementation_git_commit"]
+    if status == "NOT_AUTHORIZED":
+        if manifest_sha is not None or implementation_git_commit is not None:
+            raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_UNAUTHORIZED_FIELDS_INVALID")
+    else:
+        if (
+            not isinstance(manifest_sha, str)
+            or len(manifest_sha) != 64
+            or any(char not in "0123456789abcdef" for char in manifest_sha)
+        ):
+            raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_MANIFEST_SHA_INVALID")
+        _require_implementation_git_commit(implementation_git_commit)
+    if not isinstance(anchor["authorization_note"], str):
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_AUTHORIZATION_NOTE_INVALID")
+    return dict(anchor)
 
 
 def _validated_partition_binding(
@@ -201,10 +238,28 @@ def _validated_partition_binding(
     """Read and validate the sole permitted production acquisition inputs."""
     if block not in ALLOWED_ACQUISITION_BLOCKS:
         raise V8HistoricalAcquisitionBlocked("V8_BLOCK_ACQUISITION_PROHIBITED:" + str(block))
+    anchor = _read_trusted_partition_anchor(TRUSTED_PARTITION_ANCHOR_PATH)
+    if anchor["authorization_status"] != "AUTHORIZED":
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_NOT_AUTHORIZED")
     try:
         partition_manifest = read_partition_manifest(partition_manifest_path)
     except V8PartitionBlocked as error:
         raise V8HistoricalAcquisitionBlocked(error.reason) from error
+
+    partition_manifest_sha256 = partition_manifest["manifest_sha256"]
+    if (
+        not isinstance(partition_manifest_sha256, str)
+        or len(partition_manifest_sha256) != 64
+        or any(char not in "0123456789abcdef" for char in partition_manifest_sha256)
+    ):
+        raise V8HistoricalAcquisitionBlocked("PARTITION_MANIFEST_SHA_INVALID")
+    if partition_manifest_sha256 != anchor["authorized_partition_manifest_sha256"]:
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_MANIFEST_SHA_MISMATCH")
+    partition_implementation_git_commit = partition_manifest["partition_implementation_git_commit"]
+    if _require_implementation_git_commit(partition_implementation_git_commit) != anchor[
+        "authorized_partition_implementation_git_commit"
+    ]:
+        raise V8HistoricalAcquisitionBlocked("TRUSTED_PARTITION_IMPLEMENTATION_GIT_COMMIT_MISMATCH")
 
     if partition_manifest["schema_version"] != PARTITION_MANIFEST_SCHEMA_VERSION:
         raise V8HistoricalAcquisitionBlocked("PARTITION_MANIFEST_SCHEMA_VERSION_MISMATCH")
@@ -227,13 +282,6 @@ def _validated_partition_binding(
     if ticker_list_sha256(tickers) != partition_manifest[expected_hash_field]:
         raise V8HistoricalAcquisitionBlocked("PARTITION_TICKER_LIST_SHA_MISMATCH:" + block)
 
-    partition_manifest_sha256 = partition_manifest["manifest_sha256"]
-    if (
-        not isinstance(partition_manifest_sha256, str)
-        or len(partition_manifest_sha256) != 64
-        or any(char not in "0123456789abcdef" for char in partition_manifest_sha256)
-    ):
-        raise V8HistoricalAcquisitionBlocked("PARTITION_MANIFEST_SHA_INVALID")
     return tickers, partition_manifest_sha256
 
 

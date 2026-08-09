@@ -13,13 +13,13 @@ the actual repository state at the current remote HEAD.
 ## Current phase
 
 ```text
-INDEPENDENT_CRITICAL_REVIEW_PENDING
+INDEPENDENT_CRITICAL_REVIEW_RETEST_PENDING
 ```
 
-This is **not** "actual acquisition ready." The production partition-manifest
-runner and manifest-bound acquisition API have passed static/synthetic
-verification. Both production CLI/runner paths now exist, but no real network
-action is authorized before independent critical review.
+This is **not** "actual acquisition ready." The previous independent critical
+review BLOCKed the production paths; its CRITICAL/HIGH/MEDIUM remediation is
+implemented and awaits a new independent review. No real network action is
+authorized.
 
 ## Completed milestones
 
@@ -33,6 +33,7 @@ action is authorized before independent critical review.
 | 6 | Fail-closed production partition-manifest CLI | `23667bb855db405cf488755f0f166d91d8f75f32` | implemented; fake-only tests, no real request or manifest |
 | 7 | Acquisition binding to validated partition manifest + implementation provenance | `aea2cb40efaf15bb749ee8545b021d65c2c52821` | Finding 2 resolved; 136 V8 tests passing |
 | 8 | Fail-closed production acquisition CLI/runner | `53c951d4e0dfc9cce92e38a223d74636406c6cce` | Finding 1 resolved; 149 V8 tests passing, fake-only |
+| 9 | Critical-review remediation: trusted partition anchor, GitHub-ref provenance, JPX preflight/redirect hardening, atomic no-overwrite publication | current branch working state | implementation pending independent retest; fake-only |
 
 ## Human approvals
 
@@ -59,7 +60,8 @@ v8_design_branch = v8-historical-research-design
 v8_design_frozen_commit = c414d3191cba356734d7ed08bdf1abc7d51fc384
 
 v8_implementation_branch = v8-partition-acquisition
-v8_implementation_commit = 53c951d4e0dfc9cce92e38a223d74636406c6cce
+v8_pre_remediation_implementation_commit = 53c951d4e0dfc9cce92e38a223d74636406c6cce
+v8_current_remediation_state = verify current remote HEAD before acting
 ```
 
 Verify current remote state with:
@@ -73,11 +75,11 @@ git ls-remote origin v7-forward-capacity-gate3-dry-run
 
 | File | Role |
 |---|---|
-| `src/v8_partition.py` | Reconstructs the eligible JPX universe, proves reproduction of the official raw source and of `T0` (`V4_UNIVERSE.csv`), allocates `T1`/`T2`/`T3`/`T_spare`, writes a write-once, self-hash-verified partition manifest. Never imports any V7 module. |
-| `src/v8_historical_acquisition.py` | Raw-only OHLCV acquisition for manifest-verified `T1` or `T2` (never `T3`), reusing `src.v7_yahoo_collector.fetch_chart_once` read-only for transport. The public path self-hash-verifies the partition manifest, validates V8 identity and the exact 300-ticker hash-bound assignment, derives its partition-manifest SHA, and records `implementation_git_commit`. It publishes `T1` unsealed/`RAW_ACQUIRED_NOT_OPENED` and `T2` sealed/`RAW_ACQUIRED_SEALED`; the T2 access guard remains procedural (not cryptographic). |
-| `scripts/build_v8_partition_manifest.py` | Synthetic CLI plus implemented `--production-build-manifest` path. The latter requires confirmation and an absolute, outside-repository, write-once output path; it has not been invoked with real JPX. |
+| `src/v8_partition.py` | Reconstructs the eligible JPX universe, proves official-source and `T0` reproduction, records `partition_implementation_git_commit`, and atomically publishes a self-hash-verified manifest without replacement. Never imports any V7 module. |
+| `src/v8_historical_acquisition.py` | Raw-only OHLCV acquisition for `T1`/`T2` only. Before transport, the public path requires the canonical Git-tracked `V8_TRUSTED_PARTITION.json` authorization and an exact match of both partition manifest SHA and partition implementation commit, then performs identity/300-ticker/hash checks and records acquisition `implementation_git_commit`. |
+| `scripts/build_v8_partition_manifest.py` | Synthetic CLI plus `--production-build-manifest`. Production requires confirmation, absolute external unused output, clean `HEAD == origin/v8-partition-acquisition`, trusted-host redirect enforcement, and source/T0 reproduction before publish; it has not been invoked with real JPX. |
 | `scripts/acquire_v8_historical.py` | Synthetic CLI plus implemented `--production-acquire` path. Production mode accepts only block, persisted partition manifest, private output root, and block-specific confirmation; it delegates all binding, provenance, storage, and T1/T2 enforcement to the public acquisition API. |
-| `tests/test_v8_partition.py`, `tests/test_v8_partition_cli.py`, `tests/test_v8_historical_acquisition.py`, `tests/test_v8_historical_acquisition_cli.py` | 149 tests, all passing at `53c951d4e0dfc9cce92e38a223d74636406c6cce`. Zero real JPX/Yahoo calls anywhere in the suite. |
+| `tests/test_v8_partition.py`, `tests/test_v8_partition_cli.py`, `tests/test_v8_historical_acquisition.py`, `tests/test_v8_historical_acquisition_cli.py` | 169 fake-only tests passing in the remediation working state. Zero real JPX/Yahoo calls anywhere in the suite. |
 
 ## Data state
 
@@ -86,6 +88,7 @@ real_partition_manifest_exists = false
 real_jpx_source_fetched = false
 private_v8_storage_location = NOT_YET_DEFINED
 requirements = absolute path; outside this repository; never committed
+trusted_partition_authorization = false
 ```
 
 ## T1 state
@@ -135,42 +138,50 @@ of the already-accepted, generic Yahoo Chart transport in
 
 ## Current pre-production blockers and next action
 
-### Finding 1 — resolved
+### Previous critical review and Finding 1
 
 The production partition-manifest runner is implemented at
 `23667bb855db405cf488755f0f166d91d8f75f32`; it preserves the existing
 fail-closed source and T0 reproduction guards. The production acquisition
 runner is implemented at `53c951d4e0dfc9cce92e38a223d74636406c6cce` and
-delegates to the manifest-bound public acquisition API. Neither has been
+delegates to the manifest-bound public acquisition API. The previous
+independent critical review BLOCKed the combined production path. Its
+remediation is implemented but Finding 1 must not be treated as review-passed
+until `INDEPENDENT_CRITICAL_REVIEW_RETEST` completes. Neither runner has been
 used against a real service, and no real manifest exists.
 
-### Finding 2 — resolved
+### Finding 2 — remediated pending independent retest
 
 At `aea2cb40efaf15bb749ee8545b021d65c2c52821`, the public acquisition path:
 
-1. reads the persisted partition manifest with `read_partition_manifest()`
+1. reads the canonical Git-tracked `V8_TRUSTED_PARTITION.json`, verifies its
+   identity, and requires `authorization_status=AUTHORIZED`;
+2. reads the persisted partition manifest with `read_partition_manifest()`
    and its self-hash verification;
-2. verifies `schema_version`, `study_name`, and `design_commit`;
-3. permits only `T1` and `T2`, with `T3` unconditionally blocked;
-4. sources tickers solely from the verified `block_assignments[block]`;
-5. requires exactly 300 tickers;
-6. verifies the authoritative block ticker-list SHA256;
-7. derives `partition_manifest_sha256` from the verified manifest; and
-8. records validated `implementation_git_commit` provenance in the
-   acquisition manifest.
+3. requires its manifest SHA and `partition_implementation_git_commit` to
+   exactly match the trusted anchor;
+4. verifies `schema_version`, `study_name`, and `design_commit`;
+5. permits only `T1` and `T2`, with `T3` unconditionally blocked;
+6. sources tickers solely from the verified `block_assignments[block]`;
+7. requires exactly 300 tickers and verifies the authoritative block
+   ticker-list SHA256; and
+8. derives `partition_manifest_sha256` and records validated acquisition
+   `implementation_git_commit` provenance.
 
-Every failed binding or provenance check blocks before transport. The
-current fake-only V8 regression is 136 passed / 0 failed.
+Every failed anchor, binding, or provenance check blocks before transport. The
+current fake-only V8 regression is 169 passed / 0 failed.
 
 ## Current ordered next steps
 
-1. Obtain an independent critical review of the complete production
-   partition and acquisition paths.
+1. Obtain an independent critical review retest of the complete remediated
+   production partition and acquisition paths.
 2. Only after separate explicit human authorization: real JPX source
    reproduction.
 3. Under separate authorization: real partition manifest creation.
-4. Under separate authorization: T1 raw acquisition.
-5. Under separate authorization: T2 raw acquisition and procedural seal.
+4. Verify its exact SHA and partition implementation commit, then obtain a
+   separate human authorization to Git-pin them in `V8_TRUSTED_PARTITION.json`.
+5. Under separate authorization: T1 raw acquisition.
+6. Under separate authorization: T2 raw acquisition and procedural seal.
 
 None of these steps is authorized by this documentation update. Actual
 private storage remains `NOT_YET_DEFINED`; when selected it must be an

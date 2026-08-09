@@ -6,6 +6,7 @@ import subprocess
 import sys
 import urllib.request
 from datetime import datetime, timezone
+from email.message import Message
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,13 @@ def no_real_urlopen(monkeypatch):
         raise AssertionError("real urlopen executed")
 
     monkeypatch.setattr(urllib.request, "urlopen", forbidden)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def test_production_git_provenance(monkeypatch):
+    """Keep fake-only production-path tests deterministic without weakening CLI."""
+    monkeypatch.setattr(cli, "resolve_verified_production_git_commit", lambda _: "a" * 40)
     yield
 
 
@@ -198,17 +206,26 @@ class FakeProductionResponse:
 class FakeJpxOpener:
     """Deterministic fake JPX page+xls opener; performs no network I/O."""
 
-    def __init__(self, xls_bytes: bytes, *, data_link: str = "/files/data_j.xls") -> None:
+    def __init__(
+        self,
+        xls_bytes: bytes,
+        *,
+        data_link: str = "/files/data_j.xls",
+        page_final_url: str | None = None,
+        xls_final_url: str | None = None,
+    ) -> None:
         self.xls_bytes = xls_bytes
         self.data_link = data_link
+        self.page_final_url = page_final_url or cli.JPX_PAGE
+        self.xls_final_url = xls_final_url
         self.calls: list[str] = []
 
     def __call__(self, request_obj):
         self.calls.append(request_obj.full_url)
         if request_obj.full_url == cli.JPX_PAGE:
             page_html = f'<a href="{self.data_link}">data_j.xls</a>'.encode("utf-8")
-            return FakeProductionResponse(page_html, cli.JPX_PAGE)
-        return FakeProductionResponse(self.xls_bytes, request_obj.full_url)
+            return FakeProductionResponse(page_html, self.page_final_url)
+        return FakeProductionResponse(self.xls_bytes, self.xls_final_url or request_obj.full_url)
 
 
 def _ordered_production_codes(total: int, *, start: int = 1000, pool: int = 4000) -> list[str]:
@@ -341,6 +358,7 @@ def test_production_relative_output_path_blocks(production_fixture):
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
         cli.run_production_partition_build(**_build_kwargs(production_fixture, Path("relative/pm.json"), opener))
     assert excinfo.value.reason == "OUTPUT_PATH_NOT_ABSOLUTE"
+    assert opener.calls == []
 
 
 def test_production_in_repository_output_path_blocks(production_fixture):
@@ -350,14 +368,37 @@ def test_production_in_repository_output_path_blocks(production_fixture):
         cli.run_production_partition_build(**_build_kwargs(production_fixture, inside_repo, opener))
     assert excinfo.value.reason == "OUTPUT_PATH_INSIDE_SOURCE_REPOSITORY"
     assert not inside_repo.exists()
+    assert opener.calls == []
 
 
 def test_production_overwrite_of_existing_manifest_blocks(tmp_path, production_fixture):
     output_path = tmp_path / "output" / "partition_manifest.json"
     cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, FakeJpxOpener(production_fixture["xls_bytes"])))
+    second_opener = FakeJpxOpener(production_fixture["xls_bytes"])
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, FakeJpxOpener(production_fixture["xls_bytes"])))
+        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, second_opener))
     assert excinfo.value.reason == "PARTITION_MANIFEST_ALREADY_EXISTS"
+    assert second_opener.calls == []
+
+
+@pytest.mark.parametrize("git_reason", (
+    "PRODUCTION_GIT_WORKTREE_DIRTY",
+    "PRODUCTION_GIT_HEAD_UNAVAILABLE",
+    "PRODUCTION_GIT_ORIGIN_REF_UNAVAILABLE",
+    "PRODUCTION_GIT_HEAD_NOT_ORIGIN",
+))
+def test_production_git_provenance_failure_blocks_before_jpx_network(tmp_path, production_fixture, monkeypatch, git_reason):
+    def blocked(_):
+        raise partition.V8PartitionBlocked(git_reason)
+
+    monkeypatch.setattr(cli, "resolve_verified_production_git_commit", blocked)
+    opener = FakeJpxOpener(production_fixture["xls_bytes"])
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli.run_production_partition_build(
+            **_build_kwargs(production_fixture, tmp_path / "output" / "partition_manifest.json", opener)
+        )
+    assert excinfo.value.reason == git_reason
+    assert opener.calls == []
 
 
 def test_production_data_link_not_found_blocks(tmp_path, production_fixture):
@@ -382,6 +423,40 @@ def test_production_resolved_source_host_must_be_jpx(tmp_path, production_fixtur
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
         cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
     assert excinfo.value.reason == "V8_PARTITION_SOURCE_HOST_INVALID"
+
+
+def test_trusted_jpx_same_host_redirect_is_permitted():
+    handler = cli.TrustedJpxRedirectHandler()
+    request = urllib.request.Request(cli.JPX_PAGE)
+    redirected = handler.redirect_request(
+        request, None, 302, "Found", Message(), "https://www.jpx.co.jp/files/data_j.xls"
+    )
+    assert redirected is not None
+    assert redirected.full_url == "https://www.jpx.co.jp/files/data_j.xls"
+
+
+@pytest.mark.parametrize("redirect_url", (
+    "https://attacker.example/data_j.xls",
+    "http://www.jpx.co.jp/files/data_j.xls",
+))
+def test_trusted_jpx_redirect_rejected_before_off_host_request(redirect_url):
+    handler = cli.TrustedJpxRedirectHandler()
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        handler.redirect_request(
+            urllib.request.Request(cli.JPX_PAGE), None, 302, "Found", Message(), redirect_url
+        )
+    assert excinfo.value.reason == "V8_PARTITION_SOURCE_HOST_INVALID"
+
+
+def test_production_final_response_host_must_be_jpx(tmp_path, production_fixture):
+    opener = FakeJpxOpener(
+        production_fixture["xls_bytes"], xls_final_url="https://attacker.example/data_j.xls"
+    )
+    output_path = tmp_path / "output" / "partition_manifest.json"
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+    assert excinfo.value.reason == "V8_PARTITION_SOURCE_HOST_INVALID"
+    assert opener.calls == [cli.JPX_PAGE, "https://www.jpx.co.jp/files/data_j.xls"]
 
 
 def test_production_network_call_count_is_exactly_two_per_attempt(tmp_path, production_fixture):

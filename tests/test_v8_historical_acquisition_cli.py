@@ -28,6 +28,29 @@ def no_real_urlopen(monkeypatch):
     yield
 
 
+def write_trusted_partition_anchor(path: Path, *, manifest: dict | None = None) -> None:
+    authorized = manifest is not None
+    path.write_bytes(partition.canonical_json_bytes({
+        "schema_version": acquisition.TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION,
+        "study_name": partition.STUDY_NAME,
+        "design_commit": partition.DESIGN_COMMIT,
+        "authorization_status": "AUTHORIZED" if authorized else "NOT_AUTHORIZED",
+        "authorized_partition_manifest_sha256": manifest["manifest_sha256"] if manifest else None,
+        "authorized_partition_implementation_git_commit": (
+            manifest["partition_implementation_git_commit"] if manifest else None
+        ),
+        "authorization_note": "test-only anchor",
+    }))
+
+
+@pytest.fixture(autouse=True)
+def test_trusted_partition_anchor(monkeypatch, tmp_path):
+    anchor_path = tmp_path / "V8_TRUSTED_PARTITION.json"
+    monkeypatch.setattr(acquisition, "TRUSTED_PARTITION_ANCHOR_PATH", anchor_path)
+    write_trusted_partition_anchor(anchor_path)
+    yield
+
+
 @pytest.fixture(scope="module")
 def synthetic_result():
     return cli.run_synthetic_acquisition_test()
@@ -72,6 +95,7 @@ def test_cli_has_no_ticker_or_bypass_override():
         "--implementation-git-commit", "--yahoo-host", "--request-start", "--request-end",
         "--retry-count", "--force", "--override", "--allow-t3", "--open-t2", "--unseal",
         "--authorize-research-access", "--skip-source-hash", "--ignore-parity", "--network", "--all",
+        "--trusted-manifest-sha", "--trusted-registry", "--trust-anchor", "--authorization-file", "--expected-sha",
     ):
         assert flag not in options
 
@@ -100,6 +124,7 @@ def write_partition_manifest(path: Path, *, mutation=None) -> dict:
     manifest = {
         "schema_version": partition.SCHEMA_VERSION, "study_name": partition.STUDY_NAME,
         "design_commit": partition.DESIGN_COMMIT, "created_utc": "2026-08-09T00:00:00Z",
+        "partition_implementation_git_commit": "a" * 40,
         "source_url": "https://example.invalid/jpx", "source_host": "example.invalid",
         "source_acquisition_utc": "2026-08-09T00:00:00Z", "source_raw_sha256": "0" * 64,
         "source_raw_byte_count": 0, "expected_v4_source_raw_sha256": "0" * 64,
@@ -121,6 +146,7 @@ def write_partition_manifest(path: Path, *, mutation=None) -> dict:
         mutation(manifest)
     manifest["manifest_sha256"] = partition.canonical_sha256(manifest)
     path.write_bytes(partition.canonical_json_bytes(manifest))
+    write_trusted_partition_anchor(acquisition.TRUSTED_PARTITION_ANCHOR_PATH, manifest=manifest)
     return manifest
 
 
@@ -175,6 +201,15 @@ def test_production_runner_reaches_only_fake_transport(tmp_path, block, role, se
     assert result["partition_manifest_sha256"] == manifest["manifest_sha256"]
 
 
+def test_production_runner_unauthorized_trust_anchor_blocks_before_network(tmp_path):
+    _, opener, kwargs = production_kwargs(tmp_path)
+    write_trusted_partition_anchor(acquisition.TRUSTED_PARTITION_ANCHOR_PATH)
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        cli.run_production_acquisition(**kwargs)
+    assert excinfo.value.reason == "TRUSTED_PARTITION_NOT_AUTHORIZED"
+    assert opener.calls == []
+
+
 @pytest.mark.parametrize("mutation", (
     lambda value: value.__setitem__("study_name", "WRONG"),
     lambda value: value.__setitem__("t1_ticker_list_sha256", "0" * 64),
@@ -191,6 +226,16 @@ def test_production_runner_storage_and_provenance_fail_closed(tmp_path):
     kwargs["output_root"] = Path("relative-private")
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
         cli.run_production_acquisition(**kwargs)
+    assert opener.calls == []
+    _, opener, kwargs = production_kwargs(tmp_path / "git-dirty")
+
+    def dirty_git(_):
+        raise acquisition.V8HistoricalAcquisitionBlocked("PRODUCTION_GIT_WORKTREE_DIRTY")
+
+    kwargs["implementation_git_commit_resolver"] = dirty_git
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        cli.run_production_acquisition(**kwargs)
+    assert excinfo.value.reason == "PRODUCTION_GIT_WORKTREE_DIRTY"
     assert opener.calls == []
     _, opener, kwargs = production_kwargs(tmp_path / "inside-repository")
     kwargs["output_root"] = ROOT / "would-be-private-v8-storage"

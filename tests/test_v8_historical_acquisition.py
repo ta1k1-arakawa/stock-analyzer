@@ -24,6 +24,40 @@ def no_real_urlopen(monkeypatch):
     yield
 
 
+def write_trusted_partition_anchor(
+    path: Path,
+    *,
+    manifest: dict | None = None,
+    manifest_sha256: str | None = None,
+    implementation_git_commit: str | None = None,
+    authorization_status: str | None = None,
+) -> None:
+    authorized = manifest is not None if authorization_status is None else authorization_status == "AUTHORIZED"
+    path.write_bytes(partition.canonical_json_bytes({
+        "schema_version": acquisition.TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION,
+        "study_name": partition.STUDY_NAME,
+        "design_commit": partition.DESIGN_COMMIT,
+        "authorization_status": authorization_status or ("AUTHORIZED" if authorized else "NOT_AUTHORIZED"),
+        "authorized_partition_manifest_sha256": (
+            manifest_sha256 if manifest_sha256 is not None else (manifest["manifest_sha256"] if manifest else None)
+        ),
+        "authorized_partition_implementation_git_commit": (
+            implementation_git_commit if implementation_git_commit is not None else (
+                manifest["partition_implementation_git_commit"] if manifest else None
+            )
+        ),
+        "authorization_note": "test-only anchor",
+    }))
+
+
+@pytest.fixture(autouse=True)
+def test_trusted_partition_anchor(monkeypatch, tmp_path):
+    anchor_path = tmp_path / "V8_TRUSTED_PARTITION.json"
+    monkeypatch.setattr(acquisition, "TRUSTED_PARTITION_ANCHOR_PATH", anchor_path)
+    write_trusted_partition_anchor(anchor_path)
+    yield
+
+
 # ---------------------------------------------------------------------------
 # Fake Yahoo transport
 # ---------------------------------------------------------------------------
@@ -138,6 +172,7 @@ def write_partition_manifest(path: Path, *, t1=None, t2=None, mutation=None) -> 
         "schema_version": partition.SCHEMA_VERSION,
         "study_name": partition.STUDY_NAME,
         "design_commit": partition.DESIGN_COMMIT,
+        "partition_implementation_git_commit": SYNTHETIC_IMPLEMENTATION_GIT_COMMIT,
         "created_utc": "2026-08-09T00:00:00Z",
         "source_url": "https://example.invalid/jpx",
         "source_host": "example.invalid",
@@ -170,6 +205,7 @@ def write_partition_manifest(path: Path, *, t1=None, t2=None, mutation=None) -> 
     manifest["manifest_sha256"] = partition.canonical_sha256(manifest)
     assert set(manifest) == set(partition.MANIFEST_FIELDS)
     path.write_bytes(partition.canonical_json_bytes(manifest))
+    write_trusted_partition_anchor(acquisition.TRUSTED_PARTITION_ANCHOR_PATH, manifest=manifest)
     return manifest
 
 
@@ -190,6 +226,79 @@ def bound_acquire_kwargs(output_root, partition_manifest_path, block, opener, *,
 # ---------------------------------------------------------------------------
 # Validated partition binding
 # ---------------------------------------------------------------------------
+
+
+def test_unauthorized_canonical_trust_anchor_blocks_before_network(tmp_path):
+    partition_path = tmp_path / "synthetic-partition.json"
+    write_partition_manifest(partition_path)
+    write_trusted_partition_anchor(acquisition.TRUSTED_PARTITION_ANCHOR_PATH)
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition.acquire_historical_block_bundle(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
+        )
+    assert excinfo.value.reason == "TRUSTED_PARTITION_NOT_AUTHORIZED"
+    assert opener.calls == []
+
+
+def test_self_hashed_arbitrary_manifest_cannot_reach_network_without_authorization(tmp_path):
+    partition_path = tmp_path / "forged-300-ticker-partition.json"
+    forged = write_partition_manifest(partition_path, t1=_tickers(6000), t2=_tickers(7000))
+    assert partition.read_partition_manifest(partition_path)["manifest_sha256"] == forged["manifest_sha256"]
+    write_trusted_partition_anchor(acquisition.TRUSTED_PARTITION_ANCHOR_PATH)
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
+        acquisition.acquire_historical_block_bundle(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
+        )
+    assert opener.calls == []
+
+
+def test_trust_anchor_manifest_sha_mismatch_blocks_before_network(tmp_path):
+    partition_path = tmp_path / "partition.json"
+    manifest = write_partition_manifest(partition_path)
+    write_trusted_partition_anchor(
+        acquisition.TRUSTED_PARTITION_ANCHOR_PATH,
+        manifest=manifest,
+        manifest_sha256="0" * 64,
+    )
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition.acquire_historical_block_bundle(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
+        )
+    assert excinfo.value.reason == "TRUSTED_PARTITION_MANIFEST_SHA_MISMATCH"
+    assert opener.calls == []
+
+
+def test_trust_anchor_partition_implementation_mismatch_blocks_before_network(tmp_path):
+    partition_path = tmp_path / "partition.json"
+    manifest = write_partition_manifest(partition_path)
+    write_trusted_partition_anchor(
+        acquisition.TRUSTED_PARTITION_ANCHOR_PATH,
+        manifest=manifest,
+        implementation_git_commit="b" * 40,
+    )
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition.acquire_historical_block_bundle(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
+        )
+    assert excinfo.value.reason == "TRUSTED_PARTITION_IMPLEMENTATION_GIT_COMMIT_MISMATCH"
+    assert opener.calls == []
+
+
+def test_tampered_trust_anchor_blocks_before_network(tmp_path):
+    partition_path = tmp_path / "partition.json"
+    write_partition_manifest(partition_path)
+    acquisition.TRUSTED_PARTITION_ANCHOR_PATH.write_text("{not json", encoding="utf-8")
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition.acquire_historical_block_bundle(
+            **bound_acquire_kwargs(tmp_path / "private", partition_path, "T1", opener)
+        )
+    assert excinfo.value.reason == "TRUSTED_PARTITION_ANCHOR_INVALID_JSON"
+    assert opener.calls == []
 
 
 def test_validated_partition_binding_reaches_fake_t1_transport(tmp_path):
@@ -254,6 +363,12 @@ def test_tampered_partition_self_hash_blocks_before_network(tmp_path):
 
 
 def test_missing_partition_manifest_blocks_before_network(tmp_path):
+    write_trusted_partition_anchor(
+        acquisition.TRUSTED_PARTITION_ANCHOR_PATH,
+        authorization_status="AUTHORIZED",
+        manifest_sha256="0" * 64,
+        implementation_git_commit=SYNTHETIC_IMPLEMENTATION_GIT_COMMIT,
+    )
     opener = default_opener()
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
         acquisition.acquire_historical_block_bundle(
@@ -284,6 +399,8 @@ def test_caller_cannot_spoof_partition_hash_or_substitute_tickers(tmp_path):
         acquisition.acquire_historical_block_bundle(**kwargs, partition_manifest_sha256="0" * 64)
     with pytest.raises(TypeError):
         acquisition.acquire_historical_block_bundle(**kwargs, tickers=["9999"])
+    with pytest.raises(TypeError):
+        acquisition.acquire_historical_block_bundle(**kwargs, trusted_partition_anchor_path=tmp_path / "other.json")
     assert opener.calls == []
 
 

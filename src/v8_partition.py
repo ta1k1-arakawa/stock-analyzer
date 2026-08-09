@@ -33,13 +33,15 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 STUDY_NAME = "V8_HISTORICAL_RESEARCH"
-SCHEMA_VERSION = "V8_PARTITION_MANIFEST_V1"
+SCHEMA_VERSION = "V8_PARTITION_MANIFEST_V2"
 DESIGN_COMMIT = "c414d3191cba356734d7ed08bdf1abc7d51fc384"
+PRODUCTION_BRANCH = "v8-partition-acquisition"
 
 BLOCK_SIZE = 300
 P_HIST_START = "2016-04-01"
@@ -78,6 +80,7 @@ MANIFEST_FIELDS = (
     "schema_version",
     "study_name",
     "design_commit",
+    "partition_implementation_git_commit",
     "created_utc",
     "source_url",
     "source_host",
@@ -157,6 +160,51 @@ def ticker_list_sha256(tickers: Sequence[str]) -> str:
     for consumers that need to verify a persisted partition assignment.
     """
     return _ticker_list_sha(tickers)
+
+
+def require_git_commit(value: object, reason: str = "IMPLEMENTATION_GIT_COMMIT_INVALID") -> str:
+    """Require a full lowercase Git object ID suitable for provenance."""
+    if not isinstance(value, str) or len(value) != 40 or any(char not in "0123456789abcdef" for char in value):
+        raise V8PartitionBlocked(reason)
+    return value
+
+
+def resolve_verified_production_git_commit(
+    repository_root: str | os.PathLike[str],
+) -> str:
+    """Resolve a clean checkout exactly matching the local origin branch ref.
+
+    This deliberately performs no fetch.  Production operators must fetch
+    separately; this guard only proves the local checkout is exactly the
+    already-fetched GitHub-tracking state before any production network I/O.
+    """
+    root = Path(repository_root)
+    commands = (
+        ("status", ["git", "-C", str(root), "status", "--porcelain"]),
+        ("head", ["git", "-C", str(root), "rev-parse", "HEAD"]),
+        ("origin", ["git", "-C", str(root), "rev-parse", "origin/" + PRODUCTION_BRANCH]),
+    )
+    results: dict[str, subprocess.CompletedProcess[str]] = {}
+    try:
+        for name, command in commands:
+            results[name] = subprocess.run(
+                command, capture_output=True, check=False, text=True, timeout=10
+            )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise V8PartitionBlocked("PRODUCTION_GIT_PROVENANCE_UNAVAILABLE") from error
+    if results["status"].returncode != 0:
+        raise V8PartitionBlocked("PRODUCTION_GIT_PROVENANCE_UNAVAILABLE")
+    if results["status"].stdout.strip():
+        raise V8PartitionBlocked("PRODUCTION_GIT_WORKTREE_DIRTY")
+    if results["head"].returncode != 0:
+        raise V8PartitionBlocked("PRODUCTION_GIT_HEAD_UNAVAILABLE")
+    if results["origin"].returncode != 0:
+        raise V8PartitionBlocked("PRODUCTION_GIT_ORIGIN_REF_UNAVAILABLE")
+    head = require_git_commit(results["head"].stdout.strip())
+    origin = require_git_commit(results["origin"].stdout.strip())
+    if head != origin:
+        raise V8PartitionBlocked("PRODUCTION_GIT_HEAD_NOT_ORIGIN")
+    return head
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +450,28 @@ def require_absolute_output_path_outside_repository(
     return candidate
 
 
+def preflight_partition_manifest_output(
+    output_path: str | os.PathLike[str],
+    repository_root: str | os.PathLike[str],
+) -> Path:
+    """Validate and prepare a production manifest destination before fetch.
+
+    The write path repeats these checks immediately before publish.  This
+    preflight exists specifically so invalid, in-repository, or already-used
+    destinations cannot cause a JPX request.
+    """
+    destination = require_absolute_output_path_outside_repository(output_path, repository_root)
+    if destination.exists():
+        raise V8PartitionBlocked("PARTITION_MANIFEST_ALREADY_EXISTS")
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise V8PartitionBlocked("OUTPUT_PATH_PARENT_INVALID") from error
+    if not destination.parent.is_dir():
+        raise V8PartitionBlocked("OUTPUT_PATH_PARENT_INVALID")
+    return destination
+
+
 # ---------------------------------------------------------------------------
 # Manifest construction
 # ---------------------------------------------------------------------------
@@ -416,6 +486,7 @@ def build_partition_manifest(
     source_url: str,
     source_acquisition_utc: datetime,
     clock: Callable[[], datetime],
+    partition_implementation_git_commit: str,
     block_size: int = BLOCK_SIZE,
 ) -> dict[str, Any]:
     """Build (but do not write) the complete partition manifest.
@@ -426,6 +497,7 @@ def build_partition_manifest(
     if the reconstructed universe's first 300 tickers do not byte-reproduce
     ``V4_UNIVERSE.csv``. Neither failure writes anything.
     """
+    implementation_git_commit = require_git_commit(partition_implementation_git_commit)
     if not isinstance(raw_source_bytes, (bytes, bytearray)):
         raise V8PartitionBlocked("RAW_SOURCE_BYTES_INVALID")
     raw_bytes = bytes(raw_source_bytes)
@@ -469,6 +541,7 @@ def build_partition_manifest(
         "schema_version": SCHEMA_VERSION,
         "study_name": STUDY_NAME,
         "design_commit": DESIGN_COMMIT,
+        "partition_implementation_git_commit": implementation_git_commit,
         "created_utc": _timestamp_text(started),
         "source_url": source_url,
         "source_host": v4_provenance["source_host"],
@@ -507,12 +580,28 @@ def write_partition_manifest_once(
     manifest: Mapping[str, Any],
     repository_root: str | os.PathLike[str],
 ) -> Path:
-    """Atomic write-once publish. Refuses an in-repository destination and
-    refuses to overwrite an existing manifest."""
+    """Atomically publish a complete manifest without replacing a destination.
+
+    The staging file is fsynced first, then linked into its final name.
+    ``os.link`` is atomic with respect to destination creation on supported
+    filesystems: if another process wins the race, this operation blocks and
+    never falls back to a replacement operation.
+    """
     destination = require_absolute_output_path_outside_repository(output_path, repository_root)
     if destination.exists():
         raise V8PartitionBlocked("PARTITION_MANIFEST_ALREADY_EXISTS")
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise V8PartitionBlocked("OUTPUT_PATH_PARENT_INVALID") from error
+    if not destination.parent.is_dir():
+        raise V8PartitionBlocked("OUTPUT_PATH_PARENT_INVALID")
+    if not isinstance(manifest, Mapping) or set(manifest) != set(MANIFEST_FIELDS):
+        raise V8PartitionBlocked("MANIFEST_SCHEMA_INVALID")
+    stated = manifest.get("manifest_sha256")
+    recomputed = canonical_sha256({key: value for key, value in manifest.items() if key != "manifest_sha256"})
+    if stated != recomputed:
+        raise V8PartitionBlocked("MANIFEST_SHA_MISMATCH")
     payload = canonical_json_bytes(dict(manifest))
     staging = destination.parent / (destination.name + ".staging-" + os.urandom(8).hex())
     try:
@@ -520,7 +609,15 @@ def write_partition_manifest_once(
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(str(staging), str(destination))
+        try:
+            os.link(str(staging), str(destination))
+        except FileExistsError as error:
+            raise V8PartitionBlocked("PARTITION_MANIFEST_ALREADY_EXISTS") from error
+        except OSError as error:
+            # Never replace an existing destination as a fallback.  A
+            # filesystem without atomic no-overwrite publication support is
+            # fail-closed rather than weakening write-once semantics.
+            raise V8PartitionBlocked("PARTITION_MANIFEST_ATOMIC_PUBLISH_FAILED") from error
     finally:
         if staging.exists():
             try:

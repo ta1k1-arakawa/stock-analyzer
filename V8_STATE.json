@@ -2,16 +2,16 @@
   "schema_version": "V8_STATE_SNAPSHOT_V1",
   "study": "V8_HISTORICAL_RESEARCH",
   "repository": "ta1k1-arakawa/stock-analyzer",
-  "state_basis_commit": "53c951d4e0dfc9cce92e38a223d74636406c6cce",
+  "pre_remediation_baseline_commit": "53c951d4e0dfc9cce92e38a223d74636406c6cce",
   "active_branch": "v8-partition-acquisition",
-  "state_basis_note": "This snapshot describes the verified current implementation state at state_basis_commit; always re-check remote HEAD before acting.",
+  "state_basis_note": "The listed baseline predates critical-review remediation; always re-check remote HEAD before acting because the current remote implementation is authoritative.",
 
   "design_commit": "c414d3191cba356734d7ed08bdf1abc7d51fc384",
   "design_branch": "v8-historical-research-design",
   "design_frozen": true,
   "design_status": "HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION",
 
-  "current_phase": "INDEPENDENT_CRITICAL_REVIEW_PENDING",
+  "current_phase": "INDEPENDENT_CRITICAL_REVIEW_RETEST_PENDING",
 
   "human_gates": {
     "new_strategy_family_accepted": true,
@@ -39,9 +39,10 @@
       "tests/test_v8_partition.py",
       "tests/test_v8_partition_cli.py",
       "tests/test_v8_historical_acquisition.py",
-      "tests/test_v8_historical_acquisition_cli.py"
+      "tests/test_v8_historical_acquisition_cli.py",
+      "V8_TRUSTED_PARTITION.json"
     ],
-    "test_count": 149,
+    "test_count": 169,
     "tests_passing": true,
     "cli_flags": {
       "build_v8_partition_manifest.py": ["--synthetic-test", "--production-build-manifest", "--output-path", "--confirmation"],
@@ -50,12 +51,18 @@
     "production_partition_runner_exists": true,
     "production_acquisition_runner_exists": true,
     "acquisition_bound_to_validated_partition_manifest": true,
-    "implementation_commit_provenance": true
+    "implementation_commit_provenance": true,
+    "partition_implementation_commit_provenance": true,
+    "production_git_head_must_match_local_origin_ref": true,
+    "trusted_partition_anchor": "V8_TRUSTED_PARTITION.json",
+    "trusted_partition_authorization": false,
+    "critical_review_remediation": "IMPLEMENTED_PENDING_REVIEW"
   },
 
   "partition": {
     "real_partition_manifest_exists": false,
     "real_jpx_source_fetched": false,
+    "trusted_partition_authorized": false,
     "private_v8_storage_location": "NOT_YET_DEFINED",
     "private_storage_requirements": ["absolute", "outside_repository", "not_committed"],
     "block_size_frozen": 300,
@@ -110,17 +117,19 @@
     {
       "id": "FINDING_1",
       "title": "Production partition and acquisition runners implemented",
-      "detail": "The production partition-manifest runner is implemented as --production-build-manifest and the production acquisition runner is implemented as --production-acquire. Both remain unexercised against real services; no real network authorization is implied.",
-      "blocks": "independent critical review before any real network authorization",
+      "detail": "The production partition-manifest runner is implemented as --production-build-manifest and the production acquisition runner is implemented as --production-acquire. A previous independent critical review BLOCKed the paths; provenance, output preflight, redirect, write-once, and trusted-manifest remediation is implemented but awaits independent retest.",
+      "blocks": "independent critical review retest before any real network authorization",
       "resolved": true
     },
     {
       "id": "FINDING_2",
-      "title": "Acquisition bound to a validated partition manifest",
+      "title": "Acquisition bound to a trusted, validated partition manifest",
       "severity": "CRITICAL",
-      "detail": "acquire_historical_block_bundle() reads a persisted partition manifest with self-hash verification, verifies schema_version/study_name/design_commit, accepts only T1/T2, sources tickers only from block_assignments[block], requires exactly 300 and the authoritative ticker-list SHA256, derives partition_manifest_sha256 from the verified manifest, unconditionally blocks T3, and records implementation_git_commit provenance.",
+      "detail": "acquire_historical_block_bundle() first validates the canonical Git-tracked trust anchor and requires authorization, then reads a persisted self-hash-verified partition manifest whose SHA256 and partition_implementation_git_commit exactly match the anchor. It verifies schema_version/study_name/design_commit, accepts only T1/T2, sources tickers only from block_assignments[block], requires exactly 300 and the authoritative ticker-list SHA256, derives partition_manifest_sha256 from the verified manifest, unconditionally blocks T3, and records implementation_git_commit provenance.",
       "required_checks_before_first_network_request": [
+        "canonical V8_TRUSTED_PARTITION.json identity and authorization verification",
         "read_partition_manifest(path) with self-hash verification",
+        "manifest SHA256 and partition implementation commit match the trusted anchor",
         "verify schema_version, study_name, design_commit",
         "requested block is exactly T1 or T2",
         "tickers sourced only from partition_manifest.block_assignments[block], never from CLI/user input",
@@ -130,12 +139,12 @@
         "T3 continues to unconditionally BLOCK"
       ],
       "fail_closed_requirement": "NETWORK_ACCESS_BEFORE_BLOCK = 0",
-      "additional_future_work": "none; production acquisition runner implementation remains a separate Finding 1 task",
+      "additional_future_work": "a separate human gate must pin a real production manifest SHA256 and partition implementation commit only after real partition creation; current authorization remains false",
       "resolved": true
     }
   ],
 
-  "next_action": "INDEPENDENT_CRITICAL_REVIEW",
+  "next_action": "INDEPENDENT_CRITICAL_REVIEW_RETEST",
 
   "source_of_truth_priority": [
     "immutable/raw acquisition manifests and their hashes (once they exist)",
