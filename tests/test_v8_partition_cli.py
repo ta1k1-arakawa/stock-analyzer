@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import subprocess
 import sys
@@ -298,21 +299,86 @@ def production_fixture(tmp_path, production_fixture_data):
     }
 
 
-def _build_kwargs(fixture, output_path, opener):
+def _private_test_seam_kwargs(fixture, output_path, opener):
+    """PRIVATE TEST SEAM ONLY -- NOT PRODUCTION PUBLIC BOUNDARY."""
     return dict(
         output_path=output_path,
         opener=opener,
         parse_source_table=lambda _raw: fixture["frame"],
         v4_manifest_path=fixture["manifest_path"],
         v4_universe_csv_path=fixture["universe_csv_path"],
-        clock=lambda: datetime.now(timezone.utc),
+        clock=lambda: datetime(2026, 8, 9, tzinfo=timezone.utc),
+        repository_root=ROOT,
+        git_commit_resolver=cli.resolve_verified_production_git_commit,
     )
 
 
-def test_production_build_succeeds_with_valid_fixture(tmp_path, production_fixture):
+def test_production_public_runner_signature_exposes_output_path_only():
+    signature = inspect.signature(cli.run_production_partition_build)
+    assert tuple(signature.parameters) == ("output_path",)
+    for forbidden in (
+        "opener",
+        "parse_source_table",
+        "v4_manifest_path",
+        "v4_universe_csv_path",
+        "clock",
+        "repository_root",
+        "git_commit_resolver",
+        "raw_source_bytes",
+        "source_url",
+        "source_host",
+        "ticker_frame",
+    ):
+        assert forbidden not in signature.parameters
+
+
+@pytest.mark.parametrize("override_name, override_value", (
+    ("opener", lambda _request: None),
+    ("parse_source_table", lambda _raw: None),
+    ("v4_manifest_path", Path("fake-manifest.json")),
+    ("v4_universe_csv_path", Path("fake-universe.csv")),
+    ("clock", lambda: datetime(2026, 8, 9, tzinfo=timezone.utc)),
+))
+def test_production_public_runner_rejects_dependency_overrides(tmp_path, override_name, override_value):
+    with pytest.raises(TypeError):
+        cli.run_production_partition_build(
+            output_path=tmp_path / "partition_manifest.json",
+            **{override_name: override_value},
+        )
+
+
+def test_production_public_runner_wires_canonical_dependencies(monkeypatch, tmp_path):
+    """Public wiring is inspected without making a real network request."""
+    captured = {}
+
+    def fake_private_helper(**kwargs):
+        captured.update(kwargs)
+        return {"manifest": {}, "written_path": kwargs["output_path"]}
+
+    monkeypatch.setattr(cli, "_run_production_partition_build_with_dependencies", fake_private_helper)
+    output_path = tmp_path / "partition_manifest.json"
+    result = cli.run_production_partition_build(output_path=output_path)
+
+    assert result["written_path"] == output_path
+    assert captured == {
+        "output_path": output_path,
+        "opener": cli._default_trusted_jpx_opener,
+        "parse_source_table": cli.default_parse_source_table,
+        "v4_manifest_path": cli.V4_MANIFEST_PATH,
+        "v4_universe_csv_path": cli.V4_UNIVERSE_CSV_PATH,
+        "clock": cli._utc_clock,
+        "repository_root": cli.ROOT,
+        "git_commit_resolver": cli.resolve_verified_production_git_commit,
+    }
+
+
+def test_private_test_seam_build_succeeds_with_valid_fixture(tmp_path, production_fixture):
+    """PRIVATE TEST SEAM ONLY -- NOT PRODUCTION PUBLIC BOUNDARY."""
     opener = FakeJpxOpener(production_fixture["xls_bytes"])
     output_path = tmp_path / "private-output" / "partition_manifest.json"
-    result = cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+    result = cli._run_production_partition_build_with_dependencies(
+        **_private_test_seam_kwargs(production_fixture, output_path, opener)
+    )
     assert result["manifest"]["source_reproduction_status"] == "PASS"
     assert result["written_path"] == output_path
     assert opener.calls == [cli.JPX_PAGE, "https://www.jpx.co.jp/files/data_j.xls"]
@@ -321,7 +387,9 @@ def test_production_build_succeeds_with_valid_fixture(tmp_path, production_fixtu
 def test_production_manifest_self_hash_verified_on_readback(tmp_path, production_fixture):
     opener = FakeJpxOpener(production_fixture["xls_bytes"])
     output_path = tmp_path / "output" / "partition_manifest.json"
-    result = cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+    result = cli._run_production_partition_build_with_dependencies(
+        **_private_test_seam_kwargs(production_fixture, output_path, opener)
+    )
     reread = partition.read_partition_manifest(output_path)
     assert reread == result["manifest"]
 
@@ -330,7 +398,9 @@ def test_production_source_hash_mismatch_blocks_before_block_assignment(tmp_path
     opener = FakeJpxOpener(b"WRONG_BYTES_DO_NOT_MATCH")
     output_path = tmp_path / "output" / "partition_manifest.json"
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+        cli._run_production_partition_build_with_dependencies(
+            **_private_test_seam_kwargs(production_fixture, output_path, opener)
+        )
     assert excinfo.value.reason == "V8_PARTITION_SOURCE_NOT_REPRODUCIBLE"
     assert not output_path.exists()
 
@@ -348,7 +418,9 @@ def test_production_t0_reproduction_mismatch_blocks_before_block_assignment(tmp_
     opener = FakeJpxOpener(production_fixture["xls_bytes"])
     output_path = tmp_path / "output" / "partition_manifest.json"
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli.run_production_partition_build(**_build_kwargs(fixture, output_path, opener))
+        cli._run_production_partition_build_with_dependencies(
+            **_private_test_seam_kwargs(fixture, output_path, opener)
+        )
     assert excinfo.value.reason == "V8_T0_REPRODUCTION_MISMATCH"
     assert not output_path.exists()
 
@@ -356,7 +428,9 @@ def test_production_t0_reproduction_mismatch_blocks_before_block_assignment(tmp_
 def test_production_relative_output_path_blocks(production_fixture):
     opener = FakeJpxOpener(production_fixture["xls_bytes"])
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli.run_production_partition_build(**_build_kwargs(production_fixture, Path("relative/pm.json"), opener))
+        cli._run_production_partition_build_with_dependencies(
+            **_private_test_seam_kwargs(production_fixture, Path("relative/pm.json"), opener)
+        )
     assert excinfo.value.reason == "OUTPUT_PATH_NOT_ABSOLUTE"
     assert opener.calls == []
 
@@ -365,7 +439,9 @@ def test_production_in_repository_output_path_blocks(production_fixture):
     opener = FakeJpxOpener(production_fixture["xls_bytes"])
     inside_repo = ROOT / "tmp-v8-production-cli-test.json"
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli.run_production_partition_build(**_build_kwargs(production_fixture, inside_repo, opener))
+        cli._run_production_partition_build_with_dependencies(
+            **_private_test_seam_kwargs(production_fixture, inside_repo, opener)
+        )
     assert excinfo.value.reason == "OUTPUT_PATH_INSIDE_SOURCE_REPOSITORY"
     assert not inside_repo.exists()
     assert opener.calls == []
@@ -373,10 +449,16 @@ def test_production_in_repository_output_path_blocks(production_fixture):
 
 def test_production_overwrite_of_existing_manifest_blocks(tmp_path, production_fixture):
     output_path = tmp_path / "output" / "partition_manifest.json"
-    cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, FakeJpxOpener(production_fixture["xls_bytes"])))
+    cli._run_production_partition_build_with_dependencies(
+        **_private_test_seam_kwargs(
+            production_fixture, output_path, FakeJpxOpener(production_fixture["xls_bytes"])
+        )
+    )
     second_opener = FakeJpxOpener(production_fixture["xls_bytes"])
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, second_opener))
+        cli._run_production_partition_build_with_dependencies(
+            **_private_test_seam_kwargs(production_fixture, output_path, second_opener)
+        )
     assert excinfo.value.reason == "PARTITION_MANIFEST_ALREADY_EXISTS"
     assert second_opener.calls == []
 
@@ -394,8 +476,10 @@ def test_production_git_provenance_failure_blocks_before_jpx_network(tmp_path, p
     monkeypatch.setattr(cli, "resolve_verified_production_git_commit", blocked)
     opener = FakeJpxOpener(production_fixture["xls_bytes"])
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli.run_production_partition_build(
-            **_build_kwargs(production_fixture, tmp_path / "output" / "partition_manifest.json", opener)
+        cli._run_production_partition_build_with_dependencies(
+            **_private_test_seam_kwargs(
+                production_fixture, tmp_path / "output" / "partition_manifest.json", opener
+            )
         )
     assert excinfo.value.reason == git_reason
     assert opener.calls == []
@@ -412,7 +496,9 @@ def test_production_data_link_not_found_blocks(tmp_path, production_fixture):
     opener = NoLinkOpener()
     output_path = tmp_path / "output" / "partition_manifest.json"
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+        cli._run_production_partition_build_with_dependencies(
+            **_private_test_seam_kwargs(production_fixture, output_path, opener)
+        )
     assert excinfo.value.reason == "V8_PARTITION_SOURCE_LINK_NOT_FOUND"
     assert opener.calls == [cli.JPX_PAGE]  # never attempted the (nonexistent) xls fetch
 
@@ -421,7 +507,9 @@ def test_production_resolved_source_host_must_be_jpx(tmp_path, production_fixtur
     opener = FakeJpxOpener(production_fixture["xls_bytes"], data_link="https://evil.example.com/data_j.xls")
     output_path = tmp_path / "output" / "partition_manifest.json"
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+        cli._run_production_partition_build_with_dependencies(
+            **_private_test_seam_kwargs(production_fixture, output_path, opener)
+        )
     assert excinfo.value.reason == "V8_PARTITION_SOURCE_HOST_INVALID"
 
 
@@ -461,7 +549,9 @@ def test_production_final_response_host_must_be_jpx(tmp_path, production_fixture
     )
     output_path = tmp_path / "output" / "partition_manifest.json"
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+        cli._run_production_partition_build_with_dependencies(
+            **_private_test_seam_kwargs(production_fixture, output_path, opener)
+        )
     assert excinfo.value.reason == "V8_PARTITION_SOURCE_HOST_INVALID"
     assert opener.calls == [cli.JPX_PAGE, "https://www.jpx.co.jp/files/data_j.xls"]
 
@@ -471,7 +561,9 @@ def test_production_network_call_count_is_exactly_two_per_attempt(tmp_path, prod
     never more, never fewer, and never any other host."""
     opener = FakeJpxOpener(production_fixture["xls_bytes"])
     output_path = tmp_path / "output" / "partition_manifest.json"
-    cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+    cli._run_production_partition_build_with_dependencies(
+        **_private_test_seam_kwargs(production_fixture, output_path, opener)
+    )
     assert len(opener.calls) == 2
     assert opener.calls[0] == cli.JPX_PAGE
     assert opener.calls[1].startswith("https://www.jpx.co.jp/")

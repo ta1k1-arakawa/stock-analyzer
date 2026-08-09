@@ -52,9 +52,9 @@ from src.v8_partition import (
     write_partition_manifest_once,
 )
 
-# Real official source. Only touched by --production-build-manifest, and
-# only when this module's ``opener`` parameter is left at its network-
-# capable default -- every test in this repository injects a fake opener.
+# Real official source. Only touched by --production-build-manifest. The
+# public production runner always selects the strict canonical opener; fake
+# openers exist only behind the private test seam below.
 JPX_PAGE = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
 JPX_SOURCE_HOST = "www.jpx.co.jp"
 DATA_LINK_PATTERN = re.compile(r'href=["\']([^"\']*data_j\.xls)["\']', re.IGNORECASE)
@@ -287,16 +287,12 @@ def _read_response(response: Any) -> bytes:
     return payload
 
 
-def fetch_real_jpx_source(
-    opener: Callable[[Any], Any] = _default_trusted_jpx_opener,
-) -> tuple[bytes, str]:
-    """Fetch the official JPX listing page, resolve its ``data_j.xls`` link,
-    and fetch that file's raw bytes.
+def _fetch_jpx_source_with_opener(*, opener: Callable[[Any], Any]) -> tuple[bytes, str]:
+    """PRIVATE TEST SEAM ONLY -- fetch a JPX source through ``opener``.
 
-    Performs real network I/O when called with the default ``opener``.
-    Every test in this repository injects a fake opener; production wiring
-    (``run_production_partition_build`` with its default argument) is the
-    only caller that ever uses the real default.
+    This dependency-injected helper is not a production public boundary.
+    Production code must use ``fetch_real_jpx_source`` or
+    ``run_production_partition_build`` instead.
     """
     page_request = urllib.request.Request(JPX_PAGE, headers={"User-Agent": PRODUCTION_USER_AGENT})
     try:
@@ -320,35 +316,37 @@ def fetch_real_jpx_source(
     return raw_bytes, source_url
 
 
+def fetch_real_jpx_source() -> tuple[bytes, str]:
+    """Fetch the official JPX listing using the canonical strict opener."""
+    return _fetch_jpx_source_with_opener(opener=_default_trusted_jpx_opener)
+
+
 def _utc_clock() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def run_production_partition_build(
+def _run_production_partition_build_with_dependencies(
     *,
     output_path: Path,
-    opener: Callable[[Any], Any] = _default_trusted_jpx_opener,
-    parse_source_table: Callable[[bytes], Any] = default_parse_source_table,
-    v4_manifest_path: Path = V4_MANIFEST_PATH,
-    v4_universe_csv_path: Path = V4_UNIVERSE_CSV_PATH,
-    clock: Callable[[], datetime] = _utc_clock,
+    opener: Callable[[Any], Any],
+    parse_source_table: Callable[[bytes], Any],
+    v4_manifest_path: Path,
+    v4_universe_csv_path: Path,
+    clock: Callable[[], datetime],
+    repository_root: Path,
+    git_commit_resolver: Callable[[Path], str],
 ) -> dict[str, Any]:
-    """Real partition-manifest build: fetch the real JPX source, run it
-    through the unmodified ``build_partition_manifest`` fail-closed guards,
-    and write the manifest once to ``output_path``.
+    """PRIVATE TEST SEAM ONLY -- dependency-injected partition build.
 
-    Raises ``V8PartitionBlocked`` -- and writes nothing -- on a source-hash
-    mismatch (``V8_PARTITION_SOURCE_NOT_REPRODUCIBLE``), a T0 mismatch
-    (``V8_T0_REPRODUCTION_MISMATCH``), an invalid or in-repository output
-    path, or an existing manifest at ``output_path``. The raw JPX bytes are
-    never persisted anywhere by this function, in this repository or in the
-    private output location -- only the resulting manifest is written.
+    NOT PRODUCTION PUBLIC BOUNDARY. Tests may inject fixtures here without
+    creating a production override path. The public runner below supplies
+    only canonical production dependencies.
     """
     # These guards deliberately precede the first JPX request.
-    destination = preflight_partition_manifest_output(output_path, ROOT)
-    implementation_git_commit = resolve_verified_production_git_commit(ROOT)
+    destination = preflight_partition_manifest_output(output_path, repository_root)
+    implementation_git_commit = git_commit_resolver(repository_root)
 
-    raw_source_bytes, source_url = fetch_real_jpx_source(opener=opener)
+    raw_source_bytes, source_url = _fetch_jpx_source_with_opener(opener=opener)
     fetched_at = clock()
 
     manifest = build_partition_manifest(
@@ -361,8 +359,27 @@ def run_production_partition_build(
         clock=clock,
         partition_implementation_git_commit=implementation_git_commit,
     )
-    written_path = write_partition_manifest_once(destination, manifest, repository_root=ROOT)
+    written_path = write_partition_manifest_once(destination, manifest, repository_root=repository_root)
     return {"manifest": manifest, "written_path": written_path}
+
+
+def run_production_partition_build(*, output_path: Path) -> dict[str, Any]:
+    """Build a production partition manifest with canonical dependencies only.
+
+    Callers may supply only the destination path. JPX transport, parsing, V4
+    provenance, UTC clock, repository root, and Git provenance resolution are
+    intentionally fixed inside this formal production boundary.
+    """
+    return _run_production_partition_build_with_dependencies(
+        output_path=output_path,
+        opener=_default_trusted_jpx_opener,
+        parse_source_table=default_parse_source_table,
+        v4_manifest_path=V4_MANIFEST_PATH,
+        v4_universe_csv_path=V4_UNIVERSE_CSV_PATH,
+        clock=_utc_clock,
+        repository_root=ROOT,
+        git_commit_resolver=resolve_verified_production_git_commit,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
