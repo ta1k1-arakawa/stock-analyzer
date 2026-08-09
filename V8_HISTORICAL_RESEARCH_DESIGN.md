@@ -245,6 +245,11 @@ real_money_authorization=false
 prospective_forward_study_still_required=true
 
 v7_isolation_weakened=false
+
+initial_v8_layer_a_overlaps_v7_feature_seed_date_span=true
+overlap_scope=T0_FEATURE_LINEAGE_ONLY
+overlap_is_confirmatory_evidence=false
+T1_T2_share_v7_seed_tickers=false
 ```
 
 ## 2. Purpose and position
@@ -307,16 +312,48 @@ set for V8. Equally, if V8 findings were allowed to alter V7's frozen
 parameters mid-flight, V7's preregistration would be void. Both directions are
 prohibited for the whole life of both studies.
 
-### 3.2 Shared-lineage disclosure requirement
+### 3.2 Shared-lineage disclosure requirement (corrected 2026-08-09, see erratum)
 
-V7 and V8 share the `FIXED_V4_300` universe and, per the audit §3.9, would share
-feature lineage over ≈2025-08 → 2026-08-07 if V8 used that span. Initial V8 does
-not use it: `P_hist` ends 2025-12-31 and `P_future` is unused (§1.3, §1.6).
+**Erratum.** An earlier revision of this section claimed that initial V8 does
+not overlap the V7 feature seed span, on the reasoning that `P_hist` ends
+2025-12-31. That reasoning was incomplete: the V7 production feature seed
+(audit §2.3) is the *latest 252 valid observations per ticker* with cutoff
+`2026-08-07`, which the audit estimates begins **approximately 2025-08**. Because
+`P_hist` runs through 2025-12-31, **Layer A (`T0 × P_hist`) does overlap the V7
+feature-seed date span**, over approximately 2025-08 → 2025-12-31. The claim of
+no overlap was a factual error and is corrected here; see the append-only
+erratum note in `V8_DATA_EXPOSURE_AUDIT.md` Appendix B for the full record.
 
-Should any future V8 phase report a result over a span overlapping the V7
-feature seed, or over V7's forward window (2026-08-08 onward), that document
-must state the overlap and must not present the result as independent
-corroboration of V7.
+The corrected picture, and why it does not change any frozen parameter:
+
+- The overlap is confined to `T0` — the same 300 exposed tickers V7 already
+  uses — because `T0` *is* `FIXED_V4_300`, the universe the V7 seed is drawn
+  from.
+- `T1` and `T2` are fresh cross-sectional ticker blocks (§5.1) that share **no**
+  tickers with the V7 seed; the overlap does not extend to them.
+- Layer A already carries `evidential_weight = NONE` (§5.2); nothing derived
+  from the overlapping span can be promoted, so the overlap adds no new
+  evidentiary risk beyond what §5.2 already accounts for.
+- V8 does not read, request, or otherwise use any V7 forward outcome; V7's
+  study state is unaffected in either direction (§3, §3.1).
+- This is therefore a **shared-lineage disclosure correction**, not a design
+  parameter change: no ticker block size, no `P_hist` boundary, no
+  walk-forward split, no threshold, no friction value, no Layer B/C policy, and
+  no `T3` reserve status is altered by this correction.
+
+```text
+initial_v8_layer_a_overlaps_v7_feature_seed_date_span=true
+overlap_scope=T0_FEATURE_LINEAGE_ONLY
+overlap_is_confirmatory_evidence=false
+T1_T2_share_v7_seed_tickers=false
+```
+
+Separately, and unaffected by this correction: `P_future` remains unused by
+initial V8 (§1.3, §1.6), so no overlap with V7's forward window
+(2026-08-08 onward) arises in this phase. Should any future V8 phase report a
+result over a span overlapping the V7 feature seed, or over V7's forward
+window, that document must state the overlap and must not present the result
+as independent corroboration of V7.
 
 ### 3.3 Reconciliation with the V3 closure statement (Decision 1)
 

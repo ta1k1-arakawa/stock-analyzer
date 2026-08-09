@@ -693,3 +693,61 @@ past_verdicts_reopened=false
 v7_artifacts_modified=false
 network_requests=0
 ```
+
+---
+
+## Appendix B — Erratum: V7 feature-seed overlap (append-only, 2026-08-09)
+
+```text
+note_type=APPEND_ONLY_ERRATUM
+note_date=2026-08-09
+audit_findings_modified=false
+audit_classifications_modified=false
+audit_tables_modified=false
+supersedes=Appendix_A_A.3_summary_line_only
+```
+
+**No audit fact in Sections 0–10 above is changed by this note.** This appendix
+corrects an overbroad summary line that appeared in Appendix A §A.3, discovered
+during implementation review of the frozen V8 design. Per the append-only
+principle, A.3 is left as originally written; this entry supersedes only its
+`v7_feature_seed_span_used_by_initial_v8=false` line.
+
+**The error.** A.3 asserted that initial V8 does not use any part of the V7
+feature-seed span. That assertion was too broad. The audit's own §2.3 records
+the V7 production seed as the latest 252 valid observations per ticker with
+cutoff `2026-08-07`, estimated to begin **approximately 2025-08**
+(`U-5`, §7). Initial V8's `P_hist` runs `2016-04-01 → 2025-12-31` — which
+**does** include the approximately 2025-08 → 2025-12-31 portion of the seed
+span, even though it correctly excludes the later portion,
+`2026-01-31 → 2026-08-07` (`P_gap`, unaffected).
+
+**Corrected statement.**
+
+```text
+v7_feature_seed_span_used_by_initial_v8=PARTIAL
+v7_feature_seed_overlap_subspan=approximately_2025-08..2025-12-31
+v7_feature_seed_overlap_layer=A_DEVELOPMENT_T0_ONLY
+v7_feature_seed_overlap_tickers=T0_ONLY_i.e._FIXED_V4_300
+T1_T2_overlap_with_v7_seed=false
+2026-01-31..2026-08-07_used_by_initial_v8=false      # A.3 line unaffected, still correct
+pre_2015_used_by_initial_v8=false                     # A.3 line unaffected, still correct
+v7_forward_window_2026-08-08_onward_used_by_initial_v8=false   # A.3 line unaffected, still correct
+```
+
+**Why this does not change any audit finding.** The overlap is on the `T0`
+ticker block, which the audit already classified in full: §3.9 already records
+≈2025-08 → 2025-12-31 as `EXPOSED_FOR_STRATEGY_DEVELOPMENT` (inside the V5-B and
+V6-A-R2 signal windows) and the consolidated matrix in §4 already carries that
+classification for `FIXED_V4_300`. This erratum does not reclassify any span;
+it only corrects which *layer* of the frozen V8 design touches that
+already-classified span. The corresponding correction in
+`V8_HISTORICAL_RESEARCH_DESIGN.md` §3.2 explains why the overlap does not alter
+any frozen design parameter: it is confined to `T0` (`evidential_weight=NONE`
+in Layer A), and `T1`/`T2` remain untouched fresh cross-sections.
+
+```text
+network_requests=0
+data_acquired=0
+v7_artifacts_modified=false
+```
