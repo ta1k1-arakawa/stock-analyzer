@@ -2,16 +2,16 @@
   "schema_version": "V8_STATE_SNAPSHOT_V1",
   "study": "V8_HISTORICAL_RESEARCH",
   "repository": "ta1k1-arakawa/stock-analyzer",
-  "state_basis_commit": "c5848ced1a5c800f384cb7b86fb642e5c748c2c2",
+  "state_basis_commit": "aea2cb40efaf15bb749ee8545b021d65c2c52821",
   "active_branch": "v8-partition-acquisition",
-  "state_basis_note": "This snapshot describes the repository AT state_basis_commit. It is not a claim about current remote HEAD -- always re-check git ls-remote before acting.",
+  "state_basis_note": "This snapshot describes the verified current implementation state at state_basis_commit; always re-check remote HEAD before acting.",
 
   "design_commit": "c414d3191cba356734d7ed08bdf1abc7d51fc384",
   "design_branch": "v8-historical-research-design",
   "design_frozen": true,
   "design_status": "HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION",
 
-  "current_phase": "PRODUCTION_ACQUISITION_HARDENING_PENDING",
+  "current_phase": "PRODUCTION_ACQUISITION_RUNNER_IMPLEMENTATION_PENDING",
 
   "human_gates": {
     "new_strategy_family_accepted": true,
@@ -29,7 +29,7 @@
   },
 
   "static_implementation": {
-    "commit": "c5848ced1a5c800f384cb7b86fb642e5c748c2c2",
+    "commit": "aea2cb40efaf15bb749ee8545b021d65c2c52821",
     "verdict": "V8_PARTITION_ACQUISITION_STATIC_PASS",
     "files": [
       "src/v8_partition.py",
@@ -41,19 +41,23 @@
       "tests/test_v8_historical_acquisition.py",
       "tests/test_v8_historical_acquisition_cli.py"
     ],
-    "test_count": 106,
+    "test_count": 136,
     "tests_passing": true,
     "cli_flags": {
-      "build_v8_partition_manifest.py": ["--synthetic-test"],
+      "build_v8_partition_manifest.py": ["--synthetic-test", "--production-build-manifest", "--output-path", "--confirmation"],
       "acquire_v8_historical.py": ["--synthetic-test"]
     },
-    "production_runner_exists": false,
-    "acquisition_bound_to_validated_partition_manifest": false
+    "production_partition_runner_exists": true,
+    "production_acquisition_runner_exists": false,
+    "acquisition_bound_to_validated_partition_manifest": true,
+    "implementation_commit_provenance": true
   },
 
   "partition": {
     "real_partition_manifest_exists": false,
     "real_jpx_source_fetched": false,
+    "private_v8_storage_location": "NOT_YET_DEFINED",
+    "private_storage_requirements": ["absolute", "outside_repository", "not_committed"],
     "block_size_frozen": 300,
     "p_hist_start": "2016-04-01",
     "p_hist_end": "2025-12-31",
@@ -105,16 +109,16 @@
   "production_blockers": [
     {
       "id": "FINDING_1",
-      "title": "No production runner exists",
-      "detail": "scripts/build_v8_partition_manifest.py and scripts/acquire_v8_historical.py each expose only --synthetic-test. No real JPX fetch, real partition creation, or real Yahoo T1/T2 acquisition path exists yet.",
+      "title": "Production acquisition runner not yet implemented",
+      "detail": "The production partition-manifest runner is implemented as --production-build-manifest. scripts/acquire_v8_historical.py remains synthetic-only; no production Yahoo T1/T2 acquisition runner exists yet.",
       "blocks": "any real network call",
-      "resolved": false
+      "resolved": "partially_resolved"
     },
     {
       "id": "FINDING_2",
-      "title": "Acquisition not bound to a validated partition manifest",
+      "title": "Acquisition bound to a validated partition manifest",
       "severity": "CRITICAL",
-      "detail": "acquire_historical_block_bundle() accepts block, tickers, and partition_manifest_sha256 as independent caller-supplied arguments. It does not itself read an actual partition manifest, verify its self-hash, verify schema_version/study_name/design_commit, restrict tickers to block_assignments[block], verify exact 300-ticker count and ticker_list_sha256 match, or derive partition_manifest_sha256 from the real manifest.",
+      "detail": "acquire_historical_block_bundle() reads a persisted partition manifest with self-hash verification, verifies schema_version/study_name/design_commit, accepts only T1/T2, sources tickers only from block_assignments[block], requires exactly 300 and the authoritative ticker-list SHA256, derives partition_manifest_sha256 from the verified manifest, unconditionally blocks T3, and records implementation_git_commit provenance.",
       "required_checks_before_first_network_request": [
         "read_partition_manifest(path) with self-hash verification",
         "verify schema_version, study_name, design_commit",
@@ -126,12 +130,12 @@
         "T3 continues to unconditionally BLOCK"
       ],
       "fail_closed_requirement": "NETWORK_ACCESS_BEFORE_BLOCK = 0",
-      "additional_future_work": "record the V8 implementation git commit that performed a real acquisition as production provenance",
-      "resolved": false
+      "additional_future_work": "none; production acquisition runner implementation remains a separate Finding 1 task",
+      "resolved": true
     }
   ],
 
-  "next_action": "IMPLEMENT_PRODUCTION_PARTITION_AND_ACQUISITION_RUNNER + BIND_ACQUISITION_TO_VALIDATED_PARTITION_MANIFEST + ADD_IMPLEMENTATION_COMMIT_PROVENANCE",
+  "next_action": "IMPLEMENT_PRODUCTION_ACQUISITION_RUNNER",
 
   "source_of_truth_priority": [
     "immutable/raw acquisition manifests and their hashes (once they exist)",
