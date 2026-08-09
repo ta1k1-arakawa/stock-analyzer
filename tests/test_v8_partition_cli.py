@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -36,9 +37,9 @@ def synthetic_result():
 # ---------------------------------------------------------------------------
 
 
-def test_cli_has_exactly_one_authorized_option():
+def _cli_option_names() -> set[str]:
     tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
-    options = {
+    return {
         node.args[0].value
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
@@ -49,16 +50,25 @@ def test_cli_has_exactly_one_authorized_option():
         and isinstance(node.args[0].value, str)
         and node.args[0].value.startswith("--")
     }
-    assert options == {"--synthetic-test"}
 
 
-def test_cli_has_no_bypass_or_real_path_option():
-    text = SCRIPT.read_text(encoding="utf-8")
-    for flag in (
-        "--skip-source-hash", "--force", "--ignore-parity", "--real",
-        "--output-root", "--source-path", "--network",
-    ):
-        assert flag not in text
+def test_cli_has_exactly_the_authorized_options():
+    """--synthetic-test (unchanged) plus the production path's three flags:
+    a mode flag and the two arguments production mode requires
+    (--output-path, --confirmation). No other option exists."""
+    assert _cli_option_names() == {
+        "--synthetic-test", "--production-build-manifest", "--output-path", "--confirmation",
+    }
+
+
+def test_cli_has_no_bypass_option():
+    """Checks actual add_argument() calls, not raw source text -- this
+    file's own module docstring names bypass-flag examples of what must NOT
+    exist (e.g. "no --skip-source-hash"), so a substring search over the
+    whole source would false-positive on its own documentation."""
+    options = _cli_option_names()
+    for flag in ("--skip-source-hash", "--force", "--ignore-parity", "--network", "--all"):
+        assert flag not in options
 
 
 def test_cli_subprocess_requires_the_flag():
@@ -83,6 +93,43 @@ def test_cli_subprocess_exit_zero_and_reports_result():
     assert payload["status"] == "PASS"
     assert payload["network_requests"] == 0
     assert payload["real_partition_created"] is False
+
+
+def test_cli_subprocess_rejects_both_modes_together():
+    result = subprocess.run(
+        [PYTHON, str(SCRIPT), "--synthetic-test", "--production-build-manifest"],
+        cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode != 0
+
+
+def test_cli_subprocess_production_missing_args_errors_before_any_network(tmp_path):
+    """--production-build-manifest without --output-path/--confirmation must
+    fail via argparse before main() ever calls the fetch function -- a real
+    subprocess run proves this without needing to fake urlopen."""
+    result = subprocess.run(
+        [PYTHON, str(SCRIPT), "--production-build-manifest"],
+        cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_cli_subprocess_production_wrong_confirmation_blocks_before_any_network(tmp_path):
+    """Confirmation is checked before run_production_partition_build (and
+    therefore before fetch_real_jpx_source) is ever called, so this real
+    subprocess run is safe to execute without any network fake: a wrong
+    confirmation can never reach the network path."""
+    output_path = tmp_path / "would-be-manifest.json"
+    result = subprocess.run(
+        [PYTHON, str(SCRIPT), "--production-build-manifest",
+         "--output-path", str(output_path), "--confirmation", "WRONG_CONFIRMATION"],
+        cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 2, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload == {"status": "BLOCKED", "reason": "CONFIRMATION_MISMATCH"}
+    assert not output_path.exists()
 
 
 def test_cli_leaves_no_manifest_in_repository():
@@ -127,6 +174,252 @@ def test_synthetic_result_values(synthetic_result):
 def test_synthetic_result_block_sizes_equal_for_t0_t1_t2_t3(synthetic_result):
     sizes = synthetic_result["block_sizes"]
     assert sizes["T0"] == sizes["T1"] == sizes["T2"] == sizes["T3"] == cli.SYNTHETIC_BLOCK_SIZE
+
+
+# ---------------------------------------------------------------------------
+# Production path (in-process, always with an injected fake opener --
+# no test in this file ever calls the real urllib.request.urlopen default)
+# ---------------------------------------------------------------------------
+
+
+class FakeProductionResponse:
+    def __init__(self, payload: bytes, url: str) -> None:
+        self.payload = payload
+        self.url = url
+        self.status = 200
+
+    def read(self) -> bytes:
+        return self.payload
+
+    def close(self) -> None:
+        pass
+
+
+class FakeJpxOpener:
+    """Deterministic fake JPX page+xls opener; performs no network I/O."""
+
+    def __init__(self, xls_bytes: bytes, *, data_link: str = "/files/data_j.xls") -> None:
+        self.xls_bytes = xls_bytes
+        self.data_link = data_link
+        self.calls: list[str] = []
+
+    def __call__(self, request_obj):
+        self.calls.append(request_obj.full_url)
+        if request_obj.full_url == cli.JPX_PAGE:
+            page_html = f'<a href="{self.data_link}">data_j.xls</a>'.encode("utf-8")
+            return FakeProductionResponse(page_html, cli.JPX_PAGE)
+        return FakeProductionResponse(self.xls_bytes, request_obj.full_url)
+
+
+def _ordered_production_codes(total: int, *, start: int = 1000, pool: int = 4000) -> list[str]:
+    import hashlib
+
+    candidates = [str(start + i) for i in range(pool)]
+    return sorted(candidates, key=lambda code: hashlib.sha256(code.encode("utf-8")).hexdigest())[:total]
+
+
+@pytest.fixture(scope="module")
+def production_fixture_data():
+    """Full production scale (300 T0 + 900+ fresh), matching the frozen,
+    non-overridable BLOCK_SIZE run_production_partition_build actually uses
+    -- module-scoped since the code-ordering computation is the same for
+    every test in this file and is pure/side-effect-free."""
+    import hashlib
+
+    import pandas as pd
+
+    all_codes = _ordered_production_codes(partition.BLOCK_SIZE * 4 + 10)
+    t0_codes = all_codes[:partition.BLOCK_SIZE]
+    fresh_codes = all_codes[partition.BLOCK_SIZE:]
+
+    t0_rows = [{"code": c, "market": "プライム（内国株式）", "industry": "IND"} for c in t0_codes]
+    csv_bytes = partition.build_universe_csv_bytes(t0_rows)
+    xls_bytes = b"FAKE_PRODUCTION_XLS_BYTES"
+
+    manifest_payload = {
+        "source_host": "www.jpx.co.jp",
+        "source_page": cli.JPX_PAGE,
+        "raw_file_sha256": hashlib.sha256(xls_bytes).hexdigest(),
+        "universe_csv_sha256": hashlib.sha256(csv_bytes).hexdigest(),
+        "ticker_list_sha256": hashlib.sha256(("\n".join(t0_codes) + "\n").encode()).hexdigest(),
+        "selection_rule": "fixture",
+        "selected_count": partition.BLOCK_SIZE,
+        "eligible_current_only": len(all_codes),
+    }
+
+    frame = pd.DataFrame(
+        [{"コード": c, "銘柄名": "SYN", "市場・区分": "プライム（内国株式）", "33業種区分": "IND"} for c in t0_codes]
+        + [{"コード": c, "銘柄名": "SYN", "市場・区分": "スタンダード（内国株式）", "33業種区分": "IND"} for c in fresh_codes]
+    )
+
+    return {
+        "csv_bytes": csv_bytes,
+        "xls_bytes": xls_bytes,
+        "manifest_payload": manifest_payload,
+        "frame": frame,
+    }
+
+
+@pytest.fixture()
+def production_fixture(tmp_path, production_fixture_data):
+    """Per-test file paths for the module-scoped fixture data above."""
+    import json as json_module
+
+    universe_csv_path = tmp_path / "V4_UNIVERSE.csv"
+    universe_csv_path.write_bytes(production_fixture_data["csv_bytes"])
+
+    manifest_path = tmp_path / "V4_UNIVERSE_MANIFEST.json"
+    manifest_path.write_bytes(
+        json_module.dumps(production_fixture_data["manifest_payload"], ensure_ascii=False).encode("utf-8")
+    )
+
+    return {
+        "manifest_path": manifest_path,
+        "universe_csv_path": universe_csv_path,
+        "xls_bytes": production_fixture_data["xls_bytes"],
+        "frame": production_fixture_data["frame"],
+    }
+
+
+def _build_kwargs(fixture, output_path, opener):
+    return dict(
+        output_path=output_path,
+        opener=opener,
+        parse_source_table=lambda _raw: fixture["frame"],
+        v4_manifest_path=fixture["manifest_path"],
+        v4_universe_csv_path=fixture["universe_csv_path"],
+        clock=lambda: datetime.now(timezone.utc),
+    )
+
+
+def test_production_build_succeeds_with_valid_fixture(tmp_path, production_fixture):
+    opener = FakeJpxOpener(production_fixture["xls_bytes"])
+    output_path = tmp_path / "private-output" / "partition_manifest.json"
+    result = cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+    assert result["manifest"]["source_reproduction_status"] == "PASS"
+    assert result["written_path"] == output_path
+    assert opener.calls == [cli.JPX_PAGE, "https://www.jpx.co.jp/files/data_j.xls"]
+
+
+def test_production_manifest_self_hash_verified_on_readback(tmp_path, production_fixture):
+    opener = FakeJpxOpener(production_fixture["xls_bytes"])
+    output_path = tmp_path / "output" / "partition_manifest.json"
+    result = cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+    reread = partition.read_partition_manifest(output_path)
+    assert reread == result["manifest"]
+
+
+def test_production_source_hash_mismatch_blocks_before_block_assignment(tmp_path, production_fixture):
+    opener = FakeJpxOpener(b"WRONG_BYTES_DO_NOT_MATCH")
+    output_path = tmp_path / "output" / "partition_manifest.json"
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+    assert excinfo.value.reason == "V8_PARTITION_SOURCE_NOT_REPRODUCIBLE"
+    assert not output_path.exists()
+
+
+def test_production_t0_reproduction_mismatch_blocks_before_block_assignment(tmp_path, production_fixture):
+    import pandas as pd
+
+    # Same raw bytes (so the source-hash gate passes) but a frame whose T0
+    # market string diverges from the committed V4_UNIVERSE.csv, so the
+    # reconstructed T0 no longer byte-reproduces it.
+    tampered_frame = production_fixture["frame"].copy()
+    tampered_frame.loc[0, "市場・区分"] = "スタンダード（内国株式）"
+    fixture = dict(production_fixture, frame=tampered_frame)
+
+    opener = FakeJpxOpener(production_fixture["xls_bytes"])
+    output_path = tmp_path / "output" / "partition_manifest.json"
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli.run_production_partition_build(**_build_kwargs(fixture, output_path, opener))
+    assert excinfo.value.reason == "V8_T0_REPRODUCTION_MISMATCH"
+    assert not output_path.exists()
+
+
+def test_production_relative_output_path_blocks(production_fixture):
+    opener = FakeJpxOpener(production_fixture["xls_bytes"])
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli.run_production_partition_build(**_build_kwargs(production_fixture, Path("relative/pm.json"), opener))
+    assert excinfo.value.reason == "OUTPUT_PATH_NOT_ABSOLUTE"
+
+
+def test_production_in_repository_output_path_blocks(production_fixture):
+    opener = FakeJpxOpener(production_fixture["xls_bytes"])
+    inside_repo = ROOT / "tmp-v8-production-cli-test.json"
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli.run_production_partition_build(**_build_kwargs(production_fixture, inside_repo, opener))
+    assert excinfo.value.reason == "OUTPUT_PATH_INSIDE_SOURCE_REPOSITORY"
+    assert not inside_repo.exists()
+
+
+def test_production_overwrite_of_existing_manifest_blocks(tmp_path, production_fixture):
+    output_path = tmp_path / "output" / "partition_manifest.json"
+    cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, FakeJpxOpener(production_fixture["xls_bytes"])))
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, FakeJpxOpener(production_fixture["xls_bytes"])))
+    assert excinfo.value.reason == "PARTITION_MANIFEST_ALREADY_EXISTS"
+
+
+def test_production_data_link_not_found_blocks(tmp_path, production_fixture):
+    class NoLinkOpener:
+        calls: list[str] = []
+
+        def __call__(self, request_obj):
+            self.calls.append(request_obj.full_url)
+            return FakeProductionResponse(b"<html>no xls link here</html>", cli.JPX_PAGE)
+
+    opener = NoLinkOpener()
+    output_path = tmp_path / "output" / "partition_manifest.json"
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+    assert excinfo.value.reason == "V8_PARTITION_SOURCE_LINK_NOT_FOUND"
+    assert opener.calls == [cli.JPX_PAGE]  # never attempted the (nonexistent) xls fetch
+
+
+def test_production_resolved_source_host_must_be_jpx(tmp_path, production_fixture):
+    opener = FakeJpxOpener(production_fixture["xls_bytes"], data_link="https://evil.example.com/data_j.xls")
+    output_path = tmp_path / "output" / "partition_manifest.json"
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+    assert excinfo.value.reason == "V8_PARTITION_SOURCE_HOST_INVALID"
+
+
+def test_production_network_call_count_is_exactly_two_per_attempt(tmp_path, production_fixture):
+    """One request for the listing page, one for the resolved data_j.xls --
+    never more, never fewer, and never any other host."""
+    opener = FakeJpxOpener(production_fixture["xls_bytes"])
+    output_path = tmp_path / "output" / "partition_manifest.json"
+    cli.run_production_partition_build(**_build_kwargs(production_fixture, output_path, opener))
+    assert len(opener.calls) == 2
+    assert opener.calls[0] == cli.JPX_PAGE
+    assert opener.calls[1].startswith("https://www.jpx.co.jp/")
+
+
+def test_production_confirmation_constant_is_used_by_main(tmp_path, production_fixture, monkeypatch):
+    """Exercises main() end-to-end with a correct confirmation, entirely
+    through injected fakes -- monkeypatches run_production_partition_build
+    itself so this test never touches the real network path at all."""
+    captured = {}
+
+    def fake_build(*, output_path):
+        captured["output_path"] = output_path
+        return {
+            "manifest": {
+                "source_reproduction_status": "PASS",
+                "block_sizes": {"T0": 5, "T1": 5, "T2": 5, "T3": 5, "T_spare": 0},
+                "manifest_sha256": "f" * 64,
+            },
+            "written_path": output_path,
+        }
+
+    monkeypatch.setattr(cli, "run_production_partition_build", fake_build)
+    output_path = tmp_path / "manifest.json"
+    exit_code = cli.main([
+        "--production-build-manifest", "--output-path", str(output_path),
+        "--confirmation", cli.PRODUCTION_CONFIRMATION,
+    ])
+    assert exit_code == 0
+    assert captured["output_path"] == output_path
 
 
 # ---------------------------------------------------------------------------

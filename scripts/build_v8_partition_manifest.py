@@ -1,23 +1,43 @@
-"""Synthetic-only V8 partition manifest builder check.
+"""V8 partition manifest builder CLI: synthetic check and production path.
 
-This CLI has no real-source, real-output-root, or real-network option. It
-builds a fully local synthetic JPX-listing fixture and a synthetic
-``V4_UNIVERSE_MANIFEST.json``/``V4_UNIVERSE.csv`` pair inside a temporary
-workspace, drives the production partition builder end to end (source-hash
-reproduction guard, eligible-universe reconstruction, T0 reproduction guard,
-fresh-block allocation, write-once manifest publish), and never touches the
-real JPX host, the real V4 universe files, or any real private V8 storage.
+Two entirely separate code paths, selected by mutually exclusive flags:
+
+* ``--synthetic-test`` -- unchanged from the original static-verification
+  CLI. Builds a fully local synthetic JPX-listing fixture and a synthetic
+  ``V4_UNIVERSE_MANIFEST.json``/``V4_UNIVERSE.csv`` pair inside a temporary
+  workspace, drives the production partition builder end to end, and never
+  touches the real JPX host, the real V4 universe files, or any real
+  private V8 storage. ``network_requests`` is always 0 in this mode.
+
+* ``--production-build-manifest`` -- fetches the real official JPX listing
+  (real network I/O when invoked with the default opener) and builds a
+  real partition manifest. It reuses ``src.v8_partition.build_partition_manifest``
+  and ``write_partition_manifest_once`` completely unchanged: the same
+  ``V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`` and ``V8_T0_REPRODUCTION_MISMATCH``
+  fail-closed guards apply, and a source-hash or T0-reproduction failure
+  BLOCKs before any block assignment is ever constructed. This mode
+  requires an explicit ``--output-path`` (validated absolute, outside this
+  repository, write-once) and an explicit ``--confirmation`` string, and
+  persists nothing but the resulting manifest -- the raw JPX bytes
+  themselves are never written anywhere, in this repository or otherwise.
+
+No bypass flag of any kind exists for either mode: there is no
+``--skip-source-hash``, ``--force``, or ``--ignore-parity``.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -29,6 +49,17 @@ from src.v8_partition import (
     read_partition_manifest,
     write_partition_manifest_once,
 )
+
+# Real official source. Only touched by --production-build-manifest, and
+# only when this module's ``opener`` parameter is left at its network-
+# capable default -- every test in this repository injects a fake opener.
+JPX_PAGE = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
+JPX_SOURCE_HOST = "www.jpx.co.jp"
+DATA_LINK_PATTERN = re.compile(r'href=["\']([^"\']*data_j\.xls)["\']', re.IGNORECASE)
+PRODUCTION_USER_AGENT = "V8-Partition-Builder/1.0"
+PRODUCTION_CONFIRMATION = "V8_PRODUCTION_PARTITION_BUILD"
+V4_MANIFEST_PATH = ROOT / "V4_UNIVERSE_MANIFEST.json"
+V4_UNIVERSE_CSV_PATH = ROOT / "V4_UNIVERSE.csv"
 
 # Synthetic block size, deliberately far smaller than the frozen production
 # value (300) -- this CLI proves the pipeline's *logic*, not production block
@@ -185,12 +216,151 @@ def run_synthetic_partition_test() -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Production path -- real JPX source, real partition manifest
+# ---------------------------------------------------------------------------
+
+
+def default_parse_source_table(raw_bytes: bytes) -> Any:
+    """Real production parser: the raw bytes are the official JPX ``data_j.xls``
+    listing. Tests must always inject a fake table-returning callable instead
+    of exercising this function, since it depends on real spreadsheet bytes."""
+    import io
+
+    import pandas as pd
+
+    return pd.read_excel(io.BytesIO(raw_bytes), dtype=str)
+
+
+def _read_response(response: Any) -> bytes:
+    try:
+        payload = response.read()
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+    if not isinstance(payload, bytes):
+        raise V8PartitionBlocked("V8_PARTITION_SOURCE_RESPONSE_INVALID")
+    return payload
+
+
+def fetch_real_jpx_source(
+    opener: Callable[[Any], Any] = urllib.request.urlopen,
+) -> tuple[bytes, str]:
+    """Fetch the official JPX listing page, resolve its ``data_j.xls`` link,
+    and fetch that file's raw bytes.
+
+    Performs real network I/O when called with the default ``opener``.
+    Every test in this repository injects a fake opener; production wiring
+    (``run_production_partition_build`` with its default argument) is the
+    only caller that ever uses the real default.
+    """
+    page_request = urllib.request.Request(JPX_PAGE, headers={"User-Agent": PRODUCTION_USER_AGENT})
+    try:
+        page_response = opener(page_request)
+    except urllib.error.URLError as error:
+        raise V8PartitionBlocked("V8_PARTITION_SOURCE_PAGE_FETCH_FAILED:" + str(error.reason)) from error
+    page_bytes = _read_response(page_response)
+
+    match = DATA_LINK_PATTERN.search(page_bytes.decode("utf-8", errors="replace"))
+    if not match:
+        raise V8PartitionBlocked("V8_PARTITION_SOURCE_LINK_NOT_FOUND")
+    source_url = urllib.parse.urljoin(JPX_PAGE, match.group(1))
+    parsed = urllib.parse.urlparse(source_url)
+    if parsed.scheme != "https" or parsed.hostname != JPX_SOURCE_HOST:
+        raise V8PartitionBlocked("V8_PARTITION_SOURCE_HOST_INVALID")
+
+    xls_request = urllib.request.Request(source_url, headers={"User-Agent": PRODUCTION_USER_AGENT})
+    try:
+        xls_response = opener(xls_request)
+    except urllib.error.URLError as error:
+        raise V8PartitionBlocked("V8_PARTITION_SOURCE_XLS_FETCH_FAILED:" + str(error.reason)) from error
+    raw_bytes = _read_response(xls_response)
+    return raw_bytes, source_url
+
+
+def _utc_clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def run_production_partition_build(
+    *,
+    output_path: Path,
+    opener: Callable[[Any], Any] = urllib.request.urlopen,
+    parse_source_table: Callable[[bytes], Any] = default_parse_source_table,
+    v4_manifest_path: Path = V4_MANIFEST_PATH,
+    v4_universe_csv_path: Path = V4_UNIVERSE_CSV_PATH,
+    clock: Callable[[], datetime] = _utc_clock,
+) -> dict[str, Any]:
+    """Real partition-manifest build: fetch the real JPX source, run it
+    through the unmodified ``build_partition_manifest`` fail-closed guards,
+    and write the manifest once to ``output_path``.
+
+    Raises ``V8PartitionBlocked`` -- and writes nothing -- on a source-hash
+    mismatch (``V8_PARTITION_SOURCE_NOT_REPRODUCIBLE``), a T0 mismatch
+    (``V8_T0_REPRODUCTION_MISMATCH``), an invalid or in-repository output
+    path, or an existing manifest at ``output_path``. The raw JPX bytes are
+    never persisted anywhere by this function, in this repository or in the
+    private output location -- only the resulting manifest is written.
+    """
+    raw_source_bytes, source_url = fetch_real_jpx_source(opener=opener)
+    fetched_at = clock()
+
+    manifest = build_partition_manifest(
+        raw_source_bytes=raw_source_bytes,
+        parse_source_table=parse_source_table,
+        v4_manifest_path=v4_manifest_path,
+        v4_universe_csv_path=v4_universe_csv_path,
+        source_url=source_url,
+        source_acquisition_utc=fetched_at,
+        clock=clock,
+    )
+    written_path = write_partition_manifest_once(output_path, manifest, repository_root=ROOT)
+    return {"manifest": manifest, "written_path": written_path}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="V8 partition manifest builder")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--synthetic-test", action="store_true")
+    mode.add_argument("--production-build-manifest", action="store_true")
+    parser.add_argument("--output-path", default=None)
+    parser.add_argument("--confirmation", default=None)
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="V8 partition manifest synthetic-only check")
-    parser.add_argument("--synthetic-test", action="store_true", required=True)
-    parser.parse_args(argv)
-    result = run_synthetic_partition_test()
-    print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.synthetic_test:
+        result = run_synthetic_partition_test()
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
+        return 0
+
+    # --production-build-manifest
+    if not args.output_path or not args.confirmation:
+        parser.error("--production-build-manifest requires --output-path and --confirmation")
+    if args.confirmation != PRODUCTION_CONFIRMATION:
+        print(json.dumps({"status": "BLOCKED", "reason": "CONFIRMATION_MISMATCH"}, sort_keys=True))
+        return 2
+
+    try:
+        result = run_production_partition_build(output_path=Path(args.output_path))
+    except V8PartitionBlocked as error:
+        print(json.dumps({"status": "BLOCKED", "reason": error.reason}, sort_keys=True))
+        return 2
+
+    manifest = result["manifest"]
+    summary = {
+        "status": "PASS",
+        "mode": "PRODUCTION",
+        "written_path": str(result["written_path"]),
+        "source_reproduction_status": manifest["source_reproduction_status"],
+        "block_sizes": manifest["block_sizes"],
+        "manifest_sha256": manifest["manifest_sha256"],
+    }
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True, indent=2))
     return 0
 
 
