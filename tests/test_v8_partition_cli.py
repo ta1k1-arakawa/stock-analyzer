@@ -179,11 +179,11 @@ def test_cli_leaves_no_manifest_in_repository():
 
 
 REQUIRED_RESULT_FIELDS = {
-    "status", "mode", "source_reproduction_status", "block_sizes",
-    "t1_role", "t2_role", "t3_role", "t3_price_acquisition_authorized",
+    "status", "mode", "source_reproduction_status", "v4_raw_sha_equality_required",
+    "block_sizes", "t1_role", "t2_role", "t3_role", "t3_price_acquisition_authorized",
     "manifest_sha256_verified", "write_once_enforced",
-    "source_mismatch_blocks_before_allocation", "network_requests",
-    "real_partition_created", "real_source_fetch_performed",
+    "raw_hash_mismatch_does_not_block", "t0_mismatch_blocks_before_allocation",
+    "network_requests", "real_partition_created", "real_source_fetch_performed",
 }
 
 
@@ -195,13 +195,15 @@ def test_synthetic_result_values(synthetic_result):
     assert synthetic_result["status"] == "PASS"
     assert synthetic_result["mode"] == "STATIC_SYNTHETIC_ONLY"
     assert synthetic_result["source_reproduction_status"] == "PASS"
+    assert synthetic_result["v4_raw_sha_equality_required"] is False
     assert synthetic_result["t1_role"] == "VALIDATION"
     assert synthetic_result["t2_role"] == "SEALED_HOLDOUT"
     assert synthetic_result["t3_role"] == "SEALED_RESERVE"
     assert synthetic_result["t3_price_acquisition_authorized"] is False
     assert synthetic_result["manifest_sha256_verified"] is True
     assert synthetic_result["write_once_enforced"] is True
-    assert synthetic_result["source_mismatch_blocks_before_allocation"] is True
+    assert synthetic_result["raw_hash_mismatch_does_not_block"] is True
+    assert synthetic_result["t0_mismatch_blocks_before_allocation"] is True
     assert synthetic_result["network_requests"] == 0
     assert synthetic_result["real_partition_created"] is False
     assert synthetic_result["real_source_fetch_performed"] is False
@@ -433,9 +435,12 @@ def test_source_preflight_valid_source_t0_passes_without_partition_artifact(
     assert not (tmp_path / "partition_manifest.json").exists()
 
 
-def test_source_preflight_wrong_source_hash_blocks_before_parse_or_artifact(
+def test_source_preflight_raw_sha_mismatch_does_not_block_when_t0_reproduces(
     tmp_path, production_fixture
 ):
+    """V8_HISTORICAL_RESEARCH_DESIGN.md §16: raw bytes differing from V4's
+    2026-08-03 reference must not block on their own -- parsing proceeds and
+    the preflight PASSes as long as T0 still reproduces."""
     parse_calls = []
 
     def parser(_raw):
@@ -443,13 +448,16 @@ def test_source_preflight_wrong_source_hash_blocks_before_parse_or_artifact(
         return production_fixture["frame"]
 
     kwargs = _private_source_preflight_seam_kwargs(
-        production_fixture, FakeJpxOpener(b"WRONG_BYTES_DO_NOT_MATCH")
+        production_fixture, FakeJpxOpener(b"CURRENT_SNAPSHOT_DIFFERENT_FROM_V4_REFERENCE")
     )
     kwargs["parse_source_table"] = parser
-    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli._run_production_source_preflight_with_dependencies(**kwargs)
-    assert excinfo.value.reason == "V8_PARTITION_SOURCE_NOT_REPRODUCIBLE"
-    assert parse_calls == []
+    result = cli._run_production_source_preflight_with_dependencies(**kwargs)
+
+    assert result["source_reproduction_status"] == "PASS"
+    assert result["t0_reproduction_status"] == "PASS"
+    assert result["v4_raw_sha_equality_required"] is False
+    assert result["source_raw_sha256"] != result["v4_source_raw_sha256_reference"]
+    assert parse_calls == [True]
     assert not (tmp_path / "partition_manifest.json").exists()
 
 
@@ -566,23 +574,31 @@ def test_production_manifest_self_hash_verified_on_readback(tmp_path, production
     assert reread == result["manifest"]
 
 
-def test_production_source_hash_mismatch_blocks_before_block_assignment(tmp_path, production_fixture):
-    opener = FakeJpxOpener(b"WRONG_BYTES_DO_NOT_MATCH")
+def test_production_raw_sha_mismatch_does_not_block_full_build_when_t0_reproduces(
+    tmp_path, production_fixture
+):
+    """V8_HISTORICAL_RESEARCH_DESIGN.md §16: the full production build path
+    must not require raw-hash equality against V4's 2026-08-03 reference --
+    only exact T0 reproduction gates block allocation and publication."""
+    opener = FakeJpxOpener(b"CURRENT_SNAPSHOT_DIFFERENT_FROM_V4_REFERENCE")
     output_path = tmp_path / "output" / "partition_manifest.json"
-    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        cli._run_production_partition_build_with_dependencies(
-            **_private_test_seam_kwargs(production_fixture, output_path, opener)
-        )
-    assert excinfo.value.reason == "V8_PARTITION_SOURCE_NOT_REPRODUCIBLE"
-    assert not output_path.exists()
+    result = cli._run_production_partition_build_with_dependencies(
+        **_private_test_seam_kwargs(production_fixture, output_path, opener)
+    )
+    manifest = result["manifest"]
+    assert manifest["source_reproduction_status"] == "PASS"
+    assert manifest["t0_reproduction_status"] == "PASS"
+    assert manifest["v4_raw_sha_equality_required"] is False
+    assert manifest["source_raw_sha256"] != manifest["v4_source_raw_sha256_reference"]
+    assert output_path.exists()
 
 
 def test_production_t0_reproduction_mismatch_blocks_before_block_assignment(tmp_path, production_fixture):
     import pandas as pd
 
-    # Same raw bytes (so the source-hash gate passes) but a frame whose T0
-    # market string diverges from the committed V4_UNIVERSE.csv, so the
-    # reconstructed T0 no longer byte-reproduces it.
+    # Raw bytes are irrelevant to this BLOCK under §16 -- what matters is
+    # a frame whose T0 market string diverges from the committed
+    # V4_UNIVERSE.csv, so the reconstructed T0 no longer byte-reproduces it.
     tampered_frame = production_fixture["frame"].copy()
     tampered_frame.loc[0, "市場・区分"] = "スタンダード（内国株式）"
     fixture = dict(production_fixture, frame=tampered_frame)
@@ -804,3 +820,10 @@ def test_frozen_block_size_and_p_hist_unchanged():
     assert partition.BLOCK_SIZE == 300
     assert partition.P_HIST_START == "2016-04-01"
     assert partition.P_HIST_END == "2025-12-31"
+
+
+def test_source_snapshot_semantics_binding_matches_design_clarification():
+    assert partition.SCHEMA_VERSION == "V8_PARTITION_MANIFEST_V3"
+    assert partition.SOURCE_SNAPSHOT_SEMANTICS == "IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT"
+    assert partition.SOURCE_SNAPSHOT_CLARIFICATION_COMMIT == "266999a8e48c77905dd7c7312fd41c7f38241d78"
+    assert partition.V4_RAW_SHA_EQUALITY_REQUIRED is False

@@ -15,10 +15,19 @@ reproduces the existing frozen ``T0`` (``V4_UNIVERSE.csv``) exactly, and only
 then allocate the frozen-size fresh ticker blocks ``T1``/``T2``/``T3``/
 ``T_spare`` required by ``V8_HISTORICAL_RESEARCH_DESIGN.md`` Decision 2.
 
-If reproduction of the official source or of ``T0`` cannot be proven, this
-module BLOCKs before any block assignment is written -- a partition that
-cannot be re-derived is not a partition, it is an unverifiable claim about
-which tickers were sealed.
+If reproduction of ``T0`` cannot be proven, this module BLOCKs before any
+block assignment is written -- a partition that cannot be re-derived is not
+a partition, it is an unverifiable claim about which tickers were sealed.
+Per ``V8_HISTORICAL_RESEARCH_DESIGN.md`` §16 (append-only clarification,
+commit ``266999a8e48c77905dd7c7312fd41c7f38241d78``), the official JPX
+source artifact used is whichever snapshot is fetched at
+partition-implementation time (``SOURCE_SNAPSHOT_SEMANTICS =
+"IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT"``); its raw bytes are not
+required to hash-equal V4's 2026-08-03 ``raw_file_sha256``, which is never
+compared for equality and is retained only as an audit reference
+(``v4_raw_sha_equality_required = False``). Exact ``T0`` reproduction
+against the already-frozen ``V4_UNIVERSE.csv`` remains the sole
+source-reproducibility BLOCK condition.
 
 Importing this module performs no I/O. The raw JPX source bytes and the
 raw-bytes-to-table parser are both caller-supplied, so the whole pipeline is
@@ -39,9 +48,19 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 STUDY_NAME = "V8_HISTORICAL_RESEARCH"
-SCHEMA_VERSION = "V8_PARTITION_MANIFEST_V2"
+SCHEMA_VERSION = "V8_PARTITION_MANIFEST_V3"
 DESIGN_COMMIT = "c414d3191cba356734d7ed08bdf1abc7d51fc384"
 PRODUCTION_BRANCH = "v8-partition-acquisition"
+
+# V8_HISTORICAL_RESEARCH_DESIGN.md §16 (append-only clarification, 2026-08-10):
+# the V8 partition source artifact may be an official JPX snapshot fetched at
+# partition-implementation time. It is not required to be byte-identical to
+# the raw bytes V4 fetched on 2026-08-03 -- that original raw file was never
+# committed or archived anywhere and cannot be reproduced. T0 exact
+# reproduction against the already-frozen V4_UNIVERSE.csv remains mandatory.
+SOURCE_SNAPSHOT_SEMANTICS = "IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT"
+SOURCE_SNAPSHOT_CLARIFICATION_COMMIT = "266999a8e48c77905dd7c7312fd41c7f38241d78"
+V4_RAW_SHA_EQUALITY_REQUIRED = False
 
 BLOCK_SIZE = 300
 P_HIST_START = "2016-04-01"
@@ -80,6 +99,8 @@ MANIFEST_FIELDS = (
     "schema_version",
     "study_name",
     "design_commit",
+    "source_snapshot_semantics",
+    "source_snapshot_clarification_commit",
     "partition_implementation_git_commit",
     "created_utc",
     "source_url",
@@ -87,10 +108,13 @@ MANIFEST_FIELDS = (
     "source_acquisition_utc",
     "source_raw_sha256",
     "source_raw_byte_count",
-    "expected_v4_source_raw_sha256",
+    "v4_source_raw_sha256_reference",
+    "v4_raw_sha_equality_required",
     "source_reproduction_status",
+    "t0_reproduction_status",
     "eligible_ticker_count",
     "eligible_ticker_list_sha256",
+    "selection_rule",
     "deterministic_ordering_rule",
     "t0_ticker_list_sha256",
     "t1_ticker_list_sha256",
@@ -108,6 +132,26 @@ MANIFEST_FIELDS = (
     "t3_role",
     "t3_price_acquisition_authorized",
     "manifest_sha256",
+)
+
+# Fields shared by the source-only preflight result and the full manifest.
+# Kept as one tuple so both producers stay literally in sync.
+SOURCE_ONLY_RESULT_FIELDS = (
+    "source_reproduction_status",
+    "t0_reproduction_status",
+    "source_snapshot_semantics",
+    "source_snapshot_clarification_commit",
+    "source_url",
+    "source_host",
+    "source_raw_sha256",
+    "source_raw_byte_count",
+    "source_acquisition_utc",
+    "v4_source_raw_sha256_reference",
+    "v4_raw_sha_equality_required",
+    "eligible_ticker_count",
+    "eligible_ticker_list_sha256",
+    "t0_ticker_list_sha256",
+    "partition_implementation_git_commit",
 )
 
 
@@ -394,10 +438,16 @@ def _source_preflight_core(
     if sha256_bytes(committed_csv_bytes) != v4_provenance["universe_csv_sha256"]:
         raise V8PartitionBlocked("V4_UNIVERSE_CSV_PROVENANCE_MISMATCH")
 
+    # V8_HISTORICAL_RESEARCH_DESIGN.md §16: the snapshot fetched at
+    # partition-implementation time is not required to hash-equal V4's
+    # 2026-08-03 raw bytes (that original file was never archived anywhere
+    # and cannot be reproduced). V4's raw_file_sha256 is read here only as
+    # an audit-reference value recorded alongside the current snapshot's own
+    # hash -- it is never compared against source_raw_sha256, and it never
+    # gates acceptance. Acceptance is gated solely by exact T0 reproduction
+    # below.
     source_raw_sha256 = sha256_bytes(raw_bytes)
-    expected = v4_provenance["raw_file_sha256"]
-    if source_raw_sha256 != expected:
-        raise V8PartitionBlocked("V8_PARTITION_SOURCE_NOT_REPRODUCIBLE")
+    v4_source_raw_sha256_reference = v4_provenance["raw_file_sha256"]
 
     frame = parse_source_table(raw_bytes)
     eligible_rows, _reasons = parse_eligible_universe(frame)
@@ -415,18 +465,23 @@ def _source_preflight_core(
     result = {
         "source_reproduction_status": "PASS",
         "t0_reproduction_status": "PASS",
+        "source_snapshot_semantics": SOURCE_SNAPSHOT_SEMANTICS,
+        "source_snapshot_clarification_commit": SOURCE_SNAPSHOT_CLARIFICATION_COMMIT,
         "source_url": source_url,
         "source_host": v4_provenance["source_host"],
         "source_raw_sha256": source_raw_sha256,
-        "expected_source_raw_sha256": expected,
         "source_raw_byte_count": len(raw_bytes),
         "source_acquisition_utc": _timestamp_text(acquired),
+        "v4_source_raw_sha256_reference": v4_source_raw_sha256_reference,
+        "v4_raw_sha_equality_required": V4_RAW_SHA_EQUALITY_REQUIRED,
         "eligible_ticker_count": len(ordered_codes),
         "eligible_ticker_list_sha256": _ticker_list_sha(ordered_codes),
         "t0_ticker_list_sha256": _ticker_list_sha(t0_tickers),
         "partition_implementation_git_commit": implementation_git_commit,
     }
-    return result, ordered_codes, t0_tickers
+    if set(result) != set(SOURCE_ONLY_RESULT_FIELDS):
+        raise V8PartitionBlocked("SOURCE_PREFLIGHT_RESULT_SCHEMA_INVALID")
+    return result, ordered_codes, t0_tickers, v4_provenance
 
 
 def verify_partition_source_preflight(
@@ -447,7 +502,7 @@ def verify_partition_source_preflight(
     T0 reproduction, then returns audit metadata.  It never calls
     ``allocate_fresh_blocks`` and never constructs T1/T2/T3/T_spare data.
     """
-    result, _ordered_codes, _t0_tickers = _source_preflight_core(
+    result, _ordered_codes, _t0_tickers, _v4_provenance = _source_preflight_core(
         raw_source_bytes=raw_source_bytes,
         parse_source_table=parse_source_table,
         v4_manifest_path=v4_manifest_path,
@@ -585,13 +640,15 @@ def build_partition_manifest(
 ) -> dict[str, Any]:
     """Build (but do not write) the complete partition manifest.
 
-    Fails closed with ``V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`` if the raw
-    source bytes do not hash-match the ``raw_file_sha256`` already recorded
-    in ``V4_UNIVERSE_MANIFEST.json``, and with ``V8_T0_REPRODUCTION_MISMATCH``
-    if the reconstructed universe's first 300 tickers do not byte-reproduce
-    ``V4_UNIVERSE.csv``. Neither failure writes anything.
+    Fails closed with ``V8_T0_REPRODUCTION_MISMATCH`` if the reconstructed
+    universe's first ``block_size`` tickers do not byte-reproduce
+    ``V4_UNIVERSE.csv`` -- this is the only source-reproducibility BLOCK
+    condition. Per ``V8_HISTORICAL_RESEARCH_DESIGN.md`` §16, the raw source
+    bytes fetched here are not required to hash-equal V4's 2026-08-03
+    ``raw_file_sha256``; that value is recorded only as an audit reference.
+    A T0 mismatch writes nothing and never reaches ``allocate_fresh_blocks``.
     """
-    source_result, ordered_codes, t0_tickers = _source_preflight_core(
+    source_result, ordered_codes, t0_tickers, v4_provenance = _source_preflight_core(
         raw_source_bytes=raw_source_bytes,
         parse_source_table=parse_source_table,
         v4_manifest_path=v4_manifest_path,
@@ -603,8 +660,7 @@ def build_partition_manifest(
     )
     implementation_git_commit = source_result["partition_implementation_git_commit"]
     source_raw_sha256 = source_result["source_raw_sha256"]
-    expected = source_result["expected_source_raw_sha256"]
-    v4_provenance = load_v4_provenance(v4_manifest_path)
+    v4_source_raw_sha256_reference = source_result["v4_source_raw_sha256_reference"]
     raw_bytes = bytes(raw_source_bytes)
     blocks = allocate_fresh_blocks(ordered_codes, t0_tickers, block_size=block_size)
 
@@ -618,6 +674,8 @@ def build_partition_manifest(
         "schema_version": SCHEMA_VERSION,
         "study_name": STUDY_NAME,
         "design_commit": DESIGN_COMMIT,
+        "source_snapshot_semantics": SOURCE_SNAPSHOT_SEMANTICS,
+        "source_snapshot_clarification_commit": SOURCE_SNAPSHOT_CLARIFICATION_COMMIT,
         "partition_implementation_git_commit": implementation_git_commit,
         "created_utc": _timestamp_text(started),
         "source_url": source_url,
@@ -625,10 +683,13 @@ def build_partition_manifest(
         "source_acquisition_utc": _timestamp_text(acquired),
         "source_raw_sha256": source_raw_sha256,
         "source_raw_byte_count": len(raw_bytes),
-        "expected_v4_source_raw_sha256": expected,
+        "v4_source_raw_sha256_reference": v4_source_raw_sha256_reference,
+        "v4_raw_sha_equality_required": V4_RAW_SHA_EQUALITY_REQUIRED,
         "source_reproduction_status": "PASS",
+        "t0_reproduction_status": "PASS",
         "eligible_ticker_count": len(ordered_codes),
         "eligible_ticker_list_sha256": _ticker_list_sha(ordered_codes),
+        "selection_rule": v4_provenance["selection_rule"],
         "deterministic_ordering_rule": DETERMINISTIC_ORDERING_RULE,
         "t0_ticker_list_sha256": _ticker_list_sha(blocks["T0"]),
         "t1_ticker_list_sha256": _ticker_list_sha(blocks["T1"]),
@@ -729,6 +790,23 @@ def read_partition_manifest(path: str | os.PathLike[str]) -> dict[str, Any]:
     if stated != recomputed:
         raise V8PartitionBlocked("MANIFEST_SHA_MISMATCH")
     require_git_commit(manifest["partition_implementation_git_commit"])
+
+    # Central source-snapshot-semantics validation (V8_HISTORICAL_RESEARCH_
+    # DESIGN.md §16). Every consumer of a persisted manifest -- production
+    # acquisition included -- goes through this reader, so these checks are
+    # enforced exactly once rather than duplicated per caller.
+    if manifest["schema_version"] != SCHEMA_VERSION:
+        raise V8PartitionBlocked("MANIFEST_SCHEMA_VERSION_MISMATCH")
+    if manifest["source_snapshot_semantics"] != SOURCE_SNAPSHOT_SEMANTICS:
+        raise V8PartitionBlocked("MANIFEST_SOURCE_SNAPSHOT_SEMANTICS_MISMATCH")
+    if manifest["source_snapshot_clarification_commit"] != SOURCE_SNAPSHOT_CLARIFICATION_COMMIT:
+        raise V8PartitionBlocked("MANIFEST_SOURCE_SNAPSHOT_CLARIFICATION_COMMIT_MISMATCH")
+    if manifest["v4_raw_sha_equality_required"] is not False:
+        raise V8PartitionBlocked("MANIFEST_V4_RAW_SHA_EQUALITY_REQUIREMENT_INVALID")
+    if manifest["source_reproduction_status"] != "PASS":
+        raise V8PartitionBlocked("MANIFEST_SOURCE_REPRODUCTION_NOT_PASS")
+    if manifest["t0_reproduction_status"] != "PASS":
+        raise V8PartitionBlocked("MANIFEST_T0_REPRODUCTION_NOT_PASS")
     return dict(manifest)
 
 
@@ -742,12 +820,16 @@ __all__ = [
     "P_HIST_START",
     "REQUIRED_V4_PROVENANCE_FIELDS",
     "SCHEMA_VERSION",
+    "SOURCE_ONLY_RESULT_FIELDS",
+    "SOURCE_SNAPSHOT_CLARIFICATION_COMMIT",
+    "SOURCE_SNAPSHOT_SEMANTICS",
     "STUDY_NAME",
     "T1_ROLE",
     "T2_ROLE",
     "T3_PRICE_ACQUISITION_AUTHORIZED",
     "T3_ROLE",
     "UNIVERSE_CSV_COLUMNS",
+    "V4_RAW_SHA_EQUALITY_REQUIRED",
     "V8PartitionBlocked",
     "allocate_fresh_blocks",
     "build_partition_manifest",

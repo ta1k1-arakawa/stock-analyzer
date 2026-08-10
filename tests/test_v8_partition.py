@@ -185,7 +185,11 @@ def test_source_provenance_fields_present_and_correct(v4_fixture, t0_codes, fres
     assert manifest["source_url"] == "https://www.jpx.co.jp/synthetic/data_j.xls"
     assert manifest["source_raw_sha256"] == hashlib.sha256(v4_fixture["raw_source_bytes"]).hexdigest()
     assert manifest["source_raw_byte_count"] == len(v4_fixture["raw_source_bytes"])
-    assert manifest["expected_v4_source_raw_sha256"] == manifest["source_raw_sha256"]
+    assert manifest["v4_source_raw_sha256_reference"] == hashlib.sha256(v4_fixture["raw_source_bytes"]).hexdigest()
+    assert manifest["v4_raw_sha_equality_required"] is False
+    assert manifest["source_snapshot_semantics"] == partition.SOURCE_SNAPSHOT_SEMANTICS
+    assert manifest["source_snapshot_clarification_commit"] == partition.SOURCE_SNAPSHOT_CLARIFICATION_COMMIT
+    assert manifest["selection_rule"]
     assert manifest["design_commit"] == partition.DESIGN_COMMIT
     assert manifest["partition_implementation_git_commit"] == "a" * 40
     assert manifest["study_name"] == partition.STUDY_NAME
@@ -210,20 +214,96 @@ def test_source_only_preflight_returns_source_and_t0_audit_without_allocating(
     assert result["t0_reproduction_status"] == "PASS"
     assert result["eligible_ticker_count"] == BLOCK_SIZE * 4 + 20
     assert result["t0_ticker_list_sha256"] == _ticker_list_sha(t0_codes)
+    assert result["source_snapshot_semantics"] == partition.SOURCE_SNAPSHOT_SEMANTICS
+    assert result["source_snapshot_clarification_commit"] == partition.SOURCE_SNAPSHOT_CLARIFICATION_COMMIT
+    assert result["v4_raw_sha_equality_required"] is False
+    assert result["v4_source_raw_sha256_reference"] == hashlib.sha256(v4_fixture["raw_source_bytes"]).hexdigest()
+    assert set(result) == set(partition.SOURCE_ONLY_RESULT_FIELDS)
     assert "block_assignments" not in result
     assert not any(key.startswith("t1_") or key.startswith("t2_") or key.startswith("t3_") for key in result)
 
 
 # ---------------------------------------------------------------------------
-# Fail-closed BLOCKs
+# V8_HISTORICAL_RESEARCH_DESIGN.md §16 source-snapshot semantics
 # ---------------------------------------------------------------------------
 
 
-def test_source_raw_hash_mismatch_blocks_before_any_allocation(v4_fixture, t0_codes, fresh_codes):
+def test_a_source_only_preflight_passes_on_raw_sha_mismatch_when_t0_reproduces(
+    v4_fixture, t0_codes, fresh_codes, monkeypatch
+):
+    """§16 case A: current raw bytes differ from V4's 2026-08-03 reference,
+    but T0 (rank 1-300) still reproduces V4_UNIVERSE.csv exactly -- the
+    preflight must PASS, record the current snapshot's own raw hash, and
+    record the V4 hash only as a non-gating audit reference."""
     frame = build_frame(t0_codes, fresh_codes)
+    kwargs = build_kwargs(v4_fixture, frame, raw_source_bytes=b"CURRENT_SNAPSHOT_DIFFERENT_FROM_V4")
+    kwargs.pop("clock")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("allocate_fresh_blocks reached")
+
+    monkeypatch.setattr(partition, "allocate_fresh_blocks", forbidden)
+    result = partition.verify_partition_source_preflight(**kwargs)
+
+    v4_raw_sha = hashlib.sha256(v4_fixture["raw_source_bytes"]).hexdigest()
+    current_raw_sha = hashlib.sha256(b"CURRENT_SNAPSHOT_DIFFERENT_FROM_V4").hexdigest()
+    assert current_raw_sha != v4_raw_sha
+    assert result["source_reproduction_status"] == "PASS"
+    assert result["t0_reproduction_status"] == "PASS"
+    assert result["source_raw_sha256"] == current_raw_sha
+    assert result["v4_source_raw_sha256_reference"] == v4_raw_sha
+    assert result["v4_raw_sha_equality_required"] is False
+
+
+def test_b_t0_mismatch_blocks_even_with_differing_raw_bytes(v4_fixture, t0_codes, fresh_codes, monkeypatch):
+    """§16 case B: raw bytes differ from V4's reference AND T0 also fails to
+    reproduce -- must BLOCK with V8_T0_REPRODUCTION_MISMATCH, and
+    allocate_fresh_blocks must never be called (call count 0)."""
+    frame = build_frame(t0_codes, fresh_codes, t0_market="スタンダード（内国株式）")
+    kwargs = build_kwargs(v4_fixture, frame, raw_source_bytes=b"WRONG_BYTES_AND_T0_ALSO_WRONG")
+
+    calls = []
+    monkeypatch.setattr(partition, "allocate_fresh_blocks", lambda *a, **k: calls.append((a, k)))
+
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
-        partition.build_partition_manifest(**build_kwargs(v4_fixture, frame, raw_source_bytes=b"WRONG_BYTES"))
-    assert excinfo.value.reason == "V8_PARTITION_SOURCE_NOT_REPRODUCIBLE"
+        partition.build_partition_manifest(**kwargs)
+    assert excinfo.value.reason == "V8_T0_REPRODUCTION_MISMATCH"
+    assert len(calls) == 0
+
+
+def test_c_eligible_list_beyond_t0_reflects_current_snapshot_only(v4_fixture, t0_codes, fresh_codes):
+    """§16 case C: two different partition-implementation-time snapshots,
+    both reproducing the same frozen T0, are allowed to disagree on the
+    eligible universe beyond rank 300 -- there is no committed hash of the
+    full eligible list to require parity against
+    (V8_HISTORICAL_RESEARCH_DESIGN.md §5.7). Each manifest's
+    eligible_ticker_list_sha256 reflects only its own current snapshot."""
+    frame_full = build_frame(t0_codes, fresh_codes)
+    frame_smaller = build_frame(t0_codes, fresh_codes[:-10])
+
+    manifest_full = partition.build_partition_manifest(
+        **build_kwargs(v4_fixture, frame_full, raw_source_bytes=b"SNAPSHOT_ONE_DIFFERENT_FROM_V4")
+    )
+    manifest_smaller = partition.build_partition_manifest(
+        **build_kwargs(v4_fixture, frame_smaller, raw_source_bytes=b"SNAPSHOT_TWO_ALSO_DIFFERENT_FROM_V4")
+    )
+
+    assert manifest_full["t0_reproduction_status"] == "PASS"
+    assert manifest_smaller["t0_reproduction_status"] == "PASS"
+    assert manifest_full["t0_ticker_list_sha256"] == manifest_smaller["t0_ticker_list_sha256"]
+    assert manifest_full["eligible_ticker_count"] != manifest_smaller["eligible_ticker_count"]
+    assert manifest_full["eligible_ticker_list_sha256"] != manifest_smaller["eligible_ticker_list_sha256"]
+    assert manifest_full["eligible_ticker_list_sha256"] == partition.ticker_list_sha256(
+        partition.canonical_order(t0_codes + fresh_codes)
+    )
+    assert manifest_smaller["eligible_ticker_list_sha256"] == partition.ticker_list_sha256(
+        partition.canonical_order(t0_codes + fresh_codes[:-10])
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed BLOCKs
+# ---------------------------------------------------------------------------
 
 
 def test_t0_parity_mismatch_blocks(v4_fixture, t0_codes, fresh_codes):
@@ -471,6 +551,40 @@ def test_read_partition_manifest_rejects_invalid_partition_implementation_commit
     with pytest.raises(partition.V8PartitionBlocked) as excinfo:
         partition.read_partition_manifest(path)
     assert excinfo.value.reason == "IMPLEMENTATION_GIT_COMMIT_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("schema_version", "V8_PARTITION_MANIFEST_V2", "MANIFEST_SCHEMA_VERSION_MISMATCH"),
+        ("source_snapshot_semantics", "SOME_OTHER_SEMANTICS", "MANIFEST_SOURCE_SNAPSHOT_SEMANTICS_MISMATCH"),
+        (
+            "source_snapshot_clarification_commit",
+            "0" * 40,
+            "MANIFEST_SOURCE_SNAPSHOT_CLARIFICATION_COMMIT_MISMATCH",
+        ),
+        ("v4_raw_sha_equality_required", True, "MANIFEST_V4_RAW_SHA_EQUALITY_REQUIREMENT_INVALID"),
+        ("source_reproduction_status", "SYNTHETIC", "MANIFEST_SOURCE_REPRODUCTION_NOT_PASS"),
+        ("t0_reproduction_status", "SYNTHETIC", "MANIFEST_T0_REPRODUCTION_NOT_PASS"),
+    ],
+)
+def test_read_partition_manifest_enforces_source_snapshot_semantics(
+    tmp_path, v4_fixture, t0_codes, fresh_codes, field, value, reason
+):
+    """V8_HISTORICAL_RESEARCH_DESIGN.md §16 central fail-closed validation:
+    every consumer of a persisted manifest -- including production
+    acquisition -- goes through read_partition_manifest(), so these six
+    invariants are enforced exactly once here."""
+    manifest = partition.build_partition_manifest(**build_kwargs(v4_fixture, build_frame(t0_codes, fresh_codes)))
+    manifest[field] = value
+    manifest["manifest_sha256"] = partition.canonical_sha256({
+        key: v for key, v in manifest.items() if key != "manifest_sha256"
+    })
+    path = tmp_path / f"tampered-{field}.json"
+    path.write_bytes(partition.canonical_json_bytes(manifest))
+    with pytest.raises(partition.V8PartitionBlocked) as excinfo:
+        partition.read_partition_manifest(path)
+    assert excinfo.value.reason == reason
 
 
 def test_read_partition_manifest_rejects_duplicate_json_key(tmp_path):

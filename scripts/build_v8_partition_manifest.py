@@ -9,25 +9,29 @@ Two entirely separate code paths, selected by mutually exclusive flags:
   touches the real JPX host, the real V4 universe files, or any real
   private V8 storage. ``network_requests`` is always 0 in this mode.
 
-* ``--production-build-manifest`` -- fetches the real official JPX listing
-  (real network I/O when invoked with the default opener) and builds a
-  real partition manifest. It reuses ``src.v8_partition.build_partition_manifest``
-  and ``write_partition_manifest_once`` completely unchanged: the same
-  ``V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`` and ``V8_T0_REPRODUCTION_MISMATCH``
-  fail-closed guards apply, and a source-hash or T0-reproduction failure
-  BLOCKs before any block assignment is ever constructed. This mode
-  requires an explicit ``--output-path`` (validated absolute, outside this
-  repository, write-once) and an explicit ``--confirmation`` string, and
-  persists nothing but the resulting manifest -- the raw JPX bytes
+* ``--production-build-manifest`` -- fetches the official JPX listing at
+  partition-implementation time (real network I/O when invoked with the
+  default opener) and builds a real partition manifest. It reuses
+  ``src.v8_partition.build_partition_manifest`` and
+  ``write_partition_manifest_once`` completely unchanged. Per
+  ``V8_HISTORICAL_RESEARCH_DESIGN.md`` §16 (``SOURCE_SNAPSHOT_SEMANTICS =
+  "IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT"``), the fetched raw bytes are
+  not required to hash-equal V4's 2026-08-03 ``raw_file_sha256`` -- the sole
+  source-reproducibility fail-closed guard is exact ``T0`` reproduction
+  against the already-frozen ``V4_UNIVERSE.csv``; a ``V8_T0_REPRODUCTION_
+  MISMATCH`` BLOCKs before any block assignment is ever constructed. This
+  mode requires an explicit ``--output-path`` (validated absolute, outside
+  this repository, write-once) and an explicit ``--confirmation`` string,
+  and persists nothing but the resulting manifest -- the raw JPX bytes
   themselves are never written anywhere, in this repository or otherwise.
 
 * ``--production-source-preflight`` -- fetches the official JPX listing and
-  verifies source/T0 reproduction only. It never allocates blocks, writes a
-  partition manifest, or calls Yahoo. This is the separately authorized
-  source-reproduction human gate.
+  verifies source/T0 reproduction only, under the same §16 semantics. It
+  never allocates blocks, writes a partition manifest, or calls Yahoo. This
+  is the separately authorized source-reproduction human gate.
 
 No bypass flag of any kind exists for either mode: there is no
-``--skip-source-hash``, ``--force``, or ``--ignore-parity``.
+``--skip-t0-check``, ``--force``, or ``--ignore-parity``.
 """
 
 from __future__ import annotations
@@ -176,6 +180,8 @@ def run_synthetic_partition_test() -> dict[str, Any]:
         )
         if manifest["source_reproduction_status"] != "PASS":
             raise AssertionError("SOURCE_REPRODUCTION_NOT_PASS")
+        if manifest["v4_raw_sha_equality_required"] is not False:
+            raise AssertionError("V4_RAW_SHA_EQUALITY_REQUIREMENT_UNEXPECTED")
 
         output_path = workspace / "private-output" / "partition_manifest.json"
         write_partition_manifest_once(output_path, manifest, repository_root=ROOT)
@@ -191,11 +197,34 @@ def run_synthetic_partition_test() -> dict[str, Any]:
             if error.reason != "PARTITION_MANIFEST_ALREADY_EXISTS":
                 raise
 
-        # A source-hash mismatch must BLOCK before any block assignment.
+        # V8_HISTORICAL_RESEARCH_DESIGN.md §16: a raw-hash mismatch against
+        # V4's 2026-08-03 reference alone must NOT block -- only T0 mismatch
+        # does. This proves the new semantics with a distinct (differing)
+        # raw payload whose T0 still reproduces V4_UNIVERSE.csv exactly.
+        differing_source_manifest = build_partition_manifest(
+            raw_source_bytes=fixture["raw_source_bytes"] + b"_DIFFERENT_BUT_T0_STILL_REPRODUCES",
+            parse_source_table=lambda _raw: fixture["frame"],
+            v4_manifest_path=fixture["v4_manifest_path"],
+            v4_universe_csv_path=fixture["v4_universe_csv_path"],
+            source_url=SYNTHETIC_SOURCE_URL,
+            source_acquisition_utc=datetime(2026, 8, 9, tzinfo=timezone.utc),
+            clock=lambda: datetime(2026, 8, 9, 2, 0, 0, tzinfo=timezone.utc),
+            partition_implementation_git_commit="a" * 40,
+            block_size=SYNTHETIC_BLOCK_SIZE,
+        )
+        if differing_source_manifest["source_raw_sha256"] == manifest["v4_source_raw_sha256_reference"]:
+            raise AssertionError("SYNTHETIC_FIXTURE_RAW_HASH_UNEXPECTEDLY_MATCHED")
+        if differing_source_manifest["source_reproduction_status"] != "PASS":
+            raise AssertionError("RAW_HASH_MISMATCH_INCORRECTLY_BLOCKED")
+
+        # A T0 mismatch must still BLOCK before any block assignment -- the
+        # sole remaining source-reproducibility guard.
+        tampered_frame = fixture["frame"].copy()
+        tampered_frame.loc[0, "市場・区分"] = "スタンダード（内国株式）"
         try:
             build_partition_manifest(
-                raw_source_bytes=b"WRONG_BYTES_MUST_NOT_REPRODUCE",
-                parse_source_table=lambda _raw: fixture["frame"],
+                raw_source_bytes=fixture["raw_source_bytes"],
+                parse_source_table=lambda _raw: tampered_frame,
                 v4_manifest_path=fixture["v4_manifest_path"],
                 v4_universe_csv_path=fixture["v4_universe_csv_path"],
                 source_url=SYNTHETIC_SOURCE_URL,
@@ -204,15 +233,16 @@ def run_synthetic_partition_test() -> dict[str, Any]:
                 partition_implementation_git_commit="a" * 40,
                 block_size=SYNTHETIC_BLOCK_SIZE,
             )
-            raise AssertionError("SOURCE_MISMATCH_NOT_BLOCKED")
+            raise AssertionError("T0_MISMATCH_NOT_BLOCKED")
         except V8PartitionBlocked as error:
-            if error.reason != "V8_PARTITION_SOURCE_NOT_REPRODUCIBLE":
+            if error.reason != "V8_T0_REPRODUCTION_MISMATCH":
                 raise
 
     return {
         "status": "PASS",
         "mode": "STATIC_SYNTHETIC_ONLY",
         "source_reproduction_status": manifest["source_reproduction_status"],
+        "v4_raw_sha_equality_required": manifest["v4_raw_sha_equality_required"],
         "block_sizes": manifest["block_sizes"],
         "t1_role": manifest["t1_role"],
         "t2_role": manifest["t2_role"],
@@ -220,7 +250,8 @@ def run_synthetic_partition_test() -> dict[str, Any]:
         "t3_price_acquisition_authorized": manifest["t3_price_acquisition_authorized"],
         "manifest_sha256_verified": True,
         "write_once_enforced": True,
-        "source_mismatch_blocks_before_allocation": True,
+        "raw_hash_mismatch_does_not_block": True,
+        "t0_mismatch_blocks_before_allocation": True,
         "network_requests": 0,
         "real_partition_created": False,
         "real_source_fetch_performed": False,

@@ -182,6 +182,8 @@ def write_partition_manifest(
         "schema_version": partition.SCHEMA_VERSION,
         "study_name": partition.STUDY_NAME,
         "design_commit": partition.DESIGN_COMMIT,
+        "source_snapshot_semantics": partition.SOURCE_SNAPSHOT_SEMANTICS,
+        "source_snapshot_clarification_commit": partition.SOURCE_SNAPSHOT_CLARIFICATION_COMMIT,
         "partition_implementation_git_commit": SYNTHETIC_IMPLEMENTATION_GIT_COMMIT,
         "created_utc": "2026-08-09T00:00:00Z",
         "source_url": source_url,
@@ -189,10 +191,13 @@ def write_partition_manifest(
         "source_acquisition_utc": "2026-08-09T00:00:00Z",
         "source_raw_sha256": "0" * 64,
         "source_raw_byte_count": 0,
-        "expected_v4_source_raw_sha256": "0" * 64,
+        "v4_source_raw_sha256_reference": "1" * 64,
+        "v4_raw_sha_equality_required": partition.V4_RAW_SHA_EQUALITY_REQUIRED,
         "source_reproduction_status": source_reproduction_status,
+        "t0_reproduction_status": source_reproduction_status,
         "eligible_ticker_count": 1500,
         "eligible_ticker_list_sha256": partition.ticker_list_sha256(sum((blocks[key] for key in blocks), [])),
+        "selection_rule": "synthetic fixture selection rule",
         "deterministic_ordering_rule": partition.DETERMINISTIC_ORDERING_RULE,
         "t0_ticker_list_sha256": partition.ticker_list_sha256(blocks["T0"]),
         "t1_ticker_list_sha256": partition.ticker_list_sha256(blocks["T1"]),
@@ -410,7 +415,11 @@ def test_authorized_synthetic_manifest_blocks_before_network(tmp_path, trusted_a
         acquire_with_test_dependencies(**bound_acquire_kwargs(
             tmp_path / "private", partition_path, "T1", opener, trusted_anchor_path
         ))
-    assert excinfo.value.reason == "PARTITION_MANIFEST_SOURCE_REPRODUCTION_NOT_PASS"
+    # src.v8_partition.read_partition_manifest() now centrally validates
+    # source_reproduction_status/t0_reproduction_status (V8_HISTORICAL_
+    # RESEARCH_DESIGN.md §16) before acquisition's own redundant check ever
+    # runs, so this BLOCKs earlier with the partition-module reason.
+    assert excinfo.value.reason == "MANIFEST_SOURCE_REPRODUCTION_NOT_PASS"
     assert opener.calls == []
 
 
