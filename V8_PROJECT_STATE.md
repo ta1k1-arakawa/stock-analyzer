@@ -13,7 +13,7 @@ the actual repository state at the current remote HEAD.
 ## Current phase
 
 ```text
-SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS_PENDING_FRESH_REAL_JPX_HUMAN_GATE
+REAL_JPX_SOURCE_PREFLIGHT_PASS_PENDING_REAL_PARTITION_HUMAN_GATE
 ```
 
 The independent source-preflight review passed
@@ -88,10 +88,53 @@ drift, not a repository or production-code bug) and verified
 `pandas=3.0.3` / `xlrd=2.0.2`; no repository file was changed by that `pip
 install`.
 
-Cumulative real JPX requests across both attempts: **4** (2 + 2). Real
-Yahoo requests: **0**. This documentation/state update itself grants **no**
-real network authorization — the next real JPX source-only preflight
-attempt (#3) requires its own fresh, separate human authorization.
+A fresh human authorization then permitted **attempt #3** of the real JPX
+source-only preflight against `371f547fc9f32c0aac84e34634b0f97a40e083c6`
+(the docs/state commit that recorded attempt #2). This attempt **PASSED**:
+`process_result=PASS, exit_code=0, source_reproduction_status=PASS,
+t0_reproduction_status=PASS`. It made 2 real JPX requests (page +
+`data_j.xls`), fetched the raw XLS bytes into memory, reconstructed the
+eligible universe, and reproduced `T0` (rank 1–300) exactly against the
+committed `V4_UNIVERSE.csv` — the reported `t0_ticker_list_sha256`
+(`12777a83f259cd885ebb828e0ce895a5bf53be37c27928c1a487f629002ce4f7`) matches
+the value independently re-derived from the actual committed
+`V4_UNIVERSE.csv` during the prior review, confirming genuine reproduction
+rather than a reported-but-uncorroborated result. Source metadata recorded:
+
+```text
+source_acquisition_utc              = 2026-08-10T03:00:51.733526Z
+source_host                         = www.jpx.co.jp
+source_url                          = https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls
+source_raw_byte_count               = 830464
+source_raw_sha256                   = 6e401867d9ddf2524e4752f08fd3e3e434cd308c6d423839ca6e24fc7b1e1653
+eligible_ticker_count               = 3110
+eligible_ticker_list_sha256         = 37630f8f754c1a1f0f3e07f0ffc26711c83e635b5eaf24533659f37970263405
+t0_ticker_list_sha256               = 12777a83f259cd885ebb828e0ce895a5bf53be37c27928c1a487f629002ce4f7
+source_snapshot_semantics           = IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT
+source_snapshot_clarification_commit = 266999a8e48c77905dd7c7312fd41c7f38241d78
+v4_raw_sha_equality_required        = false
+v4_source_raw_sha256_reference      = d99706334b3a9ca56b13805dac08d53ae1c2cd7df2ae77e7a9fad767cac51460
+partition_implementation_git_commit = 371f547fc9f32c0aac84e34634b0f97a40e083c6
+```
+
+As designed, this PASS is source-only: `real_partition_created=false`,
+`partition_manifest_written=false`, `real_block_assignments_created=false`,
+no `T1`/`T2`/`T3`/`T_spare` assignment was exposed, no raw source bytes were
+persisted anywhere, no Yahoo request occurred, and the trust anchor is
+unchanged. No retry was performed; attempt #3's authorization is now
+consumed.
+
+**This source-only PASS does not, by itself, authorize**: real partition
+creation, trust-anchor pinning, or `T1`/`T2`/`T3` acquisition — each remains
+its own separate future human gate. Real partition creation additionally
+remains blocked because `private_v8_storage_location` is still
+`NOT_YET_DEFINED`: the operator must choose an absolute path outside this
+repository (never committed) before that gate can even be requested.
+
+Cumulative real JPX requests across all three attempts: **6** (2 + 2 + 2).
+Real Yahoo requests: **0**. This documentation/state update itself grants
+**no** real network authorization, no partition creation, and no
+trust-anchor change.
 
 ## Completed milestones
 
@@ -112,6 +155,7 @@ attempt (#3) requires its own fresh, separate human authorization.
 | 13 | Independent source-preflight review passed; one human-authorized real JPX source-only preflight run (BLOCKED: `V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`, no retry); source-snapshot ambiguity resolved by human design gate | `eb13eb6cad4d0f5a920929cf0eaf97d1f673743d` | `SOURCE_PREFLIGHT_REVIEW_PASS`; append-only design clarification recorded, `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 |
 | 14 | Implemented `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 source-snapshot semantics: removed the `V4`-raw-hash-equality gate, kept exact `T0` reproduction mandatory, bumped manifest schema to `V8_PARTITION_MANIFEST_V3`; plus a test-only environment-compatibility fix (no production code) | implementation `1306d7be39ef9b73d049d5c4899ce286080ec1c2`; test-fix `68b836d314b98955aa7d76e390ce6235a765b183` | `SOURCE_SNAPSHOT_SEMANTICS_IMPLEMENTED_PENDING_REVIEW`; human-PC-verified 235 passed / 0 failed, exit code 0, on transfer branch `v8-partition-acquisition-transfer-pytest-check`; fast-forwarded onto `v8-partition-acquisition` |
 | 15 | Independent review of the source-snapshot-semantics implementation passed (0 CRITICAL/HIGH/MEDIUM, 3 LOW deliberately unfixed); real JPX source-only preflight attempt #2 authorized and run, errored pre-`T0` on a local `xlrd` dependency gap (not a `T0` result), no retry; local environment remediated (`pip install xlrd==2.0.2`, no repository file changed) | reviewed HEAD `9b260e898aa019f8ee5102f3a00e7e1ec7a22584` | `SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS`; cumulative real JPX requests 4, real Yahoo requests 0 |
+| 16 | Real JPX source-only preflight attempt #3: **PASS**. `source_reproduction_status=PASS`, `t0_reproduction_status=PASS`; `t0_ticker_list_sha256` matches independently-verified committed `V4_UNIVERSE.csv`. Source-only — no partition/manifest/block-assignment/trust-anchor change | authorized HEAD `371f547fc9f32c0aac84e34634b0f97a40e083c6` | `REAL_JPX_SOURCE_PREFLIGHT_PASS_PENDING_REAL_PARTITION_HUMAN_GATE`; cumulative real JPX requests 6, real Yahoo requests 0 |
 
 ## Human approvals
 
@@ -125,7 +169,10 @@ attempt (#3) requires its own fresh, separate human authorization.
 | Source-snapshot semantics clarification (append-only design gate) | **GRANTED** (2026-08-10) — `V8_HISTORICAL_RESEARCH_DESIGN.md` §16; does not itself authorize any real network action |
 | Independent source-snapshot-semantics implementation review | **PASSED** — `SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS`, reviewed HEAD `9b260e898aa019f8ee5102f3a00e7e1ec7a22584`; does not itself authorize any real network action |
 | Real JPX source-only preflight — attempt #2 | One-time authorization **GRANTED and consumed** — result `ERROR/LOCAL_ENVIRONMENT_DEPENDENCY_MISSING_XLRD` before `T0` was reached, no retry performed |
-| Real JPX source-only preflight — attempt #3 | **NOT GRANTED** — a fresh authorization is required for the next attempt |
+| Real JPX source-only preflight — attempt #3 | One-time authorization **GRANTED and consumed** — result **PASS** (`source_reproduction_status=PASS`, `t0_reproduction_status=PASS`), no retry performed |
+| Real JPX source-only preflight — attempt #4 (or any further real network action) | **NOT GRANTED** — a fresh authorization is required |
+| Real partition creation | **NOT GRANTED** — separate future human gate; also blocked on `private_v8_storage_location` still being `NOT_YET_DEFINED` |
+| Trust-anchor pinning (`V8_TRUSTED_PARTITION.json` authorization) | **NOT GRANTED** — separate future human gate, only after a real partition manifest exists and its SHA/commit are inspected |
 | Real T1 acquisition | **NOT GRANTED** |
 | Real T2 acquisition | **NOT GRANTED** |
 | T3 acquisition of any kind | **NOT GRANTED** (and the code path unconditionally rejects it regardless of any future gate wording short of a design amendment) |
@@ -168,19 +215,24 @@ git ls-remote origin v7-forward-capacity-gate3-dry-run
 
 ```text
 real_partition_manifest_exists = false
-real_jpx_source_fetched = true (attempt #1 2026-08-10: BLOCKED; attempt #2: raw XLS bytes fetched into memory, ERROR before T0 was reached; neither attempt produced an accepted source snapshot or a partition/manifest/allocation)
-real_jpx_source_preflight_executed = true (attempt_count=2; attempt#1 result=BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE; attempt#2 result=ERROR/LOCAL_ENVIRONMENT_DEPENDENCY_MISSING_XLRD, t0_reproduction_reached=false; retry_performed=false for both; see V8_STATE.json -> source_preflight_attempt_history for full detail)
+real_jpx_source_fetched = true (attempt #1 2026-08-10: BLOCKED; attempt #2: raw XLS bytes fetched into memory, ERROR before T0 was reached; attempt #3: PASS, accepted/reproduced source snapshot -- see below; real_jpx_source_fetched=true now reflects that an accepted snapshot exists, NOT that a partition manifest was built)
+accepted_source_snapshot = true (attempt #3 only; attempts #1 and #2 did not produce an accepted snapshot)
+real_jpx_source_preflight_executed = true (attempt_count=3; attempt#1 result=BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE; attempt#2 result=ERROR/LOCAL_ENVIRONMENT_DEPENDENCY_MISSING_XLRD, t0_reproduction_reached=false; attempt#3 result=PASS, t0_reproduction_reached=true, source_reproduction_status=PASS, t0_reproduction_status=PASS; retry_performed=false for all three; see V8_STATE.json -> source_preflight_attempt_history for full detail)
 private_v8_storage_location = NOT_YET_DEFINED
 requirements = absolute path; outside this repository; never committed
+real_partition_creation_blocked_reason = private_v8_storage_location is NOT_YET_DEFINED; the human operator must choose an absolute path outside this repository (never committed) before real partition creation can even be requested, separately from the required human authorization itself
 trusted_partition_authorization = false
 partition_public_dependency_injection = CLOSED_PENDING_REVIEW
 source_snapshot_clarification = IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT (V8_HISTORICAL_RESEARCH_DESIGN.md §16, 2026-08-10; V4 raw SHA equality not required; T0 exact reproduction still required)
 source_snapshot_semantics_implemented = true (1306d7be39ef9b73d049d5c4899ce286080ec1c2; test-fix 68b836d314b98955aa7d76e390ce6235a765b183)
 source_snapshot_semantics_independently_reviewed = true (SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS, reviewed HEAD 9b260e898aa019f8ee5102f3a00e7e1ec7a22584; 0 CRITICAL/HIGH/MEDIUM, 3 LOW deliberately unfixed)
 manifest_schema_version = V8_PARTITION_MANIFEST_V3 (was V8_PARTITION_MANIFEST_V2)
-cumulative_real_jpx_requests = 4 (2 per attempt x 2 attempts)
+cumulative_real_jpx_requests = 6 (2 per attempt x 3 attempts)
 cumulative_real_yahoo_requests = 0
-next_real_jpx_source_only_attempt_authorized = false (attempt #2's authorization was consumed by its single ERROR outcome; attempt #3 needs a fresh authorization)
+next_real_jpx_source_only_attempt_authorized = false (attempt #3's authorization was consumed by its single PASS outcome; any further real JPX action needs a fresh authorization)
+source_only_pass_authorizes_real_partition_creation = false
+source_only_pass_authorizes_trust_anchor_pinning = false
+source_only_pass_authorizes_t1_t2_t3_acquisition = false
 ```
 
 ## T1 state
@@ -295,24 +347,35 @@ current fake-only V8 regression is 226 passed / 0 failed.
    authorization is consumed. Local environment subsequently remediated
    (`xlrd==2.0.2` installed in the operator's `.venv`; no repository file
    changed).
-8. Obtain a fresh human authorization for real JPX source-only preflight
-   **attempt #3**. **Not yet authorized.**
-9. Obtain separate human authorization for real partition creation.
-10. Create the real partition manifest.
-11. Verify manifest SHA and partition implementation commit.
-12. Obtain a separate human gate to Git-pin the trust anchor.
-13. Obtain separate T1 authorization.
-14. Obtain later separate T2 authorization.
+8. ~~Obtain a fresh human authorization for real JPX source-only preflight
+   attempt #3.~~ **Done** — authorized and run against
+   `371f547fc9f32c0aac84e34634b0f97a40e083c6`. Result: **PASS**
+   (`source_reproduction_status=PASS`, `t0_reproduction_status=PASS`,
+   `t0_ticker_list_sha256` matches the independently-verified committed
+   `V4_UNIVERSE.csv`); no retry performed; that authorization is consumed.
+   Source-only — no partition, manifest, block assignment, or trust-anchor
+   change resulted.
+9. Choose an absolute, outside-this-repository, never-committed private
+   `V8` storage path. **Not yet done** — `private_v8_storage_location`
+   remains `NOT_YET_DEFINED`; this must happen before step 10 can even be
+   requested.
+10. Obtain separate human authorization for real partition creation.
+    **Not yet authorized.** (A source-only PASS does not imply or grant
+    this authorization.)
+11. Create the real partition manifest.
+12. Verify manifest SHA and partition implementation commit.
+13. Obtain a separate human gate to Git-pin the trust anchor.
+14. Obtain separate T1 authorization.
+15. Obtain later separate T2 authorization.
 
 None of these steps is authorized by this documentation update beyond steps
-1–7, which are already recorded as done. This handoff records the
-already-completed independent review, the already-run attempt #2, and the
-already-completed local environment remediation; it authorizes no real
-network action (step 8 remains open and requires its own fresh
-authorization), no partition creation, no trust-anchor authorization, and no
-`T1`/`T2` acquisition. Actual private storage remains `NOT_YET_DEFINED`;
-when selected it must be an absolute path outside this repository and must
-never be committed.
+1–8, which are already recorded as done. This handoff records the
+already-run, already-PASSED attempt #3; it authorizes no real network
+action, no partition creation (steps 9–10 remain open, and step 9 is a
+prerequisite decision, not a network action), no trust-anchor authorization,
+and no `T1`/`T2` acquisition. Actual private storage remains
+`NOT_YET_DEFINED`; when selected it must be an absolute path outside this
+repository and must never be committed.
 
 ## Historical pre-production blockers at c5848ced1a5c800f384cb7b86fb642e5c748c2c2
 
