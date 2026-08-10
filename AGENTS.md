@@ -1,3 +1,17 @@
+## AI research/execution governance
+
+For every AI-assisted research, design, implementation, review, or
+execution task in this repository, read `AI_RESEARCH_EXECUTION_RULES.md`
+first. It governs: human gate authority, ChatGPT research-planner
+authority, the Claude Code / Codex execution-agent role, and fail-closed
+behavior for unspecified methodological decisions. It does not duplicate
+or weaken any rule below. Existing task-specific rules, including the
+Evaluator v2 rules below, remain in force; where a task-specific prompt
+is more restrictive than either document, the more restrictive rule
+applies.
+
+---
+
 # Evaluator v2 rules
 
 - Run fixed evaluation only with the CSV snapshot capped at 2026-05-20.
