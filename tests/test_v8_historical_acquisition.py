@@ -1214,3 +1214,74 @@ def test_threshold_exceedance_reason_does_not_expose_ticker_or_date(tmp_path):
     assert secret_ticker not in reason
     assert not re.search(r"\d{4}-\d{2}-\d{2}", reason)
     assert reason == "MALFORMED_OHLCV_QUALITY_GATE:FRACTION_EXCEEDED"
+
+
+# ---------------------------------------------------------------------------
+# Private-ticker redaction on adjacent (non-quality-gate) failure paths
+# ---------------------------------------------------------------------------
+
+
+def test_noncanonical_ticker_reason_does_not_expose_ticker(tmp_path):
+    secret_ticker = "1234"
+    opener = default_opener()
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(
+            **acquire_kwargs(tmp_path / "root", "T1", [secret_ticker + ".T"], opener)
+        )
+    assert excinfo.value.reason == "V8_TICKER_NOT_CANONICAL"
+    assert secret_ticker not in excinfo.value.reason
+
+
+def test_transport_failure_reason_does_not_expose_ticker(tmp_path):
+    secret_ticker = "1234"
+    opener = FakeOpener(lambda t: synthetic_payload(t, DEFAULT_DATES, symbol_override="9999"))
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(
+            **acquire_kwargs(tmp_path / "root", "T1", [secret_ticker], opener)
+        )
+    assert excinfo.value.reason.startswith("TICKER_FETCH_BLOCKED:")
+    assert "SYMBOL_MISMATCH" in excinfo.value.reason
+    assert secret_ticker not in excinfo.value.reason
+
+
+def test_http_error_reason_does_not_expose_ticker(tmp_path):
+    import urllib.error
+
+    secret_ticker = "1234"
+
+    class Http429Opener:
+        def __call__(self, request_obj):
+            raise urllib.error.HTTPError(request_obj.full_url, 429, "Too Many Requests", {}, None)
+
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(
+            **acquire_kwargs(tmp_path / "root", "T1", [secret_ticker], Http429Opener())
+        )
+    assert excinfo.value.reason.startswith("TICKER_FETCH_BLOCKED:")
+    assert "HTTP_STATUS_429" in excinfo.value.reason
+    assert secret_ticker not in excinfo.value.reason
+
+
+def test_raw_payload_mismatch_reasons_are_static_string_literals_with_no_ticker_concatenation():
+    """RAW_PAYLOAD_SHA_MISMATCH / RAW_PAYLOAD_BYTE_COUNT_MISMATCH are not
+    reachable through any realistic fake opener: fetch_chart_once() itself
+    rejects a non-bytes response.read() result (RESPONSE_BYTES_INVALID)
+    before either check could ever observe a divergence, and a genuine
+    bytes payload is captured byte-for-byte identically on both sides of
+    the comparison by construction. This statically proves the redaction
+    fix (no ' + ticker' concatenation) instead."""
+    text = Path(acquisition.__file__).read_text(encoding="utf-8")
+    assert 'V8HistoricalAcquisitionBlocked("RAW_PAYLOAD_SHA_MISMATCH")' in text
+    assert 'V8HistoricalAcquisitionBlocked("RAW_PAYLOAD_BYTE_COUNT_MISMATCH")' in text
+    assert '"RAW_PAYLOAD_SHA_MISMATCH:"' not in text
+    assert '"RAW_PAYLOAD_BYTE_COUNT_MISMATCH:"' not in text
+
+
+def test_no_ticker_concatenation_survives_for_any_redacted_reason_prefix():
+    """Guards against regressing any of the four redacted reason formats
+    back to their old ':<ticker>' or '<ticker>' suffix pattern."""
+    text = Path(acquisition.__file__).read_text(encoding="utf-8")
+    assert '"V8_TICKER_NOT_CANONICAL:" + str(ticker)' not in text
+    assert '"TICKER_" + str(ticker) + ":"' not in text
+    assert '"RAW_PAYLOAD_SHA_MISMATCH:" + ticker' not in text
+    assert '"RAW_PAYLOAD_BYTE_COUNT_MISMATCH:" + ticker' not in text

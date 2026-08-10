@@ -476,6 +476,63 @@ def _require_valid_malformed_ohlcv_policy_metadata(value: object) -> dict[str, A
     return dict(value)
 
 
+ACQUISITION_MANIFEST_ZERO_ACCESS_COUNTER_FIELDS = (
+    "validation_access_count",
+    "feature_computation_count",
+    "outcome_access_count",
+    "sealed_holdout_access_count",
+)
+
+
+def _require_valid_acquisition_manifest_invariants(manifest: Mapping[str, Any], *, block: str) -> None:
+    """Fail closed unless a manifest's immutable acquisition-time invariants
+    hold exactly, independent of duplicate-key protection.
+
+    A freshly-acquired raw T1/T2 manifest always has these exact values by
+    construction (see the manifest literal in
+    ``_acquire_historical_block_bundle_with_validated_inputs``); this is a
+    read-time re-assertion, not a new rule. In particular
+    ``research_access_authorized`` and every access counter are always
+    ``False``/``0`` for a raw acquisition -- no code path in this module
+    ever sets them otherwise -- so a manifest claiming any other value is,
+    by construction, not a genuine raw acquisition of this schema. Any
+    future human-authorized research-access transition is a separate,
+    later, gated artifact/schema change, not something this function may be
+    weakened to permit.
+    """
+    if manifest.get("block") != block:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_BLOCK_MISMATCH")
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_SCHEMA_VERSION_MISMATCH")
+    if manifest.get("study_name") != STUDY_NAME:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_STUDY_NAME_MISMATCH")
+    if manifest.get("design_commit") != DESIGN_COMMIT:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_DESIGN_COMMIT_MISMATCH")
+    if manifest.get("role") != BLOCK_ROLE[block]:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_ROLE_MISMATCH")
+    if manifest.get("status") != BLOCK_STATUS[block]:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_STATUS_MISMATCH")
+    if manifest.get("sealed") is not BLOCK_SEALED[block]:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_SEALED_MISMATCH")
+    if manifest.get("research_access_authorized") is not False:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_RESEARCH_ACCESS_INVARIANT_VIOLATED")
+    for field in ACQUISITION_MANIFEST_ZERO_ACCESS_COUNTER_FIELDS:
+        if manifest.get(field) != 0 or isinstance(manifest.get(field), bool):
+            raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_ACCESS_COUNTER_INVARIANT_VIOLATED")
+    if manifest.get("data_source") != DATA_SOURCE:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_DATA_SOURCE_MISMATCH")
+    if manifest.get("data_source_host") != DATA_SOURCE_HOST:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_DATA_SOURCE_HOST_MISMATCH")
+    if manifest.get("data_source_schema") != DATA_SOURCE_SCHEMA:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_DATA_SOURCE_SCHEMA_MISMATCH")
+    if manifest.get("request_start") != REQUEST_START:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_REQUEST_START_MISMATCH")
+    if manifest.get("request_end_exclusive") != REQUEST_END_EXCLUSIVE:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_REQUEST_END_EXCLUSIVE_MISMATCH")
+    if manifest.get("retry_count") != RETRY_COUNT:
+        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_RETRY_COUNT_MISMATCH")
+
+
 def _malformed_ohlcv_returned_observations(
     valid_rows: Sequence[Mapping[str, Any]],
     invalid_rows: Sequence[Mapping[str, Any]],
@@ -712,11 +769,16 @@ def _acquire_historical_block_bundle_with_validated_inputs(
     transport (sequential, one HTTP request per ticker); this function adds
     no additional network path.
 
-    Any invalid, non-finite, or otherwise malformed OHLCV row anywhere in a
-    ticker's response blocks the whole acquisition -- unlike V7's daily
-    acquisition, which tolerates a single missing day, a multi-year bulk
-    historical fetch treats any row anomaly as fail-closed rather than as a
-    per-row soft classification.
+    Invalid Yahoo-returned OHLCV rows are handled per
+    POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE
+    (`V8_HISTORICAL_RESEARCH_DESIGN.md` §17): a ticker's invalid returned
+    rows may be excluded from its canonical valid rows as long as this
+    ticker's returned-row quality stays within the frozen thresholds
+    (<=1% invalid, <=5 consecutive invalid, checked over the full series
+    and independently per frozen test year); no row is ever filled,
+    interpolated, or imputed, and no ticker is ever replaced or dropped.
+    Exceeding any threshold for any ticker BLOCKs the whole acquisition --
+    the entire block is atomically discarded, never published partially.
     """
     if block not in ALLOWED_ACQUISITION_BLOCKS:
         raise V8HistoricalAcquisitionBlocked("V8_BLOCK_ACQUISITION_PROHIBITED:" + str(block))
@@ -732,9 +794,9 @@ def _acquire_historical_block_bundle_with_validated_inputs(
     for ticker in tickers_list:
         try:
             if canonical_ticker(ticker) != ticker:
-                raise V8HistoricalAcquisitionBlocked("V8_TICKER_NOT_CANONICAL:" + str(ticker))
+                raise V8HistoricalAcquisitionBlocked("V8_TICKER_NOT_CANONICAL")
         except V7YahooCollectorBlocked as error:
-            raise V8HistoricalAcquisitionBlocked("V8_TICKER_NOT_CANONICAL:" + str(ticker)) from error
+            raise V8HistoricalAcquisitionBlocked("V8_TICKER_NOT_CANONICAL") from error
 
     try:
         output_path = require_absolute_output_path_outside_repository(output_root, repository_root)
@@ -790,18 +852,18 @@ def _acquire_historical_block_bundle_with_validated_inputs(
                 reason = error.reason
                 if reason == "HTTP_STATUS_429":
                     http_429_count += 1
-                raise V8HistoricalAcquisitionBlocked("TICKER_" + str(ticker) + ":" + reason) from error
+                raise V8HistoricalAcquisitionBlocked("TICKER_FETCH_BLOCKED:" + reason) from error
             except BaseException as error:
                 reason, is_429 = _classify_error(error)
                 if is_429:
                     http_429_count += 1
-                raise V8HistoricalAcquisitionBlocked("TICKER_" + str(ticker) + ":" + reason) from error
+                raise V8HistoricalAcquisitionBlocked("TICKER_FETCH_BLOCKED:" + reason) from error
 
             payload_bytes = bytes(capture)
             if sha256_bytes(payload_bytes) != parsed.get("payload_sha256"):
-                raise V8HistoricalAcquisitionBlocked("RAW_PAYLOAD_SHA_MISMATCH:" + ticker)
+                raise V8HistoricalAcquisitionBlocked("RAW_PAYLOAD_SHA_MISMATCH")
             if len(payload_bytes) != parsed.get("byte_count"):
-                raise V8HistoricalAcquisitionBlocked("RAW_PAYLOAD_BYTE_COUNT_MISMATCH:" + ticker)
+                raise V8HistoricalAcquisitionBlocked("RAW_PAYLOAD_BYTE_COUNT_MISMATCH")
 
             invalid_rows = parsed["invalid_price_rows"]
             valid_rows_raw = parsed["valid_price_rows"]
@@ -917,19 +979,32 @@ def _acquire_historical_block_bundle_with_validated_inputs(
 
 
 def read_acquisition_manifest(output_root: str | os.PathLike[str], block: str) -> dict[str, Any]:
-    """Read-only load of a previously published block manifest."""
+    """Read-only load of a previously published block manifest.
+
+    Fails closed on duplicate JSON keys (top-level or nested, e.g. inside
+    ``malformed_ohlcv_policy``) and re-validates every immutable
+    acquisition-time invariant (schema/study/design identity, block/role/
+    status/sealed, zero access counters, fixed transport/window constants)
+    against this module's own constants -- not merely the manifest's key
+    set -- so that no single mutable JSON value in a persisted file can
+    redefine a T1/T2 block's role or seal state after acquisition.
+    """
+    if block not in ALLOWED_ACQUISITION_BLOCKS:
+        raise V8HistoricalAcquisitionBlocked("V8_BLOCK_ACQUISITION_PROHIBITED:" + str(block))
     manifest_path = Path(output_root) / ACQUISITIONS_DIRNAME / block / MANIFEST_FILENAME
     try:
         raw = manifest_path.read_bytes()
     except OSError as error:
         raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_READ_FAILED") from error
-    try:
-        manifest = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_INVALID_JSON") from error
-    if not isinstance(manifest, Mapping) or set(manifest) != set(ACQUISITION_MANIFEST_FIELDS):
+    manifest = _strict_json_object(
+        raw,
+        invalid_reason="ACQUISITION_MANIFEST_INVALID_JSON",
+        duplicate_reason="ACQUISITION_MANIFEST_DUPLICATE_KEY",
+    )
+    if set(manifest) != set(ACQUISITION_MANIFEST_FIELDS):
         raise V8HistoricalAcquisitionBlocked("MANIFEST_SCHEMA_INVALID")
     _require_valid_malformed_ohlcv_policy_metadata(manifest["malformed_ohlcv_policy"])
+    _require_valid_acquisition_manifest_invariants(manifest, block=block)
     return dict(manifest)
 
 
@@ -967,6 +1042,21 @@ def _require_research_access_authorized(acquisition_manifest: Mapping[str, Any],
     opens it) -- neither path implemented by this module grants access on
     its own; both require ``research_access_authorized: true`` to already be
     recorded in the manifest handed to this guard.
+
+    Scope note: this guard is a generic flag check over whatever mapping it
+    is handed, by design -- it does not itself require that mapping to have
+    come from ``read_acquisition_manifest()``. No code path in this module
+    ever produces ``research_access_authorized: true``; that remains a
+    "separate, later, gated action this module does not perform" (module
+    docstring). Binding this guard's input to specifically
+    ``read_acquisition_manifest()``-sourced, on-disk manifests would be a
+    new design decision about how that not-yet-built research-access
+    mechanism must obtain its manifest, and is deliberately left to that
+    future gate rather than invented here. What this module DOES guarantee
+    today: a manifest actually loaded via ``read_acquisition_manifest()``
+    from a persisted file cannot have its ``sealed``/
+    ``research_access_authorized`` values silently flipped by duplicate-key
+    JSON or by any other tampering of that file -- see its docstring.
     """
     if not isinstance(acquisition_manifest, Mapping) or "sealed" not in acquisition_manifest:
         raise V8SealedHoldoutBlocked("ACQUISITION_MANIFEST_INVALID:" + operation)

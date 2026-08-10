@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+import re
 import subprocess
 import sys
 import urllib.request
@@ -270,3 +271,47 @@ def test_frozen_request_window_matches_p_hist():
 def test_min_request_interval_matches_v7_precedent():
     assert acquisition.MIN_REQUEST_INTERVAL_SECONDS == 2.0
     assert acquisition.RETRY_COUNT == 0
+
+
+# ---------------------------------------------------------------------------
+# End-to-end CLI privacy: no concrete ticker/date reaches actual CLI output,
+# for every category of production failure reason.
+# ---------------------------------------------------------------------------
+
+
+SECRET_TICKER = "1234"
+
+
+@pytest.mark.parametrize(
+    ("label", "reason"),
+    (
+        ("malformed_ohlcv_quality_gate", "MALFORMED_OHLCV_QUALITY_GATE:FRACTION_EXCEEDED"),
+        ("v7_parser_failure", "TICKER_FETCH_BLOCKED:SYMBOL_MISMATCH"),
+        ("transport_failure", "TICKER_FETCH_BLOCKED:HTTP_STATUS_429"),
+        ("raw_payload_sha_mismatch", "RAW_PAYLOAD_SHA_MISMATCH"),
+        ("raw_payload_byte_count_mismatch", "RAW_PAYLOAD_BYTE_COUNT_MISMATCH"),
+        ("noncanonical_ticker", "V8_TICKER_NOT_CANONICAL"),
+    ),
+)
+def test_cli_output_never_exposes_ticker_or_date_for_any_failure_category(monkeypatch, capsys, label, reason):
+    """Each reason string here is exactly what the redacted production code
+    now raises for its category (see src/v8_historical_acquisition.py); this
+    proves the CLI's print/json layer relays it verbatim with no concrete
+    ticker or date added anywhere along the way, for every category
+    real T1/T2 acquisition failures can currently produce."""
+
+    def fake_runner(**_):
+        raise acquisition.V8HistoricalAcquisitionBlocked(reason)
+
+    monkeypatch.setattr(cli, "run_production_acquisition", fake_runner)
+    exit_code = cli.main([
+        "--production-acquire", "--block", "T1", "--partition-manifest", "C:/partition.json",
+        "--output-root", "C:/private", "--confirmation", "V8_PRODUCTION_ACQUIRE_T1",
+    ])
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert SECRET_TICKER not in captured.out
+    assert SECRET_TICKER not in captured.err
+    assert not re.search(r"\d{4}-\d{2}-\d{2}", captured.out)
+    assert not re.search(r"\d{4}-\d{2}-\d{2}", captured.err)
+    assert json.loads(captured.out) == {"status": "BLOCKED", "reason": reason}
