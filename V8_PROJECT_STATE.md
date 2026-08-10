@@ -13,7 +13,7 @@ the actual repository state at the current remote HEAD.
 ## Current phase
 
 ```text
-TRUST_ANCHOR_PINNED_PENDING_T1_HUMAN_GATE
+T1_RAW_ACQUISITION_BLOCKED_PENDING_HUMAN_DESIGN_REVIEW
 ```
 
 The independent source-preflight review passed
@@ -200,6 +200,74 @@ assignments were read, exposed, or committed by this pinning; the private
 manifest itself was neither opened nor copied — only the previously-audited
 SHA/commit values were applied.
 
+## T1 raw acquisition attempt #1 audit — BLOCKED
+
+A separately human-authorized one-time real `T1` raw historical acquisition
+was executed against authorized implementation HEAD
+`d5441020389452d85cb19a94f647448775fba8d8`, block `T1`, expected ticker
+count `300`, request window `2016-04-01 .. 2025-12-31` (end exclusive
+`2026-01-01`), confirmation `V8_PRODUCTION_ACQUIRE_T1`.
+
+```text
+process_result = BLOCKED
+exit_code = 2
+reason_class = MALFORMED_OHLCV
+failing_request_position = 298 of 300
+real_yahoo_requests_this_attempt = 298
+real_jpx_requests_this_attempt = 0
+automatic_retry_performed = false
+manual_retry_performed = false
+t1_final_bundle_exists = false
+t1_staging_directory_exists = false
+raw_payload_opened_for_research = false
+block_assignments_committed = false
+authorization_consumed = true
+```
+
+**The concrete failing `T1` ticker is private partition information and is
+deliberately not recorded here, in any committed file, or in any commit
+message.** The production implementation increments `request_count`
+immediately before each per-ticker fetch, so the position of the failing
+request (298 of 300) directly gives the real Yahoo request count for this
+attempt: **298**. Cumulative real Yahoo requests: **298** (previous
+cumulative: 0). This attempt added **0** real JPX requests; cumulative real
+JPX requests remain **8**.
+
+A read-only local manifest audit performed after the BLOCK confirmed the
+failing-ticker position but did not open, copy, or persist any raw payload,
+and did not expose any block assignment. The implementation cleaned the
+failed staging directory: no `T1` final bundle and no `T1` staging directory
+exist. No partial acquisition artifact is published or should be treated as
+such. The exact invalid-row reason (e.g. null OHLC, null adjclose, null
+volume, nonpositive price, negative volume, or something else) is **not
+persisted and therefore unknown** — it must not be guessed, and is not
+recorded as anything other than `UNKNOWN_NOT_PERSISTED`.
+
+The first real Yahoo request occurred, so the one-time `T1` acquisition
+attempt #1 authorization is **consumed**. No retry — automatic or
+manual — was performed, and none is authorized by this record.
+
+**This is an acquisition/data-quality BLOCK only.** It must **not** be
+reinterpreted as a `T1` validation failure, a strategy failure, a model
+failure, profitability evidence, or a Layer B result: `T1` was never
+successfully acquired and was never opened for research. The current
+production implementation is fail-closed by design — a `T1` ticker
+containing at least one invalid historical OHLCV row stops the whole block
+acquisition rather than silently admitting a partial or repaired dataset.
+
+**No malformed-OHLCV handling policy is decided by this record.** In
+particular, none of the following is approved, implemented, or documented
+as decided here: skipping invalid rows, skipping the whole ticker,
+replacing missing values, forward-fill, back-fill, using another data
+source, retrying Yahoo, reducing the `T1` ticker count, replacing the
+ticker from `T_spare`, repartitioning, or relaxing parser validation. Each
+would be its own methodological/design decision requiring separate human
+review before any further `T1` action.
+
+`T2`, `T3`, and `T_spare` were not touched by this attempt. The trust
+anchor is unchanged (`AUTHORIZED`, same pinned manifest SHA and
+implementation commit as above).
+
 ## Completed milestones
 
 | # | Milestone | Commit | Verdict |
@@ -222,6 +290,7 @@ SHA/commit values were applied.
 | 16 | Real JPX source-only preflight attempt #3: **PASS**. `source_reproduction_status=PASS`, `t0_reproduction_status=PASS`; `t0_ticker_list_sha256` matches independently-verified committed `V4_UNIVERSE.csv`. Source-only — no partition/manifest/block-assignment/trust-anchor change | authorized HEAD `371f547fc9f32c0aac84e34634b0f97a40e083c6` | `REAL_JPX_SOURCE_PREFLIGHT_PASS_PENDING_REAL_PARTITION_HUMAN_GATE`; cumulative real JPX requests 6, real Yahoo requests 0 |
 | 17 | One-time real production partition creation and independent read-only manifest validation: **PASS** | authorized HEAD `36cbed941050e728f7f96ce2af505e81175cc02c` | `REAL_PARTITION_CREATED_VALIDATED_PENDING_TRUST_ANCHOR_HUMAN_GATE`; cumulative real JPX requests 8, real Yahoo requests 0; no assignments exposed |
 | 18 | One-time trust-anchor pinning: `V8_TRUSTED_PARTITION.json` set to `AUTHORIZED` with the audited manifest SHA and partition implementation commit | anchor base HEAD `46023d92d359c222438b9c0b2dbe410e6623c1f6` | `TRUST_ANCHOR_PINNED_PENDING_T1_HUMAN_GATE`; 0 new network requests (cumulative real JPX requests remain 8, real Yahoo requests remain 0); does not authorize `T1`/`T2`/`T3`/`T_spare` acquisition |
+| 19 | One-time real `T1` raw acquisition attempt #1: **BLOCKED** (`MALFORMED_OHLCV`, failing request 298 of 300); acquisition/data-quality BLOCK only, not a validation/strategy/model result; no bundle published, no retry | authorized HEAD `d5441020389452d85cb19a94f647448775fba8d8` | `T1_RAW_ACQUISITION_BLOCKED_PENDING_HUMAN_DESIGN_REVIEW`; 298 real Yahoo requests this attempt (cumulative 298), 0 new real JPX requests (cumulative 8); no malformed-OHLCV handling policy decided |
 
 ## Human approvals
 
@@ -239,14 +308,15 @@ SHA/commit values were applied.
 | Real JPX source-only preflight — attempt #4 (or any further real network action) | **NOT GRANTED** — a fresh authorization is required |
 | Real partition creation | **GRANTED, CONSUMED** — one-time production build PASS and read-only validation PASS; no retry |
 | Trust-anchor pinning (`V8_TRUSTED_PARTITION.json` authorization) | **GRANTED, CONSUMED** — anchor pinned to `authorization_status=AUTHORIZED`, `authorized_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62`, `authorized_partition_implementation_git_commit=36cbed941050e728f7f96ce2af505e81175cc02c`; does not itself authorize `T1`/`T2`/`T3` acquisition |
-| Real T1 acquisition | **NOT GRANTED** |
+| Real T1 acquisition — attempt #1 | One-time authorization **GRANTED and consumed** — result **BLOCKED** (`MALFORMED_OHLCV`, acquisition/data-quality issue, not a validation result), no retry performed |
+| Real T1 acquisition — attempt #2 (or any further real `T1` action) | **NOT GRANTED** — blocked pending a separate human design review of malformed-OHLCV handling policy |
 | Real T2 acquisition | **NOT GRANTED** |
 | T3 acquisition of any kind | **NOT GRANTED** (and the code path unconditionally rejects it regardless of any future gate wording short of a design amendment) |
 | Layer A search, Layer B validation, Layer C evaluation | **NOT GRANTED** — not implemented at all yet |
 | Prospective forward study | **NOT GRANTED** — separate future study |
 | Real-money deployment | **NOT GRANTED** — separate future human gate, downstream of everything above |
 
-## Current gate state after trust-anchor pinning
+## Current gate state after T1 acquisition attempt #1 BLOCK
 
 ```text
 real_partition_manifest_exists = true
@@ -256,6 +326,10 @@ trusted_partition_authorization = true
 trust_anchor_pinning_authorization_consumed = true
 authorized_partition_manifest_sha256 = 0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62
 authorized_partition_implementation_git_commit = 36cbed941050e728f7f96ce2af505e81175cc02c
+T1_acquisition_attempt_1_authorization_consumed = true
+T1_acquisition_complete = false
+T1_raw_bundle_exists = false
+T1_research_access_authorized = false
 T1_authorized = false
 T2_authorized = false
 T3_authorized = false / PROHIBITED
@@ -263,14 +337,16 @@ T_spare_authorized = false
 layer_b_opened = false
 layer_c_opened = false
 private_v8_storage_location = DEFINED_OUTSIDE_REPOSITORY
+malformed_ohlcv_policy_decided = false
 ```
 
-The one-time real partition build, its subsequent read-only validation, and
-the one-time trust-anchor pinning are all recorded above.
-`V8_TRUSTED_PARTITION.json` is now `AUTHORIZED` and pinned to the exact
-audited manifest SHA and partition implementation commit. This does not
-itself authorize any acquisition. The next action is
-`T1_ACQUISITION_HUMAN_GATE`.
+The one-time real partition build, its subsequent read-only validation, the
+one-time trust-anchor pinning, and the one-time `T1` acquisition attempt #1
+(BLOCKED) are all recorded above. `V8_TRUSTED_PARTITION.json` remains
+`AUTHORIZED` and unchanged by the `T1` attempt. `T1` was never successfully
+acquired and has no raw bundle; no acquisition of any block, and no further
+`T1` action, is authorized by this record. The next action is
+`DEFINE_MALFORMED_OHLCV_POLICY_BEFORE_ANY_FURTHER_T1_ACTION`.
 
 ## Git provenance
 
@@ -322,8 +398,8 @@ source_snapshot_clarification = IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT (V8_HI
 source_snapshot_semantics_implemented = true (1306d7be39ef9b73d049d5c4899ce286080ec1c2; test-fix 68b836d314b98955aa7d76e390ce6235a765b183)
 source_snapshot_semantics_independently_reviewed = true (SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS, reviewed HEAD 9b260e898aa019f8ee5102f3a00e7e1ec7a22584; 0 CRITICAL/HIGH/MEDIUM, 3 LOW deliberately unfixed)
 manifest_schema_version = V8_PARTITION_MANIFEST_V3 (was V8_PARTITION_MANIFEST_V2)
-cumulative_real_jpx_requests = 8 (source-only attempts 1-3: 6; real partition build: 2)
-cumulative_real_yahoo_requests = 0
+cumulative_real_jpx_requests = 8 (source-only attempts 1-3: 6; real partition build: 2; T1 attempt #1 added 0 JPX requests)
+cumulative_real_yahoo_requests = 298 (T1 acquisition attempt #1 only; previous cumulative was 0)
 next_real_jpx_source_only_attempt_authorized = false (attempt #3's authorization was consumed by its single PASS outcome; any further real JPX action needs a fresh authorization)
 source_only_pass_authorizes_real_partition_creation = false
 source_only_pass_authorizes_trust_anchor_pinning = false
@@ -331,6 +407,11 @@ source_only_pass_authorizes_t1_t2_t3_acquisition = false
 trust_anchor_pin_authorizes_t1_acquisition = false
 trust_anchor_pin_authorizes_t2_acquisition = false
 trust_anchor_pin_authorizes_t3_acquisition = false
+t1_acquisition_attempt_1_result = BLOCKED (MALFORMED_OHLCV, failing request 298 of 300; concrete failing ticker is private and not recorded)
+t1_acquisition_attempt_1_authorization_consumed = true
+t1_final_bundle_exists = false
+t1_opened_for_research = false
+next_t1_acquisition_attempt_authorized = false (blocked pending separate human design review of malformed-OHLCV handling policy)
 ```
 
 ## T1 state
@@ -338,7 +419,11 @@ trust_anchor_pin_authorizes_t3_acquisition = false
 ```text
 role = VALIDATION
 raw_data_acquired = false
-validation_access_count = N/A (no manifest exists yet)
+raw_acquisition_attempt_1_result = BLOCKED (MALFORMED_OHLCV; see "T1 raw acquisition attempt #1 audit" above)
+raw_acquisition_attempt_1_authorization_consumed = true
+raw_bundle_exists = false
+research_access_authorized = false
+validation_access_count = null (remains logically 0: no completed acquisition bundle exists and no research opening occurred)
 layer_B_opened = false
 ```
 
@@ -422,13 +507,16 @@ current fake-only V8 regression is 226 passed / 0 failed.
 2. ~~Human authorization and execution of exactly one real partition build~~ — done; authorization consumed, no retry.
 3. ~~Independent local read-only validation of the real manifest~~ — done; self-hash, implementation commit, schema, source/T0 PASS, and T3 prohibition verified.
 4. ~~Obtain a separate human gate to pin the trust anchor using the audited manifest SHA and implementation commit.~~ **Done** — one-time authorization consumed; `V8_TRUSTED_PARTITION.json` is now `AUTHORIZED` with `authorized_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62` and `authorized_partition_implementation_git_commit=36cbed941050e728f7f96ce2af505e81175cc02c`.
-5. Obtain separate T1 authorization. **Not yet authorized.**
-6. Obtain separate T2 authorization and procedural seal. **Not yet authorized.**
-7. Keep T3 and T_spare acquisition unauthorized; T3 remains unconditionally prohibited by design.
+5. ~~Obtain separate T1 authorization and run exactly one real T1 raw acquisition attempt.~~ **Done, but BLOCKED** — attempt #1 authorized and run against `d5441020389452d85cb19a94f647448775fba8d8`; result `BLOCKED/MALFORMED_OHLCV` at request 298 of 300; authorization consumed; no retry. See "T1 raw acquisition attempt #1 audit" above.
+6. Obtain a separate human design review of malformed-OHLCV handling policy. **Not yet done — required before any further `T1` action.** None of skip-invalid-rows / skip-whole-ticker / replace-missing-values / forward-fill / back-fill / use-another-data-source / retry-Yahoo / reduce-T1-ticker-count / replace-ticker-from-T_spare / repartition / relax-parser-validation is decided or approved by this record.
+7. Obtain a fresh separate human authorization for `T1` acquisition attempt #2 (only after step 6). **Not yet authorized.**
+8. Obtain separate T2 authorization and procedural seal. **Not yet authorized** — additionally blocked while the `T1` acquisition/data-quality issue is unresolved.
+9. Keep T3 and T_spare acquisition unauthorized; T3 remains unconditionally prohibited by design.
 
-The private manifest remains outside the repository and is not copied or
-committed. This docs/state synchronization performs no real network operation
-and does not authorize any `T1`/`T2`/`T3`/`T_spare` acquisition.
+The private manifest and any private T1 staging/raw data remain outside the
+repository and are not copied or committed. This docs/state synchronization
+performs no real network operation and does not authorize any further
+`T1` action, `T2`/`T3`/`T_spare` acquisition, or any Layer A/B/C action.
 
 ## Historical ordered next steps (prior state)
 

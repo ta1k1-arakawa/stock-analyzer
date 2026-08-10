@@ -11,7 +11,7 @@
   "design_frozen": true,
   "design_status": "HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION",
 
-  "current_phase": "TRUST_ANCHOR_PINNED_PENDING_T1_HUMAN_GATE",
+  "current_phase": "T1_RAW_ACQUISITION_BLOCKED_PENDING_HUMAN_DESIGN_REVIEW",
 
   "human_gates": {
     "new_strategy_family_accepted": true,
@@ -20,6 +20,7 @@
     "real_jpx_source_fetch_authorized": false,
     "real_partition_creation_authorization_consumed": true,
     "trust_anchor_pinning_authorization_consumed": true,
+    "t1_acquisition_attempt_1_authorization_consumed": true,
     "real_t1_acquisition_authorized": false,
     "real_t2_acquisition_authorized": false,
     "t3_acquisition_authorized": false,
@@ -253,6 +254,81 @@
     "one_time_authorization_consumed": true
   },
 
+  "t1_raw_acquisition_attempt_history": [
+    {
+      "attempt_number": 1,
+      "block": "T1",
+      "authorized_implementation_head": "d5441020389452d85cb19a94f647448775fba8d8",
+      "expected_ticker_count": 300,
+      "request_start": "2016-04-01",
+      "request_end_exclusive": "2026-01-01",
+      "production_confirmation": "V8_PRODUCTION_ACQUIRE_T1",
+      "process_result": "BLOCKED",
+      "exit_code": 2,
+      "reason_class": "MALFORMED_OHLCV",
+      "reason": "MALFORMED_OHLCV",
+      "concrete_failing_ticker_recorded": false,
+      "failing_ticker_note": "PRIVATE partition information; never recorded in any committed file, commit message, or report",
+      "failing_request_position": 298,
+      "failing_request_position_of_total": "298 of 300",
+      "exact_invalid_row_reason": "UNKNOWN_NOT_PERSISTED",
+      "exact_invalid_row_reason_note": "Failed staging data was cleaned before this audit; the specific invalid-row cause (e.g. null OHLC, null adjclose, null volume, nonpositive price, negative volume) is not known and must not be guessed.",
+      "real_yahoo_requests_this_attempt": 298,
+      "real_jpx_requests_this_attempt": 0,
+      "automatic_retry_performed": false,
+      "manual_retry_performed": false,
+      "retry_performed": false,
+      "t1_final_bundle_exists": false,
+      "t1_staging_directory_exists": false,
+      "staging_cleaned_by_implementation": true,
+      "raw_payload_opened_for_research": false,
+      "block_assignments_committed": false,
+      "authorization_consumed": true,
+      "classification": "ACQUISITION_DATA_QUALITY_BLOCK",
+      "prohibited_reinterpretations": [
+        "T1_VALIDATION_FAILURE",
+        "STRATEGY_FAILURE",
+        "MODEL_FAILURE",
+        "PROFITABILITY_EVIDENCE",
+        "LAYER_B_RESULT"
+      ]
+    }
+  ],
+
+  "last_real_t1_acquisition_attempt": {
+    "attempt_count": 1,
+    "result": "BLOCKED",
+    "reason_class": "MALFORMED_OHLCV",
+    "exit_code": 2,
+    "retry_performed": false,
+    "real_yahoo_requests_this_attempt": 298,
+    "real_jpx_requests_this_attempt": 0,
+    "t1_final_bundle_exists": false,
+    "t1_successfully_acquired": false,
+    "t1_opened_for_research": false,
+    "authorization_consumed": true,
+    "next_t1_attempt_authorized": false,
+    "see_full_history": "t1_raw_acquisition_attempt_history"
+  },
+
+  "malformed_ohlcv_policy": {
+    "decided_this_task": false,
+    "prohibited_undecided_options": [
+      "skip_invalid_rows",
+      "skip_whole_ticker",
+      "replace_missing_values",
+      "forward_fill",
+      "back_fill",
+      "use_another_data_source",
+      "retry_yahoo",
+      "reduce_t1_ticker_count",
+      "replace_ticker_from_t_spare",
+      "repartition",
+      "relax_parser_validation"
+    ],
+    "requires_separate_human_design_review": true
+  },
+
   "source_snapshot_semantics_implementation": {
     "implements": "V8_HISTORICAL_RESEARCH_DESIGN.md §16 (source_snapshot_clarification above)",
     "implementation_commit": "1306d7be39ef9b73d049d5c4899ce286080ec1c2",
@@ -353,9 +429,15 @@
     "role": "VALIDATION",
     "raw_data_acquired": false,
     "real_acquisition_authorized": false,
+    "raw_acquisition_attempt_1_authorization_consumed": true,
+    "raw_acquisition_attempt_1_result": "BLOCKED",
+    "raw_acquisition_attempt_1_reason_class": "MALFORMED_OHLCV",
+    "raw_bundle_exists": false,
+    "research_access_authorized": false,
     "ticker_count_frozen": 300,
     "max_validation_access": 1,
     "validation_access_count": null,
+    "validation_access_count_note": "remains logically 0: no completed acquisition bundle exists and no research opening occurred",
     "layer_b_opened": false
   },
 
@@ -433,8 +515,11 @@
     }
   ],
 
-  "next_action": "T1_ACQUISITION_HUMAN_GATE",
+  "next_action": "DEFINE_MALFORMED_OHLCV_POLICY_BEFORE_ANY_FURTHER_T1_ACTION",
   "this_docs_state_update_authorizes_real_network": false,
+  "t1_attempt_1_block_authorizes_t2_acquisition": false,
+  "t1_attempt_1_block_authorizes_further_t1_action": false,
+  "t1_attempt_1_block_authorizes_layer_a_b_c_action": false,
   "trust_anchor_pin_authorizes_t1_acquisition": false,
   "trust_anchor_pin_authorizes_t2_acquisition": false,
   "trust_anchor_pin_authorizes_t3_acquisition": false,
@@ -453,6 +538,8 @@
   ],
 
   "network_requests": 8,
+  "network_requests_note": "cumulative real JPX requests only (source-only preflight attempts + real partition build); see yahoo_requests for cumulative real Yahoo Chart requests",
+  "yahoo_requests": 298,
   "real_data_acquired": false,
   "backtests": 0,
   "models_fitted": 0,
