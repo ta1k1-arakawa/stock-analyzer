@@ -284,7 +284,11 @@ def test_public_path_blocks_before_network_on_git_or_unauthorized_anchor(tmp_pat
         acquisition.acquire_historical_block_bundle(
             output_root=tmp_path / "private", block="T1", partition_manifest_path=tmp_path / "missing.json"
         )
-    assert excinfo.value.reason in {"PRODUCTION_GIT_WORKTREE_DIRTY", "TRUSTED_PARTITION_NOT_AUTHORIZED"}
+    assert excinfo.value.reason in {
+        "PRODUCTION_GIT_WORKTREE_DIRTY",
+        "PRODUCTION_GIT_HEAD_NOT_ORIGIN",
+        "TRUSTED_PARTITION_NOT_AUTHORIZED",
+    }
 
 
 def test_git_resolution_precedes_anchor_read_and_committed_anchor_bytes_are_used(tmp_path, trusted_anchor_path):
