@@ -13,13 +13,23 @@ the actual repository state at the current remote HEAD.
 ## Current phase
 
 ```text
-SOURCE_REPRODUCTION_PREFLIGHT_IMPLEMENTED_PENDING_REVIEW
+SOURCE_SNAPSHOT_CLARIFICATION_APPROVED_IMPLEMENTATION_PENDING
 ```
 
-This is **not** "actual acquisition ready." The previous independent critical
-review BLOCKed the production paths; its CRITICAL/HIGH/MEDIUM remediation is
-implemented and awaits a new independent review. No real network action is
-authorized.
+The independent source-preflight review passed
+(`SOURCE_PREFLIGHT_REVIEW_PASS`), and the human-authorized real JPX
+source-only preflight was run exactly once. It returned
+`status=BLOCKED, reason=V8_PARTITION_SOURCE_NOT_REPRODUCIBLE, exit_code=2`
+because the currently-served JPX raw bytes did not hash-match the `V4`
+2026-08-03 `raw_file_sha256`; no retry was performed. A human design gate then
+resolved the underlying ambiguity: `V8_HISTORICAL_RESEARCH_DESIGN.md` §16
+(append-only, 2026-08-10) clarifies that the V8 partition may use an official
+JPX snapshot fetched at partition-implementation time, and does not require
+that snapshot's raw bytes to equal `V4`'s 2026-08-03 raw bytes — while `T0`
+exact reproduction against the already-frozen `V4_UNIVERSE.csv` remains
+mandatory. This clarification authorizes **no** real network action by
+itself; implementing the corresponding code change is the next step, still
+followed by its own independent review and its own real-network human gate.
 
 ## Completed milestones
 
@@ -37,6 +47,7 @@ authorized.
 | 10 | Second critical-review remediation: fixed public acquisition boundary, Git-HEAD anchor bytes, fixed dates, production partition metadata checks, and exact JPX/Yahoo origins | `172f35d1fa747ffb4acb006a0f59c36700cd53a3` | implementation pending independent retest; 199 fake-only tests passing |
 | 11 | Partition production public-boundary remediation: public runner accepts only `output_path`; fake opener/parser/V4/clock dependencies are private test seams | `297cb8aa599a74bd9a09953ce7acae10c9cfec95` | `CLOSED_PENDING_REVIEW`; 206 fake-only V8 tests passing |
 | 12 | Source-only JPX/T0 reproduction preflight with closed public boundary; no allocation or publication | `38697c9ede51cac7bd500206d857ee585464996b` | `SOURCE_REPRODUCTION_PREFLIGHT_IMPLEMENTED_PENDING_REVIEW`; 226 fake-only V8 tests passing |
+| 13 | Independent source-preflight review passed; one human-authorized real JPX source-only preflight run (BLOCKED: `V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`, no retry); source-snapshot ambiguity resolved by human design gate | `eb13eb6cad4d0f5a920929cf0eaf97d1f673743d` | `SOURCE_PREFLIGHT_REVIEW_PASS`; append-only design clarification recorded, `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 |
 
 ## Human approvals
 
@@ -46,7 +57,8 @@ authorized.
 | Design frozen (10 decisions: Layer A reconciliation, block sizes, `P_early` deferred, Layer B access=1, Layer C one-candidate, `T2` sealed holdout scope, walk-forward split scheme, friction grid, Layer A promotion thresholds, survivorship-bias wording) | GRANTED — `V8_HISTORICAL_RESEARCH_DESIGN.md` §1 |
 | `V8_T1_T2_ACQUISITION_AND_PARTITION_APPROVED` (build the partition/acquisition **code**, still no real network) | GRANTED |
 | Real JPX source fetch | **NOT GRANTED** |
-| Real JPX source-only preflight | **NOT GRANTED** |
+| Real JPX source-only preflight | One-time authorization **GRANTED and consumed** (2026-08-10) — result `BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`, no retry performed; a fresh authorization would be required for any further attempt |
+| Source-snapshot semantics clarification (append-only design gate) | **GRANTED** (2026-08-10) — `V8_HISTORICAL_RESEARCH_DESIGN.md` §16; does not itself authorize any real network action |
 | Real T1 acquisition | **NOT GRANTED** |
 | Real T2 acquisition | **NOT GRANTED** |
 | T3 acquisition of any kind | **NOT GRANTED** (and the code path unconditionally rejects it regardless of any future gate wording short of a design amendment) |
@@ -89,12 +101,13 @@ git ls-remote origin v7-forward-capacity-gate3-dry-run
 
 ```text
 real_partition_manifest_exists = false
-real_jpx_source_fetched = false
-real_jpx_source_preflight_executed = false
+real_jpx_source_fetched = true (one preflight attempt, 2026-08-10; result BLOCKED, no partition/manifest/allocation followed)
+real_jpx_source_preflight_executed = true (attempt_count=1; result=BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE; retry_performed=false)
 private_v8_storage_location = NOT_YET_DEFINED
 requirements = absolute path; outside this repository; never committed
 trusted_partition_authorization = false
 partition_public_dependency_injection = CLOSED_PENDING_REVIEW
+source_snapshot_clarification = IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT (V8_HISTORICAL_RESEARCH_DESIGN.md §16, 2026-08-10; V4 raw SHA equality not required; T0 exact reproduction still required)
 ```
 
 ## T1 state
@@ -182,20 +195,33 @@ current fake-only V8 regression is 226 passed / 0 failed.
 
 ## Current ordered next steps
 
-1. Obtain an independent review of the source-only production preflight.
-2. Obtain human authorization for exactly one real JPX source-only preflight.
-3. Run the source-only preflight.
-4. Inspect and report the source-only preflight result.
-5. Obtain separate human authorization for real partition creation.
-6. Create the real partition manifest.
-7. Verify manifest SHA and partition implementation commit.
-8. Obtain a separate human gate to Git-pin the trust anchor.
-9. Obtain separate T1 authorization.
-10. Obtain later separate T2 authorization.
+1. ~~Obtain an independent review of the source-only production preflight.~~ **Done** — `SOURCE_PREFLIGHT_REVIEW_PASS`.
+2. ~~Obtain human authorization for exactly one real JPX source-only preflight.~~ **Done** — authorized 2026-08-10.
+3. ~~Run the source-only preflight.~~ **Done** — one attempt, `BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`, no retry.
+4. ~~Inspect and report the source-only preflight result; resolve the raw-SHA-vs-design ambiguity.~~ **Done** — `V8_HISTORICAL_RESEARCH_DESIGN.md` §16, human clarification `IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT`.
+5. Implement the source-snapshot semantics in `src/v8_partition.py` /
+   `scripts/build_v8_partition_manifest.py`: the source-only and full-build
+   paths must stop requiring `source_raw_sha256 == V4 raw_file_sha256`,
+   while continuing to require exact `T0` reproduction and to fix the new
+   snapshot's own provenance (`eligible_ticker_list_sha256`, byte count,
+   acquisition UTC, etc.) into the result/manifest. **Not done yet — code
+   unchanged by this handoff.**
+6. Obtain an independent review of that code change.
+7. Obtain a fresh human authorization for the next real JPX source-only
+   preflight attempt under the new semantics.
+8. Obtain separate human authorization for real partition creation.
+9. Create the real partition manifest.
+10. Verify manifest SHA and partition implementation commit.
+11. Obtain a separate human gate to Git-pin the trust anchor.
+12. Obtain separate T1 authorization.
+13. Obtain later separate T2 authorization.
 
-None of these steps is authorized by this documentation update. Actual
-private storage remains `NOT_YET_DEFINED`; when selected it must be an
-absolute path outside this repository and must never be committed.
+None of these steps is authorized by this documentation update beyond step 4,
+which is already recorded as done. This handoff makes no code change (step 5
+remains open) and authorizes no real network action, no partition creation,
+no trust-anchor authorization, and no `T1`/`T2` acquisition. Actual private
+storage remains `NOT_YET_DEFINED`; when selected it must be an absolute path
+outside this repository and must never be committed.
 
 ## Historical pre-production blockers at c5848ced1a5c800f384cb7b86fb642e5c748c2c2
 

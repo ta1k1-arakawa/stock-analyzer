@@ -49,21 +49,22 @@ root. This has held for every V8 phase so far and must keep holding.**
 ## Current phase
 
 ```text
-SOURCE_REPRODUCTION_PREFLIGHT_IMPLEMENTED_PENDING_REVIEW
+SOURCE_SNAPSHOT_CLARIFICATION_APPROVED_IMPLEMENTATION_PENDING
 ```
 
 ## Last completed gate
 
 ```text
-human_gate = V8_T1_T2_ACQUISITION_AND_PARTITION_APPROVED
-design_status = HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION  (design_commit c414d3191cba356734d7ed08bdf1abc7d51fc384)
-static_implementation_verdict = V8_SECOND_CRITICAL_REMEDIATION_PENDING_REVIEW
+human_gate = SOURCE_SNAPSHOT_CLARIFICATION (V8_HISTORICAL_RESEARCH_DESIGN.md §16, append-only, 2026-08-10)
+human_clarification = IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT
+design_status = HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION  (design_commit c414d3191cba356734d7ed08bdf1abc7d51fc384; §16 is an append-only erratum, not a reopening)
+static_implementation_verdict = SOURCE_PREFLIGHT_REVIEW_PASS (source-only preflight implementation commit 38697c9ede51cac7bd500206d857ee585464996b)
 ```
 
 ## Current production status (do not contradict this)
 
 ```text
-real_jpx_requests = 0
+real_jpx_requests = 2 (one source-only preflight attempt, 2026-08-10; result BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE; no retry)
 real_yahoo_requests = 0
 real_partition_created = false
 T1_real_data_acquired = false
@@ -78,9 +79,11 @@ real_orders = 0
 partition_public_dependency_injection = CLOSED_PENDING_REVIEW
 trusted_partition_authorization = false
 real_jpx_authorization = false
-real_jpx_source_fetch_authorized = false
+real_jpx_source_fetch_authorized = false (the single 2026-08-10 authorization was consumed by the one attempt above; a fresh authorization is required for the next attempt)
 real_T1_authorization = false
 real_T2_authorization = false
+v4_raw_sha_equality_required_for_v8_partition = false (V8_HISTORICAL_RESEARCH_DESIGN.md §16)
+t0_300_exact_reproduction_required = true (unchanged)
 ```
 
 The production partition-manifest CLI is implemented in
@@ -104,18 +107,31 @@ fake-test seam only and remains `CLOSED_PENDING_REVIEW`.
 ## Immediate next action
 
 ```text
-INDEPENDENT_SOURCE_PREFLIGHT_REVIEW
+IMPLEMENT_SOURCE_SNAPSHOT_SEMANTICS
 ```
 
+Implement `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 in code: the source-only and
+full-build paths in `src/v8_partition.py` /
+`scripts/build_v8_partition_manifest.py` must stop requiring
+`source_raw_sha256 == V4 raw_file_sha256`, while continuing to require exact
+`T0` reproduction (BLOCK on mismatch) and to fix the newly-fetched snapshot's
+own provenance (`eligible_ticker_list_sha256`, raw byte count, acquisition
+UTC, etc.) into the result/manifest. This has **not** been implemented yet —
+this handoff is a design/state clarification only, no code changed. The
+implementation then requires its own independent review before any further
+real JPX request is authorized.
+
 See `V8_PROJECT_STATE.md` → "Current ordered next steps" for the full requirement
-list, and `V8_STATE.json` → `production_blockers` for the machine-readable
-form.
+list, and `V8_STATE.json` → `production_blockers` / `source_snapshot_clarification`
+for the machine-readable form.
 
 ## Current blockers before any real network call
 
-1. **Previous independent critical reviews: BLOCK.** The second CRITICAL/HIGH/MEDIUM
-   remediation is implemented but not yet independently re-reviewed. Neither
-   production runner may contact a real service.
+1. **Source-snapshot semantics not yet implemented in code.** The design
+   clarification (§16) is recorded, but `src/v8_partition.py` still enforces
+   the stricter raw-hash-equality check that caused the 2026-08-10 BLOCK.
+   Until that code changes and is independently reviewed, a real re-attempt
+   would very likely BLOCK again for the same reason.
 2. **Trusted partition authorization is false.** Production acquisition reads
    the canonical Git-tracked `V8_TRUSTED_PARTITION.json` before the partition
    manifest and blocks with `TRUSTED_PARTITION_NOT_AUTHORIZED` before Yahoo
@@ -129,8 +145,10 @@ form.
    reads its trust anchor from the verified `HEAD` Git object, never from the
    working-tree file.
 
-The next task is `INDEPENDENT_CRITICAL_REVIEW_RETEST` of both production paths. No
-real JPX or Yahoo request is authorized by implementation completion or review.
+No real JPX or Yahoo request is authorized by this documentation update. The
+one 2026-08-10 source-only preflight authorization was consumed by its single
+attempt (BLOCKED, no retry); any further real attempt needs a fresh human
+authorization.
 
 ## Historical blockers at c5848ced1a5c800f384cb7b86fb642e5c748c2c2
 

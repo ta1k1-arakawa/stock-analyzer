@@ -1130,3 +1130,117 @@ deployment_allowed=false
 
 next_authorized_action=HUMAN_GATE_FOR_T1_T2_ACQUISITION_AND_PARTITION_MANIFEST
 ```
+
+## 16. Implementation-time source-snapshot clarification (2026-08-10, append-only)
+
+This section is an **append-only clarification**, not a revision. Nothing in
+§1–§15 above is deleted, reworded or reinterpreted by this section. It resolves
+one specific ambiguity that surfaced during implementation and does not reopen
+any other frozen decision.
+
+```text
+clarification_date=2026-08-10
+clarification_type=APPEND_ONLY_ERRATUM
+frozen_sections_modified=none
+```
+
+**Trigger.** The first human-authorized real JPX source-only preflight
+(`--production-source-preflight`, implementation commit
+`38697c9ede51cac7bd500206d857ee585464996b`, run against remote HEAD
+`eb13eb6cad4d0f5a920929cf0eaf97d1f673743d`) returned
+`status=BLOCKED, reason=V8_PARTITION_SOURCE_NOT_REPRODUCIBLE, exit_code=2`. The
+currently-served official JPX raw listing bytes did not SHA-256-match
+`V4_UNIVERSE_MANIFEST.json`'s `raw_file_sha256` (the byte hash of the raw JPX
+file `V4` acquired on 2026-08-03T06:53:30Z). That original raw file was never
+committed to this repository or archived to any other known storage, so
+byte-for-byte reproduction of that specific historical fetch cannot be
+demonstrated going forward by any mechanism this project has built.
+
+**Ambiguity identified.** §1.2 (Decision 2) and §5.7 require that "exact
+source-list reproducibility" be demonstrated before a partition manifest may
+be built, and separately require that the manifest fix "the exact source
+artifact used." §5.9 point 1 describes the partition pool as coming from "a
+current-only 2026-08-03 listing." Read together, these left it unstated
+whether "exact source-list reproducibility" meant (a) the raw bytes fetched at
+partition-implementation time must hash-equal the raw bytes `V4` fetched on
+2026-08-03, or (b) the reconstruction pipeline applied to whatever official
+snapshot is fetched at partition-implementation time must be provably
+self-consistent — verified via exact `T0` reproduction against the
+already-committed, already-frozen `V4_UNIVERSE.csv` / `T0` ticker-list hash.
+
+**Human decision — binding clarification.**
+
+```text
+V8_SOURCE_SNAPSHOT_CLARIFICATION=IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT
+```
+
+1. The V8 partition may use, as its source artifact, the official JPX
+   current-universe snapshot fetched at partition-implementation time. It is
+   not required to be the same raw bytes `V4` fetched on 2026-08-03.
+2. `source_raw_sha256` in the V8 partition manifest fixes the provenance of
+   the artifact actually used in that partition run. It is a self-provenance
+   value, not a value required to equal any prior stored hash.
+3. Byte-for-byte equality between the partition-implementation-time raw JPX
+   bytes and `V4_UNIVERSE_MANIFEST.json`'s 2026-08-03
+   `raw_file_sha256 = d99706334b3a9ca56b13805dac08d53ae1c2cd7df2ae77e7a9fad767cac51460`
+   is **not** a required condition for building the V8 partition manifest.
+4. This does **not** weaken `T0`/`V4` reproducibility. The rank 1–300 ticker
+   list derived from the partition-implementation-time snapshot, using the
+   unchanged frozen canonical parser, selection rule and deterministic
+   ordering rule, must reproduce the committed `V4_UNIVERSE.csv` and its `T0`
+   ticker-list hash exactly. Failure to reproduce `T0` still BLOCKs, and fresh
+   block allocation still must not proceed on a `T0` mismatch.
+5. The full eligible universe reconstructed from the partition-implementation-
+   time snapshot, in the frozen deterministic order, must have its
+   `eligible_ticker_list_sha256` fixed into the partition manifest as that
+   snapshot's own provenance (no prior full-list hash exists to compare it
+   against — see §5.7's existing statement that the complete eligible-3,115
+   list was never committed).
+6. The partition manifest must continue to record, at minimum: exact source
+   URL/host, source acquisition UTC, source raw SHA-256, source raw byte
+   count, eligible ticker count, eligible ticker-list SHA-256, the frozen
+   selection rule, the frozen deterministic ordering rule, the legacy-exposed
+   exclusions, explicit block assignments, the partition implementation Git
+   SHA, and the manifest's own self-hash.
+7. Raw JPX bytes are not committed to this public repository under this
+   clarification, exactly as before. Reproducibility is audited through the
+   manifest's fixed source provenance and derived hashes, not through a
+   committed raw-bytes archive.
+8. This clarification does **not** change: ticker block sizes (`T0`–`T3` =
+   300 each, Decision 2), block roles (`T1=VALIDATION`, `T2=SEALED_HOLDOUT`,
+   `T3=SEALED_RESERVE`), `P_hist` (2016-04-01 → 2025-12-31, Decision 3),
+   Layer B/C access rules (Decisions 4, 5), the walk-forward split scheme
+   (Decision 7), the friction grid and promotion thresholds (Decisions 8, 9),
+   or V7 isolation (§3, throughout).
+9. §5.9 point 1's phrase "a current-only 2026-08-03 listing" is historical
+   wording describing the state of the universe at `V4`/audit time — it
+   documents that this is a **current-only** pool (as opposed to a formal
+   point-in-time historical universe reconstruction; see
+   `V4_UNIVERSE_MANIFEST.json`'s `formal_point_in_time_universe: false`) and
+   is not a binding requirement that fixes the V8 partition's source date to
+   2026-08-03 in perpetuity. The residual-contamination caveat itself
+   (survivorship bias applies to the pool regardless of fetch date) remains
+   unchanged and still applies.
+10. This clarification does **not** authorize real network access, real
+    partition creation, trust-anchor authorization, or `T1`/`T2` acquisition.
+    Each remains its own separate human gate.
+
+```text
+v4_raw_sha_equality_required_for_v8_partition=false
+t0_300_exact_reproduction_required=true
+current_snapshot_provenance_fixation_required=true
+fresh_allocation_before_all_reproduction_checks=PROHIBITED
+ticker_block_size_changed=false
+p_hist_changed=false
+t1_role_changed=false
+t2_role_changed=false
+t3_role_changed=false
+walk_forward_scheme_changed=false
+friction_grid_changed=false
+promotion_thresholds_changed=false
+v7_isolation_changed=false
+real_network_authorized_by_this_clarification=false
+real_partition_creation_authorized_by_this_clarification=false
+trust_anchor_authorization_by_this_clarification=false
+t1_t2_acquisition_authorized_by_this_clarification=false
+```

@@ -11,7 +11,7 @@
   "design_frozen": true,
   "design_status": "HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION",
 
-  "current_phase": "SOURCE_REPRODUCTION_PREFLIGHT_IMPLEMENTED_PENDING_REVIEW",
+  "current_phase": "SOURCE_SNAPSHOT_CLARIFICATION_APPROVED_IMPLEMENTATION_PENDING",
 
   "human_gates": {
     "new_strategy_family_accepted": true,
@@ -26,6 +26,34 @@
     "layer_c_evaluation_authorized": false,
     "prospective_forward_study_authorized": false,
     "real_money_deployment_authorized": false
+  },
+
+  "source_snapshot_clarification": {
+    "clarification_date": "2026-08-10",
+    "clarification_type": "APPEND_ONLY_ERRATUM",
+    "design_section": "V8_HISTORICAL_RESEARCH_DESIGN.md §16",
+    "human_clarification": "IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT",
+    "trigger": "first authorized real source-only preflight returned V8_PARTITION_SOURCE_NOT_REPRODUCIBLE because current official JPX raw bytes did not match the V4 2026-08-03 raw_file_sha256",
+    "v4_raw_sha_equality_required_for_v8_partition": false,
+    "t0_300_exact_reproduction_required": true,
+    "current_snapshot_provenance_fixation_required": true,
+    "fresh_allocation_before_all_reproduction_checks": "PROHIBITED",
+    "frozen_block_date_evaluation_parameters_changed": false,
+    "real_network_authorized_by_this_clarification": false,
+    "real_partition_creation_authorized_by_this_clarification": false,
+    "trust_anchor_authorization_by_this_clarification": false,
+    "t1_t2_acquisition_authorized_by_this_clarification": false
+  },
+
+  "last_real_source_preflight_attempt": {
+    "attempt_count": 1,
+    "result": "BLOCKED",
+    "reason": "V8_PARTITION_SOURCE_NOT_REPRODUCIBLE",
+    "exit_code": 2,
+    "retry_performed": false,
+    "real_jpx_requests_this_attempt": 2,
+    "real_yahoo_requests_this_attempt": 0,
+    "raw_bytes_or_new_hashes_recorded": false
   },
 
   "static_implementation": {
@@ -153,7 +181,7 @@
     }
   ],
 
-  "next_action": "INDEPENDENT_SOURCE_PREFLIGHT_REVIEW",
+  "next_action": "IMPLEMENT_SOURCE_SNAPSHOT_SEMANTICS",
 
   "source_of_truth_priority": [
     "immutable/raw acquisition manifests and their hashes (once they exist)",
@@ -165,7 +193,7 @@
     "chat history / model memory (lowest priority, never authoritative)"
   ],
 
-  "network_requests": 0,
+  "network_requests": 2,
   "real_data_acquired": false,
   "backtests": 0,
   "models_fitted": 0,
