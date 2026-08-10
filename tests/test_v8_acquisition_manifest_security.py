@@ -152,23 +152,25 @@ def test_single_field_invariant_tampering_rejected(tmp_path, key, value, expecte
     assert excinfo.value.reason == expected_reason
 
 
-@pytest.mark.parametrize("field", acquisition.ACQUISITION_MANIFEST_ZERO_ACCESS_COUNTER_FIELDS)
-def test_access_counter_tampering_rejected(tmp_path, field):
-    manifest_path, raw_text = _acquire_genuine_manifest_text(tmp_path)
-    manifest_path.write_bytes(_set_single_top_level_value(raw_text, field, 1))
-    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
-        acquisition.read_acquisition_manifest(tmp_path / "root", "T2")
-    assert excinfo.value.reason == "ACQUISITION_MANIFEST_ACCESS_COUNTER_INVARIANT_VIOLATED"
+STRICT_ZERO_INTEGER_FIELDS = (
+    *acquisition.ACQUISITION_MANIFEST_ZERO_ACCESS_COUNTER_FIELDS,
+    "retry_count",
+)
+STRICT_ZERO_INTEGER_VALUES = (0, False, True, 0.0, 1.0, -1, 1, "0", None)
 
 
-def test_access_counter_boolean_false_not_silently_accepted_as_zero(tmp_path):
-    """0 == False in Python; the invariant check must not be fooled by a
-    boolean masquerading as the integer zero."""
+@pytest.mark.parametrize("field", STRICT_ZERO_INTEGER_FIELDS)
+@pytest.mark.parametrize("value", STRICT_ZERO_INTEGER_VALUES, ids=lambda value: repr(value))
+def test_manifest_integer_type_matrix_rejected_or_accepted(tmp_path, field, value):
     manifest_path, raw_text = _acquire_genuine_manifest_text(tmp_path)
-    manifest_path.write_bytes(_set_single_top_level_value(raw_text, "validation_access_count", False))
-    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+    manifest_path.write_bytes(_set_single_top_level_value(raw_text, field, value))
+    if type(value) is int and value == 0:
+        reread = acquisition.read_acquisition_manifest(tmp_path / "root", "T2")
+        assert type(reread[field]) is int
+        assert reread[field] == 0
+        return
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
         acquisition.read_acquisition_manifest(tmp_path / "root", "T2")
-    assert excinfo.value.reason == "ACQUISITION_MANIFEST_ACCESS_COUNTER_INVARIANT_VIOLATED"
 
 
 def test_block_field_changed_to_t1_inside_persisted_t2_file_rejected(tmp_path):

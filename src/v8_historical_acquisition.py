@@ -517,7 +517,8 @@ def _require_valid_acquisition_manifest_invariants(manifest: Mapping[str, Any], 
     if manifest.get("research_access_authorized") is not False:
         raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_RESEARCH_ACCESS_INVARIANT_VIOLATED")
     for field in ACQUISITION_MANIFEST_ZERO_ACCESS_COUNTER_FIELDS:
-        if manifest.get(field) != 0 or isinstance(manifest.get(field), bool):
+        value = manifest.get(field)
+        if type(value) is not int or value != 0:
             raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_ACCESS_COUNTER_INVARIANT_VIOLATED")
     if manifest.get("data_source") != DATA_SOURCE:
         raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_DATA_SOURCE_MISMATCH")
@@ -529,7 +530,8 @@ def _require_valid_acquisition_manifest_invariants(manifest: Mapping[str, Any], 
         raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_REQUEST_START_MISMATCH")
     if manifest.get("request_end_exclusive") != REQUEST_END_EXCLUSIVE:
         raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_REQUEST_END_EXCLUSIVE_MISMATCH")
-    if manifest.get("retry_count") != RETRY_COUNT:
+    retry_count = manifest.get("retry_count")
+    if type(retry_count) is not int or retry_count != RETRY_COUNT:
         raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_RETRY_COUNT_MISMATCH")
 
 
