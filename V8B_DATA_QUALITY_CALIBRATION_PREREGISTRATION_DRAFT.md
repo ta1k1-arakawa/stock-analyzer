@@ -168,8 +168,8 @@ preflight, performed at that future calibration-execution time — not by
 this task — proves that the existing local cache
 (`C:\taiki\hobbies\v5-b-evaluation-cache-retry1`) still exists and matches
 the committed provenance/hash expectations in §3 above, and that its raw
-payloads can be parsed under the current canonical classification
-semantics (§3.3 below).
+payloads can be parsed under the pinned canonical classification
+semantics (§4's exact Git blob; §3.3 below).
 
 If that preflight cannot establish this:
 
@@ -188,15 +188,16 @@ calibration-execution time, not at drafting time.
 ### 3.3 Canonical input parse requirement (fixed)
 
 Before future calibration metrics are calculated, every designated V5-B
-raw payload must be reproducible under the current canonical
-row-classification semantics (§4). The execution implementation must
-reconstruct returned-observation valid/invalid status using the current
-canonical classifier, from the raw payload bytes, not from any
-pre-derived summary.
+raw payload must be reproducible under the pinned canonical
+row-classification semantics (§4's exact Git blob — not whatever version
+happens to be present in the working tree at execution time). The
+execution implementation must reconstruct returned-observation
+valid/invalid status using that pinned canonical classifier, from the raw
+payload bytes, not from any pre-derived summary.
 
-If a designated payload produces a current canonical schema-level hard
-failure (§4's `DUPLICATE_TRADING_DATE` / `ARRAY_LENGTH_MISMATCH` /
-`TIMESTAMP_INVALID` class, or any other hard parser failure) such that
+If a designated payload produces a schema-level hard failure under the
+pinned classifier (§4's `DUPLICATE_TRADING_DATE` / `ARRAY_LENGTH_MISMATCH`
+/ `TIMESTAMP_INVALID` class, or any other hard parser failure) such that
 row-level classification cannot be reproduced for that ticker:
 
 ```text
@@ -208,14 +209,56 @@ not repair the payload. Do not substitute another ticker or source.
 
 ---
 
-## 4. Canonical malformed-row classifier (fixed, independently verified against source)
+## 4. Canonical malformed-row classifier (fixed, pinned to an exact Git blob)
 
-Use exactly the existing canonical reason classes from
-`src/v7_yahoo_collector.py::_row_invalid_reason`.
+```text
+canonical_parser_classifier_file=src/v7_yahoo_collector.py
+canonical_parser_classifier_git_commit=28e281c3ee30d6b4c2f981c5da3ddc983c09724d
+canonical_parser_classifier_blob_sha=76b57b077f3214e666ff9dc06d9c224afc16df9f
+canonical_row_invalid_function=_row_invalid_reason
+classifier_version_binding=EXACT_GIT_BLOB
+```
 
-**Verification performed by this task:** the function was read directly
-(`src/v7_yahoo_collector.py:155-167`). It iterates the fields `open`,
-`high`, `low`, `close`, `adjclose` — for each, a non-finite value yields
+**The entire pinned source-file blob is the authoritative parser/classifier
+version for this calibration plan** — not only the text of
+`_row_invalid_reason`. This is deliberate: run validity also depends on
+parser/schema semantics that live elsewhere in the same file, such as
+`TIMESTAMP_INVALID`, `ARRAY_LENGTH_MISMATCH`, and `DUPLICATE_TRADING_DATE`
+(§4 below). Pinning the whole blob, rather than one function's text,
+means none of that surrounding semantics can drift out from under the
+calibration without being caught. The future calibration implementation
+must **not** silently use whatever version happens to be present in the
+working tree at execution time.
+
+**Before calibration execution, require:**
+
+```text
+actual_src_v7_yahoo_collector_py_git_blob_sha == 76b57b077f3214e666ff9dc06d9c224afc16df9f
+```
+
+If not:
+
+```text
+CALIBRATION_CLASSIFIER_VERSION_MISMATCH  -->  CALIBRATION_RUN_INVALID (§13, new R0)
+CALIBRATION_RUN_VALID=false
+selected_policy=NOT_EVALUATED
+candidate_selection_executed=false
+```
+
+**STOP.** Do not automatically accept a semantically-similar newer
+implementation. A change to the classifier/parser version is a
+methodological plan change and therefore requires a new calibration plan
+version and a new human approval gate — not a silent substitution.
+
+Use exactly the canonical reason classes produced by this pinned blob's
+`_row_invalid_reason`.
+
+**Verification performed by this task, against the pinned blob:** the
+function was read directly (`src/v7_yahoo_collector.py:155-167` at commit
+`28e281c3ee30d6b4c2f981c5da3ddc983c09724d`, blob
+`76b57b077f3214e666ff9dc06d9c224afc16df9f` — independently re-verified via
+`git ls-tree` for this revision). It iterates the fields `open`, `high`,
+`low`, `close`, `adjclose` — for each, a non-finite value yields
 `NONFINITE_<FIELD>` and a non-positive value yields `NONPOSITIVE_<FIELD>`
 — then checks `volume`, where a non-finite value yields `NONFINITE_VOLUME`
 and a negative value yields `NEGATIVE_VOLUME` (there is no
@@ -240,8 +283,8 @@ NEGATIVE_VOLUME
 
 No corruption classes unrelated to this row-level policy are added.
 
-**Schema-level hard failures — independently verified as distinct.**
-`DUPLICATE_TRADING_DATE` (`src/v7_yahoo_collector.py:281`),
+**Schema-level hard failures — independently verified as distinct, in the
+same pinned blob.** `DUPLICATE_TRADING_DATE` (`src/v7_yahoo_collector.py:281`),
 `ARRAY_LENGTH_MISMATCH` (`:179`), and `TIMESTAMP_INVALID` (`:134`) are
 each raised as a `V7YahooCollectorBlocked` exception — a hard
 parser/schema failure that aborts the whole fetch — and are structurally
@@ -249,7 +292,7 @@ separate from `_row_invalid_reason`'s per-row classification, which marks
 a single row invalid without aborting the fetch. This calibration does
 **not** convert any schema-level hard failure into a tolerated row-level
 malformed observation (see §3.3's `CALIBRATION_INPUT_CANONICAL_PARSE_
-BLOCKED` gate).
+BLOCKED` gate). This task does not change any of these semantics.
 
 ---
 
@@ -345,23 +388,23 @@ For each ticker, in canonical ticker ascending order:
 
 ```text
 1. use only returned observations inside the approved burned-data calibration span (§3: 2019-01-01 through 2025-12-31)
-2. reconstruct valid/invalid flags using the canonical classifier (§4)
+2. reconstruct valid/invalid flags using the pinned canonical classifier (§4's exact Git blob)
 3. scan returned observations chronologically
 4. find the EARLIEST contiguous slice of exactly 252 consecutive returned observations for which all 252 observations are canonically valid before synthetic injection
 5. a ticker contributes at most one synthetic base slice
 ```
 
-Then: take the **first 20 qualifying tickers** in canonical ticker
-ascending order. Base selection order is fully deterministic.
-
-If fewer than 20 distinct tickers possess such a 252-returned-observation
-clean slice:
+The selected synthetic-base set contains **exactly 20 distinct tickers**
+— never "at least 20." Base selection order is fully deterministic:
 
 ```text
-SYNTHETIC_BASE_SELECTION_BLOCKED  -->  CALIBRATION_RUN_INVALID (§13)
+if fewer than 20 qualifying tickers exist: SYNTHETIC_BASE_SELECTION_BLOCKED  -->  CALIBRATION_RUN_INVALID (§13)
+if exactly 20 qualifying tickers exist: select all 20
+if more than 20 qualifying tickers exist: select exactly the first 20, in canonical ticker ascending order; no discretion
 ```
 
-and **STOP** calibration. Do not choose another base definition.
+On `SYNTHETIC_BASE_SELECTION_BLOCKED`, **STOP** calibration. Do not
+choose another base definition.
 
 ---
 
@@ -548,10 +591,11 @@ CALIBRATION_RUN_VALID = true
 if and only if **all** of the following hold:
 
 ```text
+R0. canonical parser/classifier Git blob identity matches the preregistered blob SHA exactly (§4: 76b57b077f3214e666ff9dc06d9c224afc16df9f)
 R1. V5-B cache provenance/preflight validates exactly (§3.2)
-R2. all designated raw payloads can be reconstructed under canonical parser/classifier semantics (§3.3)
+R2. all designated raw payloads can be reconstructed under the pinned canonical parser/classifier semantics (§4, §3.3)
 R3. no designated full-calibration ticker has zero returned observations (§6)
-R4. at least 20 qualifying distinct-ticker synthetic bases are selected exactly according to the preregistered rule (§7)
+R4. exactly 20 distinct qualifying synthetic bases are selected exactly according to the preregistered deterministic rule (§7)
 R5. every synthetically corrupted row is classified as EXACTLY its intended canonical malformed-row reason (§9)
 R6. every synthetic non-corrupted row remains unchanged and valid (§9)
 R7. for all 30 candidates and all preregistered synthetic scenarios, observed policy pass/fail exactly equals the mathematical expected truth table (§11)
@@ -559,7 +603,7 @@ R8. no schema-level hard parser failure is converted into a tolerated row-level 
 R9. the candidate grid, observed windows, synthetic scenarios, metrics, selection rule, and all preregistered methodology match this approved plan (`calibration_plan_version=V8B_DATA_QUALITY_CALIBRATION_PLAN_V1`) exactly
 ```
 
-If **any** of R1-R9 fails:
+If **any** of R0-R9 fails:
 
 ```text
 CALIBRATION_RUN_VALID=false
@@ -578,6 +622,7 @@ exactly, and each is classified as `CALIBRATION_RUN_INVALID` — never as
 POLICY`:
 
 ```text
+CALIBRATION_CLASSIFIER_VERSION_MISMATCH       -->  CALIBRATION_RUN_INVALID (R0)
 V5B_CALIBRATION_INPUT_PREFLIGHT_BLOCKED       -->  CALIBRATION_RUN_INVALID (R1)
 CALIBRATION_INPUT_CANONICAL_PARSE_BLOCKED     -->  CALIBRATION_RUN_INVALID (R2, R8)
 CALIBRATION_INPUT_EMPTY_SERIES_BLOCKED        -->  CALIBRATION_RUN_INVALID (R3)
@@ -586,9 +631,11 @@ SYNTHETIC_CLASSIFIER_MISMATCH                 -->  CALIBRATION_RUN_INVALID (R5, 
 SYNTHETIC_POLICY_SEMANTICS_MISMATCH           -->  CALIBRATION_RUN_INVALID (R7)
 ```
 
-Any other detected deviation from the approved plan (R9) is likewise
-`CALIBRATION_RUN_INVALID`, whether or not it has its own named status
-constant.
+`CALIBRATION_CLASSIFIER_VERSION_MISMATCH` is never classified as
+`candidate_not_defensible` or `CALIBRATION_NO_DEFENSIBLE_POLICY`, exactly
+like every other entry above. Any other detected deviation from the
+approved plan (R9) is likewise `CALIBRATION_RUN_INVALID`, whether or not
+it has its own named status constant.
 
 ---
 
@@ -1025,7 +1072,7 @@ synthetic_corruption_generation_procedure -> §7-§11
 synthetic_random_seed_or_seeds -> NOT_USED (§10)
 unit_of_analysis -> per-ticker-year window and full calibration-span window (§6)
 evaluation_windows -> 2019..2025 individually, and 2019-01-01..2025-12-31 in full (§6)
-malformed_row_classifier_and_version -> src/v7_yahoo_collector.py::_row_invalid_reason, verified against source (§4)
+malformed_row_classifier_and_version -> function src/v7_yahoo_collector.py::_row_invalid_reason; file src/v7_yahoo_collector.py; Git commit 28e281c3ee30d6b4c2f981c5da3ddc983c09724d; blob SHA 76b57b077f3214e666ff9dc06d9c224afc16df9f; version semantics EXACT_GIT_BLOB (§4)
 exact_finite_candidate_set_invalid_fraction_threshold -> {1/252, 2/252, 1/100, 3/252, 4/252, 5/252} (§5)
 exact_finite_candidate_set_max_consecutive_invalid_returned_rows -> {1, 2, 3, 4, 5} (§5)
 exact_metrics_computed_per_candidate -> §25
