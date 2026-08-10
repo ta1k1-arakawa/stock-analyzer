@@ -49,7 +49,7 @@ root. This has held for every V8 phase so far and must keep holding.**
 ## Current phase
 
 ```text
-T1_RAW_ACQUISITION_ATTEMPT_2_HUMAN_GATE_PENDING
+T1_RAW_ACQUISITION_ATTEMPT_2_BLOCKED_PENDING_HUMAN_DESIGN_GATE
 ```
 
 ## Last completed gate
@@ -72,6 +72,16 @@ integer_invariant_remediation_commit = 24e44f3eb32bafa248fafaada73a55ebb838a3a5
 integer_invariant_review = INTEGER_INVARIANT_REVIEW_PASS (0 CRITICAL/HIGH/MEDIUM/LOW)
 test_only_stale_expectation_fix_commit = 91a049c137df014b8ac2d7f50ce8f79289f2b8f7
 full_local_v8_regression = 349 passed / 0 failed, fake-only, 0 real Yahoo requests, 0 real JPX requests
+t1_attempt_2_result = BLOCKED (reason=MALFORMED_OHLCV_QUALITY_GATE:FRACTION_EXCEEDED, exit_code=2; authorized_head a8710437db0c0752219d9aff34ac31d55b154d81)
+t1_attempt_2_authorization = GRANTED_AND_CONSUMED
+t1_attempt_2_final_bundle = false
+t1_attempt_2_research_opened = false
+t1_attempt_2_validation_performed = false
+t1_attempt_2_real_yahoo_requests = UNKNOWN_NOT_PERSISTED (lower_bound >= 1)
+t1_attempt_2_real_jpx_requests = 0
+t1_attempt_3_authorized = false
+current_phase = T1_RAW_ACQUISITION_ATTEMPT_2_BLOCKED_PENDING_HUMAN_DESIGN_GATE
+next_action = HUMAN_DESIGN_REVIEW_AFTER_T1_ATTEMPT_2_QUALITY_GATE_BLOCK
 ```
 
 ## Latest real partition audit record
@@ -219,23 +229,28 @@ integer_invariant_remediation_commit = 24e44f3eb32bafa248fafaada73a55ebb838a3a5
 ```
 
 The clarification itself was docs/state only; subsequent implementation and
-remediation commits are recorded above. This does not authorize `T1` attempt
-#2 or `T2` acquisition. See `V8_HISTORICAL_RESEARCH_DESIGN.md` §17 and
+remediation commits are recorded above. This does not authorize any retry,
+`T1` attempt #3, or `T2` acquisition. See `V8_HISTORICAL_RESEARCH_DESIGN.md` §17 and
 `V8_STATE.json` → `malformed_ohlcv_policy_clarification` for full detail.
 
 ## Current production status (do not contradict this)
 
 ```text
-real_jpx_requests = 8 (source-only attempts #1-#3: 2 each; real partition build: 2; T1 attempt #1: 0; no retry)
-real_yahoo_requests = 298 (T1 acquisition attempt #1 only; previous cumulative was 0)
+real_jpx_requests = 8 (source-only attempts #1-#3: 2 each; real partition build: 2; T1 attempts #1-#2: 0; no retry)
+real_yahoo_requests_attempt_1 = 298 (exact historical value)
+real_yahoo_requests_attempt_2 = UNKNOWN_NOT_PERSISTED (lower_bound >= 1)
+cumulative_real_yahoo_requests_exact = UNKNOWN_AFTER_ATTEMPT_2
+cumulative_real_yahoo_requests_lower_bound = >= 299
 real_partition_created = true
 accepted_source_snapshot = true (attempt #3 only; attempts #1 and #2 did not reach an accepted/reproduced snapshot)
 partition_manifest_written = true
 real_block_assignments_created = true
 T1_real_data_acquired = false
 T1_acquisition_attempt_1_result = BLOCKED (MALFORMED_OHLCV, failing request 298 of 300)
+T1_acquisition_attempt_2_result = BLOCKED (MALFORMED_OHLCV_QUALITY_GATE:FRACTION_EXCEEDED)
 T1_final_bundle_exists = false
 T1_opened_for_research = false
+T1_validation_performed = false
 T2_real_data_acquired = false
 T2_opened = false
 T3_data_acquired = false
@@ -248,11 +263,12 @@ partition_public_dependency_injection = CLOSED_PENDING_REVIEW
 trusted_partition_authorization = true (pinned by one-time trust-anchor authorization; see "Trust anchor pinning record" above; unchanged by the T1 attempt)
 real_jpx_authorization = false
 real_jpx_source_fetch_authorized = false (attempt #3's authorization was consumed by its single PASS outcome; a fresh authorization is required for any further real JPX action)
-real_T1_authorization = false (attempt #1's authorization was consumed by its single BLOCKED outcome; implementation/reviews/regression are complete, but a fresh authorization is required before any further T1 action)
+real_T1_authorization = false (attempt #2 authorization was consumed by its single BLOCKED outcome; no retry or attempt #3 is authorized)
 real_T2_authorization = false
 real_T3_authorization = false
 real_partition_creation_authorization_consumed = true
 t1_acquisition_attempt_1_authorization_consumed = true
+t1_acquisition_attempt_2_authorization_consumed = true
 malformed_ohlcv_policy_decided = true (POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE, §17)
 malformed_ohlcv_policy_implemented = true
 integer_invariant_review = INTEGER_INVARIANT_REVIEW_PASS (0 CRITICAL/HIGH/MEDIUM/LOW)
@@ -294,7 +310,7 @@ fake-test seam only and remains `CLOSED_PENDING_REVIEW`.
 ## Immediate next action
 
 ```text
-OBTAIN_HUMAN_GATE_FOR_T1_RAW_ACQUISITION_ATTEMPT_2
+HUMAN_DESIGN_REVIEW_AFTER_T1_ATTEMPT_2_QUALITY_GATE_BLOCK
 ```
 
 `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 is implemented in code, has **passed
@@ -303,8 +319,11 @@ source-only preflight has **PASSED** (attempt #3), the subsequent one-time
 real partition build **PASSED** and was validated read-only, and the trust
 anchor has been **pinned** (`AUTHORIZED`). A further one-time authorization
 then permitted **`T1` raw acquisition attempt #1**, which **BLOCKED**:
-`reason_class=MALFORMED_OHLCV`, failing request 298 of 300, exit code 2. See
-"T1 raw acquisition attempt #1 record" above for full detail.
+`reason_class=MALFORMED_OHLCV`, failing request 298 of 300, exit code 2. A
+separate one-time authorization then permitted attempt #2 at authorized HEAD
+`a8710437db0c0752219d9aff34ac31d55b154d81`, which **BLOCKED** with
+`MALFORMED_OHLCV_QUALITY_GATE:FRACTION_EXCEEDED` (exit code 2). See the
+attempt records above for full detail.
 
 **The malformed-OHLCV handling policy has since been decided** —
 `POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE`, recorded as an
@@ -313,23 +332,36 @@ This BLOCK still does not authorize a retry. `T1` was never
 successfully acquired and was never opened for research; this remains an
 acquisition/data-quality issue, not a validation, strategy, or model
 result. The implementation, security remediation, strict integer remediation,
-and full local fake-only regression (`349 passed / 0 failed`) are complete. A
-fresh human gate is still required for attempt #2. `T2` acquisition remains
-unauthorized and `T3` remains unconditionally prohibited.
+and full local fake-only regression (`349 passed / 0 failed`) are complete.
+Attempt #2 authorization is consumed; no retry or attempt #3 is authorized.
+The next action is a human design review after this quality-gate BLOCK. `T2`
+acquisition remains unauthorized and `T3` remains unconditionally prohibited.
 
 See `V8_PROJECT_STATE.md` → "Current ordered next steps" for the full requirement
 list, and `V8_STATE.json` → `t1_raw_acquisition_attempt_history` /
 `malformed_ohlcv_policy_clarification` for the machine-readable form.
 
+## Human design gate after attempt #2
+
+The attempt #2 quality-gate BLOCK is an acquisition/data-quality result only;
+it is not evidence for or against strategy expectancy. The human must decide
+the future study path separately. Under the frozen design, this record does
+not permit relaxing the 1% threshold, dropping the failing ticker, replacing
+it from `T_spare`, repartitioning, retrying Yahoo under the consumed
+authorization, changing source, or manually repairing rows. No such choice is
+made here.
+
 ## Current blockers before any real network call
 
-1. **No T1 acquisition attempt #2 authorization exists.** Attempt #1's
-   authorization was consumed by its single BLOCKED outcome; a fresh,
-   separate human authorization is required. This docs/state update does not
-   grant that gate.
+1. **Attempt #2 is BLOCKED and its authorization is consumed.** The generic
+   reason is `MALFORMED_OHLCV_QUALITY_GATE:FRACTION_EXCEEDED`; no bundle,
+   research opening, or validation resulted. No retry or attempt #3 is
+   authorized. The next action is a human design review; this docs/state
+   update does not select a future path.
 2. **Research opening remains separately gated.** The generic `open_for_*`
-   functions retain their pre-existing arbitrary `Mapping` contract; this
-   crafted-mapping issue is unreachable from the current T1 raw acquisition
+   functions retain their pre-existing arbitrary `Mapping` contract, and
+   read-time acquisition-manifest block/partition content binding remains
+   deferred; these issues are unreachable from the current T1 raw acquisition
    path, but must be resolved before T1 research opening/validation and
    before T2 opening.
 3. **`T2` acquisition remains unauthorized** and `T3`/`T_spare` remain

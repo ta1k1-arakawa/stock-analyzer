@@ -20,7 +20,7 @@ Do not update it just because a phase completed — that belongs in
 | 2 | Partition/acquisition static implementation | COMPLETE |
 | 3 | Production acquisition hardening | COMPLETE — implemented, remediated, independently reviewed, and locally regression-tested |
 | 4 | Production partition creation | COMPLETE — one-time build PASS, read-only validation PASS, trust anchor pinned |
-| 5 | T1/T2 raw acquisition | **CURRENT** — T1 attempt #1 BLOCKED; attempt #2 human gate pending |
+| 5 | T1/T2 raw acquisition | **CURRENT** — T1 attempts #1 and #2 BLOCKED; human design gate pending |
 | 6 | Layer A historical research | NOT STARTED |
 | 7 | Layer B one-shot validation | NOT STARTED |
 | 8 | Exactly-one final candidate freeze | NOT STARTED |
@@ -134,11 +134,17 @@ Do not update it just because a phase completed — that belongs in
 
 Current state: T1 raw acquisition attempt #1 was separately authorized and
 BLOCKed at request 298 of 300 with reason class `MALFORMED_OHLCV`; no final
-bundle was published and that authorization was consumed. The selected
-`POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE` is now implemented,
-security-remediated, independently reviewed, and covered by the full local
-fake-only regression (`349 passed / 0 failed`). A fresh human gate is still
-required before T1 attempt #2; this runbook update does not grant it.
+bundle was published and that authorization was consumed. After the policy
+was selected and implemented, the separately authorized T1 attempt #2 ran at
+authorized HEAD `a8710437db0c0752219d9aff34ac31d55b154d81` and BLOCKed with
+`MALFORMED_OHLCV_QUALITY_GATE:FRACTION_EXCEEDED` (exit code 2). No final
+bundle or staging remained, research was not opened, validation was not
+performed, T2/T3/T_spare were not touched, and the attempt #2 authorization
+was consumed. Its exact Yahoo request count was not persisted; the safe lower
+bound is >=1, so cumulative Yahoo requests are exact UNKNOWN with lower bound
+>=299 (attempt #1 exact 298). No retry or attempt #3 is authorized. The next
+action is `HUMAN_DESIGN_REVIEW_AFTER_T1_ATTEMPT_2_QUALITY_GATE_BLOCK`; this
+runbook update does not choose a future policy or authorize network access.
 
 - **Prerequisites:** Phase 4 complete; a real, validated partition manifest
   exists; explicit human authorization for real Yahoo network access,
