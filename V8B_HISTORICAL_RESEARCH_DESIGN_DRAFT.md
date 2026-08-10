@@ -12,11 +12,15 @@ v8b_successor_trust_authority_model=HUMAN_DECISION_REQUIRED_BEFORE_V8B_DESIGN_FR
 
 This is a **design draft**, not a frozen design. Nothing in this document
 authorizes acquisition, partition allocation, implementation, or any real
-network request. It becomes actionable only after the gate sequence in §12
-is followed, starting with a separate human design-freeze decision. One
-open item — the successor trust/authority model for `T1B` — is explicitly
-unresolved and marked `HUMAN_DECISION_REQUIRED_BEFORE_V8B_DESIGN_FREEZE`;
-see §11.
+network request. It becomes actionable only by following the full gate
+sequence in §12. The **immediate next gate** is
+`DATA_QUALITY_CALIBRATION_PLAN_APPROVED` — not `HUMAN_DESIGN_FREEZE`.
+Calibration execution itself still requires that approved preregistration
+first (§6.1) and is not authorized by this document. The successor
+trust/authority model for `T1B` (§11) must be resolved later in the
+sequence, before `V8B_DESIGN_FINALIZED` and `HUMAN_DESIGN_FREEZE`, and
+remains explicitly unresolved and marked
+`HUMAN_DECISION_REQUIRED_BEFORE_V8B_DESIGN_FREEZE`; see §11.
 
 This document does not edit, reinterpret, delete, or supersede
 `V8_HISTORICAL_RESEARCH_DESIGN.md`. That document remains the frozen,
