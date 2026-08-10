@@ -810,11 +810,11 @@ CALIBRATION_IMPLEMENTED_ON_ALLOWED_DATA_ONLY        (T0 / synthetic / provider-d
   ↓
 CALIBRATION_RESULT_REVIEW                          (independent review of calibration output; full distribution, not just chosen point)
   ↓
-V8B_DESIGN_FINALIZED                                (Q1 retained, or Q2 with a specific reviewed number; never Q3 by default per §7)
+SUCCESSOR_TRUST_AUTHORITY_MODEL_RESOLVED            (§11 A-E decided, including the §11.3.E T2-integration choice; human decision, not assumed by this draft; the authority model is itself part of what V8B_DESIGN_FINALIZED/HUMAN_DESIGN_FREEZE freeze, so it must resolve first)
+  ↓
+V8B_DESIGN_FINALIZED                                (Q1 retained, or Q2 with a specific reviewed number; never Q3 by default per §7; includes the now-resolved successor trust/authority model)
   ↓
 HUMAN_DESIGN_FREEZE                                 (separate human gate; freezes V8B exactly as V8_HISTORICAL_RESEARCH_DESIGN.md §1 froze V8)
-  ↓
-SUCCESSOR_TRUST_AUTHORITY_MODEL_RESOLVED            (§11 A-E decided, including the §11.3.E T2-integration choice; human decision, not assumed by this draft)
   ↓
 T1B PARTITION-ALLOCATION IMPLEMENTATION             (code implementing §4's deterministic draw and §11's new authority artifacts; fake-only tests)
   ↓
