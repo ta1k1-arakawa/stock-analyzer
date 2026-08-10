@@ -61,7 +61,7 @@ from src.v8_partition import (
     ticker_list_sha256,
 )
 
-SCHEMA_VERSION = "V8_HISTORICAL_ACQUISITION_V1"
+SCHEMA_VERSION = "V8_HISTORICAL_ACQUISITION_V2"
 MODE = "V8_RAW_HISTORICAL_ACQUISITION"
 DATA_SOURCE = "Yahoo Chart"
 DATA_SOURCE_HOST = HOST
@@ -72,6 +72,28 @@ REQUEST_END_EXCLUSIVE = "2026-01-01"
 
 MIN_REQUEST_INTERVAL_SECONDS = 2.0
 RETRY_COUNT = 0
+
+# Malformed historical OHLCV handling policy (V8_HISTORICAL_RESEARCH_DESIGN.md
+# §17, human-selected append-only design clarification, 2026-08-10). These
+# are repository-fixed constants -- no production entry point accepts a
+# caller-selected threshold, test-year list, or policy override.
+MALFORMED_OHLCV_POLICY_NAME = "POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE"
+MALFORMED_OHLCV_INVALID_FRACTION_THRESHOLD = 0.01
+MALFORMED_OHLCV_MAX_CONSECUTIVE_INVALID_RETURNED_ROWS = 5
+MALFORMED_OHLCV_FULL_P_HIST_CHECK_REQUIRED = True
+MALFORMED_OHLCV_TEST_YEARS = (2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025)
+MALFORMED_OHLCV_EXPECTED_CALENDAR_MISSING_DATES_TREATED_AS_MALFORMED = False
+MALFORMED_OHLCV_THRESHOLD_EXCEEDANCE_ACTION = "BLOCK_WHOLE_ACQUISITION"
+
+MALFORMED_OHLCV_POLICY_METADATA_FIELDS = (
+    "policy_name",
+    "invalid_fraction_threshold",
+    "max_consecutive_invalid_returned_rows",
+    "full_p_hist_check_required",
+    "test_years",
+    "expected_calendar_missing_dates_treated_as_malformed",
+    "threshold_exceedance_action",
+)
 
 ALLOWED_ACQUISITION_BLOCKS = ("T1", "T2")
 PROHIBITED_ACQUISITION_BLOCKS = ("T0", "T3", "T_spare")
@@ -126,6 +148,7 @@ ACQUISITION_MANIFEST_FIELDS = (
     "valid_price_row_count",
     "invalid_price_row_count",
     "invalid_reason_counts",
+    "malformed_ohlcv_policy",
     "split_event_count",
     "payload_manifest",
     "payload_manifest_sha256",
@@ -429,6 +452,111 @@ def _canonical_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
+def _malformed_ohlcv_policy_metadata() -> dict[str, Any]:
+    """The exact, repository-fixed POLICY_G_PRIME_V1 metadata for a manifest."""
+    return {
+        "policy_name": MALFORMED_OHLCV_POLICY_NAME,
+        "invalid_fraction_threshold": MALFORMED_OHLCV_INVALID_FRACTION_THRESHOLD,
+        "max_consecutive_invalid_returned_rows": MALFORMED_OHLCV_MAX_CONSECUTIVE_INVALID_RETURNED_ROWS,
+        "full_p_hist_check_required": MALFORMED_OHLCV_FULL_P_HIST_CHECK_REQUIRED,
+        "test_years": list(MALFORMED_OHLCV_TEST_YEARS),
+        "expected_calendar_missing_dates_treated_as_malformed": (
+            MALFORMED_OHLCV_EXPECTED_CALENDAR_MISSING_DATES_TREATED_AS_MALFORMED
+        ),
+        "threshold_exceedance_action": MALFORMED_OHLCV_THRESHOLD_EXCEEDANCE_ACTION,
+    }
+
+
+def _require_valid_malformed_ohlcv_policy_metadata(value: object) -> dict[str, Any]:
+    """Fail closed unless a manifest's policy metadata exactly matches §17."""
+    if not isinstance(value, Mapping) or set(value) != set(MALFORMED_OHLCV_POLICY_METADATA_FIELDS):
+        raise V8HistoricalAcquisitionBlocked("MALFORMED_OHLCV_POLICY_METADATA_SCHEMA_INVALID")
+    if dict(value) != _malformed_ohlcv_policy_metadata():
+        raise V8HistoricalAcquisitionBlocked("MALFORMED_OHLCV_POLICY_METADATA_MISMATCH")
+    return dict(value)
+
+
+def _malformed_ohlcv_returned_observations(
+    valid_rows: Sequence[Mapping[str, Any]],
+    invalid_rows: Sequence[Mapping[str, Any]],
+) -> list[tuple[str, bool]]:
+    """Chronological ``(trading_date, is_valid)`` sequence of Yahoo-RETURNED rows.
+
+    Only observations Yahoo actually returned with a timestamp are ever
+    represented here. A calendar date absent from Yahoo's returned
+    timestamps (pre-listing, IPO-before-history, holiday, or otherwise) is
+    not an observation under POLICY_G_PRIME_V1 -- it never enters this
+    sequence, is never synthesised, and never counts toward any threshold.
+    """
+    observations = [(str(row["trading_date"]), True) for row in valid_rows]
+    observations.extend((str(row["trading_date"]), False) for row in invalid_rows)
+    observations.sort(key=lambda item: item[0])
+    return observations
+
+
+def _malformed_ohlcv_check_window(
+    observations: Sequence[tuple[str, bool]],
+    *,
+    allow_empty: bool,
+    fraction_reason: str,
+    consecutive_reason: str,
+) -> None:
+    """Apply the fraction and consecutive-run gates to one evaluation window."""
+    total = len(observations)
+    if total == 0:
+        if allow_empty:
+            return
+        raise V8HistoricalAcquisitionBlocked("MALFORMED_OHLCV_QUALITY_GATE:EMPTY_SERIES")
+    invalid_count = sum(1 for _, is_valid in observations if not is_valid)
+    # Exact integer comparison -- invalid_count/total <= 0.01 is authoritative
+    # as invalid_count * 100 <= total, avoiding any float-rounding ambiguity.
+    if invalid_count * 100 > total:
+        raise V8HistoricalAcquisitionBlocked(fraction_reason)
+    run = 0
+    for _, is_valid in observations:
+        if is_valid:
+            run = 0
+        else:
+            run += 1
+            if run > MALFORMED_OHLCV_MAX_CONSECUTIVE_INVALID_RETURNED_ROWS:
+                raise V8HistoricalAcquisitionBlocked(consecutive_reason)
+
+
+def _require_malformed_ohlcv_quality_gate(
+    valid_rows: Sequence[Mapping[str, Any]],
+    invalid_rows: Sequence[Mapping[str, Any]],
+) -> None:
+    """Enforce POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE (design §17).
+
+    Evaluated only over observations Yahoo actually returned. The full
+    ``P_hist`` series and each frozen test year (2018-2025) are each checked
+    independently for both the 1% invalid-fraction ceiling and the
+    max-5-consecutive-invalid-returned-rows ceiling; a test year in which
+    this ticker has no returned observations is NOT_APPLICABLE, not a
+    BLOCK. On any exceedance the whole acquisition BLOCKs -- this function
+    never drops, replaces, repairs, or admits a partial series; it only
+    decides pass/BLOCK. The reason raised is deliberately generic (no
+    ticker, no trading_date) so that no private per-ticker quality detail
+    reaches CLI stdout/stderr.
+    """
+    observations = _malformed_ohlcv_returned_observations(valid_rows, invalid_rows)
+    _malformed_ohlcv_check_window(
+        observations,
+        allow_empty=False,
+        fraction_reason="MALFORMED_OHLCV_QUALITY_GATE:FRACTION_EXCEEDED",
+        consecutive_reason="MALFORMED_OHLCV_QUALITY_GATE:CONSECUTIVE_EXCEEDED",
+    )
+    for year in MALFORMED_OHLCV_TEST_YEARS:
+        prefix = str(year) + "-"
+        year_observations = [item for item in observations if item[0].startswith(prefix)]
+        _malformed_ohlcv_check_window(
+            year_observations,
+            allow_empty=True,
+            fraction_reason="MALFORMED_OHLCV_QUALITY_GATE:TEST_YEAR_FRACTION_EXCEEDED",
+            consecutive_reason="MALFORMED_OHLCV_QUALITY_GATE:TEST_YEAR_CONSECUTIVE_EXCEEDED",
+        )
+
+
 def _classify_error(error: BaseException) -> tuple[str, bool]:
     code = getattr(error, "code", None)
     if code == 429:
@@ -676,14 +804,23 @@ def _acquire_historical_block_bundle_with_validated_inputs(
                 raise V8HistoricalAcquisitionBlocked("RAW_PAYLOAD_BYTE_COUNT_MISMATCH:" + ticker)
 
             invalid_rows = parsed["invalid_price_rows"]
+            valid_rows_raw = parsed["valid_price_rows"]
+
+            # POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE
+            # (V8_HISTORICAL_RESEARCH_DESIGN.md §17): a Yahoo-returned invalid
+            # row may be excluded if this ticker's returned-row quality is
+            # within the frozen thresholds; any exceedance BLOCKs the whole
+            # acquisition rather than dropping, replacing, or repairing this
+            # ticker. No fill/interpolation/imputation is ever performed.
+            _require_malformed_ohlcv_quality_gate(valid_rows_raw, invalid_rows)
+
             if invalid_rows:
                 for row in invalid_rows:
                     invalid_reason_counts[str(row["reason"])] += 1
-                raise V8HistoricalAcquisitionBlocked("MALFORMED_OHLCV:" + ticker)
 
             _write_bytes(staging / RAW_DIRNAME / (ticker + ".json"), payload_bytes)
 
-            valid_rows = [dict(row) for row in parsed["valid_price_rows"]]
+            valid_rows = [dict(row) for row in valid_rows_raw]
             split_rows = [dict(row) for row in parsed["canonical_split_events"]]
             all_price_rows.extend(valid_rows)
             all_split_rows.extend(split_rows)
@@ -695,7 +832,7 @@ def _acquire_historical_block_bundle_with_validated_inputs(
                 "canonical_price_rows_sha256": parsed["canonical_price_rows_sha256"],
                 "canonical_split_events_sha256": parsed["canonical_split_events_sha256"],
                 "valid_price_row_count": len(valid_rows),
-                "invalid_price_row_count": 0,
+                "invalid_price_row_count": len(invalid_rows),
                 "split_event_count": len(split_rows),
             })
             success_transport_count += 1
@@ -738,8 +875,9 @@ def _acquire_historical_block_bundle_with_validated_inputs(
             "http_429_count": http_429_count,
             "success_transport_count": success_transport_count,
             "valid_price_row_count": len(canonical_rows),
-            "invalid_price_row_count": 0,
+            "invalid_price_row_count": sum(entry["invalid_price_row_count"] for entry in payload_manifest),
             "invalid_reason_counts": dict(sorted(invalid_reason_counts.items())),
+            "malformed_ohlcv_policy": _malformed_ohlcv_policy_metadata(),
             "split_event_count": len(canonical_splits),
             "payload_manifest": payload_manifest,
             "payload_manifest_sha256": sha256_bytes(payload_manifest_bytes),
@@ -791,6 +929,7 @@ def read_acquisition_manifest(output_root: str | os.PathLike[str], block: str) -
         raise V8HistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_INVALID_JSON") from error
     if not isinstance(manifest, Mapping) or set(manifest) != set(ACQUISITION_MANIFEST_FIELDS):
         raise V8HistoricalAcquisitionBlocked("MANIFEST_SCHEMA_INVALID")
+    _require_valid_malformed_ohlcv_policy_metadata(manifest["malformed_ohlcv_policy"])
     return dict(manifest)
 
 
@@ -867,6 +1006,14 @@ __all__ = [
     "DATA_SOURCE",
     "DATA_SOURCE_HOST",
     "DATA_SOURCE_SCHEMA",
+    "MALFORMED_OHLCV_EXPECTED_CALENDAR_MISSING_DATES_TREATED_AS_MALFORMED",
+    "MALFORMED_OHLCV_FULL_P_HIST_CHECK_REQUIRED",
+    "MALFORMED_OHLCV_INVALID_FRACTION_THRESHOLD",
+    "MALFORMED_OHLCV_MAX_CONSECUTIVE_INVALID_RETURNED_ROWS",
+    "MALFORMED_OHLCV_POLICY_METADATA_FIELDS",
+    "MALFORMED_OHLCV_POLICY_NAME",
+    "MALFORMED_OHLCV_TEST_YEARS",
+    "MALFORMED_OHLCV_THRESHOLD_EXCEEDANCE_ACTION",
     "MANIFEST_FILENAME",
     "MIN_REQUEST_INTERVAL_SECONDS",
     "MODE",

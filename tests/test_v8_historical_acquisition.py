@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import inspect
+import re
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.message import Message
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,7 @@ def synthetic_payload(
     price: float = 1000.0,
     *,
     bad_row_index: int | None = None,
+    bad_row_indices: list[int] | None = None,
     duplicate: bool = False,
     symbol_override: str | None = None,
     empty: bool = False,
@@ -88,6 +90,9 @@ def synthetic_payload(
     closes = [price] * len(timestamps)
     if bad_row_index is not None:
         closes[bad_row_index] = -1.0
+    if bad_row_indices is not None:
+        for index in bad_row_indices:
+            closes[index] = -1.0
     result = {
         "meta": {"symbol": (symbol_override or ticker) + ".T"},
         "timestamp": timestamps,
@@ -135,6 +140,18 @@ class FakeOpener:
 
 
 DEFAULT_DATES = [(2016, 4, 1), (2016, 4, 4), (2025, 12, 30)]
+
+
+def _date_tuples(start: tuple[int, int, int], count: int) -> list[tuple[int, int, int]]:
+    """``count`` consecutive calendar dates starting at ``start``.
+
+    Only used to synthesize distinct Yahoo-returned trading_date values for
+    the malformed-OHLCV quality-gate tests below; not a claim about a real
+    JPX trading calendar.
+    """
+    start_date = date(*start)
+    return [((start_date + timedelta(days=i)).year, (start_date + timedelta(days=i)).month,
+              (start_date + timedelta(days=i)).day) for i in range(count)]
 
 
 def default_opener() -> FakeOpener:
@@ -1050,3 +1067,150 @@ def test_module_has_no_profit_or_feature_tokens_in_identifiers():
     for token in ("profit_factor", "realized_net_profit", "win_rate", "moving_average", "candidate_rank"):
         offending = [v for v in lowered if token in v]
         assert offending == [], token
+
+
+# ---------------------------------------------------------------------------
+# Malformed-OHLCV quality gate (POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_
+# QUALITY_GATE, V8_HISTORICAL_RESEARCH_DESIGN.md §17) -- integration-level
+# behaviour through the full acquisition pipeline. Pure threshold-arithmetic
+# tests (fraction/consecutive boundaries, per-test-year semantics, cross-year
+# runs, reason-label uniformity) live in test_v8_malformed_ohlcv_policy.py.
+# ---------------------------------------------------------------------------
+
+
+def test_schema_version_bumped_for_malformed_ohlcv_policy_field():
+    assert acquisition.SCHEMA_VERSION == "V8_HISTORICAL_ACQUISITION_V2"
+    assert "malformed_ohlcv_policy" in acquisition.ACQUISITION_MANIFEST_FIELDS
+
+
+def test_prohibited_blocks_unchanged_by_policy_addition():
+    assert acquisition.PROHIBITED_ACQUISITION_BLOCKS == ("T0", "T3", "T_spare")
+    assert acquisition.ALLOWED_ACQUISITION_BLOCKS == ("T1", "T2")
+
+
+def test_accepted_invalid_rows_excluded_without_repair(tmp_path):
+    dates = _date_tuples((2016, 4, 1), 151)
+    opener = FakeOpener(lambda t: synthetic_payload(t, dates, bad_row_indices=[0]))
+    manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(
+        **acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener)
+    )
+    record = manifest["payload_manifest"][0]
+    assert record["valid_price_row_count"] == 150
+    assert record["invalid_price_row_count"] == 1
+    assert manifest["valid_price_row_count"] == 150
+    assert manifest["invalid_price_row_count"] == 1
+    assert manifest["invalid_reason_counts"] == {"NONPOSITIVE_CLOSE": 1}
+    # Raw payload bytes on disk are the untouched original wire bytes -- no
+    # fill/repair/imputation is ever applied to an accepted invalid row.
+    raw_path = tmp_path / "root" / acquisition.ACQUISITIONS_DIRNAME / "T1" / acquisition.RAW_DIRNAME / "1001.json"
+    assert raw_path.read_bytes() == synthetic_payload("1001", dates, bad_row_indices=[0])
+
+
+def test_multi_ticker_invalid_reason_counts_accurate_and_policy_uniform_across_t1_t2(tmp_path):
+    dates = _date_tuples((2016, 4, 1), 200)
+
+    def payload_fn(ticker: str) -> bytes:
+        return synthetic_payload(ticker, dates, bad_row_indices=[5])
+
+    for block, tickers in (("T1", ["1001", "1002"]), ("T2", ["2001", "2002"])):
+        opener = FakeOpener(payload_fn)
+        manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(
+            **acquire_kwargs(tmp_path / f"root-{block}", block, tickers, opener)
+        )
+        assert manifest["invalid_price_row_count"] == 2
+        assert manifest["invalid_reason_counts"] == {"NONPOSITIVE_CLOSE": 2}
+        assert manifest["valid_price_row_count"] == 2 * 199
+        assert manifest["malformed_ohlcv_policy"]["policy_name"] == acquisition.MALFORMED_OHLCV_POLICY_NAME
+
+
+def test_manifest_records_exact_policy_metadata(tmp_path):
+    opener = default_opener()
+    manifest = acquisition._acquire_historical_block_bundle_with_validated_inputs(
+        **acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener)
+    )
+    assert manifest["malformed_ohlcv_policy"] == {
+        "policy_name": "POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE",
+        "invalid_fraction_threshold": 0.01,
+        "max_consecutive_invalid_returned_rows": 5,
+        "full_p_hist_check_required": True,
+        "test_years": [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025],
+        "expected_calendar_missing_dates_treated_as_malformed": False,
+        "threshold_exceedance_action": "BLOCK_WHOLE_ACQUISITION",
+    }
+
+
+def test_read_acquisition_manifest_fails_closed_on_missing_policy_metadata(tmp_path):
+    opener = default_opener()
+    acquisition._acquire_historical_block_bundle_with_validated_inputs(
+        **acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener)
+    )
+    manifest_path = tmp_path / "root" / acquisition.ACQUISITIONS_DIRNAME / "T1" / acquisition.MANIFEST_FILENAME
+    tampered = json.loads(manifest_path.read_bytes())
+    del tampered["malformed_ohlcv_policy"]
+    manifest_path.write_bytes(json.dumps(tampered).encode("utf-8"))
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition.read_acquisition_manifest(tmp_path / "root", "T1")
+    assert excinfo.value.reason == "MANIFEST_SCHEMA_INVALID"
+
+
+def test_read_acquisition_manifest_fails_closed_on_wrong_policy_metadata(tmp_path):
+    opener = default_opener()
+    acquisition._acquire_historical_block_bundle_with_validated_inputs(
+        **acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener)
+    )
+    manifest_path = tmp_path / "root" / acquisition.ACQUISITIONS_DIRNAME / "T1" / acquisition.MANIFEST_FILENAME
+    tampered = json.loads(manifest_path.read_bytes())
+    tampered["malformed_ohlcv_policy"]["invalid_fraction_threshold"] = 0.05
+    manifest_path.write_bytes(json.dumps(tampered).encode("utf-8"))
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition.read_acquisition_manifest(tmp_path / "root", "T1")
+    assert excinfo.value.reason == "MALFORMED_OHLCV_POLICY_METADATA_MISMATCH"
+
+
+def test_threshold_exceedance_blocks_whole_acquisition_no_partial_bundle(tmp_path):
+    dates = _date_tuples((2016, 4, 1), 100)
+    opener = FakeOpener(lambda t: synthetic_payload(t, dates, bad_row_indices=[0, 1]))  # 2/100 -> BLOCK
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(
+            **acquire_kwargs(tmp_path / "root", "T1", ["1001"], opener)
+        )
+    assert excinfo.value.reason.startswith("MALFORMED_OHLCV_QUALITY_GATE")
+    acquisitions_root = tmp_path / "root" / acquisition.ACQUISITIONS_DIRNAME
+    if acquisitions_root.exists():
+        assert {entry.name for entry in acquisitions_root.iterdir()} == set()
+    assert acquisition.RETRY_COUNT == 0
+
+
+def test_threshold_exceedance_after_earlier_accepted_ticker_discards_everything(tmp_path):
+    """No partial/fewer-than-300-ticker bundle may ever be published: even a
+    prior ticker that individually passed the gate must be discarded whole
+    when a later ticker in the same block exceeds the threshold."""
+    dates = _date_tuples((2016, 4, 1), 100)
+
+    def payload_fn(ticker: str) -> bytes:
+        if ticker == "1001":
+            return synthetic_payload(ticker, dates)  # clean, would pass alone
+        return synthetic_payload(ticker, dates, bad_row_indices=[0, 1])  # 2/100 -> BLOCK
+
+    opener = FakeOpener(payload_fn)
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked):
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(
+            **acquire_kwargs(tmp_path / "root", "T1", ["1001", "1002"], opener)
+        )
+    acquisitions_root = tmp_path / "root" / acquisition.ACQUISITIONS_DIRNAME
+    if acquisitions_root.exists():
+        assert {entry.name for entry in acquisitions_root.iterdir()} == set()
+
+
+def test_threshold_exceedance_reason_does_not_expose_ticker_or_date(tmp_path):
+    dates = _date_tuples((2016, 4, 1), 100)
+    secret_ticker = "1234"
+    opener = FakeOpener(lambda t: synthetic_payload(t, dates, bad_row_indices=[0, 1]))
+    with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
+        acquisition._acquire_historical_block_bundle_with_validated_inputs(
+            **acquire_kwargs(tmp_path / "root", "T1", [secret_ticker], opener)
+        )
+    reason = excinfo.value.reason
+    assert secret_ticker not in reason
+    assert not re.search(r"\d{4}-\d{2}-\d{2}", reason)
+    assert reason == "MALFORMED_OHLCV_QUALITY_GATE:FRACTION_EXCEEDED"
