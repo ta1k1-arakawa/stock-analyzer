@@ -5,6 +5,7 @@ study=V8B_HISTORICAL_RESEARCH
 document_type=DATA_QUALITY_CALIBRATION_PREREGISTRATION_DRAFT
 status=DRAFT_AWAITING_HUMAN_APPROVAL
 source_v8b_design_draft_commit=a735c4a421628f615596cd2e8de267c3d165df7a
+calibration_plan_version=V8B_DATA_QUALITY_CALIBRATION_PLAN_V1
 calibration_executed=false
 real_network_authorized=false
 numeric_policy_selected=false
@@ -12,6 +13,12 @@ old_t1_used_for_calibration=false
 methodology_decision_authority=CHATGPT
 execution_agent_methodology_discretion=false
 ```
+
+`calibration_plan_version=V8B_DATA_QUALITY_CALIBRATION_PLAN_V1` is the
+semantic preregistration plan version. It is **not** changed merely
+because calibration implementation code is later written. A
+methodological plan change requires a new plan version and a new human
+approval gate.
 
 This document is a **preregistration draft**, not an executed calibration
 and not a frozen policy. It satisfies `V8B_HISTORICAL_RESEARCH_DESIGN_
@@ -21,13 +28,17 @@ calibration, accesses any real market-data provider, accesses any sealed
 or private V8/V8B block, or authorizes a real network request. It follows
 `AI_RESEARCH_EXECUTION_RULES.md`: every methodological field below was
 fixed upstream and is encoded here faithfully, not chosen by this
-execution agent. See §24 for the explicit list of actions this task does
+execution agent. See §28 for the explicit list of actions this task does
 not perform.
 
-This revision corrects and strengthens the observed-window definition, the
-synthetic-base definition, the placement formulas, the expected-vs-observed
-policy semantics, and the `DEFENSIBLE(candidate)` criterion of the prior
-draft. Nothing in §1 (purpose) or §2 (forbidden information) changes.
+**This revision's core correction:** the prior draft conflated a broken
+or non-reproducible calibration run with the scientific conclusion "no
+candidate is defensible." §13 below separates these permanently.
+**Calibration run validity** (whether the execution itself is trustworthy)
+and **candidate defensibility** (whether a specific threshold has
+predeclared headroom over the worst observed defect) are not the same
+question, and a failure of the former must never be reported or acted on
+as an instance of the latter.
 
 ---
 
@@ -84,7 +95,7 @@ fallback=UNAFFECTED_BY_OLD_T1_OUTCOME
 
 ---
 
-## 3. Observed calibration dataset (window corrected)
+## 3. Observed calibration dataset (fixed, unchanged from the prior revision)
 
 ```text
 observed_calibration_source=V5-B evaluation cache
@@ -105,24 +116,21 @@ verified_against=V8_DATA_EXPOSURE_AUDIT.md (row recording the V5-B evaluation ca
 verification_result=MATCH (declared span, ticker counts, and both hashes match the committed audit record exactly)
 ```
 
-**Corrected calibration window (binding):**
-
 ```text
 calibration_window_in_use=2019-01-01 <= returned JST trading_date < 2026-01-01
 calendar_years_evaluated_individually=2019, 2020, 2021, 2022, 2023, 2024, 2025
 full_calibration_span=2019-01-01 through 2025-12-31
 ```
 
-This replaces the prior draft's `2020-01-01..2025-12-31` window. Reason:
-the V5-B acquisition requested from `2019-01-01` and preserves raw Yahoo
-payloads (§3.2 below), so `2019` is legitimately includable observed
-material — this is already-burned development/evaluation material, is
-outside the fresh validation/holdout blocks (`T1B`, `T2`, `T3`), and
-strategy outcomes associated with this cache are not used by this
-calibration.
+Reason: the V5-B acquisition requested from `2019-01-01` and preserves
+raw Yahoo payloads (§3.1 below), so `2019` is legitimately includable
+observed material — this is already-burned development/evaluation
+material, is outside the fresh validation/holdout blocks (`T1B`, `T2`,
+`T3`), and strategy outcomes associated with this cache are not used by
+this calibration.
 
 Absent calendar dates are **not** treated as malformed. No calendar year
-is required to contain 252 observations; §3's window definition governs
+is required to contain 252 observations; this window definition governs
 observed windows only — the 252-observation quantity in §5's grid
 rationale and §7's synthetic base length is a separate, unrelated design
 constant, not a per-year requirement on observed data.
@@ -133,8 +141,9 @@ unresolved-question table records that the exact row-level contents of
 the V5-B evaluation cache are a local, uncommitted path and are *trusted
 by declared span*, not independently re-verified row-by-row in that audit
 document. This does not contradict anything fixed in this preregistration;
-it is exactly the kind of gap §3.1/§3.2 below exist to resolve before
-calibration execution, not something this task resolves or works around.
+it is exactly the kind of gap §3.2/§3.3 below, and §13's run-validity
+gate, exist to resolve before calibration execution, not something this
+task resolves or works around.
 
 ### 3.1 V5-B raw payload fact (independently verified against source)
 
@@ -152,7 +161,7 @@ v5b_raw_payload_write_verified=true (scripts/acquire_v5_b_evaluation_cache.py:86
 v5b_request_start_verified=2019-01-01 (scripts/acquire_v5_b_evaluation_cache.py:15)
 ```
 
-### 3.2 Required future preflight (fixed, renamed and strengthened)
+### 3.2 Required future preflight (fixed)
 
 Component A (§6) may proceed in a future task **only if** a read-only
 preflight, performed at that future calibration-execution time — not by
@@ -165,7 +174,7 @@ semantics (§3.3 below).
 If that preflight cannot establish this:
 
 ```text
-V5B_CALIBRATION_INPUT_PREFLIGHT_BLOCKED
+V5B_CALIBRATION_INPUT_PREFLIGHT_BLOCKED  -->  CALIBRATION_RUN_INVALID (§13; see also §23's input-provenance special case)
 ```
 
 Then **STOP**. Do not substitute another dataset.
@@ -191,7 +200,7 @@ failure (§4's `DUPLICATE_TRADING_DATE` / `ARRAY_LENGTH_MISMATCH` /
 row-level classification cannot be reproduced for that ticker:
 
 ```text
-CALIBRATION_INPUT_CANONICAL_PARSE_BLOCKED
+CALIBRATION_INPUT_CANONICAL_PARSE_BLOCKED  -->  CALIBRATION_RUN_INVALID (§13)
 ```
 
 and **STOP** the calibration for that run. Do not skip that ticker. Do
@@ -288,8 +297,7 @@ magnitude — confirmed by this task's own reading of §17, which states
 that its threshold review "derived candidate numeric thresholds from
 constants already frozen elsewhere in this document," blind to attempt
 #1's unpersisted exact reason and ticker. This 252-per-year constant is
-unrelated to §3's calendar-window definition (§3 explicitly does not
-require 252 observations per calendar year).
+unrelated to §3's calendar-window definition.
 
 ```text
 candidate_grid_size=30
@@ -299,7 +307,7 @@ candidate_grid_changed_by_this_revision=false
 
 ---
 
-## 6. Observed window statistics (Component A; window and formulas corrected)
+## 6. Observed window statistics (Component A; fixed, unchanged from the prior revision)
 
 For every applicable **ticker × calendar-year** window — years
 `2019, 2020, 2021, 2022, 2023, 2024, 2025` — and for every ticker's
@@ -322,85 +330,13 @@ either numerator or denominator.
 
 ```text
 individual_calendar_year_with_zero_returned_observations=NOT_APPLICABLE
-ticker_with_zero_returned_observations_over_full_calibration_span=CALIBRATION_INPUT_EMPTY_SERIES_BLOCKED (STOP)
+ticker_with_zero_returned_observations_over_full_calibration_span=CALIBRATION_INPUT_EMPTY_SERIES_BLOCKED  -->  CALIBRATION_RUN_INVALID (§13)
 strategy_metric_calculation=PROHIBITED
 ```
 
 ---
 
-## 7. Global observed quality envelope (new, binding)
-
-After all applicable observed windows (§6) are characterized, define:
-
-```text
-M_fraction = maximum exact invalid_fraction over every applicable ticker-year window and every full-ticker calibration-span window
-M_consecutive = maximum max_consecutive_invalid_returned_rows over every applicable ticker-year window and every full-ticker calibration-span window
-```
-
-`M_fraction` **must** be represented exactly from integer counts
-(`invalid_returned` / `total_returned` as an exact rational, e.g. kept as
-a numerator/denominator pair or an equivalent exact representation) —
-never derived through floating-point rounding. The window counts used in
-each maximum calculation (which window(s) attained `M_fraction`, and
-which attained `M_consecutive`) must be reported (§21). No strategy
-outcome is exposed by this computation.
-
----
-
-## 8. Headroom requirement (new, binding — replaces the boundary-equality rule)
-
-The prior preregistration allowed a candidate sitting exactly on the
-worst observed boundary to qualify. **That rule is replaced.**
-
-A candidate satisfies the **observed quality criterion** if and only if:
-
-```text
-fraction_threshold > M_fraction
-AND
-max_consecutive_invalid_returned_rows > M_consecutive
-```
-
-Both inequalities are **strict**. This deliberately requires positive
-predeclared headroom above the worst quality defect observed in the
-burned calibration material:
-
-```text
-threshold_exactly_equal_to_M_fraction=NOT_SUFFICIENT
-max_consecutive_exactly_equal_to_M_consecutive=NOT_SUFFICIENT
-```
-
-This is intended to avoid fitting V8B's policy exactly to the empirical
-maximum of the calibration set. The candidate grid (§5) is **not**
-expanded if no candidate supplies this headroom — the fallback (§15)
-governs that outcome instead.
-
----
-
-## 9. 100% observed pass semantics (unchanged requirement, now mechanical)
-
-The requirement that all applicable observed windows must pass is
-preserved. After §8's strict-headroom rule, this follows **mechanically**
-from the definition of `M_fraction`/`M_consecutive` as maxima: if
-`candidate_threshold > M_fraction` and `candidate_max_consecutive >
-M_consecutive`, then by construction every individual applicable window
-(whose fraction/run cannot exceed the maxima that define `M_fraction`/
-`M_consecutive`) also satisfies `candidate_threshold > window_fraction`
-and `candidate_max_consecutive > window_run`, hence passes.
-
-```text
-window_specific_exception=NONE
-ticker_exclusion=NONE
-percentile_exception=NONE
-partial_pass_relaxation_eg_99_percent=NONE
-```
-
----
-
-## 10. Synthetic base design (replaced — no longer a ticker-year rule)
-
-**The prior requirement — "first 20 eligible ticker-years with exactly
-252 observations" — is deleted and replaced completely by the
-following.**
+## 7. Synthetic base design (Component B; fixed, unchanged from the prior revision)
 
 **Synthetic base unit:** 252 consecutive Yahoo-returned observations.
 **Not** one calendar year.
@@ -422,18 +358,14 @@ If fewer than 20 distinct tickers possess such a 252-returned-observation
 clean slice:
 
 ```text
-SYNTHETIC_BASE_SELECTION_BLOCKED
+SYNTHETIC_BASE_SELECTION_BLOCKED  -->  CALIBRATION_RUN_INVALID (§13)
 ```
 
 and **STOP** calibration. Do not choose another base definition.
 
-```text
-synthetic_base_definition_changed_by_this_revision=true (was: first 20 eligible ticker-years with exactly 252 observations; now: earliest clean 252-consecutive-returned-observation slice per qualifying ticker, first 20 qualifying tickers)
-```
-
 ---
 
-## 11. Synthetic base privacy / scientific role (fixed, unchanged)
+## 8. Synthetic base privacy / scientific role (fixed, unchanged)
 
 Synthetic bases come only from already-burned V5-B material. They carry
 no V8B evidential weight. Do not use `T1B`, `T2`, `T3`, or old `T1` to
@@ -450,10 +382,10 @@ It does **not** select a threshold based on strategy performance.
 
 ---
 
-## 12. Synthetic row construction (fixed, unchanged values)
+## 9. Synthetic row construction (fixed, unchanged)
 
 For synthetic testing, start from copies of the clean returned
-observations in each 252-row base slice (§10). For the selected corrupted
+observations in each 252-row base slice (§7). For the selected corrupted
 indices, alter **exactly one** target field corresponding to one of the
 12 canonical malformed-row classes (§4):
 
@@ -473,11 +405,12 @@ indices, alter **exactly one** target field corresponding to one of the
 | `NEGATIVE_VOLUME` | `volume=-1.0` |
 
 All non-target fields remain unchanged. Every corrupted row must be
-classified as **exactly** the intended canonical reason. A different
-reason:
+classified as **exactly** the intended canonical reason, and every
+non-corrupted row must remain unchanged and valid. A different reason on
+any corrupted row:
 
 ```text
-SYNTHETIC_CLASSIFIER_MISMATCH
+SYNTHETIC_CLASSIFIER_MISMATCH  -->  CALIBRATION_RUN_INVALID (§13; see also §24's synthetic-failure special case)
 ```
 
 and the calibration fails. Corruption classes are never combined in one
@@ -485,11 +418,9 @@ synthetic scenario.
 
 ---
 
-## 13. Exact synthetic placement formulas (fixed, now fully deterministic — replaces ambiguous language)
+## 10. Exact synthetic placement formulas (fixed, unchanged)
 
-Ambiguous phrases from the prior draft ("as evenly as possible",
-"centered around the midpoint") are removed and replaced with these exact
-formulas. Let `N = 252`, zero-based indices, `K ∈ {0,1,2,3,4,5,6}`.
+Let `N = 252`, zero-based indices, `K ∈ {0,1,2,3,4,5,6}`.
 
 **`K = 0`:**
 
@@ -528,7 +459,7 @@ alternative_rounding=NOT_PERMITTED
 
 ---
 
-## 14. Synthetic expected policy result (new — exact truth table, replaces the old broad K=1/K=6-only expectations)
+## 11. Synthetic expected policy result (fixed, unchanged — exact truth table)
 
 For a candidate whose fraction is represented exactly as
 `numerator / denominator`, with `N = 252` and `K` injected invalid
@@ -559,7 +490,7 @@ The future calibration implementation must reproduce this exact truth
 table for **every** candidate and **every** synthetic scenario. Mismatch:
 
 ```text
-SYNTHETIC_POLICY_SEMANTICS_MISMATCH
+SYNTHETIC_POLICY_SEMANTICS_MISMATCH  -->  CALIBRATION_RUN_INVALID (§13; see also §24's synthetic-failure special case)
 ```
 
 and the calibration fails.
@@ -575,9 +506,9 @@ a new comparison style invented for calibration.
 
 ---
 
-## 15. Synthetic component does not fit a threshold (new clarification)
+## 12. Synthetic component does not fit a threshold (fixed, unchanged)
 
-The synthetic component (§10-§14) is a **policy/classifier semantics
+The synthetic component (§7-§11) is a **policy/classifier semantics
 verification layer**. It is **not** an empirical argument that a
 particular threshold magnitude is better because it makes more synthetic
 cases pass.
@@ -587,32 +518,196 @@ rank_candidates_by_synthetic_scenarios_passed=PROHIBITED
 ```
 
 A candidate either behaves exactly according to its mathematically
-expected policy semantics (§14), or it fails semantic verification.
-Threshold *magnitude* is selected only through the preregistered observed
-quality envelope and strict headroom rule (§7-§9), never through
-synthetic pass counts.
+expected policy semantics (§11), or its run fails semantic verification
+(§13). Threshold *magnitude* is selected only through the preregistered
+observed quality envelope and strict headroom rule (§15-§16), never
+through synthetic pass counts.
 
 ---
 
-## 16. `DEFENSIBLE(candidate)` — revised exact definition (replaces §11 of the prior draft)
+## 13. Calibration run validity (new — the core correction of this revision)
+
+**§4 of this task's instructions requires separating two distinct
+questions that the prior draft conflated:**
 
 ```text
-DEFENSIBLE(candidate) = true
+A. CALIBRATION_RUN_VALIDITY = was this execution itself trustworthy and conformant to the approved plan?
+B. CANDIDATE_DEFENSIBILITY = does a specific threshold have predeclared headroom over the worst observed defect?
+```
+
+A broken or non-reproducible calibration run must **never** be
+interpreted as `CALIBRATION_NO_DEFENSIBLE_POLICY`. That status is a
+*scientific* conclusion reachable only from a *valid* run (§21).
+
+### 13.1 Definition
+
+```text
+CALIBRATION_RUN_VALID = true
 ```
 
 if and only if **all** of the following hold:
 
 ```text
-1.  V5-B calibration input provenance validates (§3)
-2.  all designated raw payloads are reproducible under canonical classification semantics (§3.3)
-3.  candidate_fraction_threshold > M_fraction (§8, strict)
-4.  candidate_max_consecutive > M_consecutive (§8, strict)
-5.  therefore 100% of applicable observed ticker-year windows pass (§9, mechanical consequence of 3-4)
-6.  therefore 100% of observed full-ticker windows pass (§9, mechanical consequence of 3-4)
-7.  every synthetic corrupted row is classified as its exact intended reason (§12, no SYNTHETIC_CLASSIFIER_MISMATCH)
-8.  every non-corrupted synthetic row remains unchanged and valid
-9.  for every synthetic scenario and every candidate, observed policy pass/fail equals the exact mathematical expected result in §14 (no SYNTHETIC_POLICY_SEMANTICS_MISMATCH)
-10. no schema-level hard failure has been converted into a tolerated row-level quality event (§3.3, §4)
+R1. V5-B cache provenance/preflight validates exactly (§3.2)
+R2. all designated raw payloads can be reconstructed under canonical parser/classifier semantics (§3.3)
+R3. no designated full-calibration ticker has zero returned observations (§6)
+R4. at least 20 qualifying distinct-ticker synthetic bases are selected exactly according to the preregistered rule (§7)
+R5. every synthetically corrupted row is classified as EXACTLY its intended canonical malformed-row reason (§9)
+R6. every synthetic non-corrupted row remains unchanged and valid (§9)
+R7. for all 30 candidates and all preregistered synthetic scenarios, observed policy pass/fail exactly equals the mathematical expected truth table (§11)
+R8. no schema-level hard parser failure is converted into a tolerated row-level malformed observation (§3.3, §4)
+R9. the candidate grid, observed windows, synthetic scenarios, metrics, selection rule, and all preregistered methodology match this approved plan (`calibration_plan_version=V8B_DATA_QUALITY_CALIBRATION_PLAN_V1`) exactly
+```
+
+If **any** of R1-R9 fails:
+
+```text
+CALIBRATION_RUN_VALID=false
+selected_policy=NOT_EVALUATED
+candidate_selection_executed=false
+```
+
+`CALIBRATION_NO_DEFENSIBLE_POLICY` must **not** be computed or reported
+as the scientific conclusion of that invalid run.
+
+### 13.2 Specific run-invalid reasons (classification, not new codes)
+
+The specific blockers already named in this document are preserved
+exactly, and each is classified as `CALIBRATION_RUN_INVALID` — never as
+`candidate_not_defensible` and never as `CALIBRATION_NO_DEFENSIBLE_
+POLICY`:
+
+```text
+V5B_CALIBRATION_INPUT_PREFLIGHT_BLOCKED       -->  CALIBRATION_RUN_INVALID (R1)
+CALIBRATION_INPUT_CANONICAL_PARSE_BLOCKED     -->  CALIBRATION_RUN_INVALID (R2, R8)
+CALIBRATION_INPUT_EMPTY_SERIES_BLOCKED        -->  CALIBRATION_RUN_INVALID (R3)
+SYNTHETIC_BASE_SELECTION_BLOCKED              -->  CALIBRATION_RUN_INVALID (R4)
+SYNTHETIC_CLASSIFIER_MISMATCH                 -->  CALIBRATION_RUN_INVALID (R5, R6)
+SYNTHETIC_POLICY_SEMANTICS_MISMATCH           -->  CALIBRATION_RUN_INVALID (R7)
+```
+
+Any other detected deviation from the approved plan (R9) is likewise
+`CALIBRATION_RUN_INVALID`, whether or not it has its own named status
+constant.
+
+---
+
+## 14. Global observed quality envelope (fixed content, authority gated on §13)
+
+After all applicable observed windows (§6) are characterized, define:
+
+```text
+M_fraction = maximum exact invalid_fraction over every applicable ticker-year window and every full-ticker calibration-span window
+M_consecutive = maximum max_consecutive_invalid_returned_rows over every applicable ticker-year window and every full-ticker calibration-span window
+```
+
+`M_fraction` **must** be represented exactly from integer counts
+(`invalid_returned` / `total_returned` as an exact rational, e.g. kept as
+a numerator/denominator pair or an equivalent exact representation) —
+never derived through floating-point rounding. The window counts used in
+each maximum calculation (which window(s) attained `M_fraction`, and
+which attained `M_consecutive`) must be reported (§25). No strategy
+outcome is exposed by this computation.
+
+**Authority gate (new — required by §13).** `M_fraction` and
+`M_consecutive` may be accepted as **official** calibration statistics
+only from a `CALIBRATION_RUN_VALID=true` run (§13). If an execution
+becomes invalid before or during verification, any intermediate
+`M_fraction`/`M_consecutive` values computed along the way are:
+
+```text
+NON_AUTHORITATIVE_DIAGNOSTIC_ONLY
+```
+
+They must not alter the candidate grid (§5), the headroom rule (§16),
+the selection rule (§17), the V8B design, or any subsequent methodology.
+
+---
+
+## 15. Headroom requirement (fixed, unchanged — replaces the boundary-equality rule)
+
+The prior preregistration allowed a candidate sitting exactly on the
+worst observed boundary to qualify. **That rule remains replaced.**
+
+A candidate satisfies the **observed quality criterion** if and only if:
+
+```text
+fraction_threshold > M_fraction
+AND
+max_consecutive_invalid_returned_rows > M_consecutive
+```
+
+Both inequalities are **strict**. This deliberately requires positive
+predeclared headroom above the worst quality defect observed in the
+burned calibration material:
+
+```text
+threshold_exactly_equal_to_M_fraction=NOT_SUFFICIENT
+max_consecutive_exactly_equal_to_M_consecutive=NOT_SUFFICIENT
+```
+
+This is intended to avoid fitting V8B's policy exactly to the empirical
+maximum of the calibration set. The candidate grid (§5) is **not**
+expanded if no candidate supplies this headroom — the outcome is governed
+by §21 (and, if the underlying run was itself invalid, by §13/§22-§24
+instead).
+
+---
+
+## 16. 100% observed pass semantics (fixed, unchanged — now mechanical)
+
+The requirement that all applicable observed windows must pass is
+preserved. After §15's strict-headroom rule, this follows **mechanically**
+from the definition of `M_fraction`/`M_consecutive` as maxima: if
+`candidate_threshold > M_fraction` and `candidate_max_consecutive >
+M_consecutive`, then by construction every individual applicable window
+(whose fraction/run cannot exceed the maxima that define `M_fraction`/
+`M_consecutive`) also satisfies `candidate_threshold > window_fraction`
+and `candidate_max_consecutive > window_run`, hence passes.
+
+```text
+window_specific_exception=NONE
+ticker_exclusion=NONE
+percentile_exception=NONE
+partial_pass_relaxation_eg_99_percent=NONE
+```
+
+---
+
+## 17. `DEFENSIBLE(candidate)` — redefined cleanly, evaluated only after §13 passes
+
+**This section replaces the prior draft's ten-item `DEFENSIBLE(candidate)`
+definition.** Run-level concerns (input provenance, parser/classifier
+reproducibility, synthetic classification/policy-semantics correctness,
+schema-hard-failure handling, plan conformance) are **not** part of the
+per-candidate predicate — they are exclusively `CALIBRATION_RUN_VALID`
+concerns (§13). Candidate defensibility is evaluated **only after**
+`CALIBRATION_RUN_VALID=true` has already been established.
+
+For each of the 30 candidates:
+
+```text
+DEFENSIBLE(candidate) = true
+```
+
+if and only if:
+
+```text
+D1. candidate_fraction_threshold > M_fraction
+AND
+D2. candidate_max_consecutive_invalid_returned_rows > M_consecutive
+```
+
+Because `M_fraction` and `M_consecutive` are maxima over every applicable
+observed window, `D1 + D2` mechanically imply that 100% of applicable
+observed ticker-year and full-ticker windows pass (§16). The synthetic
+layer (§7-§11) is **not** itself a threshold-selection criterion for any
+individual candidate — it is already fully accounted for inside
+`CALIBRATION_RUN_VALID` (§13, R4-R7), not repeated here.
+
+```text
+parser_implementation_correctness_inside_DEFENSIBLE=false
+input_availability_inside_DEFENSIBLE=false
 ```
 
 Otherwise `DEFENSIBLE(candidate) = false`. No qualitative override
@@ -620,7 +715,7 @@ exists.
 
 ---
 
-## 17. Selection rule (fixed, unchanged)
+## 18. Selection rule (fixed, unchanged)
 
 Evaluate all 30 candidates. Collect the complete set:
 
@@ -641,9 +736,9 @@ results.
 
 ---
 
-## 18. Tie break (fixed, unchanged)
+## 19. Tie break (fixed, unchanged)
 
-The strictness order (§17) creates a total order over the 30 unique
+The strictness order (§18) creates a total order over the 30 unique
 candidates (all six fractions are distinct rational values, per §5's
 verified ordering, so no substantive tie is expected). If canonical
 representation unexpectedly produces duplicate-equivalent candidates:
@@ -657,7 +752,7 @@ A human is never asked to choose after seeing results.
 
 ---
 
-## 19. Stopping rule (fixed, unchanged)
+## 20. Stopping rule (fixed, unchanged)
 
 The calibration run completes only after:
 
@@ -678,31 +773,155 @@ threshold_shopping=false
 
 ---
 
-## 20. Fallback (fixed, Q1 receives no exemption)
+## 21. Scientific `CALIBRATION_NO_DEFENSIBLE_POLICY` semantics — valid runs only
 
-If `D` (§17) is empty:
+**Only if** `CALIBRATION_RUN_VALID=true` (§13) **and** `D` (§18) is
+empty, **then and only then**:
 
 ```text
 selected_policy=CALIBRATION_NO_DEFENSIBLE_POLICY
 action=BLOCK_V8B_DESIGN_FINALIZATION
 ```
 
-The grid is not expanded. `Q1` is not automatically restored. No second
-threshold grid is run in V8B. `Q1` remains one of the 30 candidates and
-receives no exemption from §16's criteria:
+This means the calibration executed validly, but no preregistered
+threshold candidate provides the required strict headroom (§15). That is
+a legitimate scientific result, and it must be clearly distinguished from
+an invalid calibration execution (§13) — the two are reported with
+different `selected_policy` values (`CALIBRATION_NO_DEFENSIBLE_POLICY`
+vs. `NOT_EVALUATED`) and must never be conflated in any report or
+downstream decision.
+
+**If `CALIBRATION_RUN_VALID=true` and `D` is non-empty:**
 
 ```text
-if Q1 fails DEFENSIBLE (e.g. does not satisfy the strict headroom rule): Q1 is not retained by default
-if Q1 is DEFENSIBLE but a stricter candidate is also DEFENSIBLE: the stricter candidate is selected per §17
+candidate_selection_executed=true
+selected_policy=STRICTEST_DEFENSIBLE candidate (§18's lexicographic ordering)
+```
+
+No human discretion after results, in either branch.
+
+The grid is not expanded in response to either outcome. `Q1` is not
+automatically restored in response to either outcome. No second threshold
+grid is run in V8B. `Q1` remains one of the 30 candidates and receives no
+exemption from §17's criteria:
+
+```text
+if Q1 fails DEFENSIBLE (does not satisfy the strict headroom rule): Q1 is not retained by default
+if Q1 is DEFENSIBLE but a stricter candidate is also DEFENSIBLE: the stricter candidate is selected per §18
 if Q1 is the strictest DEFENSIBLE candidate: Q1 may be selected
 ```
 
 ---
 
-## 21. Full result reporting (expanded)
+## 22. Invalid-run retry semantics (new, fixed)
 
-Future calibration output must include all 30 candidates. For every
-candidate, report at minimum:
+A `CALIBRATION_RUN_INVALID` execution (§13) is **not** a completed
+scientific calibration result. A retry under the **same** approved
+preregistration is permitted only when **all** of the following hold:
+
+```text
+the failure is corrected without changing methodology
+candidate grid remains identical
+input dataset remains identical
+observed windows remain identical
+synthetic design remains identical
+DEFENSIBLE rule remains identical
+selection/tie-break/fallback remain identical
+the fix is limited to technical/conformance implementation
+the failed attempt is retained in the audit trail
+the implementation fix is independently reviewed before rerun
+```
+
+```text
+invalid_execution_retry_under_same_plan_allowed=true
+methodology_change_during_invalid_execution_retry=false
+invalid_attempt_history_retained=true
+independent_implementation_review_before_retry=true
+```
+
+If fixing the failure would require **any** methodology change:
+
+```text
+STOP
+CHATGPT_DECISION_REQUIRED
+```
+
+No rerun under the old approved plan in that case — a new plan version
+and a new human approval gate are required instead.
+
+---
+
+## 23. Input-provenance failure special case (new, fixed)
+
+If `V5B_CALIBRATION_INPUT_PREFLIGHT_BLOCKED` (§3.2) occurs because the
+designated frozen cache is unavailable or cannot validate against the
+required provenance:
+
+```text
+substitute_another_dataset=PROHIBITED
+reacquire_yahoo_data=PROHIBITED
+choose_another_cache=PROHIBITED
+```
+
+Return:
+
+```text
+CHATGPT_DECISION_REQUIRED
+```
+
+A new methodological decision/human gate is required before any
+replacement input could be used. This is not a case §22's same-plan
+retry can resolve, because there is no "technical/conformance-only" fix
+available for a genuinely unavailable input.
+
+---
+
+## 24. Synthetic failure special case (new, fixed)
+
+If `SYNTHETIC_CLASSIFIER_MISMATCH` or `SYNTHETIC_POLICY_SEMANTICS_
+MISMATCH` (§9, §11) occurs, the run is `CALIBRATION_RUN_INVALID` (§13).
+
+```text
+interpret_mismatch_as_evidence_threshold_is_bad=PROHIBITED
+reduce_or_enlarge_candidate_grid_in_response=PROHIBITED
+change_threshold_values_in_response=PROHIBITED
+```
+
+A technical fix may be made only to conform the implementation to the
+already-approved preregistration, followed by independent implementation
+review and rerun under §22's same-plan retry rules.
+
+---
+
+## 25. Full result reporting / result artifact status (expanded)
+
+Require every future calibration attempt artifact to contain at minimum:
+
+```text
+calibration_plan_version
+calibration_plan_commit_or_hash
+calibration_attempt_id
+calibration_run_valid
+run_invalid_reason_or_null
+candidate_selection_executed
+selected_policy
+implementation_commit
+input_provenance_hashes
+run_started_utc
+run_completed_or_blocked_utc
+artifact_self_hash
+```
+
+Status combinations (exhaustive):
+
+```text
+invalid run:               calibration_run_valid=false, candidate_selection_executed=false, selected_policy=NOT_EVALUATED
+valid run, D empty:        calibration_run_valid=true,  candidate_selection_executed=true,  selected_policy=CALIBRATION_NO_DEFENSIBLE_POLICY
+valid run, D non-empty:    calibration_run_valid=true,  candidate_selection_executed=true,  selected_policy=<mechanically selected candidate ID>
+```
+
+For every candidate (when the run is valid and candidates are evaluated),
+report at minimum:
 
 ```text
 candidate_id
@@ -710,26 +929,10 @@ exact_fraction_rational
 max_consecutive
 observed_ticker_year_pass_count_over_denominator
 observed_full_ticker_pass_count_over_denominator
-synthetic_pass_fail_counts_by_corruption_class
-synthetic_pass_fail_counts_by_K
-synthetic_pass_fail_counts_by_placement_family
 DEFENSIBLE_true_or_false
-failed_criterion_ids
 ```
 
 Also record, at the artifact level:
-
-```text
-input_provenance_hashes
-calibration_plan_hash
-implementation_commit
-run_timestamps
-error_counts
-artifact_self_hash
-mechanically_selected_candidate_or_NO_DEFENSIBLE_POLICY
-```
-
-**New additional required fields (this revision):**
 
 ```text
 M_fraction_exact_numerator_denominator_or_equivalent_exact_representation
@@ -743,6 +946,8 @@ synthetic_base_selection_rule
 synthetic_base_window_start_and_end_metadata (per selected base slice)
 exact_synthetic_placement_formulas_version
 full_expected_vs_observed_synthetic_truth_table_mismatch_count
+error_counts
+mechanically_selected_candidate_or_NO_DEFENSIBLE_POLICY_or_NOT_EVALUATED
 ```
 
 ```text
@@ -757,12 +962,30 @@ publicly expose any data that existing privacy rules prohibit.
 
 ---
 
-## 22. Result review gate (expanded)
+## 26. Result review gate (updated — must check run validity first)
 
 `CALIBRATION_RESULT_REVIEW` (`V8B_HISTORICAL_RESEARCH_DESIGN_DRAFT.md`
-§12) must independently verify:
+§12) must **first** verify:
 
 ```text
+CALIBRATION_RUN_VALID=true
+```
+
+**before** reviewing any selected candidate as a scientific calibration
+result. If the latest attempt is invalid, `CALIBRATION_RESULT_REVIEW`
+**cannot** approve a policy — it can only confirm the invalid
+classification and (if applicable) that §22's retry conditions were
+honored.
+
+For an attempt reported as valid, it must also independently verify:
+
+```text
+plan_version_correct=VERIFY (matches calibration_plan_version=V8B_DATA_QUALITY_CALIBRATION_PLAN_V1)
+plan_commit_or_hash_correct=VERIFY
+attempt_history_complete=VERIFY
+previous_invalid_attempts_retained=VERIFY (if any occurred)
+no_methodology_changed_between_invalid_attempt_and_valid_rerun=VERIFY
+implementation_fix_independently_reviewed_if_any=VERIFY
 exact_preregistration_commit_or_hash=VERIFY
 exact_input_provenance=VERIFY
 no_old_t1_t1b_t2_t3_inputs=VERIFY
@@ -775,16 +998,17 @@ all_hashes_and_self_hashes_validate=VERIFY
 M_fraction_and_M_consecutive_correctly_computed_as_true_maxima=VERIFY
 strict_headroom_rule_correctly_applied_no_boundary_equality_admitted=VERIFY
 Q1_received_no_exemption_from_DEFENSIBLE_criteria=VERIFY
-synthetic_expected_vs_observed_truth_table_fully_matched_or_mismatches_correctly_failed_the_candidate=VERIFY
+synthetic_expected_vs_observed_truth_table_fully_matched_or_mismatches_correctly_marked_the_run_invalid=VERIFY
 ```
 
-Only after an independent `PASS` may the selected policy be proposed for
-`V8B_DESIGN_FINALIZED` (`V8B_HISTORICAL_RESEARCH_DESIGN_DRAFT.md` §12).
-**This document does not authorize that.**
+Only after an independent `PASS` on a **valid** run may the selected
+policy be proposed for `V8B_DESIGN_FINALIZED`
+(`V8B_HISTORICAL_RESEARCH_DESIGN_DRAFT.md` §12). **This document does not
+authorize that.**
 
 ---
 
-## 23. Relationship to the V8B design draft's own calibration wall
+## 27. Relationship to the V8B design draft's own calibration wall
 
 This preregistration satisfies, but does not replace,
 `V8B_HISTORICAL_RESEARCH_DESIGN_DRAFT.md` §6.1's requirement that a future
@@ -793,34 +1017,35 @@ calibration plan freeze `calibration_plan_version`, `allowed_data_sources`,
 listed fields before approval. Cross-mapping:
 
 ```text
+calibration_plan_version -> V8B_DATA_QUALITY_CALIBRATION_PLAN_V1 (top status block)
 allowed_data_sources -> V5-B evaluation cache, 2019-01-01..2025-12-31 (basis A/D per V8B_HISTORICAL_RESEARCH_DESIGN_DRAFT.md §6's A-D categories: already-burned development/evaluation material outside T1B/T2/T3), plus mandatory synthetic corruption (basis B)
 exact_included_calibration_datasets -> the verified V5-B cache, restricted to the 2019-01-01..2025-12-31 window (§3)
 exact_exclusions -> old T1, T1B, T2, T3, V7 forward outcomes (§2)
-synthetic_corruption_generation_procedure -> §10-§14
-synthetic_random_seed_or_seeds -> NOT_USED (§13)
+synthetic_corruption_generation_procedure -> §7-§11
+synthetic_random_seed_or_seeds -> NOT_USED (§10)
 unit_of_analysis -> per-ticker-year window and full calibration-span window (§6)
 evaluation_windows -> 2019..2025 individually, and 2019-01-01..2025-12-31 in full (§6)
 malformed_row_classifier_and_version -> src/v7_yahoo_collector.py::_row_invalid_reason, verified against source (§4)
 exact_finite_candidate_set_invalid_fraction_threshold -> {1/252, 2/252, 1/100, 3/252, 4/252, 5/252} (§5)
 exact_finite_candidate_set_max_consecutive_invalid_returned_rows -> {1, 2, 3, 4, 5} (§5)
-exact_metrics_computed_per_candidate -> §21
+exact_metrics_computed_per_candidate -> §25
 exact_aggregation_method_per_ticker -> §6 (total_returned, invalid_fraction, max_consecutive per ticker/window)
 exact_aggregation_method_per_window_or_year -> §6 (per named year and full span, independently)
-exact_aggregation_method_across_calibration_material -> §7-§9 (M_fraction/M_consecutive envelope; strict headroom)
-exact_defensibility_criterion -> §16
-exact_deterministic_candidate_selection_rule -> §17
-exact_tie_break_rule -> §18
-exact_stopping_rule -> §19
-exact_fallback_rule -> §20
-exact_missing_or_error_handling -> §3.2 (V5B_CALIBRATION_INPUT_PREFLIGHT_BLOCKED), §3.3 (CALIBRATION_INPUT_CANONICAL_PARSE_BLOCKED), §6 (CALIBRATION_INPUT_EMPTY_SERIES_BLOCKED), §10 (SYNTHETIC_BASE_SELECTION_BLOCKED)
-full_candidate_grid_results_retention -> §21 (MANDATORY, all 30 candidates)
-best_only_reporting -> PROHIBITED (§21)
+exact_aggregation_method_across_calibration_material -> §14-§16 (M_fraction/M_consecutive envelope; strict headroom)
+exact_defensibility_criterion -> §17 (evaluated only after §13's run-validity gate)
+exact_deterministic_candidate_selection_rule -> §18
+exact_tie_break_rule -> §19
+exact_stopping_rule -> §20
+exact_fallback_rule -> §21
+exact_missing_or_error_handling -> §13 (CALIBRATION_RUN_VALID / run-invalid reasons), §22 (retry semantics), §23 (input-provenance special case), §24 (synthetic-failure special case)
+full_candidate_grid_results_retention -> §25 (MANDATORY, all 30 candidates, valid runs only)
+best_only_reporting -> PROHIBITED (§25)
 old_t1_input / t1b_input / t2_input / t3_input -> PROHIBITED (§2)
 ```
 
 ---
 
-## 24. Current task does not execute calibration (fixed, unchanged)
+## 28. Current task does not execute calibration (fixed, unchanged)
 
 This task did **not**, and does not authorize any future task to
 silently:
@@ -844,7 +1069,7 @@ This task writes documentation only.
 
 ---
 
-## 25. Status
+## 29. Status
 
 ```text
 status=DRAFT_AWAITING_HUMAN_APPROVAL
