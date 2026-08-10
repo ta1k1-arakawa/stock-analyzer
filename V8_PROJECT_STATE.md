@@ -13,7 +13,7 @@ the actual repository state at the current remote HEAD.
 ## Current phase
 
 ```text
-REAL_PARTITION_CREATED_VALIDATED_PENDING_TRUST_ANCHOR_HUMAN_GATE
+TRUST_ANCHOR_PINNED_PENDING_T1_HUMAN_GATE
 ```
 
 The independent source-preflight review passed
@@ -127,7 +127,9 @@ consumed.
 **At the time of the source-only PASS, it did not authorize** real partition
 creation, trust-anchor pinning, or `T1`/`T2`/`T3` acquisition. The subsequent
 separate one-time partition authorization is recorded in the audit below as
-consumed; trust-anchor pinning and acquisition remain separate human gates.
+consumed. A further separate one-time authorization then pinned the trust
+anchor (see "Trust anchor pinning audit" below); `T1`/`T2`/`T3` acquisition
+each remain their own separate, still-ungranted human gates.
 
 Cumulative real JPX requests across all three source-only attempts: **6**
 (2 + 2 + 2). Real Yahoo requests: **0**.
@@ -161,12 +163,42 @@ with exit code `0`, the manifest remained present, and manifest self-hash,
 implementation commit, schema, source PASS, T0 PASS, and T3 prohibition all
 verified. No block assignment contents were printed. The exact private path
 is intentionally not recorded; storage is defined outside the repository.
-The trust anchor remains `NOT_AUTHORIZED` with null authorized values.
+At the time of that build, the trust anchor remained `NOT_AUTHORIZED` with
+null authorized values — see below for its subsequent pinning.
 
 The real partition build added 2 JPX requests (page plus `data_j.xls`), so
-cumulative real JPX requests are now **8**. Real Yahoo requests remain **0**.
-This docs/state update performs no network operation and changes no trust
-anchor.
+cumulative real JPX requests were **8** at that point. Real Yahoo requests
+remain **0**.
+
+## Trust anchor pinning audit
+
+A further, separate one-time human authorization then pinned
+`V8_TRUSTED_PARTITION.json` to the audited real partition build above:
+
+```text
+human_authorization = V8_HUMAN_AUTHORIZE_ONE_TRUST_ANCHOR_PIN_AT_46023d92d359c222438b9c0b2dbe410e6623c1f6_FOR_MANIFEST_0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62_IMPL_36cbed941050e728f7f96ce2af505e81175cc02c
+anchor_base_head = 46023d92d359c222438b9c0b2dbe410e6623c1f6
+authorization_status = AUTHORIZED
+authorized_partition_manifest_sha256 = 0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62
+authorized_partition_implementation_git_commit = 36cbed941050e728f7f96ce2af505e81175cc02c
+```
+
+`authorized_partition_implementation_git_commit` is the implementation
+commit that was recorded *inside* the partition manifest at build time
+(`36cbed9...`) — it is deliberately **not** replaced with this pinning
+commit's own (necessarily later) SHA. Production acquisition loads the
+anchor from the verified current Git `HEAD` and compares these pinned
+values against the private partition manifest at acquisition time.
+
+This pinning performed no network operation (0 real JPX requests, 0 real
+Yahoo requests this task; cumulative real JPX requests remain **8**, real
+Yahoo requests remain **0**). It does **not** itself authorize `T1`
+acquisition, does **not** authorize `T2` acquisition, does not lift the
+unconditional `T3` prohibition, and does not authorize `T_spare`
+acquisition — each remains its own separate future human gate. No block
+assignments were read, exposed, or committed by this pinning; the private
+manifest itself was neither opened nor copied — only the previously-audited
+SHA/commit values were applied.
 
 ## Completed milestones
 
@@ -189,6 +221,7 @@ anchor.
 | 15 | Independent review of the source-snapshot-semantics implementation passed (0 CRITICAL/HIGH/MEDIUM, 3 LOW deliberately unfixed); real JPX source-only preflight attempt #2 authorized and run, errored pre-`T0` on a local `xlrd` dependency gap (not a `T0` result), no retry; local environment remediated (`pip install xlrd==2.0.2`, no repository file changed) | reviewed HEAD `9b260e898aa019f8ee5102f3a00e7e1ec7a22584` | `SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS`; cumulative real JPX requests 4, real Yahoo requests 0 |
 | 16 | Real JPX source-only preflight attempt #3: **PASS**. `source_reproduction_status=PASS`, `t0_reproduction_status=PASS`; `t0_ticker_list_sha256` matches independently-verified committed `V4_UNIVERSE.csv`. Source-only — no partition/manifest/block-assignment/trust-anchor change | authorized HEAD `371f547fc9f32c0aac84e34634b0f97a40e083c6` | `REAL_JPX_SOURCE_PREFLIGHT_PASS_PENDING_REAL_PARTITION_HUMAN_GATE`; cumulative real JPX requests 6, real Yahoo requests 0 |
 | 17 | One-time real production partition creation and independent read-only manifest validation: **PASS** | authorized HEAD `36cbed941050e728f7f96ce2af505e81175cc02c` | `REAL_PARTITION_CREATED_VALIDATED_PENDING_TRUST_ANCHOR_HUMAN_GATE`; cumulative real JPX requests 8, real Yahoo requests 0; no assignments exposed |
+| 18 | One-time trust-anchor pinning: `V8_TRUSTED_PARTITION.json` set to `AUTHORIZED` with the audited manifest SHA and partition implementation commit | anchor base HEAD `46023d92d359c222438b9c0b2dbe410e6623c1f6` | `TRUST_ANCHOR_PINNED_PENDING_T1_HUMAN_GATE`; 0 new network requests (cumulative real JPX requests remain 8, real Yahoo requests remain 0); does not authorize `T1`/`T2`/`T3`/`T_spare` acquisition |
 
 ## Human approvals
 
@@ -205,7 +238,7 @@ anchor.
 | Real JPX source-only preflight — attempt #3 | One-time authorization **GRANTED and consumed** — result **PASS** (`source_reproduction_status=PASS`, `t0_reproduction_status=PASS`), no retry performed |
 | Real JPX source-only preflight — attempt #4 (or any further real network action) | **NOT GRANTED** — a fresh authorization is required |
 | Real partition creation | **GRANTED, CONSUMED** — one-time production build PASS and read-only validation PASS; no retry |
-| Trust-anchor pinning (`V8_TRUSTED_PARTITION.json` authorization) | **NOT GRANTED** — separate future human gate; candidate SHA/commit recorded above, anchor unchanged |
+| Trust-anchor pinning (`V8_TRUSTED_PARTITION.json` authorization) | **GRANTED, CONSUMED** — anchor pinned to `authorization_status=AUTHORIZED`, `authorized_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62`, `authorized_partition_implementation_git_commit=36cbed941050e728f7f96ce2af505e81175cc02c`; does not itself authorize `T1`/`T2`/`T3` acquisition |
 | Real T1 acquisition | **NOT GRANTED** |
 | Real T2 acquisition | **NOT GRANTED** |
 | T3 acquisition of any kind | **NOT GRANTED** (and the code path unconditionally rejects it regardless of any future gate wording short of a design amendment) |
@@ -213,13 +246,16 @@ anchor.
 | Prospective forward study | **NOT GRANTED** — separate future study |
 | Real-money deployment | **NOT GRANTED** — separate future human gate, downstream of everything above |
 
-## Current gate state after real partition validation
+## Current gate state after trust-anchor pinning
 
 ```text
 real_partition_manifest_exists = true
 real_partition_manifest_validated = true
 real_partition_creation_authorization_consumed = true
-trusted_partition_authorization = false
+trusted_partition_authorization = true
+trust_anchor_pinning_authorization_consumed = true
+authorized_partition_manifest_sha256 = 0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62
+authorized_partition_implementation_git_commit = 36cbed941050e728f7f96ce2af505e81175cc02c
 T1_authorized = false
 T2_authorized = false
 T3_authorized = false / PROHIBITED
@@ -229,10 +265,12 @@ layer_c_opened = false
 private_v8_storage_location = DEFINED_OUTSIDE_REPOSITORY
 ```
 
-The one-time real partition build and subsequent read-only validation are
-recorded above. The trust-anchor candidate SHA/commit are audit data only;
-`V8_TRUSTED_PARTITION.json` remains unchanged and unauthorized. The next
-action is `TRUST_ANCHOR_PINNING_HUMAN_GATE`.
+The one-time real partition build, its subsequent read-only validation, and
+the one-time trust-anchor pinning are all recorded above.
+`V8_TRUSTED_PARTITION.json` is now `AUTHORIZED` and pinned to the exact
+audited manifest SHA and partition implementation commit. This does not
+itself authorize any acquisition. The next action is
+`T1_ACQUISITION_HUMAN_GATE`.
 
 ## Git provenance
 
@@ -275,7 +313,10 @@ real_jpx_source_preflight_executed = true (attempt_count=3; attempt#1 result=BLO
 private_v8_storage_location = DEFINED_OUTSIDE_REPOSITORY
 requirements = absolute path; outside this repository; never committed
 real_partition_creation_blocked_reason = null (one-time production build completed and authorization consumed)
-trusted_partition_authorization = false
+trusted_partition_authorization = true (pinned by one-time trust-anchor authorization; see "Trust anchor pinning audit" above)
+authorized_partition_manifest_sha256 = 0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62
+authorized_partition_implementation_git_commit = 36cbed941050e728f7f96ce2af505e81175cc02c
+trust_anchor_pinning_authorization_consumed = true
 partition_public_dependency_injection = CLOSED_PENDING_REVIEW
 source_snapshot_clarification = IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT (V8_HISTORICAL_RESEARCH_DESIGN.md §16, 2026-08-10; V4 raw SHA equality not required; T0 exact reproduction still required)
 source_snapshot_semantics_implemented = true (1306d7be39ef9b73d049d5c4899ce286080ec1c2; test-fix 68b836d314b98955aa7d76e390ce6235a765b183)
@@ -287,6 +328,9 @@ next_real_jpx_source_only_attempt_authorized = false (attempt #3's authorization
 source_only_pass_authorizes_real_partition_creation = false
 source_only_pass_authorizes_trust_anchor_pinning = false
 source_only_pass_authorizes_t1_t2_t3_acquisition = false
+trust_anchor_pin_authorizes_t1_acquisition = false
+trust_anchor_pin_authorizes_t2_acquisition = false
+trust_anchor_pin_authorizes_t3_acquisition = false
 ```
 
 ## T1 state
@@ -377,14 +421,14 @@ current fake-only V8 regression is 226 passed / 0 failed.
 1. ~~Independent review of source-only production preflight~~ — done.
 2. ~~Human authorization and execution of exactly one real partition build~~ — done; authorization consumed, no retry.
 3. ~~Independent local read-only validation of the real manifest~~ — done; self-hash, implementation commit, schema, source/T0 PASS, and T3 prohibition verified.
-4. Obtain a separate human gate to pin the trust anchor using the audited manifest SHA and implementation commit.
-5. Obtain separate T1 authorization.
-6. Obtain separate T2 authorization and procedural seal.
+4. ~~Obtain a separate human gate to pin the trust anchor using the audited manifest SHA and implementation commit.~~ **Done** — one-time authorization consumed; `V8_TRUSTED_PARTITION.json` is now `AUTHORIZED` with `authorized_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62` and `authorized_partition_implementation_git_commit=36cbed941050e728f7f96ce2af505e81175cc02c`.
+5. Obtain separate T1 authorization. **Not yet authorized.**
+6. Obtain separate T2 authorization and procedural seal. **Not yet authorized.**
 7. Keep T3 and T_spare acquisition unauthorized; T3 remains unconditionally prohibited by design.
 
 The private manifest remains outside the repository and is not copied or
 committed. This docs/state synchronization performs no real network operation
-and does not authorize trust-anchor pinning or any acquisition.
+and does not authorize any `T1`/`T2`/`T3`/`T_spare` acquisition.
 
 ## Historical ordered next steps (prior state)
 

@@ -11,7 +11,7 @@
   "design_frozen": true,
   "design_status": "HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION",
 
-  "current_phase": "REAL_PARTITION_CREATED_VALIDATED_PENDING_TRUST_ANCHOR_HUMAN_GATE",
+  "current_phase": "TRUST_ANCHOR_PINNED_PENDING_T1_HUMAN_GATE",
 
   "human_gates": {
     "new_strategy_family_accepted": true,
@@ -19,6 +19,7 @@
     "v8_t1_t2_acquisition_and_partition_approved": true,
     "real_jpx_source_fetch_authorized": false,
     "real_partition_creation_authorization_consumed": true,
+    "trust_anchor_pinning_authorization_consumed": true,
     "real_t1_acquisition_authorized": false,
     "real_t2_acquisition_authorized": false,
     "t3_acquisition_authorized": false,
@@ -229,12 +230,27 @@
   },
 
   "trusted_partition_anchor_state": {
-    "authorization_status": "NOT_AUTHORIZED",
-    "authorized_partition_manifest_sha256": null,
-    "authorized_partition_implementation_git_commit": null,
-    "future_human_gate_manifest_sha256": "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62",
-    "future_human_gate_implementation_git_commit": "36cbed941050e728f7f96ce2af505e81175cc02c",
-    "changed_by_this_update": false
+    "authorization_status": "AUTHORIZED",
+    "authorized_partition_manifest_sha256": "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62",
+    "authorized_partition_implementation_git_commit": "36cbed941050e728f7f96ce2af505e81175cc02c",
+    "pinned_by_this_update": true,
+    "changed_by_this_update": true
+  },
+
+  "trust_anchor_pinning": {
+    "human_authorization": "V8_HUMAN_AUTHORIZE_ONE_TRUST_ANCHOR_PIN_AT_46023d92d359c222438b9c0b2dbe410e6623c1f6_FOR_MANIFEST_0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62_IMPL_36cbed941050e728f7f96ce2af505e81175cc02c",
+    "anchor_base_head": "46023d92d359c222438b9c0b2dbe410e6623c1f6",
+    "authorized_partition_manifest_sha256": "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62",
+    "authorized_partition_implementation_git_commit": "36cbed941050e728f7f96ce2af505e81175cc02c",
+    "note": "authorized_partition_implementation_git_commit is the implementation commit recorded INSIDE the partition manifest at build time (36cbed9...), not the SHA of this pinning commit itself. Production acquisition loads the anchor from the verified current Git HEAD and compares these pinned values against the private partition manifest.",
+    "t1_acquisition_authorized_by_this_pin": false,
+    "t2_acquisition_authorized_by_this_pin": false,
+    "t3_acquisition_prohibited": true,
+    "t_spare_acquisition_authorized": false,
+    "block_assignments_exposed": false,
+    "real_jpx_requests_this_task": 0,
+    "real_yahoo_requests_this_task": 0,
+    "one_time_authorization_consumed": true
   },
 
   "source_snapshot_semantics_implementation": {
@@ -302,7 +318,7 @@
     "partition_implementation_commit_provenance": true,
     "production_git_head_must_match_local_origin_ref": true,
     "trusted_partition_anchor": "V8_TRUSTED_PARTITION.json",
-    "trusted_partition_authorization": false,
+    "trusted_partition_authorization": true,
     "critical_review_remediation": "IMPLEMENTED_PENDING_REVIEW",
     "second_critical_review_remediation": "IMPLEMENTED_PENDING_REVIEW",
     "production_operation_requires_git_fetch_origin_immediately_before_command": true
@@ -313,7 +329,7 @@
     "real_partition_manifest_validated": true,
     "real_jpx_source_fetched": true,
     "real_jpx_source_fetched_note": "true means an accepted/reproduced source snapshot exists; the real partition manifest was subsequently built and validated in the separate one-time production build audit",
-    "trusted_partition_authorized": false,
+    "trusted_partition_authorized": true,
     "private_v8_storage_location": "DEFINED_OUTSIDE_REPOSITORY",
     "private_storage_requirements": ["absolute", "outside_repository", "not_committed"],
     "real_partition_creation_blocked_reason": null,
@@ -417,8 +433,11 @@
     }
   ],
 
-  "next_action": "TRUST_ANCHOR_PINNING_HUMAN_GATE",
+  "next_action": "T1_ACQUISITION_HUMAN_GATE",
   "this_docs_state_update_authorizes_real_network": false,
+  "trust_anchor_pin_authorizes_t1_acquisition": false,
+  "trust_anchor_pin_authorizes_t2_acquisition": false,
+  "trust_anchor_pin_authorizes_t3_acquisition": false,
   "source_only_pass_authorizes_real_partition_creation": false,
   "source_only_pass_authorizes_trust_anchor_pinning": false,
   "source_only_pass_authorizes_t1_t2_t3_acquisition": false,

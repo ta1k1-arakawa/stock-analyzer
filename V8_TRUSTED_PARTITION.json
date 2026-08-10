@@ -2,8 +2,8 @@
   "schema_version": "V8_TRUSTED_PARTITION_V1",
   "study_name": "V8_HISTORICAL_RESEARCH",
   "design_commit": "c414d3191cba356734d7ed08bdf1abc7d51fc384",
-  "authorization_status": "NOT_AUTHORIZED",
-  "authorized_partition_manifest_sha256": null,
-  "authorized_partition_implementation_git_commit": null,
-  "authorization_note": "No real production partition exists. A separate human gate must verify and Git-pin the exact manifest SHA256 and partition implementation commit before any production Yahoo acquisition."
+  "authorization_status": "AUTHORIZED",
+  "authorized_partition_manifest_sha256": "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62",
+  "authorized_partition_implementation_git_commit": "36cbed941050e728f7f96ce2af505e81175cc02c",
+  "authorization_note": "This anchor pins the separately human-authorized and independently read-only-validated real V8 partition manifest. Manifest SHA256 is exactly 0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62. Partition implementation commit is exactly 36cbed941050e728f7f96ce2af505e81175cc02c. This trust-anchor authorization does NOT itself authorize T1 acquisition. This trust-anchor authorization does NOT authorize T2 acquisition. T3 acquisition remains prohibited. T_spare acquisition remains unauthorized. No block assignments are exposed here or elsewhere in this repository."
 }
