@@ -192,17 +192,32 @@ nothing that isn't already spent.
 
 Even though `validation_access_count` is formally `0` for old `T1` — no
 completed bundle, no formal research opening — the researcher has observed
-a real fact about it: that it fails a specific, frozen malformed-row gate
-at some (unknown) ticker/window, on two independent real attempts. Per
-`V8_HISTORICAL_RESEARCH_DESIGN.md` §9.4, "a crashed or aborted run that
-nevertheless exposed any outcome statistic counts as an access; only a run
-that provably produced no outcome information... does not." A BLOCK that
-reveals "this specific 300-ticker set has at least one member failing this
-specific threshold" is outcome information, even without the ticker's
-identity. Old `T1` can therefore never again serve as a blind confirmatory
-block for any policy whose numeric thresholds are chosen with knowledge of
-that outcome. It is retired from validation use in V8B and is not reused
-as `T1B` under any name.
+a real fact about it, established conservatively and precisely (§0.1):
+**only `T1` attempt #2** exposed that old `T1` fails `POLICY_G_PRIME_V1`'s
+frozen 1% fraction gate at some (unknown) ticker/window. Attempt #1
+predates that policy and establishes a different, unrelated fact — that
+at least one parser-invalid returned row occurred under the older,
+since-superseded any-invalid-row rule — which is not evidence about the
+1% gate one way or the other. Per `V8_HISTORICAL_RESEARCH_DESIGN.md` §9.4,
+"a crashed or aborted run that nevertheless exposed any outcome statistic
+counts as an access; only a run that provably produced no outcome
+information... does not." Attempt #2's BLOCK reveals "this specific
+300-ticker set has at least one member failing the frozen 1% threshold"
+— that is outcome information, even without the ticker's identity, and
+even though it falls short of a formal Layer B validation result
+(`validation_access_count` correctly remains `0`, since no bundle was
+ever completed and no research opening ever occurred).
+
+**Retirement justification, stated conservatively.** Because attempt #2
+exposed this non-trivial acquisition-quality fact about old `T1`, reusing
+old `T1` for any future threshold-sensitive confirmatory validation would
+no longer be blind — the researcher would be selecting or evaluating a
+threshold with knowledge that this specific 300-ticker set is known to
+contain at least one member near or past a specific, real threshold. That
+is sufficient, on its own, to retire old `T1` from validation use, without
+needing to claim (and this draft does not claim) that attempt #1
+contributes anything to that determination. Old `T1` is retired from
+validation use in V8B and is not reused as `T1B` under any name.
 
 ### 3.3 Existing `T2` — `REUSE_WITH_CAVEAT`, conditionally preservable as V8B's sealed holdout
 
@@ -229,11 +244,23 @@ holdout — see §9 for why old-`T1`'s failure does not contaminate it.
 
 `T3` remains untouched (`T3_data_acquired=false`, never opened, acquisition
 unconditionally rejected at the code level regardless of confirmation
-token). The same four preservation conditions in §3.3 apply and hold. `T3`
-is preserved as `SEALED_RESERVE` under V8B on the same terms as under V8
-(`V8_HISTORICAL_RESEARCH_DESIGN.md` §5.4, Decision 6): not used in initial
-V8B, not opened for any purpose, release requires a separate future human
-gate.
+token). All seven of §3.3's conditions have a direct `T3` analogue, and
+all seven hold today:
+
+```text
+t3_acquired=false
+t3_opened=false
+t3_ticker_identities_exposed=false
+t3_outcomes_or_features_observed=false
+universe_definition_unchanged=true
+partition_algorithm_unchanged=true
+v8b_data_quality_policy_frozen_before_any_t3_acquisition=true (not applicable in initial V8B since T3 acquisition is not planned; stated for completeness in case a future gate releases T3)
+```
+
+`T3` is preserved as `SEALED_RESERVE` under V8B on the same terms as under
+V8 (`V8_HISTORICAL_RESEARCH_DESIGN.md` §5.4, Decision 6): not used in
+initial V8B, not opened for any purpose, release requires a separate
+future human gate.
 
 ### 3.5 Existing `T_spare` — available for exactly one new validation block
 
@@ -253,9 +280,10 @@ design (no repeated drawing, no per-ticker replacement — see §5).
 
 A full new partition (redrawing `T0`–`T3`/`T_spare` from the universe from
 scratch) is **not** required, because the condition that would force it —
-a change to the universe definition or the deterministic partition
-algorithm itself (§3.3's first two conditions) — is not proposed anywhere
-in this draft. Only `T1`'s *role* changes (old `T1` retired, one fresh
+a change to the universe definition (`universe_definition_unchanged`) or
+the deterministic partition algorithm itself
+(`partition_algorithm_unchanged`), both named explicitly in §3.3 — is not
+proposed anywhere in this draft. Only `T1`'s *role* changes (old `T1` retired, one fresh
 block drawn from `T_spare` under the *same* ordering rule). `T2`/`T3`
 membership was likewise materialized and hashed once, at original
 partition-build time, as part of the same manifest — that internal
@@ -271,13 +299,17 @@ unaffected members of the same partition, and nothing about their
 ## 4. New validation block: `T1B`
 
 ```text
-t1b_source=T_spare (existing, untouched)
+t1b_parent_block=T_spare (existing, untouched)
+t1b_offset_within_parent_t_spare=0
+t1b_slice_start_inclusive=0
+t1b_slice_end_exclusive=300
 t1b_size=300
-t1b_selection_rule=DETERMINISTIC_PREDECLARED
-t1b_selection_rule_text="first 300 members of current T_spare under the existing frozen deterministic ordering (V8_HISTORICAL_RESEARCH_DESIGN.md §5.1: sort eligible_current_only by (SHA-256(UTF-8 code), code) ascending), taken in that order starting immediately after the existing T3 boundary"
+t1b_selection_rule=DETERMINISTIC_PREDECLARED_ZERO_DISCRETION
+t1b_selection_rule_text="T1B = parent_T_spare[0:300]; remaining_T_spare = parent_T_spare[300:], where parent_T_spare is the canonical ordered T_spare sequence already contained in / derivable from the trusted parent V8 partition manifest under V8_HISTORICAL_RESEARCH_DESIGN.md §5.1's frozen deterministic ordering (sort eligible_current_only by (SHA-256(UTF-8 code), code) ascending)"
 t1b_selection_conditional_on_data_quality=false
 t1b_ticker_identities_exposed_in_this_document=false
 t1b_ticker_identities_exposed_at_design_freeze=false
+implementation_time_discretion_over_t1b_offset=false
 old_t1_replaced_ticker_by_ticker=false
 old_t1_retired_wholesale=true
 ```
@@ -285,20 +317,31 @@ old_t1_retired_wholesale=true
 `T1B` is a **new, distinct logical block**, not a repair of old `T1`. Old
 `T1`'s 300-member set is retired in its entirety (§3.2); no member of old
 `T1` is carried into `T1B`, and no single failing ticker inside old `T1`
-is swapped out. `T1B` is drawn once, mechanically, from the region of
-`T_spare` immediately following the existing `T3` boundary, using the same
-ordering rule already frozen for `T0`–`T3` — a rule that has no knowledge
-of, and no dependency on, which ticker or ticker(s) caused old `T1`'s
-BLOCK. This document does not read or expose which tickers land in `T1B`;
-that remains a matter for the implementation phase (§12), after design
-freeze, exactly as `T0`–`T3` assignment contents were never exposed by
-`V8_HISTORICAL_RESEARCH_DESIGN.md` itself.
+is swapped out. This document does not read or expose which tickers land
+in `T1B`; that remains a matter for the implementation phase (§12), after
+design freeze, exactly as `T0`–`T3` assignment contents were never
+exposed by `V8_HISTORICAL_RESEARCH_DESIGN.md` itself.
 
-The exact boundary offset (how many `T_spare` members precede `T1B`'s
-first member) is an implementation detail to be fixed at the partition-
-allocation implementation step (§12), not invented in this draft, so that
-the rule stays mechanical rather than requiring this document to encode
-private partition internals. `T1B`'s allocation, and the authority
+**The logical membership rule is frozen now, with zero implementation-time
+discretion.** `T_spare`'s position *among the five original global blocks*
+(`T0`, `T1`, `T2`, `T3`, `T_spare`, cut in that order from the eligible
+universe under §5.1's ordering) is not itself a choice this draft is
+making — it is simply where `T_spare` already sits in the existing,
+already-frozen V8 partition. That global position is unrelated to `T1B`'s
+membership rule. Within `T_spare`'s *own* internal ordering (the same
+`T_spare` sequence, ordered by the same §5.1 rule, that the trusted parent
+V8 partition manifest already fixes), `T1B`'s offset is exactly and only:
+
+```text
+T1B = parent_T_spare[0:300]
+remaining_T_spare = parent_T_spare[300:]
+```
+
+There is no boundary offset left open for implementation time to choose.
+A future implementation does not select where `T1B` begins; it only
+*materializes and verifies* this already-frozen zero-offset slice against
+the trusted parent `T_spare` sequence, and must be rejected by independent
+review if it does otherwise. `T1B`'s allocation, and the authority
 artifact that vouches for it, must additionally follow §11's successor
 trust/authority model — the existing V8 trust anchor alone does not cover
 `T1B` (§11.1).
@@ -398,9 +441,13 @@ either fact does not satisfy this section.
 **Calibration phase sub-gates** (detail of §12's
 `DATA_QUALITY_CALIBRATION_PLAN_APPROVED` → `CALIBRATION_RESULT_REVIEW` span):
 
-1. A calibration plan is written stating which of A–D it will use, and
-   exactly what it will measure, **before** any calibration run.
-2. The calibration plan is implemented using only the allowed material.
+1. A calibration **preregistration/plan** — not merely a statement of
+   which of A–D it will use — is written and approved **before** any
+   calibration run. §6.1 below fixes exactly what that preregistration
+   must freeze; retaining the full threshold distribution alone (item 3,
+   unchanged) is necessary but not sufficient.
+2. The calibration plan is implemented exactly as preregistered, using
+   only the allowed material.
 3. The calibration result — including the full distribution of outcomes
    at multiple candidate thresholds, not just the one selected — is
    reviewed independently before it is adopted into V8B's frozen policy,
@@ -408,7 +455,89 @@ either fact does not satisfy this section.
    requirement.
 4. If, after calibration, no defensible independent basis for a specific
    number emerges, V8B's design freezes with `POLICY_G_PRIME_V1` retained
-   unchanged (Option Q1, §7) rather than an invented number.
+   unchanged (Option Q1, §7) rather than an invented number — **unless**
+   the preregistered plan itself, before any calibration result existed,
+   predeclared a different scientifically justified no-selection outcome
+   (§6.2).
+
+### 6.1 Calibration preregistration requirements (binding on any future plan)
+
+This draft does **not** perform calibration and does **not** invent the
+numeric candidate grid — that remains for the future
+`DATA_QUALITY_CALIBRATION_PLAN_APPROVED` gate. What this draft fixes now
+is the **shape** every future calibration plan must satisfy before it may
+be approved. A plan missing any of the following is not a valid
+preregistration and does not satisfy sub-gate 1 above.
+
+Before any calibration execution, a separate calibration
+preregistration/plan document must freeze, in writing, all of:
+
+```text
+calibration_plan_version=<required>
+allowed_data_sources=<required, drawn only from §6's A-D>
+exact_included_calibration_datasets=<required, enumerated precisely>
+exact_exclusions=<required, enumerated precisely -- old T1, T1B, T2, T3 always excluded>
+synthetic_corruption_generation_procedure=<required if basis B is used>
+synthetic_random_seed_or_seeds=<required if basis B involves any randomness>
+unit_of_analysis=<required -- e.g. per-ticker-day observation, per-ticker-year window>
+evaluation_windows=<required -- e.g. full P_hist and/or the frozen test years of V8_HISTORICAL_RESEARCH_DESIGN.md §8.1>
+malformed_row_classifier_and_version=<required -- exact reason taxonomy/version used to label a row invalid>
+exact_finite_candidate_set_invalid_fraction_threshold=<required -- an explicit finite list, not a range or search procedure>
+exact_finite_candidate_set_max_consecutive_invalid_returned_rows=<required -- an explicit finite list>
+exact_metrics_computed_per_candidate=<required>
+exact_aggregation_method_per_ticker=<required>
+exact_aggregation_method_per_window_or_year=<required>
+exact_aggregation_method_across_calibration_material=<required>
+exact_defensibility_criterion=<required -- the precise, checkable condition a candidate must satisfy to be called DEFENSIBLE>
+exact_deterministic_candidate_selection_rule=<required -- how one candidate is chosen if more than one is DEFENSIBLE>
+exact_tie_break_rule=<required>
+exact_stopping_rule=<required -- when calibration execution is considered complete>
+exact_fallback_rule=<required -- what happens if no candidate is DEFENSIBLE; default is Q1 per sub-gate 4 unless predeclared otherwise>
+exact_missing_or_error_handling=<required -- how a calibration-data error/gap is handled, decided before any run>
+full_candidate_grid_results_retention=MANDATORY (every candidate's result, not only the selected one)
+best_only_reporting=PROHIBITED
+old_t1_input=PROHIBITED
+t1b_input=PROHIBITED
+t2_input=PROHIBITED
+t3_input=PROHIBITED
+```
+
+No value for any of these fields is invented or filled in by this draft.
+They are requirements on the *shape* of a future document, not the
+content of one.
+
+### 6.2 Prohibition on adaptive threshold shopping
+
+```text
+calibration_candidate_grid_frozen_before_first_calibration_result=true
+adaptive_grid_expansion_after_results=false
+adaptive_metric_change_after_results=false
+adaptive_acceptance_criterion_change_after_results=false
+adaptive_tie_break_change_after_results=false
+calibration_run_count=EXACTLY_THE_PREREGISTERED_RUN_SET
+calibration_stops_after_full_preregistered_grid_evaluated=true
+```
+
+Once the preregistered candidate grid, metrics, aggregation method,
+defensibility criterion, selection rule, tie-break rule, and stopping
+rule are frozen (§6.1), none of them may be changed after any calibration
+result — partial or complete — has been observed. The candidate grid for
+`invalid_fraction_threshold` and `max_consecutive_invalid_returned_rows`
+must each be an explicit finite list fixed before the first calibration
+run; expanding, narrowing, or re-weighting that grid after seeing how any
+candidate performed is prohibited, as is silently swapping the
+acceptance criterion or the tie-break rule to favor whichever candidate
+happened to look best. "Look at results, then decide what seems
+reasonable" is not a valid calibration procedure under this design.
+
+If the fully preregistered grid produces no candidate satisfying the
+preregistered defensibility criterion, the fallback is `POLICY_G_PRIME_V1`
+unchanged (Option Q1, §7), unless the plan itself predeclared, before any
+result existed, a different scientifically justified no-selection
+outcome. This mirrors, at the calibration layer, the same discipline
+`V8_HISTORICAL_RESEARCH_DESIGN.md` §9 already requires of strategy
+trials: the selection rule is declared before the search, not chosen
+afterward to match whichever result looks best.
 
 ---
 
@@ -432,9 +561,14 @@ membership_rule=T1B_drawn_once_from_T_spare_per_section_4
   byte-identical to a threshold already independently reviewed twice
   (policy review + security/integer-invariant reviews) under V8.
 - **Single-ticker brittleness:** unchanged — still fails the whole
-  300-ticker block on one non-compliant ticker. This is the property that
-  caused both V8 BLOCKs and is not resolved by keeping the threshold as
-  is.
+  300-ticker block on one non-compliant ticker. This general shape (one
+  ticker's row-level data quality can BLOCK an entire 300-ticker block) is
+  shared by both the old any-invalid-row rule that produced attempt #1's
+  `MALFORMED_OHLCV` BLOCK and `POLICY_G_PRIME_V1`'s fraction gate that
+  produced attempt #2's `FRACTION_EXCEEDED` BLOCK — but they are two
+  different rules with two different tolerances, not one gate that fired
+  twice, and retaining Q1 does not resolve this brittleness pattern
+  either way.
 - **Operational feasibility:** highest — zero new design/implementation
   work; §5's one-shot rule already bounds the downside (one
   `V8B_VALIDATION_ACQUISITION_FAIL` and the study stops, rather than
@@ -632,7 +766,7 @@ acquisition outcome, provided (per §6) it was not revised in response to
 *T2's own* outcome, which is impossible since `T2` has never been
 acquired.
 
-**If any one of the four conditions in §3.3 stops holding** (e.g., `T2`
+**If any one of all seven conditions in §3.3 stops holding** (e.g., `T2`
 somehow gets acquired or opened before V8B's design freezes, or the
 universe/partition algorithm changes), this recommendation is withdrawn
 automatically and a new sealed block must be sourced from `T_spare`
@@ -646,7 +780,7 @@ Carried forward, unresolved, exactly as identified in the prior
 independent security review and the prior design-support review:
 
 ```text
-requirement_1=generic_open_for_star_arbitrary_mapping_contract_must_be_bound
+requirement_1=generic_open_for_functions_arbitrary_mapping_contract_must_be_bound (prose: the `open_for_*` guard functions)
 requirement_2=persisted_acquisition_manifest_read_time_binding_to_block_trusted_partition_ticker_list_hash_and_partition_manifest_identity
 implementation_performed_by_this_draft=false
 ```
@@ -731,33 +865,63 @@ covers.
 
 **B. A new private V8B allocation artifact.** A successor-study-private
 record — conceptually, though not bindingly, named `T1B` allocation
-manifest — that records at minimum:
+manifest — that binds at minimum:
 
 ```text
+schema_version=<required>
+study_name=V8B_HISTORICAL_RESEARCH
+artifact_role=VALIDATION_BLOCK_ALLOCATION
+logical_block=T1B
+parent_study=V8_HISTORICAL_RESEARCH
 parent_v8_partition_manifest_sha256=<the existing authorized_partition_manifest_sha256>
-parent_partition_implementation_git_commit=<the existing authorized_partition_implementation_git_commit>
-t1b_deterministic_derivation_rule=<the exact rule from §4>
+parent_v8_partition_implementation_commit=<the existing authorized_partition_implementation_git_commit>
+parent_t_spare_ticker_count=<exact count of the trusted parent T_spare set>
+parent_t_spare_ticker_list_sha256=<the existing t_spare_ticker_list_sha256 from the trusted parent manifest>
+selection_rule_id=<identifies the exact rule from §4>
+selection_rule_canonical_text_or_hash=<the exact rule text or its hash, matching §4's frozen t1b_selection_rule_text>
+t1b_offset_within_parent_t_spare=0
+t1b_slice_start_inclusive=0
+t1b_slice_end_exclusive=300
 t1b_ticker_count=300
 t1b_ticker_list_sha256=<computed at allocation time>
-remaining_t_spare_hash_or_count=<as appropriate, to prove T1B was carved without silently touching T2/T3>
-v8b_design_commit=<this draft's eventual frozen commit>
+remaining_t_spare_ticker_count=<exact count, computed at allocation time>
+remaining_t_spare_ticker_list_sha256=<exact hash, computed at allocation time>
+v8b_frozen_design_commit=<this draft's eventual frozen commit>
 v8b_allocation_implementation_commit=<the commit implementing the T1B draw>
+created_at_utc=<allocation timestamp>
 artifact_self_hash=<self-hash of this artifact, following the same pattern as the existing partition manifest>
 ```
 
-No ticker identities are exposed by this artifact's public/repository-
-committed form; only hashes, counts, and provenance pointers, exactly as
-the existing partition manifest already discloses only aggregate/hash
-information about `T1`–`T3`/`T_spare`.
+`remaining_t_spare` is recorded as **both** an exact count and an exact
+hash — never a single combined "hash or count" field — precisely so a
+future verifier can independently prove both `len(T1B) + len(remaining_T_spare)
+= len(original_parent_T_spare)` (§11.4) and the exact identity of what
+remains, not merely one or the other.
+
+**Private vs. public artifact boundary.** This (B) artifact is the
+**private** layer: it may, and to let a production verifier actually
+prove the allocation it must, contain the exact `T1B` and
+remaining-`T_spare` ticker assignments themselves, not only their
+hashes/counts. It stays outside the public repository, exactly like the
+existing private V8 partition manifest, and its ticker-identity contents
+are never printed, logged, or otherwise exposed by this draft or any
+future document derived from it — only the hash/count fields above are
+ever disclosed publicly (see (C) below for the public layer).
 
 **C. A separate V8B trust/authorization artifact.** A public,
 repository-fixed artifact — conceptually `V8B_TRUSTED_ALLOCATION.json`,
 name not binding if a better schema is justified at implementation time —
-that pins the artifact from (B) as `AUTHORIZED`, following the same
-one-time human-authorization and independent-review pattern
-`V8_TRUSTED_PARTITION.json` already established for V8 (a separate human
-gate authorizes the pin; the pin is then read from a verified Git object,
-never a working-tree file, by the production path).
+that pins the **verified** (B) artifact's `artifact_self_hash` as
+`AUTHORIZED`, following the same one-time human-authorization and
+independent-review pattern `V8_TRUSTED_PARTITION.json` already
+established for V8. This public artifact must contain only safe
+metadata — hashes, counts, commit IDs, schema/study/role identifiers,
+authorization status, timestamps, and parent-identity pointers — and must
+**never** contain `T1B` or `T_spare` ticker identities. A separate human
+gate authorizes the pin (§11.4 lists exactly what must be verified before
+that gate may fire); the pin is then read from a verified Git object,
+never a working-tree-only file, by the production acquisition path —
+exactly as `V8_TRUSTED_PARTITION.json` is already read today.
 
 **D. Production binding.** The `T1B` acquisition production path must
 bind to this new V8B authority chain (B + C), not to
@@ -768,34 +932,116 @@ through (B) and (C), exactly as the existing code rejects a `T1`/`T2`
 acquisition that cannot verify its chain back through
 `V8_TRUSTED_PARTITION.json`.
 
-**E. Open question for existing `T2`.** Existing `T2` may, in principle,
-remain governed by its original V8 partition identity and
-`V8_TRUSTED_PARTITION.json` pin for as long as the V8B official
-research-opening path does not yet exist (§10's two security
-requirements are unresolved regardless). But once a V8B-specific
-research-opening path is built, it must decide, and this draft does
-**not** decide for it, whether the V8B authority layer should:
+**E. `T2` authority integration — preferred pre-freeze design, pending
+human approval.** The independent reviewer's recommendation is
+`OPTION_2`, and this draft adopts it as the **preferred design**, not as
+an already-approved decision:
 
 ```text
-option_1=one_v8b_study_authority_record_referencing_both_original_t2_and_new_t1b
-option_2=separate_t1b_allocation_authority_plus_the_original_immutable_t2_pin_used_as_is
+v8b_t2_authority_integration_preferred=OPTION_2
+v8b_t2_authority_integration_human_approved=false
 ```
 
-Both are structurally sound; the choice affects only how many independent
-artifacts must be independently reviewed and how `T2`'s existing
-provenance chain is presented alongside `T1B`'s new one, not whether
-either block's authorization is sound on its own. This draft marks the
-choice:
+**`OPTION_2` semantics, fully specified.** `T1B` uses the new V8B-specific
+allocation authority chain ((A)–(D) above). Existing `T2` continues to
+use the **original, immutable V8 partition/trust authority**
+(`V8_TRUSTED_PARTITION.json` plus the original V8 partition manifest) —
+untouched, unmodified, unre-pinned. `V8_TRUSTED_PARTITION.json` is never
+modified by `V8B_HISTORICAL_RESEARCH` under this option. However, `T2`'s
+*use* under V8B must still be explicitly bridged to V8B's own study
+identity, so that "V8B treats existing `T2` as its sealed holdout" is
+itself a recorded, verifiable fact rather than an assumption. The
+eventual frozen V8B design, and the official `T2`-opening configuration
+built from it, must bind all of:
 
 ```text
-v8b_t2_authority_integration_choice=HUMAN_DECISION_REQUIRED_BEFORE_V8B_DESIGN_FREEZE
+study=V8B_HISTORICAL_RESEARCH
+role=SEALED_HOLDOUT
+source_authority=ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY
+v8_trust_anchor_git_identity=<the exact Git object identity V8's V8_TRUSTED_PARTITION.json is read from>
+authorized_parent_v8_partition_manifest_sha256=<the existing authorized_partition_manifest_sha256>
+expected_t2_ticker_list_sha256=<the existing t2_ticker_list_sha256, or a verified derivation of it from the trusted private parent manifest>
+t2_acquired_before_authorized_acquisition=false
+t2_research_open_count_before_official_opening=0
+v8b_frozen_design_commit=<this draft's eventual frozen commit>
+t2_membership_reassignment=PROHIBITED
 ```
+
+The `T2`-opening path (§10's two security requirements resolved first, in
+either option) must verify **both**:
+
+```text
+A. v8b_frozen_design_explicitly_designates_original_t2_as_its_sealed_holdout=REQUIRED
+B. original_t2_still_verifies_through_the_immutable_v8_authority_chain=REQUIRED
+```
+
+This bridge records V8B's *claim* on `T2` and re-verifies `T2`'s
+*existing* V8 provenance; it never mutates, reinterprets, or re-pins the
+V8 trust anchor itself.
+
+**Why `OPTION_2` is preferred (not yet approved).** Least privilege — it
+grants `T1B` a new authority scoped only to itself, rather than folding
+`T2` into that new scope. It avoids mutating or replacing any part of
+V8's existing authority. It keeps the two study-authority scopes
+(V8's original `T2` provenance; V8B's new `T1B` provenance) simply
+separated, which makes independent audit of either one easier in
+isolation. And it leaves `T2`'s existing provenance chain completely
+intact and re-verifiable exactly as it stands today.
+
+**`OPTION_1`, kept for auditability, not deleted.**
+
+```text
+option_1=one_v8b_study_authority_record_referencing_both_original_t2_and_new_t1b (rejected/non-preferred; retained here for audit history only)
+```
+
+`OPTION_1` — one combined V8B study-authority record referencing both the
+original `T2` and the new `T1B` — remains structurally sound and is not
+deleted from this document's history; it is simply not the design this
+draft recommends, because it would require the new V8B authority
+artifact itself to become an additional dependency in `T2`'s provenance
+chain, where `OPTION_2` keeps that chain exactly as V8 already
+established it.
 
 No production code implementing (A)–(E) is written, proposed in diff
 form, or scheduled against a specific commit by this document. This
-remains a conceptual requirement to be resolved, and then implemented and
-independently reviewed, before `ONE-TIME HUMAN AUTHORIZATION TO ALLOCATE
-T1B` in §12's gate sequence.
+remains a conceptual requirement — with `OPTION_2` as the preferred but
+not human-approved design for the `T2` piece — to be resolved, and then
+implemented and independently reviewed, before `ONE_TIME_HUMAN_
+AUTHORIZATION_TO_ALLOCATE_T1B` in §12's gate sequence.
+
+### 11.4 Required allocation invariants (future verification requirement)
+
+Before any `T1B` allocation may be pinned as trusted (§12's
+`READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION` gate), a future
+independent verifier must prove all of the following against the concrete
+allocation artifact produced by allocation — not merely against the
+implementation code that produced it:
+
+```text
+T1B = original_parent_T_spare[0:300]
+remaining_T_spare = original_parent_T_spare[300:]
+len(T1B) = 300
+len(T1B) + len(remaining_T_spare) = len(original_parent_T_spare)
+T1B ∩ remaining_T_spare = ∅
+T1B ∪ remaining_T_spare = original_parent_T_spare
+T1B is disjoint from T0
+T1B is disjoint from old T1
+T1B is disjoint from T2
+T1B is disjoint from T3
+parent_t_spare_ticker_list_sha256 matches the original trusted V8 partition manifest
+t1b_ticker_list_sha256 matches the allocation artifact
+remaining_t_spare_ticker_list_sha256 matches the allocation artifact
+artifact_self_hash validates
+selection_rule_canonical_text_or_hash exactly matches the frozen V8B design (§4)
+v8b_frozen_design_commit matches the authorized/frozen V8B design
+no_membership_choice_based_on_ohlcv_or_data_quality_outcomes=true
+```
+
+If verification fails on any single invariant, the result is `BLOCK`: no
+pin is created and no acquisition proceeds. This gate exists precisely so
+that a defect in the allocation *implementation* — not just a defect in
+this *design* — cannot silently produce a `T1B` that violates the
+zero-discretion rule §4 already freezes.
 
 ---
 
@@ -816,15 +1062,25 @@ V8B_DESIGN_FINALIZED                                (Q1 retained, or Q2 with a s
   ↓
 HUMAN_DESIGN_FREEZE                                 (separate human gate; freezes V8B exactly as V8_HISTORICAL_RESEARCH_DESIGN.md §1 froze V8)
   ↓
-T1B PARTITION-ALLOCATION IMPLEMENTATION             (code implementing §4's deterministic draw and §11's new authority artifacts; fake-only tests)
+T1B_ALLOCATION_IMPLEMENTATION                       (code implementing §4's frozen zero-discretion slice rule and §11.3.B's private allocation artifact schema; fake-only tests)
   ↓
-INDEPENDENT REVIEW                                  (of the T1B allocation implementation, of §11's new authority-chain implementation, and of §10's two security requirements if they are implemented at this stage)
+INDEPENDENT_IMPLEMENTATION_REVIEW                   (of the T1B allocation implementation and of §11's new authority-chain implementation code, including §10's two security requirements if they are implemented at this stage)
   ↓
-ONE-TIME HUMAN AUTHORIZATION TO ALLOCATE T1B        (separate one-time authorization; consumed on use, per V8's established pattern; authorizes allocation under the new V8B authority chain, not under V8_TRUSTED_PARTITION.json alone)
+ONE_TIME_HUMAN_AUTHORIZATION_TO_ALLOCATE_T1B        (separate one-time authorization; consumed on use, per V8's established pattern; authorizes running the reviewed allocation implementation, not yet trusting its output)
   ↓
-T1B RAW ACQUISITION HUMAN GATE                      (separate one-time authorization; consumed on first Yahoo request regardless of outcome, per V8's established pattern)
+EXECUTE_T1B_ALLOCATION                              (produces the concrete private §11.3.B allocation artifact against the trusted parent T_spare set; read-only with respect to T0/old T1/T2/T3)
   ↓
-T1B RAW ACQUISITION                                 (real network; exactly one attempt per §5's one-shot rule — a BLOCK here ends V8B, does not trigger a redraw)
+READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION      (independent, read-only check of every §11.4 invariant against the concrete artifact just produced, not merely against the implementation code; failure of any invariant = BLOCK, no pin, no acquisition)
+  ↓
+HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_ALLOCATION  (separate human gate; only reachable after §11.4 verification PASSes)
+  ↓
+CREATE_V8B_TRUSTED_ALLOCATION_PIN                   (publishes the public §11.3.C artifact pinning the verified artifact's self-hash as AUTHORIZED; hashes/counts/commit IDs only, no ticker identities; read from a verified Git object by the production path, never a working-tree-only copy)
+  ↓
+INDEPENDENT_TRUST_PIN_REVIEW                        (independent review of the published pin artifact and its binding to production code, mirroring V8_TRUSTED_PARTITION.json's own review precedent)
+  ↓
+T1B_RAW_ACQUISITION_HUMAN_GATE                      (separate one-time authorization; consumed on first Yahoo request regardless of outcome, per V8's established pattern; authorizes acquisition under the now-pinned V8B authority chain, not under V8_TRUSTED_PARTITION.json alone)
+  ↓
+T1B_RAW_ACQUISITION                                 (real network; exactly one attempt per §5's one-shot rule — a BLOCK here ends V8B, does not trigger a redraw)
   ↓
 SEPARATE RESEARCH-OPENING GATE                      (requires §10's two security requirements resolved first)
   ↓
@@ -856,7 +1112,7 @@ no_gate_may_be_skipped=true (V8_HISTORICAL_RESEARCH_DESIGN.md §10.3: skipping_a
 | Promotion thresholds (§8.4, nine gates) | `SAFE_TO_REUSE` | Same reasoning; frozen before any search, unrelated to acquisition-quality outcomes. |
 | `T0` | `SAFE_TO_REUSE_FOR_DEVELOPMENT_ONLY` | Already non-evidential by design; unlimited reuse costs nothing (§3.1). |
 | Old `T1` (as a block) | `DO_NOT_REUSE` | Retired per §3.2 — carries outcome information that would contaminate any future validation use, even without ticker-level detail. |
-| Existing `T2` | `REUSE_WITH_CAVEAT` | Conditionally preservable as V8B's sealed holdout — see full argument in §9; contingent on the four conditions in §3.3 continuing to hold through design freeze. |
+| Existing `T2` | `REUSE_WITH_CAVEAT` | Conditionally preservable as V8B's sealed holdout — see full argument in §9; contingent on all seven conditions in §3.3 continuing to hold through design freeze. |
 | Existing `T3` | `REUSE_WITH_CAVEAT` | Same conditional preservation as `T2`, held as `SEALED_RESERVE`, not opened (§3.4). |
 | Existing `T_spare` | `REUSE_WITH_CAVEAT` | Available for exactly one new block draw (`T1B`) under the one-shot rule (§4–§5); not available for repeated drawing or for any other purpose in this study. |
 | Deterministic partition ordering rule (SHA-256(code)-then-code ascending) | `SAFE_TO_REUSE` | Content-independent, deterministic, carries no outcome information; reused verbatim to draw `T1B`. |
@@ -893,15 +1149,15 @@ separate human decision beyond this draft:
 
 - The exact numeric threshold (if any) that emerges from §6's calibration
   phase.
-- The exact `T_spare` boundary offset that fixes `T1B`'s 300 members
-  (an implementation detail, §4).
 - Whether `T2`/`T3` preservation (§3.3/§3.4) still holds at the moment
   design actually freezes — this draft only confirms it holds as of the
   reviewed HEAD.
 - The concrete code changes implementing §10's two security requirements.
 - **The successor trust/authority model for `T1B` (§11)** — this draft
   proposes a conceptual shape (§11.3.A–D) but does not implement it, and
-  explicitly marks the `T2`-integration choice (§11.3.E) as
+  for the `T2`-integration piece (§11.3.E) states `OPTION_2` as the
+  preferred pre-freeze design while explicitly leaving
+  `v8b_t2_authority_integration_human_approved=false` —
   `HUMAN_DECISION_REQUIRED_BEFORE_V8B_DESIGN_FREEZE`.
 - Any and all real network authorization — none is granted by this
   document.
