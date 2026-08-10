@@ -13,23 +13,23 @@ the actual repository state at the current remote HEAD.
 ## Current phase
 
 ```text
-SOURCE_SNAPSHOT_SEMANTICS_IMPLEMENTED_PENDING_REVIEW
+SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS_PENDING_FRESH_REAL_JPX_HUMAN_GATE
 ```
 
 The independent source-preflight review passed
 (`SOURCE_PREFLIGHT_REVIEW_PASS`), and the human-authorized real JPX
-source-only preflight was run exactly once. It returned
+source-only preflight was run exactly once (**attempt #1**). It returned
 `status=BLOCKED, reason=V8_PARTITION_SOURCE_NOT_REPRODUCIBLE, exit_code=2`
 because the currently-served JPX raw bytes did not hash-match the `V4`
 2026-08-03 `raw_file_sha256`; no retry was performed. A human design gate then
 resolved the underlying ambiguity: `V8_HISTORICAL_RESEARCH_DESIGN.md` §16
-(append-only, 2026-08-10, unchanged by this phase) clarifies that the V8
-partition may use an official JPX snapshot fetched at
-partition-implementation time, and does not require that snapshot's raw
-bytes to equal `V4`'s 2026-08-03 raw bytes — while `T0` exact reproduction
-against the already-frozen `V4_UNIVERSE.csv` remains mandatory.
+(append-only, 2026-08-10, unchanged since) clarifies that the V8 partition
+may use an official JPX snapshot fetched at partition-implementation time,
+and does not require that snapshot's raw bytes to equal `V4`'s 2026-08-03
+raw bytes — while `T0` exact reproduction against the already-frozen
+`V4_UNIVERSE.csv` remains mandatory.
 
-That clarification is now implemented in code
+That clarification was implemented in code
 (`1306d7be39ef9b73d049d5c4899ce286080ec1c2`, plus a test-only environment-
 compatibility fix at `68b836d314b98955aa7d76e390ce6235a765b183` that widened
 one test's accepted `V8HistoricalAcquisitionBlocked` reason set to include
@@ -50,11 +50,48 @@ against transfer branch `v8-partition-acquisition-transfer-pytest-check` at
 `68b836d314b98955aa7d76e390ce6235a765b183`: **235 passed, 0 failed, exit code
 0**. That commit chain was then fast-forwarded (no merge commit, no rebase,
 no SHA rewrite) onto `v8-partition-acquisition`, so the production branch's
-current HEAD is the exact commit that was tested. Zero real JPX/Yahoo
-requests occurred during implementation or testing. This phase authorizes
-**no** real network action; the next step is an independent review of the
-source-snapshot-semantics implementation, followed by its own separate
-real-network human gate.
+current HEAD is the exact commit that was tested.
+
+**Independent review of that implementation then PASSED**
+(`SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS`, reviewed HEAD
+`9b260e898aa019f8ee5102f3a00e7e1ec7a22584`, review model Claude Opus 5 /
+`claude-opus-5`, reasoning effort High). Zero CRITICAL/HIGH/MEDIUM findings.
+Three LOW findings were recorded and deliberately **not** fixed this round
+(see `V8_STATE.json` → `source_snapshot_semantics_review.findings.low`):
+a return-type annotation arity mismatch on `_source_preflight_core()` (no
+runtime effect — the module uses `from __future__ import annotations` and
+both call sites already unpack all four return values correctly), a stale
+docstring describing two continuation values instead of three, and
+`selection_rule` being copied verbatim from `V4` provenance without an
+explicit cross-check against the actual parsing logic. The review could not
+execute the test suite itself (no `pytest`/`pandas` in that sandbox,
+dependency install prohibited) and relied on human-PC test evidence plus
+independent AST call-graph analysis and direct verification against the
+committed `V4_UNIVERSE.csv`/`V4_UNIVERSE_MANIFEST.json` files. Review
+recommendation: `PROCEED_TO_FRESH_REAL_JPX_SOURCE_PREFLIGHT_HUMAN_GATE`.
+
+A fresh human authorization then permitted **attempt #2** of the real
+JPX source-only preflight against reviewed HEAD
+`9b260e898aa019f8ee5102f3a00e7e1ec7a22584`. It made 2 real JPX requests (page
++ `data_j.xls`, fetching the XLS bytes into memory) but errored before
+reaching the parser: `process_result=ERROR, exit_code=1,
+failure_stage=SOURCE_XLS_PARSE, reason=LOCAL_ENVIRONMENT_DEPENDENCY_
+MISSING_XLRD` (`pandas.read_excel` requires `xlrd>=2.0.1` for `.xls`
+support, which was not installed on the operator's PC at the time of the
+attempt). **This is not a `T0` reproduction result** — `T0` PASS/FAIL was
+never reached, no source snapshot was accepted, no raw bytes were persisted,
+and no raw source hash was publicly recorded. No retry was performed under
+that authorization; it is now consumed. The operator subsequently installed
+`xlrd==2.0.2` into their local `.venv` (already declared in this
+repository's `requirements.txt` — this was local environment dependency
+drift, not a repository or production-code bug) and verified
+`pandas=3.0.3` / `xlrd=2.0.2`; no repository file was changed by that `pip
+install`.
+
+Cumulative real JPX requests across both attempts: **4** (2 + 2). Real
+Yahoo requests: **0**. This documentation/state update itself grants **no**
+real network authorization — the next real JPX source-only preflight
+attempt (#3) requires its own fresh, separate human authorization.
 
 ## Completed milestones
 
@@ -74,6 +111,7 @@ real-network human gate.
 | 12 | Source-only JPX/T0 reproduction preflight with closed public boundary; no allocation or publication | `38697c9ede51cac7bd500206d857ee585464996b` | `SOURCE_REPRODUCTION_PREFLIGHT_IMPLEMENTED_PENDING_REVIEW`; 226 fake-only V8 tests passing |
 | 13 | Independent source-preflight review passed; one human-authorized real JPX source-only preflight run (BLOCKED: `V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`, no retry); source-snapshot ambiguity resolved by human design gate | `eb13eb6cad4d0f5a920929cf0eaf97d1f673743d` | `SOURCE_PREFLIGHT_REVIEW_PASS`; append-only design clarification recorded, `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 |
 | 14 | Implemented `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 source-snapshot semantics: removed the `V4`-raw-hash-equality gate, kept exact `T0` reproduction mandatory, bumped manifest schema to `V8_PARTITION_MANIFEST_V3`; plus a test-only environment-compatibility fix (no production code) | implementation `1306d7be39ef9b73d049d5c4899ce286080ec1c2`; test-fix `68b836d314b98955aa7d76e390ce6235a765b183` | `SOURCE_SNAPSHOT_SEMANTICS_IMPLEMENTED_PENDING_REVIEW`; human-PC-verified 235 passed / 0 failed, exit code 0, on transfer branch `v8-partition-acquisition-transfer-pytest-check`; fast-forwarded onto `v8-partition-acquisition` |
+| 15 | Independent review of the source-snapshot-semantics implementation passed (0 CRITICAL/HIGH/MEDIUM, 3 LOW deliberately unfixed); real JPX source-only preflight attempt #2 authorized and run, errored pre-`T0` on a local `xlrd` dependency gap (not a `T0` result), no retry; local environment remediated (`pip install xlrd==2.0.2`, no repository file changed) | reviewed HEAD `9b260e898aa019f8ee5102f3a00e7e1ec7a22584` | `SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS`; cumulative real JPX requests 4, real Yahoo requests 0 |
 
 ## Human approvals
 
@@ -83,8 +121,11 @@ real-network human gate.
 | Design frozen (10 decisions: Layer A reconciliation, block sizes, `P_early` deferred, Layer B access=1, Layer C one-candidate, `T2` sealed holdout scope, walk-forward split scheme, friction grid, Layer A promotion thresholds, survivorship-bias wording) | GRANTED — `V8_HISTORICAL_RESEARCH_DESIGN.md` §1 |
 | `V8_T1_T2_ACQUISITION_AND_PARTITION_APPROVED` (build the partition/acquisition **code**, still no real network) | GRANTED |
 | Real JPX source fetch | **NOT GRANTED** |
-| Real JPX source-only preflight | One-time authorization **GRANTED and consumed** (2026-08-10) — result `BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`, no retry performed; a fresh authorization would be required for any further attempt |
+| Real JPX source-only preflight — attempt #1 | One-time authorization **GRANTED and consumed** (2026-08-10) — result `BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`, no retry performed |
 | Source-snapshot semantics clarification (append-only design gate) | **GRANTED** (2026-08-10) — `V8_HISTORICAL_RESEARCH_DESIGN.md` §16; does not itself authorize any real network action |
+| Independent source-snapshot-semantics implementation review | **PASSED** — `SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS`, reviewed HEAD `9b260e898aa019f8ee5102f3a00e7e1ec7a22584`; does not itself authorize any real network action |
+| Real JPX source-only preflight — attempt #2 | One-time authorization **GRANTED and consumed** — result `ERROR/LOCAL_ENVIRONMENT_DEPENDENCY_MISSING_XLRD` before `T0` was reached, no retry performed |
+| Real JPX source-only preflight — attempt #3 | **NOT GRANTED** — a fresh authorization is required for the next attempt |
 | Real T1 acquisition | **NOT GRANTED** |
 | Real T2 acquisition | **NOT GRANTED** |
 | T3 acquisition of any kind | **NOT GRANTED** (and the code path unconditionally rejects it regardless of any future gate wording short of a design amendment) |
@@ -127,16 +168,19 @@ git ls-remote origin v7-forward-capacity-gate3-dry-run
 
 ```text
 real_partition_manifest_exists = false
-real_jpx_source_fetched = true (one preflight attempt, 2026-08-10; result BLOCKED, no partition/manifest/allocation followed)
-real_jpx_source_preflight_executed = true (attempt_count=1; result=BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE; retry_performed=false)
+real_jpx_source_fetched = true (attempt #1 2026-08-10: BLOCKED; attempt #2: raw XLS bytes fetched into memory, ERROR before T0 was reached; neither attempt produced an accepted source snapshot or a partition/manifest/allocation)
+real_jpx_source_preflight_executed = true (attempt_count=2; attempt#1 result=BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE; attempt#2 result=ERROR/LOCAL_ENVIRONMENT_DEPENDENCY_MISSING_XLRD, t0_reproduction_reached=false; retry_performed=false for both; see V8_STATE.json -> source_preflight_attempt_history for full detail)
 private_v8_storage_location = NOT_YET_DEFINED
 requirements = absolute path; outside this repository; never committed
 trusted_partition_authorization = false
 partition_public_dependency_injection = CLOSED_PENDING_REVIEW
 source_snapshot_clarification = IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT (V8_HISTORICAL_RESEARCH_DESIGN.md §16, 2026-08-10; V4 raw SHA equality not required; T0 exact reproduction still required)
 source_snapshot_semantics_implemented = true (1306d7be39ef9b73d049d5c4899ce286080ec1c2; test-fix 68b836d314b98955aa7d76e390ce6235a765b183)
+source_snapshot_semantics_independently_reviewed = true (SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS, reviewed HEAD 9b260e898aa019f8ee5102f3a00e7e1ec7a22584; 0 CRITICAL/HIGH/MEDIUM, 3 LOW deliberately unfixed)
 manifest_schema_version = V8_PARTITION_MANIFEST_V3 (was V8_PARTITION_MANIFEST_V2)
-next_real_jpx_source_only_attempt_authorized = false
+cumulative_real_jpx_requests = 4 (2 per attempt x 2 attempts)
+cumulative_real_yahoo_requests = 0
+next_real_jpx_source_only_attempt_authorized = false (attempt #2's authorization was consumed by its single ERROR outcome; attempt #3 needs a fresh authorization)
 ```
 
 ## T1 state
@@ -239,23 +283,36 @@ current fake-only V8 regression is 226 passed / 0 failed.
    Human-PC-verified 235 passed / 0 failed (exit code 0) on transfer branch
    `v8-partition-acquisition-transfer-pytest-check`, then fast-forwarded
    onto `v8-partition-acquisition` (no merge commit, no rebase).
-6. Obtain an independent review of that code change.
-7. Obtain a fresh human authorization for the next real JPX source-only
-   preflight attempt under the new semantics.
-8. Obtain separate human authorization for real partition creation.
-9. Create the real partition manifest.
-10. Verify manifest SHA and partition implementation commit.
-11. Obtain a separate human gate to Git-pin the trust anchor.
-12. Obtain separate T1 authorization.
-13. Obtain later separate T2 authorization.
+6. ~~Obtain an independent review of that code change.~~ **Done** —
+   `SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS`, reviewed HEAD
+   `9b260e898aa019f8ee5102f3a00e7e1ec7a22584`. 0 CRITICAL/HIGH/MEDIUM; 3 LOW
+   findings recorded, deliberately not fixed this round.
+7. ~~Obtain a fresh human authorization for the next real JPX source-only
+   preflight attempt under the new semantics.~~ **Done** — attempt #2
+   authorized and run against `9b260e898aa019f8ee5102f3a00e7e1ec7a22584`.
+   Result: `ERROR/LOCAL_ENVIRONMENT_DEPENDENCY_MISSING_XLRD` before `T0` was
+   reached (not a `T0` reproduction result); no retry performed; that
+   authorization is consumed. Local environment subsequently remediated
+   (`xlrd==2.0.2` installed in the operator's `.venv`; no repository file
+   changed).
+8. Obtain a fresh human authorization for real JPX source-only preflight
+   **attempt #3**. **Not yet authorized.**
+9. Obtain separate human authorization for real partition creation.
+10. Create the real partition manifest.
+11. Verify manifest SHA and partition implementation commit.
+12. Obtain a separate human gate to Git-pin the trust anchor.
+13. Obtain separate T1 authorization.
+14. Obtain later separate T2 authorization.
 
 None of these steps is authorized by this documentation update beyond steps
-1–5, which are already recorded as done. This handoff records the already-
-completed implementation and its human-PC test verification; it authorizes
-no real network action, no partition creation, no trust-anchor authorization,
-and no `T1`/`T2` acquisition. Actual private storage remains
-`NOT_YET_DEFINED`; when selected it must be an absolute path outside this
-repository and must never be committed.
+1–7, which are already recorded as done. This handoff records the
+already-completed independent review, the already-run attempt #2, and the
+already-completed local environment remediation; it authorizes no real
+network action (step 8 remains open and requires its own fresh
+authorization), no partition creation, no trust-anchor authorization, and no
+`T1`/`T2` acquisition. Actual private storage remains `NOT_YET_DEFINED`;
+when selected it must be an absolute path outside this repository and must
+never be committed.
 
 ## Historical pre-production blockers at c5848ced1a5c800f384cb7b86fb642e5c748c2c2
 
