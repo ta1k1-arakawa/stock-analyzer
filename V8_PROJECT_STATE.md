@@ -255,18 +255,68 @@ production implementation is fail-closed by design — a `T1` ticker
 containing at least one invalid historical OHLCV row stops the whole block
 acquisition rather than silently admitting a partial or repaired dataset.
 
-**No malformed-OHLCV handling policy is decided by this record.** In
-particular, none of the following is approved, implemented, or documented
-as decided here: skipping invalid rows, skipping the whole ticker,
-replacing missing values, forward-fill, back-fill, using another data
-source, retrying Yahoo, reducing the `T1` ticker count, replacing the
-ticker from `T_spare`, repartitioning, or relaxing parser validation. Each
-would be its own methodological/design decision requiring separate human
-review before any further `T1` action.
+**No malformed-OHLCV handling policy was decided by this attempt-#1
+record at the time it was written.** In particular, none of the following
+was approved, implemented, or documented as decided here: skipping invalid
+rows, skipping the whole ticker, replacing missing values, forward-fill,
+back-fill, using another data source, retrying Yahoo, reducing the `T1`
+ticker count, replacing the ticker from `T_spare`, repartitioning, or
+relaxing parser validation. **A malformed-OHLCV handling policy has since
+been human-selected** — see "Malformed-OHLCV policy clarification" below —
+but it remains unimplemented in code, and none of the prohibited-here
+options above was among those selected.
 
 `T2`, `T3`, and `T_spare` were not touched by this attempt. The trust
 anchor is unchanged (`AUTHORIZED`, same pinned manifest SHA and
 implementation commit as above).
+
+## Malformed-OHLCV policy clarification (2026-08-10)
+
+Following the `T1` attempt #1 `MALFORMED_OHLCV` BLOCK above, a read-only
+design review compared candidate malformed-row handling policies, and a
+subsequent read-only threshold review derived candidate numeric thresholds
+from constants already frozen elsewhere in the design (the 8-split
+walk-forward scheme and the existing 252-observation convention). The human
+then selected one policy, recorded as an append-only design clarification in
+`V8_HISTORICAL_RESEARCH_DESIGN.md` §17:
+
+```text
+policy_name = POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE
+fitted_to_failed_t1_attempt_1_payload = false
+invalid_fraction_threshold = 0.01
+separate_integer_invalid_count_threshold = false
+max_consecutive_invalid_returned_rows = 5
+full_p_hist_check_required = true
+per_test_year_checks_required = true (2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025)
+expected_calendar_missing_dates_treated_as_malformed = false
+fixed_252_observation_acquisition_threshold = false
+ticker_removal_allowed = false
+ticker_replacement_allowed = false
+t_spare_replacement_allowed = false
+repartition_allowed = false
+imputation_allowed = false
+forward_fill_allowed = false
+back_fill_allowed = false
+alternate_source_substitution_allowed = false
+threshold_exceedance_action = BLOCK_WHOLE_ACQUISITION
+policy_uniform_across_t0_t1_t2_t3 = true
+t2_policy_change_after_opening = PROHIBITED
+partition_regeneration_required = false
+trust_anchor_repinning_required = false
+production_code_changed_by_this_clarification = false
+tests_changed_by_this_clarification = false
+implementation_status = NOT_IMPLEMENTED
+```
+
+The exact invalid-row reason and concrete ticker behind `T1` attempt #1
+remain `UNKNOWN_NOT_PERSISTED` and private, respectively, and were not used
+to fit any threshold above. This clarification is **docs/state only**: it
+does not modify `src/v8_historical_acquisition.py`, `src/v7_yahoo_collector.py`,
+or any test, does not authorize `T1` acquisition attempt #2 or `T2`
+acquisition, does not regenerate the partition, and does not repin the
+trust anchor. Implementation with fake-only tests, an independent review of
+that implementation, and a fresh separate human authorization for any real
+`T1` retry all remain outstanding.
 
 ## Completed milestones
 
@@ -291,6 +341,7 @@ implementation commit as above).
 | 17 | One-time real production partition creation and independent read-only manifest validation: **PASS** | authorized HEAD `36cbed941050e728f7f96ce2af505e81175cc02c` | `REAL_PARTITION_CREATED_VALIDATED_PENDING_TRUST_ANCHOR_HUMAN_GATE`; cumulative real JPX requests 8, real Yahoo requests 0; no assignments exposed |
 | 18 | One-time trust-anchor pinning: `V8_TRUSTED_PARTITION.json` set to `AUTHORIZED` with the audited manifest SHA and partition implementation commit | anchor base HEAD `46023d92d359c222438b9c0b2dbe410e6623c1f6` | `TRUST_ANCHOR_PINNED_PENDING_T1_HUMAN_GATE`; 0 new network requests (cumulative real JPX requests remain 8, real Yahoo requests remain 0); does not authorize `T1`/`T2`/`T3`/`T_spare` acquisition |
 | 19 | One-time real `T1` raw acquisition attempt #1: **BLOCKED** (`MALFORMED_OHLCV`, failing request 298 of 300); acquisition/data-quality BLOCK only, not a validation/strategy/model result; no bundle published, no retry | authorized HEAD `d5441020389452d85cb19a94f647448775fba8d8` | `T1_RAW_ACQUISITION_BLOCKED_PENDING_HUMAN_DESIGN_REVIEW`; 298 real Yahoo requests this attempt (cumulative 298), 0 new real JPX requests (cumulative 8); no malformed-OHLCV handling policy decided |
+| 20 | Malformed-OHLCV handling policy human-selected and recorded as an append-only design clarification: `POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE` (day-level exclusion only, 1% invalid-fraction gate, max 5 consecutive invalid returned rows, checked over full `P_hist` and independently per frozen test year, uniform across `T0`/`T1`/`T2`/`T3`, any exceedance `BLOCK_WHOLE_ACQUISITION`); docs/state only, no production code or tests changed | base HEAD `31cdd3e1854fc7465120be35a1b39cf79681c55e` (see `V8_STATE.json -> malformed_ohlcv_policy_clarification` for full field-level detail) | `MALFORMED_OHLCV_POLICY_FROZEN_PENDING_IMPLEMENTATION`; `V8_HISTORICAL_RESEARCH_DESIGN.md` §17; 0 new network requests (cumulative real JPX requests remain 8, real Yahoo requests remain 298); does not authorize `T1` attempt #2 or `T2` acquisition |
 
 ## Human approvals
 
@@ -309,7 +360,8 @@ implementation commit as above).
 | Real partition creation | **GRANTED, CONSUMED** — one-time production build PASS and read-only validation PASS; no retry |
 | Trust-anchor pinning (`V8_TRUSTED_PARTITION.json` authorization) | **GRANTED, CONSUMED** — anchor pinned to `authorization_status=AUTHORIZED`, `authorized_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62`, `authorized_partition_implementation_git_commit=36cbed941050e728f7f96ce2af505e81175cc02c`; does not itself authorize `T1`/`T2`/`T3` acquisition |
 | Real T1 acquisition — attempt #1 | One-time authorization **GRANTED and consumed** — result **BLOCKED** (`MALFORMED_OHLCV`, acquisition/data-quality issue, not a validation result), no retry performed |
-| Real T1 acquisition — attempt #2 (or any further real `T1` action) | **NOT GRANTED** — blocked pending a separate human design review of malformed-OHLCV handling policy |
+| Malformed-OHLCV handling policy (append-only design clarification) | **GRANTED** (2026-08-10) — `V8_HISTORICAL_RESEARCH_DESIGN.md` §17, `POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE`; does not itself authorize any real network action or implement any code/test change |
+| Real T1 acquisition — attempt #2 (or any further real `T1` action) | **NOT GRANTED** — additionally blocked pending implementation of the now-selected malformed-OHLCV policy and its own independent review |
 | Real T2 acquisition | **NOT GRANTED** |
 | T3 acquisition of any kind | **NOT GRANTED** (and the code path unconditionally rejects it regardless of any future gate wording short of a design amendment) |
 | Layer A search, Layer B validation, Layer C evaluation | **NOT GRANTED** — not implemented at all yet |
@@ -337,7 +389,9 @@ T_spare_authorized = false
 layer_b_opened = false
 layer_c_opened = false
 private_v8_storage_location = DEFINED_OUTSIDE_REPOSITORY
-malformed_ohlcv_policy_decided = false
+malformed_ohlcv_policy_decided = true
+malformed_ohlcv_policy_name = POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE
+malformed_ohlcv_policy_implemented = false
 ```
 
 The one-time real partition build, its subsequent read-only validation, the
@@ -345,8 +399,11 @@ one-time trust-anchor pinning, and the one-time `T1` acquisition attempt #1
 (BLOCKED) are all recorded above. `V8_TRUSTED_PARTITION.json` remains
 `AUTHORIZED` and unchanged by the `T1` attempt. `T1` was never successfully
 acquired and has no raw bundle; no acquisition of any block, and no further
-`T1` action, is authorized by this record. The next action is
-`DEFINE_MALFORMED_OHLCV_POLICY_BEFORE_ANY_FURTHER_T1_ACTION`.
+`T1` action, is authorized by this record. A malformed-OHLCV handling policy
+has now been human-selected and recorded as an append-only design
+clarification (`V8_HISTORICAL_RESEARCH_DESIGN.md` §17), but it is **not yet
+implemented** in `src/v8_historical_acquisition.py` or in any test. The next
+action is `IMPLEMENT_POLICY_G_PRIME_V1_WITH_FAKE_ONLY_TESTS`.
 
 ## Git provenance
 
@@ -411,7 +468,9 @@ t1_acquisition_attempt_1_result = BLOCKED (MALFORMED_OHLCV, failing request 298 
 t1_acquisition_attempt_1_authorization_consumed = true
 t1_final_bundle_exists = false
 t1_opened_for_research = false
-next_t1_acquisition_attempt_authorized = false (blocked pending separate human design review of malformed-OHLCV handling policy)
+malformed_ohlcv_policy_decided = true (POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE, V8_HISTORICAL_RESEARCH_DESIGN.md §17, 2026-08-10)
+malformed_ohlcv_policy_implemented = false
+next_t1_acquisition_attempt_authorized = false (blocked pending implementation of the selected malformed-OHLCV policy, fake-only tests, and independent review)
 ```
 
 ## T1 state
@@ -425,6 +484,8 @@ raw_bundle_exists = false
 research_access_authorized = false
 validation_access_count = null (remains logically 0: no completed acquisition bundle exists and no research opening occurred)
 layer_B_opened = false
+malformed_ohlcv_policy_decided = true (POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE)
+malformed_ohlcv_policy_implemented = false
 ```
 
 ## T2 state
@@ -508,10 +569,11 @@ current fake-only V8 regression is 226 passed / 0 failed.
 3. ~~Independent local read-only validation of the real manifest~~ — done; self-hash, implementation commit, schema, source/T0 PASS, and T3 prohibition verified.
 4. ~~Obtain a separate human gate to pin the trust anchor using the audited manifest SHA and implementation commit.~~ **Done** — one-time authorization consumed; `V8_TRUSTED_PARTITION.json` is now `AUTHORIZED` with `authorized_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62` and `authorized_partition_implementation_git_commit=36cbed941050e728f7f96ce2af505e81175cc02c`.
 5. ~~Obtain separate T1 authorization and run exactly one real T1 raw acquisition attempt.~~ **Done, but BLOCKED** — attempt #1 authorized and run against `d5441020389452d85cb19a94f647448775fba8d8`; result `BLOCKED/MALFORMED_OHLCV` at request 298 of 300; authorization consumed; no retry. See "T1 raw acquisition attempt #1 audit" above.
-6. Obtain a separate human design review of malformed-OHLCV handling policy. **Not yet done — required before any further `T1` action.** None of skip-invalid-rows / skip-whole-ticker / replace-missing-values / forward-fill / back-fill / use-another-data-source / retry-Yahoo / reduce-T1-ticker-count / replace-ticker-from-T_spare / repartition / relax-parser-validation is decided or approved by this record.
-7. Obtain a fresh separate human authorization for `T1` acquisition attempt #2 (only after step 6). **Not yet authorized.**
-8. Obtain separate T2 authorization and procedural seal. **Not yet authorized** — additionally blocked while the `T1` acquisition/data-quality issue is unresolved.
-9. Keep T3 and T_spare acquisition unauthorized; T3 remains unconditionally prohibited by design.
+6. ~~Obtain a separate human design review of malformed-OHLCV handling policy, then a human-selected policy and its exact thresholds.~~ **Done** — `POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE` recorded as an append-only design clarification, `V8_HISTORICAL_RESEARCH_DESIGN.md` §17. None of skip-whole-ticker / replace-missing-values / forward-fill / back-fill / use-another-data-source / retry-Yahoo / reduce-T1-ticker-count / replace-ticker-from-T_spare / repartition / relax-parser-validation was selected.
+7. Implement `POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE` in `src/v8_historical_acquisition.py` (and, if needed, `src/v7_yahoo_collector.py`) with new fake-only tests, then obtain an independent review of that implementation. **Not yet done.**
+8. Obtain a fresh separate human authorization for `T1` acquisition attempt #2 (only after step 7). **Not yet authorized.**
+9. Obtain separate T2 authorization and procedural seal. **Not yet authorized** — additionally blocked while the malformed-OHLCV policy remains unimplemented.
+10. Keep T3 and T_spare acquisition unauthorized; T3 remains unconditionally prohibited by design.
 
 The private manifest and any private T1 staging/raw data remain outside the
 repository and are not copied or committed. This docs/state synchronization

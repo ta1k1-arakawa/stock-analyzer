@@ -11,7 +11,7 @@
   "design_frozen": true,
   "design_status": "HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION",
 
-  "current_phase": "T1_RAW_ACQUISITION_BLOCKED_PENDING_HUMAN_DESIGN_REVIEW",
+  "current_phase": "MALFORMED_OHLCV_POLICY_FROZEN_PENDING_IMPLEMENTATION",
 
   "human_gates": {
     "new_strategy_family_accepted": true,
@@ -21,6 +21,7 @@
     "real_partition_creation_authorization_consumed": true,
     "trust_anchor_pinning_authorization_consumed": true,
     "t1_acquisition_attempt_1_authorization_consumed": true,
+    "malformed_ohlcv_policy_selected": true,
     "real_t1_acquisition_authorized": false,
     "real_t2_acquisition_authorized": false,
     "t3_acquisition_authorized": false,
@@ -326,7 +327,48 @@
       "repartition",
       "relax_parser_validation"
     ],
-    "requires_separate_human_design_review": true
+    "requires_separate_human_design_review": true,
+    "note": "This object's own fields are the original T1-BLOCK-time snapshot and are left unchanged; see malformed_ohlcv_policy_clarification below for the subsequent human-selected decision.",
+    "decided": true,
+    "decided_in": "malformed_ohlcv_policy_clarification (below)"
+  },
+
+  "malformed_ohlcv_policy_clarification": {
+    "clarification_date": "2026-08-10",
+    "clarification_type": "APPEND_ONLY_ERRATUM",
+    "design_section": "V8_HISTORICAL_RESEARCH_DESIGN.md §17",
+    "policy_name": "POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE",
+    "fitted_to_failed_t1_attempt_1_payload": false,
+    "invalid_fraction_threshold": 0.01,
+    "separate_integer_invalid_count_threshold": false,
+    "max_consecutive_invalid_returned_rows": 5,
+    "full_p_hist_check_required": true,
+    "per_test_year_checks_required": true,
+    "test_years": [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025],
+    "expected_calendar_missing_dates_treated_as_malformed": false,
+    "fixed_252_observation_acquisition_threshold": false,
+    "ticker_removal_allowed": false,
+    "ticker_replacement_allowed": false,
+    "t_spare_replacement_allowed": false,
+    "repartition_allowed": false,
+    "imputation_allowed": false,
+    "forward_fill_allowed": false,
+    "back_fill_allowed": false,
+    "alternate_source_substitution_allowed": false,
+    "threshold_exceedance_action": "BLOCK_WHOLE_ACQUISITION",
+    "policy_uniform_across_t0_t1_t2_t3": true,
+    "t2_policy_change_after_opening": "PROHIBITED",
+    "partition_regeneration_required": false,
+    "trust_anchor_repinning_required": false,
+    "existing_block_assignments_unchanged": true,
+    "existing_partition_manifest_identity_unchanged": true,
+    "t1_attempt_1_remains_blocked": true,
+    "t1_attempt_1_authorization_remains_consumed": true,
+    "this_clarification_authorizes_t1_attempt_2": false,
+    "this_clarification_authorizes_t2_acquisition": false,
+    "production_code_changed_by_this_clarification": false,
+    "tests_changed_by_this_clarification": false,
+    "implementation_status": "NOT_IMPLEMENTED"
   },
 
   "source_snapshot_semantics_implementation": {
@@ -515,7 +557,7 @@
     }
   ],
 
-  "next_action": "DEFINE_MALFORMED_OHLCV_POLICY_BEFORE_ANY_FURTHER_T1_ACTION",
+  "next_action": "IMPLEMENT_POLICY_G_PRIME_V1_WITH_FAKE_ONLY_TESTS",
   "this_docs_state_update_authorizes_real_network": false,
   "t1_attempt_1_block_authorizes_t2_acquisition": false,
   "t1_attempt_1_block_authorizes_further_t1_action": false,

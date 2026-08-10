@@ -1244,3 +1244,155 @@ real_partition_creation_authorized_by_this_clarification=false
 trust_anchor_authorization_by_this_clarification=false
 t1_t2_acquisition_authorized_by_this_clarification=false
 ```
+
+## 17. Malformed historical OHLCV row-quality gate clarification (2026-08-10, append-only)
+
+This section is an **append-only clarification**, not a revision. Nothing in
+§1–§16 above is deleted, reworded or reinterpreted by this section. It resolves
+one specific gap — the design previously stated no policy at all for
+malformed/invalid historical OHLCV rows — and does not reopen any other frozen
+decision.
+
+```text
+clarification_date=2026-08-10
+clarification_type=APPEND_ONLY_ERRATUM
+frozen_sections_modified=none
+```
+
+**Trigger.** The one-time human-authorized real `T1` raw acquisition attempt
+#1 (implementation HEAD `d5441020389452d85cb19a94f647448775fba8d8`) returned
+`status=BLOCKED, reason_class=MALFORMED_OHLCV` at failing request position
+298 of 300. The current fail-closed acquisition implementation discards the
+entire staging directory on this exception, so the exact invalid-row reason
+and the concrete failing ticker were never persisted; both remain
+`UNKNOWN_NOT_PERSISTED` and private, respectively. A separate read-only
+design review (not itself part of this frozen design) compared candidate
+handling policies against selection-bias, contamination, sealed-holdout, and
+reproducibility criteria; a separate read-only threshold review then derived
+candidate numeric thresholds from constants already frozen elsewhere in this
+document (the 8-split walk-forward scheme of §8.1, and the existing
+252-valid-observation convention referenced in §3.2). **Neither review
+result was fitted to the unknown attempt #1 payload** — the exact reason and
+ticker were never known to either review, and the resulting policy and
+thresholds below are prospective and mechanical, not reverse-engineered from
+that specific failure.
+
+**Ambiguity identified.** This design previously specified partition-level
+policy (§5, §5.6, §5.7) but said nothing about how a *within-ticker*
+row-level data-quality defect in raw historical OHLCV should be handled
+during `T0`/`T1`/`T2`/`T3` acquisition. Left unstated, this gap was resolved
+ad hoc in the current implementation as an undocumented whole-block
+fail-closed BLOCK (§5.8 acquisition dependency), with no persisted record of
+which rows or how many caused it.
+
+**Human decision — binding clarification.**
+
+```text
+V8_MALFORMED_OHLCV_POLICY=POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE
+```
+
+1. **Scope.** Only observations that Yahoo actually returns with a timestamp
+   are evaluated by this policy. A calendar date for which Yahoo returns no
+   timestamp is **not** counted as an invalid row. Pre-listing periods,
+   IPO-before-history gaps, exchange holidays, and other non-returned dates
+   are therefore not converted into malformed rows by this policy. This
+   clarification does **not** claim that missing-date completeness is
+   solved; that is a separate data-quality concern and must not be silently
+   folded into this policy.
+
+2. **Invalid-row classification.** Use the existing invalid-row
+   classification already implemented by the canonical Yahoo parser
+   (`src/v7_yahoo_collector.py::_row_invalid_reason()`). All current invalid
+   reasons carry uniform severity. There is no reason-specific exception.
+
+3. **Day-level handling.** An invalid returned daily row may be
+   deterministically excluded. No filling or repair of any kind is
+   permitted: no forward-fill, no back-fill, no interpolation, no
+   imputation, and no alternate-source substitution.
+
+4. **Membership invariants.** Ticker membership remains exactly the frozen
+   partition membership. Ticker removal, ticker replacement, `T_spare`
+   replacement, and repartitioning are all prohibited under this policy. An
+   acquisition-time data-quality outcome may never change `T1`/`T2`/`T3`
+   membership.
+
+5. **Fraction threshold.** For a given evaluated window,
+   `invalid_fraction = invalid_returned_row_count / (valid_returned_row_count
+   + invalid_returned_row_count)`. Requirement: `invalid_fraction <= 0.01`.
+   No separate integer max-invalid-row-count threshold exists; the 1% figure
+   is not converted to an independently rounded integer — the fraction
+   comparison itself is authoritative. If the denominator is 0, the result is
+   BLOCK.
+
+6. **Consecutive threshold.** Maximum consecutive invalid *returned* rows:
+   5. Requirement: `max_consecutive_invalid_returned_rows <= 5`.
+   "Consecutive" refers to chronologically adjacent Yahoo-returned
+   observations, not to absent calendar dates.
+
+7. **Evaluation windows.** The rule must pass (A) over the ticker's full
+   applicable returned `P_hist` series, **and** (B) independently over each
+   frozen `V8` test-year window: 2018, 2019, 2020, 2021, 2022, 2023, 2024,
+   2025 (§8.1). For a window in which the ticker has no returned
+   observations because it was not yet listed or had no applicable history,
+   the absence itself is not classified as malformed. This clarification
+   does not invent or assume any expected JPX trading-day calendar.
+
+8. **Historical-length rule.** There is no acquisition-level fixed
+   252-observation requirement in this malformed-row policy. Short history
+   by itself is not malformed OHLCV. A late-listed ticker remains a member
+   of its frozen block. Downstream feature/model/backtest logic must not use
+   that ticker until the specific strategy's required historical lookback
+   exists. This clarification does not approve any particular
+   feature/lookback rule; it only separates history sufficiency from
+   malformed-row quality.
+
+9. **Threshold exceedance.** If any ticker exceeds any binding
+   malformed-row threshold above, the result is `BLOCK_WHOLE_ACQUISITION`.
+   The implementation must not, in response: drop that ticker, publish a
+   fewer-than-300-ticker block, replace it, repair it, change the threshold,
+   or retry automatically.
+
+10. **Uniformity.** This policy is methodological and applies identically
+    wherever equivalent historical Yahoo rows are consumed for `V8`: `T0`,
+    `T1`, `T2`, and `T3`. There is no `T1`-specific exception. Consistent
+    with §5.4, `T2`'s policy may not be changed after `T2` opens.
+
+```text
+policy_name=POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE
+invalid_fraction_threshold=0.01
+separate_integer_invalid_count_threshold=false
+max_consecutive_invalid_returned_rows=5
+full_p_hist_check_required=true
+per_test_year_checks_required=true
+test_years=2018,2019,2020,2021,2022,2023,2024,2025
+expected_calendar_missing_dates_treated_as_malformed=false
+fixed_252_observation_acquisition_threshold=false
+ticker_removal_allowed=false
+ticker_replacement_allowed=false
+t_spare_replacement_allowed=false
+repartition_allowed=false
+imputation_allowed=false
+forward_fill_allowed=false
+back_fill_allowed=false
+alternate_source_substitution_allowed=false
+threshold_exceedance_action=BLOCK_WHOLE_ACQUISITION
+policy_uniform_across_t0_t1_t2_t3=true
+t2_policy_change_after_opening=PROHIBITED
+partition_regeneration_required=false
+trust_anchor_repinning_required=false
+existing_block_assignments_unchanged=true
+existing_partition_manifest_identity_unchanged=true
+t1_attempt_1_remains_blocked=true
+t1_attempt_1_authorization_remains_consumed=true
+this_clarification_authorizes_t1_attempt_2=false
+real_network_authorized_by_this_clarification=false
+production_code_changed_by_this_clarification=false
+tests_changed_by_this_clarification=false
+```
+
+This clarification does **not** authorize `T1` acquisition attempt #2, does
+**not** authorize `T2` acquisition, and does not itself implement the policy
+in `src/v8_historical_acquisition.py` or any test. Implementation with
+fake-only tests, followed by a separate independent review, and then a
+fresh, separate human authorization, all remain required before any further
+real `T1` action.

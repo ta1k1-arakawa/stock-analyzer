@@ -49,7 +49,7 @@ root. This has held for every V8 phase so far and must keep holding.**
 ## Current phase
 
 ```text
-T1_RAW_ACQUISITION_BLOCKED_PENDING_HUMAN_DESIGN_REVIEW
+MALFORMED_OHLCV_POLICY_FROZEN_PENDING_IMPLEMENTATION
 ```
 
 ## Last completed gate
@@ -164,13 +164,47 @@ successfully acquired and was never opened for research. The current
 production implementation is fail-closed: any `T1` ticker containing at
 least one invalid historical OHLCV row stops the whole block acquisition.
 
-**No malformed-OHLCV handling policy is decided here.** None of
-skip-invalid-rows, skip-whole-ticker, replace-missing-values, forward-fill,
-back-fill, use-another-data-source, retry-Yahoo, reduce-T1-ticker-count,
-replace-ticker-from-T_spare, repartition, or relax-parser-validation is
-approved or implemented by this record — each requires its own separate
-human design review before any further `T1` action. `T2`, `T3`, and
-`T_spare` were not touched.
+**No malformed-OHLCV handling policy was decided by this attempt-#1
+record.** A policy has since been human-selected as an append-only design
+clarification — see "Malformed-OHLCV policy clarification" below — but it
+is not yet implemented in code. `T2`, `T3`, and `T_spare` were not touched
+by this attempt.
+
+## Malformed-OHLCV policy clarification (2026-08-10) — decided, not yet implemented
+
+```text
+policy_name = POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE
+design_section = V8_HISTORICAL_RESEARCH_DESIGN.md §17
+fitted_to_failed_t1_attempt_1_payload = false
+invalid_fraction_threshold = 0.01
+separate_integer_invalid_count_threshold = false
+max_consecutive_invalid_returned_rows = 5
+full_p_hist_check_required = true
+per_test_year_checks_required = true (2018,2019,2020,2021,2022,2023,2024,2025)
+expected_calendar_missing_dates_treated_as_malformed = false
+fixed_252_observation_acquisition_threshold = false
+ticker_removal_allowed = false
+ticker_replacement_allowed = false
+t_spare_replacement_allowed = false
+repartition_allowed = false
+imputation_allowed = false
+forward_fill_allowed = false
+back_fill_allowed = false
+alternate_source_substitution_allowed = false
+threshold_exceedance_action = BLOCK_WHOLE_ACQUISITION
+policy_uniform_across_t0_t1_t2_t3 = true
+t2_policy_change_after_opening = PROHIBITED
+partition_regeneration_required = false
+trust_anchor_repinning_required = false
+production_code_changed_by_this_clarification = false
+tests_changed_by_this_clarification = false
+implementation_status = NOT_IMPLEMENTED
+```
+
+This is docs/state only. It does not modify
+`src/v8_historical_acquisition.py` or any test, and does not authorize `T1`
+attempt #2 or `T2` acquisition. See `V8_HISTORICAL_RESEARCH_DESIGN.md` §17
+and `V8_STATE.json` → `malformed_ohlcv_policy_clarification` for full detail.
 
 ## Current production status (do not contradict this)
 
@@ -197,12 +231,13 @@ partition_public_dependency_injection = CLOSED_PENDING_REVIEW
 trusted_partition_authorization = true (pinned by one-time trust-anchor authorization; see "Trust anchor pinning record" above; unchanged by the T1 attempt)
 real_jpx_authorization = false
 real_jpx_source_fetch_authorized = false (attempt #3's authorization was consumed by its single PASS outcome; a fresh authorization is required for any further real JPX action)
-real_T1_authorization = false (attempt #1's authorization was consumed by its single BLOCKED outcome; a fresh authorization, plus a separate malformed-OHLCV policy decision, is required before any further T1 action)
+real_T1_authorization = false (attempt #1's authorization was consumed by its single BLOCKED outcome; a fresh authorization, after implementing the now-selected malformed-OHLCV policy, is required before any further T1 action)
 real_T2_authorization = false
 real_T3_authorization = false
 real_partition_creation_authorization_consumed = true
 t1_acquisition_attempt_1_authorization_consumed = true
-malformed_ohlcv_policy_decided = false
+malformed_ohlcv_policy_decided = true (POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE, §17)
+malformed_ohlcv_policy_implemented = false
 v4_raw_sha_equality_required_for_v8_partition = false (V8_HISTORICAL_RESEARCH_DESIGN.md §16; V8_PARTITION_SOURCE_NOT_REPRODUCIBLE raw-hash gate removed in code, implementation_commit 1306d7be39ef9b73d049d5c4899ce286080ec1c2; independently reviewed, SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS)
 t0_300_exact_reproduction_required = true (unchanged; V8_T0_REPRODUCTION_MISMATCH still BLOCKs before allocate_fresh_blocks; reached and PASSED by attempt #3)
 manifest_schema_version = V8_PARTITION_MANIFEST_V3 (was V8_PARTITION_MANIFEST_V2)
@@ -240,7 +275,7 @@ fake-test seam only and remains `CLOSED_PENDING_REVIEW`.
 ## Immediate next action
 
 ```text
-DEFINE_MALFORMED_OHLCV_POLICY_BEFORE_ANY_FURTHER_T1_ACTION
+IMPLEMENT_POLICY_G_PRIME_V1_WITH_FAKE_ONLY_TESTS
 ```
 
 `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 is implemented in code, has **passed
@@ -252,29 +287,30 @@ then permitted **`T1` raw acquisition attempt #1**, which **BLOCKED**:
 `reason_class=MALFORMED_OHLCV`, failing request 298 of 300, exit code 2. See
 "T1 raw acquisition attempt #1 record" above for full detail.
 
-**This BLOCK does not authorize a retry, and it does not decide how
-malformed OHLCV rows should be handled.** `T1` was never successfully
-acquired and was never opened for research; this is an acquisition/
-data-quality issue, not a validation, strategy, or model result. Before any
-further `T1` action, a separate human design review must decide the
-malformed-OHLCV handling policy (see the prohibited-undecided-options list
-in `V8_STATE.json` → `malformed_ohlcv_policy`). `T2` acquisition may not
-proceed while this is unresolved; `T3` remains unconditionally prohibited.
+**The malformed-OHLCV handling policy has since been decided** —
+`POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE`, recorded as an
+append-only design clarification in `V8_HISTORICAL_RESEARCH_DESIGN.md` §17
+— but is **not yet implemented** in `src/v8_historical_acquisition.py` or
+any test, and this BLOCK still does not authorize a retry. `T1` was never
+successfully acquired and was never opened for research; this remains an
+acquisition/data-quality issue, not a validation, strategy, or model
+result. `T2` acquisition may not proceed until the policy is implemented,
+fake-only tested, and independently reviewed; `T3` remains unconditionally
+prohibited.
 
 See `V8_PROJECT_STATE.md` → "Current ordered next steps" for the full requirement
 list, and `V8_STATE.json` → `t1_raw_acquisition_attempt_history` /
-`malformed_ohlcv_policy` for the machine-readable form.
+`malformed_ohlcv_policy_clarification` for the machine-readable form.
 
 ## Current blockers before any real network call
 
-1. **No malformed-OHLCV handling policy has been decided.** This is a
-   required separate human design review before any further `T1` action —
-   see "T1 raw acquisition attempt #1 record" above for the full list of
-   options this record explicitly does *not* decide.
+1. **The selected malformed-OHLCV handling policy is not yet implemented.**
+   `POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE` is decided
+   (`V8_HISTORICAL_RESEARCH_DESIGN.md` §17) but requires implementation with
+   fake-only tests and an independent review before any further `T1` action.
 2. **No T1 acquisition attempt #2 authorization exists.** Attempt #1's
    authorization was consumed by its single BLOCKED outcome; a fresh,
-   separate human authorization is required, and only after the policy
-   review above.
+   separate human authorization is required, and only after item 1 above.
 3. **`T2` acquisition may not proceed** while the `T1` acquisition/
    data-quality issue is unresolved.
 4. **Git provenance is required.** Immediately before every future real
