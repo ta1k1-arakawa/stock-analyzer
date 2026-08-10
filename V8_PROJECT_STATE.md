@@ -13,7 +13,7 @@ the actual repository state at the current remote HEAD.
 ## Current phase
 
 ```text
-SOURCE_SNAPSHOT_CLARIFICATION_APPROVED_IMPLEMENTATION_PENDING
+SOURCE_SNAPSHOT_SEMANTICS_IMPLEMENTED_PENDING_REVIEW
 ```
 
 The independent source-preflight review passed
@@ -23,13 +23,38 @@ source-only preflight was run exactly once. It returned
 because the currently-served JPX raw bytes did not hash-match the `V4`
 2026-08-03 `raw_file_sha256`; no retry was performed. A human design gate then
 resolved the underlying ambiguity: `V8_HISTORICAL_RESEARCH_DESIGN.md` §16
-(append-only, 2026-08-10) clarifies that the V8 partition may use an official
-JPX snapshot fetched at partition-implementation time, and does not require
-that snapshot's raw bytes to equal `V4`'s 2026-08-03 raw bytes — while `T0`
-exact reproduction against the already-frozen `V4_UNIVERSE.csv` remains
-mandatory. This clarification authorizes **no** real network action by
-itself; implementing the corresponding code change is the next step, still
-followed by its own independent review and its own real-network human gate.
+(append-only, 2026-08-10, unchanged by this phase) clarifies that the V8
+partition may use an official JPX snapshot fetched at
+partition-implementation time, and does not require that snapshot's raw
+bytes to equal `V4`'s 2026-08-03 raw bytes — while `T0` exact reproduction
+against the already-frozen `V4_UNIVERSE.csv` remains mandatory.
+
+That clarification is now implemented in code
+(`1306d7be39ef9b73d049d5c4899ce286080ec1c2`, plus a test-only environment-
+compatibility fix at `68b836d314b98955aa7d76e390ce6235a765b183` that widened
+one test's accepted `V8HistoricalAcquisitionBlocked` reason set to include
+the pre-existing, unmodified `PRODUCTION_GIT_HEAD_NOT_ORIGIN` guard outcome —
+no production code changed by that fix). The `V8_PARTITION_SOURCE_NOT_
+REPRODUCIBLE` raw-hash-equality gate is removed from both the source-only
+preflight and the full manifest build; `V4`'s raw hash is retained only as a
+non-gating audit reference (`v4_source_raw_sha256_reference`,
+`v4_raw_sha_equality_required=false`). Exact `T0` reproduction
+(`V8_T0_REPRODUCTION_MISMATCH` on failure) remains the sole
+source-reproducibility BLOCK condition, and `allocate_fresh_blocks()` is
+still only reached after `T0` PASS. The manifest schema was bumped
+`V8_PARTITION_MANIFEST_V2` → `V8_PARTITION_MANIFEST_V3`.
+
+Because this sandbox has no `pytest`/`pandas` installed, the four V8 test
+files (235 tests total) were verified by the human operator on their own PC
+against transfer branch `v8-partition-acquisition-transfer-pytest-check` at
+`68b836d314b98955aa7d76e390ce6235a765b183`: **235 passed, 0 failed, exit code
+0**. That commit chain was then fast-forwarded (no merge commit, no rebase,
+no SHA rewrite) onto `v8-partition-acquisition`, so the production branch's
+current HEAD is the exact commit that was tested. Zero real JPX/Yahoo
+requests occurred during implementation or testing. This phase authorizes
+**no** real network action; the next step is an independent review of the
+source-snapshot-semantics implementation, followed by its own separate
+real-network human gate.
 
 ## Completed milestones
 
@@ -48,6 +73,7 @@ followed by its own independent review and its own real-network human gate.
 | 11 | Partition production public-boundary remediation: public runner accepts only `output_path`; fake opener/parser/V4/clock dependencies are private test seams | `297cb8aa599a74bd9a09953ce7acae10c9cfec95` | `CLOSED_PENDING_REVIEW`; 206 fake-only V8 tests passing |
 | 12 | Source-only JPX/T0 reproduction preflight with closed public boundary; no allocation or publication | `38697c9ede51cac7bd500206d857ee585464996b` | `SOURCE_REPRODUCTION_PREFLIGHT_IMPLEMENTED_PENDING_REVIEW`; 226 fake-only V8 tests passing |
 | 13 | Independent source-preflight review passed; one human-authorized real JPX source-only preflight run (BLOCKED: `V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`, no retry); source-snapshot ambiguity resolved by human design gate | `eb13eb6cad4d0f5a920929cf0eaf97d1f673743d` | `SOURCE_PREFLIGHT_REVIEW_PASS`; append-only design clarification recorded, `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 |
+| 14 | Implemented `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 source-snapshot semantics: removed the `V4`-raw-hash-equality gate, kept exact `T0` reproduction mandatory, bumped manifest schema to `V8_PARTITION_MANIFEST_V3`; plus a test-only environment-compatibility fix (no production code) | implementation `1306d7be39ef9b73d049d5c4899ce286080ec1c2`; test-fix `68b836d314b98955aa7d76e390ce6235a765b183` | `SOURCE_SNAPSHOT_SEMANTICS_IMPLEMENTED_PENDING_REVIEW`; human-PC-verified 235 passed / 0 failed, exit code 0, on transfer branch `v8-partition-acquisition-transfer-pytest-check`; fast-forwarded onto `v8-partition-acquisition` |
 
 ## Human approvals
 
@@ -77,7 +103,7 @@ v8_design_frozen_commit = c414d3191cba356734d7ed08bdf1abc7d51fc384
 
 v8_implementation_branch = v8-partition-acquisition
 v8_pre_remediation_implementation_commit = 53c951d4e0dfc9cce92e38a223d74636406c6cce
-v8_current_remediation_state = 38697c9ede51cac7bd500206d857ee585464996b (source-only JPX/T0 preflight; verify current remote HEAD before acting)
+v8_current_remediation_state = 1306d7be39ef9b73d049d5c4899ce286080ec1c2 (source-snapshot semantics; test-fix 68b836d314b98955aa7d76e390ce6235a765b183; verify current remote HEAD before acting)
 ```
 
 Verify current remote state with:
@@ -93,9 +119,9 @@ git ls-remote origin v7-forward-capacity-gate3-dry-run
 |---|---|
 | `src/v8_partition.py` | Reconstructs the eligible JPX universe, proves official-source and `T0` reproduction, records `partition_implementation_git_commit`, and atomically publishes a self-hash-verified manifest without replacement. Never imports any V7 module. |
 | `src/v8_historical_acquisition.py` | Raw-only OHLCV acquisition for `T1`/`T2` only. Its public production boundary accepts only output root, block, and persisted manifest path. Before transport it requires clean `HEAD == origin`, reads `V8_TRUSTED_PARTITION.json` bytes from that verified Git object, requires authorization, exact manifest/provenance/production-JPX metadata, identity/300-ticker/hash binding, fixed historical dates, and a strict Yahoo-origin opener. |
-| `scripts/build_v8_partition_manifest.py` | Synthetic CLI plus `--production-build-manifest` and `--production-source-preflight`. The source-only public runner accepts no inputs and fixes JPX transport, parser, V4 paths, UTC clock, repository root, and Git resolver internally; it stops after source/T0 reproduction and cannot allocate or publish. Fake dependencies are available only through private test seams. Neither production mode has been invoked with real JPX. |
+| `scripts/build_v8_partition_manifest.py` | Synthetic CLI plus `--production-build-manifest` and `--production-source-preflight`. The source-only public runner accepts no inputs and fixes JPX transport, parser, V4 paths, UTC clock, repository root, and Git resolver internally; it stops after source/T0 reproduction and cannot allocate or publish. Fake dependencies are available only through private test seams. Neither production mode has been invoked with real JPX. Both modes now implement `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 source-snapshot semantics: no `V4`-raw-hash-equality requirement, exact `T0` reproduction still mandatory. |
 | `scripts/acquire_v8_historical.py` | Synthetic CLI plus implemented `--production-acquire` path. Production mode accepts only block, persisted partition manifest, private output root, and block-specific confirmation; neither CLI nor runner exposes transport, date, Git, repository-root, or trust-anchor overrides. |
-| `tests/test_v8_partition.py`, `tests/test_v8_partition_cli.py`, `tests/test_v8_historical_acquisition.py`, `tests/test_v8_historical_acquisition_cli.py` | 226 fake-only tests passing after the source-only preflight implementation. Zero real JPX/Yahoo calls anywhere in the suite. |
+| `tests/test_v8_partition.py`, `tests/test_v8_partition_cli.py`, `tests/test_v8_historical_acquisition.py`, `tests/test_v8_historical_acquisition_cli.py` | 235 fake-only tests, human-PC-verified passed / 0 failed (exit code 0) after the source-snapshot-semantics implementation. Zero real JPX/Yahoo calls anywhere in the suite. |
 
 ## Data state
 
@@ -108,6 +134,9 @@ requirements = absolute path; outside this repository; never committed
 trusted_partition_authorization = false
 partition_public_dependency_injection = CLOSED_PENDING_REVIEW
 source_snapshot_clarification = IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT (V8_HISTORICAL_RESEARCH_DESIGN.md §16, 2026-08-10; V4 raw SHA equality not required; T0 exact reproduction still required)
+source_snapshot_semantics_implemented = true (1306d7be39ef9b73d049d5c4899ce286080ec1c2; test-fix 68b836d314b98955aa7d76e390ce6235a765b183)
+manifest_schema_version = V8_PARTITION_MANIFEST_V3 (was V8_PARTITION_MANIFEST_V2)
+next_real_jpx_source_only_attempt_authorized = false
 ```
 
 ## T1 state
@@ -199,13 +228,17 @@ current fake-only V8 regression is 226 passed / 0 failed.
 2. ~~Obtain human authorization for exactly one real JPX source-only preflight.~~ **Done** — authorized 2026-08-10.
 3. ~~Run the source-only preflight.~~ **Done** — one attempt, `BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE`, no retry.
 4. ~~Inspect and report the source-only preflight result; resolve the raw-SHA-vs-design ambiguity.~~ **Done** — `V8_HISTORICAL_RESEARCH_DESIGN.md` §16, human clarification `IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT`.
-5. Implement the source-snapshot semantics in `src/v8_partition.py` /
-   `scripts/build_v8_partition_manifest.py`: the source-only and full-build
-   paths must stop requiring `source_raw_sha256 == V4 raw_file_sha256`,
-   while continuing to require exact `T0` reproduction and to fix the new
-   snapshot's own provenance (`eligible_ticker_list_sha256`, byte count,
-   acquisition UTC, etc.) into the result/manifest. **Not done yet — code
-   unchanged by this handoff.**
+5. ~~Implement the source-snapshot semantics in `src/v8_partition.py` /
+   `scripts/build_v8_partition_manifest.py`.~~ **Done** —
+   `1306d7be39ef9b73d049d5c4899ce286080ec1c2` (plus test-only fix
+   `68b836d314b98955aa7d76e390ce6235a765b183`). The `V4`-raw-hash-equality
+   gate is removed; exact `T0` reproduction remains required; the new
+   snapshot's own provenance (`eligible_ticker_list_sha256`,
+   `source_raw_byte_count`, `source_acquisition_utc`, etc.) is fixed into
+   the result/manifest; manifest schema bumped to `V8_PARTITION_MANIFEST_V3`.
+   Human-PC-verified 235 passed / 0 failed (exit code 0) on transfer branch
+   `v8-partition-acquisition-transfer-pytest-check`, then fast-forwarded
+   onto `v8-partition-acquisition` (no merge commit, no rebase).
 6. Obtain an independent review of that code change.
 7. Obtain a fresh human authorization for the next real JPX source-only
    preflight attempt under the new semantics.
@@ -216,12 +249,13 @@ current fake-only V8 regression is 226 passed / 0 failed.
 12. Obtain separate T1 authorization.
 13. Obtain later separate T2 authorization.
 
-None of these steps is authorized by this documentation update beyond step 4,
-which is already recorded as done. This handoff makes no code change (step 5
-remains open) and authorizes no real network action, no partition creation,
-no trust-anchor authorization, and no `T1`/`T2` acquisition. Actual private
-storage remains `NOT_YET_DEFINED`; when selected it must be an absolute path
-outside this repository and must never be committed.
+None of these steps is authorized by this documentation update beyond steps
+1–5, which are already recorded as done. This handoff records the already-
+completed implementation and its human-PC test verification; it authorizes
+no real network action, no partition creation, no trust-anchor authorization,
+and no `T1`/`T2` acquisition. Actual private storage remains
+`NOT_YET_DEFINED`; when selected it must be an absolute path outside this
+repository and must never be committed.
 
 ## Historical pre-production blockers at c5848ced1a5c800f384cb7b86fb642e5c748c2c2
 

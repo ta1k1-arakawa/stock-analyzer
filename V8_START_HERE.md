@@ -49,16 +49,19 @@ root. This has held for every V8 phase so far and must keep holding.**
 ## Current phase
 
 ```text
-SOURCE_SNAPSHOT_CLARIFICATION_APPROVED_IMPLEMENTATION_PENDING
+SOURCE_SNAPSHOT_SEMANTICS_IMPLEMENTED_PENDING_REVIEW
 ```
 
 ## Last completed gate
 
 ```text
-human_gate = SOURCE_SNAPSHOT_CLARIFICATION (V8_HISTORICAL_RESEARCH_DESIGN.md §16, append-only, 2026-08-10)
-human_clarification = IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT
-design_status = HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION  (design_commit c414d3191cba356734d7ed08bdf1abc7d51fc384; §16 is an append-only erratum, not a reopening)
-static_implementation_verdict = SOURCE_PREFLIGHT_REVIEW_PASS (source-only preflight implementation commit 38697c9ede51cac7bd500206d857ee585464996b)
+human_gate = SOURCE_SNAPSHOT_SEMANTICS_IMPLEMENTATION_APPROVED (2026-08-10)
+human_clarification = IMPLEMENTATION_TIME_OFFICIAL_JPX_SNAPSHOT (V8_HISTORICAL_RESEARCH_DESIGN.md §16, append-only, unchanged by this phase)
+design_status = HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION  (design_commit c414d3191cba356734d7ed08bdf1abc7d51fc384)
+static_implementation_verdict = SOURCE_SNAPSHOT_SEMANTICS_IMPLEMENTED_PENDING_REVIEW
+implementation_commit = 1306d7be39ef9b73d049d5c4899ce286080ec1c2
+test_fix_commit = 68b836d314b98955aa7d76e390ce6235a765b183 (test-only; no production code)
+human_pc_pytest = 235 passed / 0 failed, exit code 0 (4 V8 test files; this sandbox has no pytest/pandas installed, so verification was done on the operator's own PC against transfer branch v8-partition-acquisition-transfer-pytest-check, then fast-forwarded onto v8-partition-acquisition with no merge/rebase/rewrite)
 ```
 
 ## Current production status (do not contradict this)
@@ -82,8 +85,9 @@ real_jpx_authorization = false
 real_jpx_source_fetch_authorized = false (the single 2026-08-10 authorization was consumed by the one attempt above; a fresh authorization is required for the next attempt)
 real_T1_authorization = false
 real_T2_authorization = false
-v4_raw_sha_equality_required_for_v8_partition = false (V8_HISTORICAL_RESEARCH_DESIGN.md §16)
-t0_300_exact_reproduction_required = true (unchanged)
+v4_raw_sha_equality_required_for_v8_partition = false (V8_HISTORICAL_RESEARCH_DESIGN.md §16; V8_PARTITION_SOURCE_NOT_REPRODUCIBLE raw-hash gate removed in code, implementation_commit 1306d7be39ef9b73d049d5c4899ce286080ec1c2)
+t0_300_exact_reproduction_required = true (unchanged; V8_T0_REPRODUCTION_MISMATCH still BLOCKs before allocate_fresh_blocks)
+manifest_schema_version = V8_PARTITION_MANIFEST_V3 (was V8_PARTITION_MANIFEST_V2)
 ```
 
 The production partition-manifest CLI is implemented in
@@ -107,31 +111,30 @@ fake-test seam only and remains `CLOSED_PENDING_REVIEW`.
 ## Immediate next action
 
 ```text
-IMPLEMENT_SOURCE_SNAPSHOT_SEMANTICS
+INDEPENDENT_SOURCE_SNAPSHOT_SEMANTICS_REVIEW
 ```
 
-Implement `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 in code: the source-only and
-full-build paths in `src/v8_partition.py` /
-`scripts/build_v8_partition_manifest.py` must stop requiring
-`source_raw_sha256 == V4 raw_file_sha256`, while continuing to require exact
-`T0` reproduction (BLOCK on mismatch) and to fix the newly-fetched snapshot's
-own provenance (`eligible_ticker_list_sha256`, raw byte count, acquisition
-UTC, etc.) into the result/manifest. This has **not** been implemented yet —
-this handoff is a design/state clarification only, no code changed. The
-implementation then requires its own independent review before any further
-real JPX request is authorized.
+`V8_HISTORICAL_RESEARCH_DESIGN.md` §16 is now implemented in code
+(`1306d7be39ef9b73d049d5c4899ce286080ec1c2`, plus test-only fix
+`68b836d314b98955aa7d76e390ce6235a765b183`): the source-only and full-build
+paths in `src/v8_partition.py` / `scripts/build_v8_partition_manifest.py` no
+longer require `source_raw_sha256 == V4 raw_file_sha256`, while exact `T0`
+reproduction (BLOCK on mismatch) is still required and the newly-fetched
+snapshot's own provenance (`eligible_ticker_list_sha256`, raw byte count,
+acquisition UTC, etc.) is fixed into the result/manifest. Human-PC-verified
+235 passed / 0 failed (exit code 0). The next task is an independent review
+of this implementation, before any further real JPX request is authorized.
 
 See `V8_PROJECT_STATE.md` → "Current ordered next steps" for the full requirement
-list, and `V8_STATE.json` → `production_blockers` / `source_snapshot_clarification`
-for the machine-readable form.
+list, and `V8_STATE.json` → `source_snapshot_semantics_implementation` /
+`production_blockers` for the machine-readable form.
 
 ## Current blockers before any real network call
 
-1. **Source-snapshot semantics not yet implemented in code.** The design
-   clarification (§16) is recorded, but `src/v8_partition.py` still enforces
-   the stricter raw-hash-equality check that caused the 2026-08-10 BLOCK.
-   Until that code changes and is independently reviewed, a real re-attempt
-   would very likely BLOCK again for the same reason.
+1. **Source-snapshot semantics implementation pending independent review.**
+   The code change (§16) is implemented and human-PC-test-verified (235
+   passed / 0 failed), but not yet independently reviewed. No production
+   runner may contact a real service until that review passes.
 2. **Trusted partition authorization is false.** Production acquisition reads
    the canonical Git-tracked `V8_TRUSTED_PARTITION.json` before the partition
    manifest and blocks with `TRUSTED_PARTITION_NOT_AUTHORIZED` before Yahoo

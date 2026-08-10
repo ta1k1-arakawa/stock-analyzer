@@ -11,7 +11,7 @@
   "design_frozen": true,
   "design_status": "HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION",
 
-  "current_phase": "SOURCE_SNAPSHOT_CLARIFICATION_APPROVED_IMPLEMENTATION_PENDING",
+  "current_phase": "SOURCE_SNAPSHOT_SEMANTICS_IMPLEMENTED_PENDING_REVIEW",
 
   "human_gates": {
     "new_strategy_family_accepted": true,
@@ -53,13 +53,47 @@
     "retry_performed": false,
     "real_jpx_requests_this_attempt": 2,
     "real_yahoo_requests_this_attempt": 0,
-    "raw_bytes_or_new_hashes_recorded": false
+    "raw_bytes_or_new_hashes_recorded": false,
+    "next_real_jpx_attempt_authorized": false
+  },
+
+  "source_snapshot_semantics_implementation": {
+    "implements": "V8_HISTORICAL_RESEARCH_DESIGN.md §16 (source_snapshot_clarification above)",
+    "implementation_commit": "1306d7be39ef9b73d049d5c4899ce286080ec1c2",
+    "test_fix_commit": "68b836d314b98955aa7d76e390ce6235a765b183",
+    "test_fix_reason": "widened test_public_path_blocks_before_network_on_git_or_unauthorized_anchor's accepted reason set to include the pre-existing, unmodified PRODUCTION_GIT_HEAD_NOT_ORIGIN guard outcome observed in a detached/non-matching local checkout; no production code changed",
+    "manifest_schema_version": "V8_PARTITION_MANIFEST_V3",
+    "manifest_schema_version_previous": "V8_PARTITION_MANIFEST_V2",
+    "v4_raw_sha_equality_gate": "REMOVED",
+    "v4_raw_sha_retained_as": "AUDIT_REFERENCE_ONLY",
+    "t0_exact_reproduction": "REQUIRED",
+    "t0_mismatch_reason": "V8_T0_REPRODUCTION_MISMATCH",
+    "fresh_allocation_before_t0_pass": false,
+    "source_only_allocate_fresh_blocks_reached": false,
+    "source_only_manifest_write_reached": false,
+    "public_production_boundaries": "UNCHANGED_CLOSED",
+    "pc_verification": {
+      "tested_transfer_head": "68b836d314b98955aa7d76e390ce6235a765b183",
+      "scope": [
+        "tests/test_v8_partition.py",
+        "tests/test_v8_partition_cli.py",
+        "tests/test_v8_historical_acquisition.py",
+        "tests/test_v8_historical_acquisition_cli.py"
+      ],
+      "result": "235 passed / 0 failed",
+      "exit_code": 0,
+      "executed_by": "HUMAN_POWERSHELL",
+      "real_jpx_requests_during_implementation_and_tests": 0,
+      "real_yahoo_requests_during_implementation_and_tests": 0
+    },
+    "transfer_branch": "v8-partition-acquisition-transfer-pytest-check",
+    "transfer_branch_retained_for_audit_trail": true
   },
 
   "static_implementation": {
-    "code_commit": "38697c9ede51cac7bd500206d857ee585464996b",
-    "commit_meaning": "Source-only JPX/T0 preflight implementation and fake-only tests; pending independent review. Verify current remote HEAD separately before acting.",
-    "verdict": "SOURCE_REPRODUCTION_PREFLIGHT_IMPLEMENTED_PENDING_REVIEW",
+    "code_commit": "1306d7be39ef9b73d049d5c4899ce286080ec1c2",
+    "commit_meaning": "Implementation-time JPX snapshot semantics (V8_HISTORICAL_RESEARCH_DESIGN.md §16) plus a test-only fix at 68b836d314b98955aa7d76e390ce6235a765b183; human-PC-verified 235 passed / 0 failed, exit code 0. Pending independent review. Verify current remote HEAD separately before acting.",
+    "verdict": "SOURCE_SNAPSHOT_SEMANTICS_IMPLEMENTED_PENDING_REVIEW",
     "files": [
       "src/v8_partition.py",
       "src/v8_historical_acquisition.py",
@@ -71,7 +105,7 @@
       "tests/test_v8_historical_acquisition_cli.py",
       "V8_TRUSTED_PARTITION.json"
     ],
-    "test_count": 226,
+    "test_count": 235,
     "tests_passing": true,
     "cli_flags": {
       "build_v8_partition_manifest.py": ["--synthetic-test", "--production-build-manifest", "--production-source-preflight", "--output-path", "--confirmation"],
@@ -181,7 +215,7 @@
     }
   ],
 
-  "next_action": "IMPLEMENT_SOURCE_SNAPSHOT_SEMANTICS",
+  "next_action": "INDEPENDENT_SOURCE_SNAPSHOT_SEMANTICS_REVIEW",
 
   "source_of_truth_priority": [
     "immutable/raw acquisition manifests and their hashes (once they exist)",
