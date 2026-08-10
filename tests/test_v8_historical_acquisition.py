@@ -296,7 +296,14 @@ def test_public_production_boundary_rejects_all_overrides(tmp_path, forbidden):
         acquisition.acquire_historical_block_bundle(**kwargs)
 
 
-def test_public_path_blocks_before_network_on_git_or_unauthorized_anchor(tmp_path):
+def test_public_path_blocks_before_network_without_valid_partition(tmp_path, monkeypatch):
+    opener_calls = []
+
+    def forbidden_trusted_yahoo_opener(request_obj):
+        opener_calls.append(request_obj)
+        raise AssertionError("trusted Yahoo opener must not run")
+
+    monkeypatch.setattr(acquisition, "_default_trusted_yahoo_opener", forbidden_trusted_yahoo_opener)
     with pytest.raises(acquisition.V8HistoricalAcquisitionBlocked) as excinfo:
         acquisition.acquire_historical_block_bundle(
             output_root=tmp_path / "private", block="T1", partition_manifest_path=tmp_path / "missing.json"
@@ -305,7 +312,9 @@ def test_public_path_blocks_before_network_on_git_or_unauthorized_anchor(tmp_pat
         "PRODUCTION_GIT_WORKTREE_DIRTY",
         "PRODUCTION_GIT_HEAD_NOT_ORIGIN",
         "TRUSTED_PARTITION_NOT_AUTHORIZED",
+        "PARTITION_MANIFEST_READ_FAILED",
     }
+    assert opener_calls == []
 
 
 def test_git_resolution_precedes_anchor_read_and_committed_anchor_bytes_are_used(tmp_path, trusted_anchor_path):
