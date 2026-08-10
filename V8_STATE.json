@@ -11,13 +11,14 @@
   "design_frozen": true,
   "design_status": "HUMAN_APPROVED_FROZEN_FOR_IMPLEMENTATION",
 
-  "current_phase": "REAL_JPX_SOURCE_PREFLIGHT_PASS_PENDING_REAL_PARTITION_HUMAN_GATE",
+  "current_phase": "REAL_PARTITION_CREATED_VALIDATED_PENDING_TRUST_ANCHOR_HUMAN_GATE",
 
   "human_gates": {
     "new_strategy_family_accepted": true,
     "design_frozen_10_decisions_applied": true,
     "v8_t1_t2_acquisition_and_partition_approved": true,
     "real_jpx_source_fetch_authorized": false,
+    "real_partition_creation_authorization_consumed": true,
     "real_t1_acquisition_authorized": false,
     "real_t2_acquisition_authorized": false,
     "t3_acquisition_authorized": false,
@@ -186,6 +187,56 @@
     "see_full_history": "source_preflight_attempt_history"
   },
 
+  "real_partition_build_history": [
+    {
+      "authorized_implementation_head": "36cbed941050e728f7f96ce2af505e81175cc02c",
+      "mode": "PRODUCTION",
+      "process_result": "PASS",
+      "exit_code": 0,
+      "source_reproduction_status": "PASS",
+      "t0_reproduction_status": "PASS",
+      "partition_manifest_written": true,
+      "real_block_assignments_created": true,
+      "real_jpx_requests_this_attempt": 2,
+      "real_yahoo_requests_this_attempt": 0,
+      "manifest_sha256": "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62",
+      "partition_implementation_git_commit": "36cbed941050e728f7f96ce2af505e81175cc02c",
+      "manifest_schema_version": "V8_PARTITION_MANIFEST_V3",
+      "block_sizes": {"T0": 300, "T1": 300, "T2": 300, "T3": 300, "T_spare": 1904},
+      "t1_ticker_list_sha256": "262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d",
+      "t2_ticker_list_sha256": "e7578db7202dcb6407d7bcd98d6365fc65f22e30aa05467313a347f9cc3d6500",
+      "t3_ticker_list_sha256": "43a585f4c3341307e7c67561c54780322b0f253fefa628a7c6129773901a7b7a",
+      "t_spare_ticker_list_sha256": "360d5c874e6c08471f118af8ac450dadb38ca138fecd1ecdb834cc08156a9e70",
+      "one_time_authorization_consumed": true,
+      "retry_performed": false,
+      "raw_jpx_bytes_persisted": false,
+      "block_assignments_exposed": false
+    }
+  ],
+
+  "last_real_partition_build": {
+    "result": "PASS",
+    "validation_result": "PASS",
+    "validation_exit_code": 0,
+    "manifest_still_exists_after_validation": true,
+    "manifest_sha_verified": true,
+    "implementation_commit_verified": true,
+    "schema_verified": true,
+    "source_pass_verified": true,
+    "t0_pass_verified": true,
+    "t3_prohibited_verified": true,
+    "partition_manifest_path_recorded": false
+  },
+
+  "trusted_partition_anchor_state": {
+    "authorization_status": "NOT_AUTHORIZED",
+    "authorized_partition_manifest_sha256": null,
+    "authorized_partition_implementation_git_commit": null,
+    "future_human_gate_manifest_sha256": "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62",
+    "future_human_gate_implementation_git_commit": "36cbed941050e728f7f96ce2af505e81175cc02c",
+    "changed_by_this_update": false
+  },
+
   "source_snapshot_semantics_implementation": {
     "implements": "V8_HISTORICAL_RESEARCH_DESIGN.md §16 (source_snapshot_clarification above)",
     "implementation_commit": "1306d7be39ef9b73d049d5c4899ce286080ec1c2",
@@ -258,13 +309,24 @@
   },
 
   "partition": {
-    "real_partition_manifest_exists": false,
+    "real_partition_manifest_exists": true,
+    "real_partition_manifest_validated": true,
     "real_jpx_source_fetched": true,
-    "real_jpx_source_fetched_note": "true means attempt #3 obtained an accepted/reproduced source snapshot (source_reproduction_status=PASS, t0_reproduction_status=PASS); it does not mean a partition manifest was built or written -- real_partition_manifest_exists remains false and requires its own separate human gate",
+    "real_jpx_source_fetched_note": "true means an accepted/reproduced source snapshot exists; the real partition manifest was subsequently built and validated in the separate one-time production build audit",
     "trusted_partition_authorized": false,
-    "private_v8_storage_location": "NOT_YET_DEFINED",
+    "private_v8_storage_location": "DEFINED_OUTSIDE_REPOSITORY",
     "private_storage_requirements": ["absolute", "outside_repository", "not_committed"],
-    "real_partition_creation_blocked_reason": "private_v8_storage_location is NOT_YET_DEFINED; the human operator must choose an absolute path outside this repository before real partition creation can be authorized",
+    "real_partition_creation_blocked_reason": null,
+    "real_partition_creation_authorization_consumed": true,
+    "manifest_sha256": "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62",
+    "partition_implementation_git_commit": "36cbed941050e728f7f96ce2af505e81175cc02c",
+    "manifest_schema_version": "V8_PARTITION_MANIFEST_V3",
+    "block_sizes": {"T0": 300, "T1": 300, "T2": 300, "T3": 300, "T_spare": 1904},
+    "t1_ticker_list_sha256": "262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d",
+    "t2_ticker_list_sha256": "e7578db7202dcb6407d7bcd98d6365fc65f22e30aa05467313a347f9cc3d6500",
+    "t3_ticker_list_sha256": "43a585f4c3341307e7c67561c54780322b0f253fefa628a7c6129773901a7b7a",
+    "t_spare_ticker_list_sha256": "360d5c874e6c08471f118af8ac450dadb38ca138fecd1ecdb834cc08156a9e70",
+    "block_assignments_recorded": false,
     "block_size_frozen": 300,
     "p_hist_start": "2016-04-01",
     "p_hist_end": "2025-12-31",
@@ -274,6 +336,7 @@
   "T1": {
     "role": "VALIDATION",
     "raw_data_acquired": false,
+    "real_acquisition_authorized": false,
     "ticker_count_frozen": 300,
     "max_validation_access": 1,
     "validation_access_count": null,
@@ -283,6 +346,7 @@
   "T2": {
     "role": "SEALED_HOLDOUT",
     "raw_data_acquired": false,
+    "real_acquisition_authorized": false,
     "ticker_count_frozen": 300,
     "sealed": null,
     "research_access_authorized": null,
@@ -295,9 +359,16 @@
   "T3": {
     "role": "SEALED_RESERVE",
     "raw_data_acquired": false,
+    "real_acquisition_authorized": false,
     "ticker_count_frozen": 300,
     "acquisition_unconditionally_blocked": true,
     "release_requires_separate_human_gate": true
+  },
+
+  "T_spare": {
+    "ticker_count_frozen": 1904,
+    "real_acquisition_authorized": false,
+    "raw_data_acquired": false
   },
 
   "v7_isolation": {
@@ -346,7 +417,7 @@
     }
   ],
 
-  "next_action": "DEFINE_PRIVATE_V8_STORAGE_AND_REAL_PARTITION_HUMAN_GATE",
+  "next_action": "TRUST_ANCHOR_PINNING_HUMAN_GATE",
   "this_docs_state_update_authorizes_real_network": false,
   "source_only_pass_authorizes_real_partition_creation": false,
   "source_only_pass_authorizes_trust_anchor_pinning": false,
@@ -362,7 +433,7 @@
     "chat history / model memory (lowest priority, never authoritative)"
   ],
 
-  "network_requests": 6,
+  "network_requests": 8,
   "real_data_acquired": false,
   "backtests": 0,
   "models_fitted": 0,

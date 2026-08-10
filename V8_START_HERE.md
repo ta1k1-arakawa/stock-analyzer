@@ -49,7 +49,7 @@ root. This has held for every V8 phase so far and must keep holding.**
 ## Current phase
 
 ```text
-REAL_JPX_SOURCE_PREFLIGHT_PASS_PENDING_REAL_PARTITION_HUMAN_GATE
+REAL_PARTITION_CREATED_VALIDATED_PENDING_TRUST_ANCHOR_HUMAN_GATE
 ```
 
 ## Last completed gate
@@ -66,15 +66,46 @@ real_jpx_attempt_2 = ERROR/LOCAL_ENVIRONMENT_DEPENDENCY_MISSING_XLRD before T0 w
 real_jpx_attempt_3 = PASS; t0_ticker_list_sha256 matches the independently-verified committed V4_UNIVERSE.csv; source-only -- no partition/manifest/block-assignment/trust-anchor change; no retry; authorization consumed
 ```
 
+## Latest real partition audit record
+
+```text
+authorized_implementation_head = 36cbed941050e728f7f96ce2af505e81175cc02c
+mode = PRODUCTION
+process_result = PASS
+exit_code = 0
+partition_manifest_written = true
+real_block_assignments_created = true
+manifest_sha256 = 0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62
+partition_implementation_git_commit = 36cbed941050e728f7f96ce2af505e81175cc02c
+manifest_schema = V8_PARTITION_MANIFEST_V3
+block_sizes = T0:300, T1:300, T2:300, T3:300, T_spare:1904
+t1_ticker_list_sha256 = 262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d
+t2_ticker_list_sha256 = e7578db7202dcb6407d7bcd98d6365fc65f22e30aa05467313a347f9cc3d6500
+t3_ticker_list_sha256 = 43a585f4c3341307e7c67561c54780322b0f253fefa628a7c6129773901a7b7a
+t_spare_ticker_list_sha256 = 360d5c874e6c08471f118af8ac450dadb38ca138fecd1ecdb834cc08156a9e70
+one_time_authorization_consumed = true
+retry_performed = false
+block_assignments_exposed = false
+```
+
+The exact private storage path is intentionally not recorded here. The
+private manifest exists outside the repository and is not copied or committed.
+
+Read-only validation subsequently returned `PASS` with exit code `0` using
+`src.v8_partition.read_partition_manifest()`. Manifest self-hash,
+implementation commit, schema, source PASS, T0 PASS, and T3 prohibition all
+verified; the manifest remained present. No block assignment contents were
+printed.
+
 ## Current production status (do not contradict this)
 
 ```text
-real_jpx_requests = 6 (attempt #1, 2026-08-10: 2 requests, result BLOCKED/V8_PARTITION_SOURCE_NOT_REPRODUCIBLE; attempt #2: 2 requests, result ERROR/LOCAL_ENVIRONMENT_DEPENDENCY_MISSING_XLRD before T0 was reached; attempt #3: 2 requests, result PASS, T0 reproduced; no retry any time)
+real_jpx_requests = 8 (source-only attempts #1-#3: 2 each; real partition build: 2; no retry)
 real_yahoo_requests = 0
-real_partition_created = false
+real_partition_created = true
 accepted_source_snapshot = true (attempt #3 only; attempts #1 and #2 did not reach an accepted/reproduced snapshot)
-partition_manifest_written = false
-real_block_assignments_created = false
+partition_manifest_written = true
+real_block_assignments_created = true
 T1_real_data_acquired = false
 T2_real_data_acquired = false
 T2_opened = false
@@ -90,13 +121,17 @@ real_jpx_authorization = false
 real_jpx_source_fetch_authorized = false (attempt #3's authorization was consumed by its single PASS outcome; a fresh authorization is required for any further real JPX action)
 real_T1_authorization = false
 real_T2_authorization = false
+real_T3_authorization = false
+real_partition_creation_authorization_consumed = true
 v4_raw_sha_equality_required_for_v8_partition = false (V8_HISTORICAL_RESEARCH_DESIGN.md §16; V8_PARTITION_SOURCE_NOT_REPRODUCIBLE raw-hash gate removed in code, implementation_commit 1306d7be39ef9b73d049d5c4899ce286080ec1c2; independently reviewed, SOURCE_SNAPSHOT_SEMANTICS_REVIEW_PASS)
 t0_300_exact_reproduction_required = true (unchanged; V8_T0_REPRODUCTION_MISMATCH still BLOCKs before allocate_fresh_blocks; reached and PASSED by attempt #3)
 manifest_schema_version = V8_PARTITION_MANIFEST_V3 (was V8_PARTITION_MANIFEST_V2)
 source_only_pass_authorizes_real_partition_creation = false
 source_only_pass_authorizes_trust_anchor_pinning = false
 source_only_pass_authorizes_t1_t2_t3_acquisition = false
-private_v8_storage_location = NOT_YET_DEFINED
+private_v8_storage_location = DEFINED_OUTSIDE_REPOSITORY
+real_partition_manifest_validated = true
+trust_anchor_authorized = false
 ```
 
 The production partition-manifest CLI is implemented in
@@ -104,8 +139,8 @@ The production partition-manifest CLI is implemented in
 The source-only production preflight is implemented as
 `--production-source-preflight`; it verifies raw JPX source reproduction and
 T0 reproduction only, with no block allocation or partition publication.
-Neither production path has been invoked: no real JPX request or real
-partition manifest has been created. The production acquisition CLI is now implemented in
+The one-time real production partition build has completed and was validated
+read-only; no retry was performed. The production acquisition CLI is now implemented in
 `scripts/acquire_v8_historical.py` as `--production-acquire`, with only a
 block, persisted partition manifest, private output root, and block-specific
 confirmation as inputs.
@@ -120,7 +155,7 @@ fake-test seam only and remains `CLOSED_PENDING_REVIEW`.
 ## Immediate next action
 
 ```text
-DEFINE_PRIVATE_V8_STORAGE_AND_REAL_PARTITION_HUMAN_GATE
+TRUST_ANCHOR_PINNING_HUMAN_GATE
 ```
 
 `V8_HISTORICAL_RESEARCH_DESIGN.md` §16 is implemented in code
@@ -132,17 +167,15 @@ deliberately unfixed), and a real JPX source-only preflight has now **PASSED**
 (attempt #3, against `371f547fc9f32c0aac84e34634b0f97a40e083c6`:
 `source_reproduction_status=PASS`, `t0_reproduction_status=PASS`, exit code
 0; `t0_ticker_list_sha256` matches the independently-verified committed
-`V4_UNIVERSE.csv`). This was source-only: no partition was created, no
-manifest was written, no block assignment was exposed, and the trust anchor
-is unchanged. Attempt #3's authorization is consumed.
+`V4_UNIVERSE.csv`). The source-only authorization was consumed. The
+subsequent one-time real partition build at
+`36cbed941050e728f7f96ce2af505e81175cc02c` returned PASS and was validated
+read-only. The trust anchor remains unchanged and unauthorized.
 
-**This source-only PASS does not itself authorize real partition creation,
-trust-anchor pinning, or `T1`/`T2`/`T3` acquisition** — each remains its own
-separate future human gate. Real partition creation is additionally blocked
-because `private_v8_storage_location` is still `NOT_YET_DEFINED`: the human
-operator must choose an absolute path outside this repository (never
-committed) before that gate can even be requested. This documentation/state
-update itself grants no real network authorization.
+**Real partition creation is complete, but this update does not authorize
+trust-anchor pinning or `T1`/`T2`/`T3` acquisition.** Those remain separate
+human gates. The private manifest remains outside the repository and is not
+committed; this documentation/state update performs no network operation.
 
 See `V8_PROJECT_STATE.md` → "Current ordered next steps" for the full requirement
 list, and `V8_STATE.json` → `source_preflight_attempt_history` /
@@ -150,19 +183,12 @@ list, and `V8_STATE.json` → `source_preflight_attempt_history` /
 
 ## Current blockers before any real network call
 
-1. **No private `V8` storage location chosen.** `private_v8_storage_location`
-   is `NOT_YET_DEFINED`. Real partition creation cannot even be requested
-   until an absolute, outside-this-repository, never-committed path is
-   chosen.
-2. **No real-partition-creation authorization exists.** A source-only PASS
-   does not imply it; it requires its own separate, explicit human
-   authorization.
-3. **Trusted partition authorization is false.** Production acquisition reads
+1. **Trusted partition authorization is false.** Production acquisition reads
    the canonical Git-tracked `V8_TRUSTED_PARTITION.json` before the partition
    manifest and blocks with `TRUSTED_PARTITION_NOT_AUTHORIZED` before Yahoo
    transport until a separate human gate pins a real manifest SHA and its
    partition implementation commit.
-4. **Git provenance is required.** Immediately before every future real
+2. **Git provenance is required.** Immediately before every future real
    production command, an operator must run `git fetch origin` successfully
    and record the remote SHA and local `HEAD`. Both production runners then
    require a clean checkout whose `HEAD` equals that locally fetched
