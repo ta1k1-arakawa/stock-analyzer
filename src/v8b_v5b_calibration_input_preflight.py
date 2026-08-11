@@ -171,9 +171,11 @@ _PREFLIGHT_DETAIL_RE = re.compile(
     r"MANIFEST_PATH_ESCAPE_DETECTED|DESIGNATED_PAYLOAD_COUNT_MISMATCH|"
     r"PAYLOAD_PATH_RESOLUTION_FAILED|PAYLOAD_PATH_ESCAPE_DETECTED|"
     r"PAYLOAD_REPARSE_POINT|PAYLOAD_NOT_REGULAR|PAYLOAD_READ_FAILED|"
-    r"PAYLOAD_BINDING_FAILED|MANIFEST_PROVENANCE_INVALID:[A-Z0-9_]+)"
+    r"PAYLOAD_BINDING_FAILED)"
     r"$"
 )
+
+_MANIFEST_PROVENANCE_INVALID_PREFIX = "MANIFEST_PROVENANCE_INVALID:"
 
 
 class V5BCalibrationInputPreflightBlocked(RuntimeError):
@@ -266,14 +268,34 @@ def _is_valid_utc_timestamp(value: Any) -> bool:
 def validate_preflight_result_semantics(
     result: Mapping[str, Any],
     *,
-    expected_implementation_git_commit: str | None = None,
+    expected_implementation_git_commit: str,
 ) -> None:
-    """Accept only a canonical, self-hashed, semantically valid artifact.
+    """Accept only a canonical, self-hashed, semantically valid artifact
+    that is bound to a caller-trusted implementation commit.
+
+    ``expected_implementation_git_commit`` is a required keyword-only
+    argument with no default: the persisted artifact's own
+    ``implementation_git_commit`` field must never be its own authority for
+    which implementation commit was reviewed. An external, independently
+    trusted commit must always be supplied, and whenever the artifact
+    records a commit at all (any state after Git verification has run, and
+    always for a PASS), it must equal that trusted value exactly. Legitimate
+    early BLOCK states raised before Git verification ever ran (e.g. a
+    rejected confirmation token, or a malformed caller-supplied commit) may
+    still record ``implementation_git_commit=None`` -- there was nothing to
+    bind yet -- but the trusted argument itself is still mandatory to
+    supply, and must itself be well-formed.
 
     This is intentionally an independent acceptance API. It never invokes
     the production preflight constructor and does not perform filesystem or
     network I/O.
     """
+
+    if (
+        not isinstance(expected_implementation_git_commit, str)
+        or _COMMIT_RE.fullmatch(expected_implementation_git_commit) is None
+    ):
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_EXPECTED_COMMIT_INVALID")
 
     if not isinstance(result, Mapping) or set(result) != _ARTIFACT_KEYS:
         raise V5BCalibrationInputPreflightBlocked("ARTIFACT_SCHEMA_INVALID")
@@ -287,19 +309,18 @@ def validate_preflight_result_semantics(
     if result["status"] == "PASS":
         if detail is not None:
             raise V5BCalibrationInputPreflightBlocked("ARTIFACT_STATE_INVALID")
+    elif isinstance(detail, str) and detail.startswith(_MANIFEST_PROVENANCE_INVALID_PREFIX):
+        inner_reason = detail[len(_MANIFEST_PROVENANCE_INVALID_PREFIX) :]
+        if inner_reason not in _v8b_calibration_module._RECOGNIZED_MANIFEST_BLOCKER_REASONS:
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_DETAIL_INVALID")
     elif not isinstance(detail, str) or _PREFLIGHT_DETAIL_RE.fullmatch(detail) is None:
         raise V5BCalibrationInputPreflightBlocked("ARTIFACT_DETAIL_INVALID")
 
     commit = result["implementation_git_commit"]
     if commit is not None and (not isinstance(commit, str) or _COMMIT_RE.fullmatch(commit) is None):
         raise V5BCalibrationInputPreflightBlocked("ARTIFACT_COMMIT_INVALID")
-    if expected_implementation_git_commit is not None:
-        if (
-            not isinstance(expected_implementation_git_commit, str)
-            or _COMMIT_RE.fullmatch(expected_implementation_git_commit) is None
-            or commit != expected_implementation_git_commit
-        ):
-            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_COMMIT_MISMATCH")
+    if commit is not None and commit != expected_implementation_git_commit:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_COMMIT_MISMATCH")
 
     expected_manifest = _v8b_calibration_module.EXPECTED_V5B_MANIFEST_SHA256
     expected_payload_list = _v8b_calibration_module.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256
@@ -408,6 +429,7 @@ def validate_preflight_result_semantics(
     if result["status"] == "PASS":
         if (
             commit is None
+            or commit != expected_implementation_git_commit
             or result["observed_manifest_sha256"] != expected_manifest
             or result["observed_payload_hash_list_sha256"] != expected_payload_list
             or result["checked_payload_count"] != EXPECTED_V5B_TICKER_COUNT

@@ -569,7 +569,10 @@ def test_path_escape_via_symlink_blocks(tmp_path, monkeypatch, gated_head):
     monkeypatch.setattr(preflight, "V5B_CACHE_ROOT", root)
     with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
         _pass_gate(implementation_git_commit=gated_head)
-    assert excinfo.value.detail == "PAYLOAD_PATH_ESCAPE_DETECTED"
+    # The symlinked payload itself is now caught by the earlier, more
+    # specific reparse-point check (reject_reparse_components()) before the
+    # separate path-escape/containment check ever runs.
+    assert excinfo.value.detail == "PAYLOAD_REPARSE_POINT"
     assert excinfo.value.result is not None
     assert _no_leakage(excinfo.value.result)
 
@@ -879,7 +882,136 @@ def test_semantic_verifier_accepts_valid_block_and_rejects_self_hash_only():
     malformed = dict(result)
     malformed["sha256_mismatch_count"] = 0
     with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked):
-        preflight.validate_preflight_result_semantics(malformed)
+        preflight.validate_preflight_result_semantics(malformed, expected_implementation_git_commit="a" * 40)
+
+
+# ---------------------------------------------------------------------------
+# HIGH remediation: expected_implementation_git_commit is a required,
+# no-default keyword-only argument -- the persisted artifact's own
+# implementation_git_commit field is never its own authority for which
+# implementation commit was reviewed.
+# ---------------------------------------------------------------------------
+
+
+def _valid_pass_artifact(implementation_git_commit: str = "a" * 40) -> dict:
+    fields = {
+        "schema_version": preflight.PREFLIGHT_RESULT_SCHEMA_VERSION,
+        "study": preflight.STUDY,
+        "role": preflight.PREFLIGHT_ROLE,
+        "status": "PASS",
+        "detail_reason": None,
+        "implementation_git_commit": implementation_git_commit,
+        "expected_manifest_sha256": calib.EXPECTED_V5B_MANIFEST_SHA256,
+        "observed_manifest_sha256": calib.EXPECTED_V5B_MANIFEST_SHA256,
+        "expected_payload_hash_list_sha256": calib.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256,
+        "observed_payload_hash_list_sha256": calib.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256,
+        "expected_payload_count": 300,
+        "checked_payload_count": 300,
+        "byte_count_mismatch_count": 0,
+        "sha256_mismatch_count": 0,
+        "missing_or_unreadable_count": 0,
+        "run_started_utc": "2026-08-11T00:00:00Z",
+        "run_completed_utc": "2026-08-11T00:00:01Z",
+    }
+    return preflight._finalize(fields)
+
+
+def test_A_rehashed_commit_substitution_on_pass_artifact_is_rejected():
+    genuine = _valid_pass_artifact(implementation_git_commit="a" * 40)
+    preflight.validate_preflight_result_semantics(
+        genuine, expected_implementation_git_commit="a" * 40
+    )  # baseline: the genuine, untampered artifact is accepted under its true commit
+
+    # Attacker mutates the recorded commit to a different, still-valid
+    # 40-hex value and recomputes the self-hash so integrity alone holds.
+    mutated_fields = dict(genuine)
+    mutated_fields["implementation_git_commit"] = "b" * 40
+    del mutated_fields["artifact_self_hash"]
+    mutated_fields["artifact_self_hash"] = preflight.sha256_hex(preflight.canonical_json_bytes(mutated_fields))
+    preflight._verify_artifact_self_hash(mutated_fields)  # integrity alone would pass -- proves this is a genuine rehash attack
+
+    with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
+        preflight.validate_preflight_result_semantics(
+            mutated_fields, expected_implementation_git_commit="a" * 40
+        )
+    assert excinfo.value.detail == "ARTIFACT_COMMIT_MISMATCH"
+
+
+def test_B_semantic_verifier_cannot_be_called_without_trusted_commit():
+    genuine = _valid_pass_artifact()
+    with pytest.raises(TypeError):
+        preflight.validate_preflight_result_semantics(genuine)  # type: ignore[call-arg]
+
+
+def test_C_correct_trusted_commit_accepts_genuine_pass():
+    genuine = _valid_pass_artifact(implementation_git_commit="c" * 40)
+    preflight.validate_preflight_result_semantics(
+        genuine, expected_implementation_git_commit="c" * 40
+    )  # must not raise
+
+
+def test_D_early_block_state_allows_none_commit_but_still_requires_trusted_commit_argument():
+    early_block = preflight._canonical_block_result("PREFLIGHT_GATE_CONFIRMATION_REQUIRED")
+    assert early_block["implementation_git_commit"] is None
+
+    with pytest.raises(TypeError):
+        preflight.validate_preflight_result_semantics(early_block)  # type: ignore[call-arg]
+
+    # Accepted only once the trusted expected commit is explicitly supplied
+    # -- even though this early state never got as far as recording one.
+    preflight.validate_preflight_result_semantics(
+        early_block, expected_implementation_git_commit="d" * 40
+    )
+
+
+def test_malformed_expected_commit_argument_is_rejected():
+    genuine = _valid_pass_artifact(implementation_git_commit="a" * 40)
+    for bad_expected in ("", "not-hex", "A" * 40, "0" * 39, "0" * 41):
+        with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
+            preflight.validate_preflight_result_semantics(
+                genuine, expected_implementation_git_commit=bad_expected
+            )
+        assert excinfo.value.detail == "ARTIFACT_EXPECTED_COMMIT_INVALID"
+
+
+def test_post_git_verification_block_artifact_with_commit_binds_to_trusted_commit():
+    # A BLOCK artifact produced after Git verification succeeded (e.g. a
+    # payload-binding failure) always carries the Git-verified commit; it
+    # must bind to the trusted expected commit exactly like a PASS does.
+    genuine = _valid_payload_block_artifact()
+    preflight.validate_preflight_result_semantics(genuine, expected_implementation_git_commit="a" * 40)
+
+    mutated_fields = dict(genuine)
+    mutated_fields["implementation_git_commit"] = "b" * 40
+    del mutated_fields["artifact_self_hash"]
+    mutated_fields["artifact_self_hash"] = preflight.sha256_hex(preflight.canonical_json_bytes(mutated_fields))
+    with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
+        preflight.validate_preflight_result_semantics(
+            mutated_fields, expected_implementation_git_commit="a" * 40
+        )
+    assert excinfo.value.detail == "ARTIFACT_COMMIT_MISMATCH"
+
+
+def test_manifest_provenance_invalid_detail_requires_exact_recognized_inner_reason():
+    genuine = preflight._canonical_block_result(
+        "MANIFEST_PROVENANCE_INVALID:MANIFEST_SHA256_MISMATCH",
+        implementation_git_commit="a" * 40,
+        observed_manifest_sha256="0" * 64,
+    )
+    preflight.validate_preflight_result_semantics(
+        genuine, expected_implementation_git_commit="a" * 40
+    )  # a real, recognized inner reason is accepted
+
+    fabricated = preflight._canonical_block_result(
+        "MANIFEST_PROVENANCE_INVALID:TOTALLY_MADE_UP_REASON",
+        implementation_git_commit="a" * 40,
+        observed_manifest_sha256="0" * 64,
+    )
+    with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
+        preflight.validate_preflight_result_semantics(
+            fabricated, expected_implementation_git_commit="a" * 40
+        )
+    assert excinfo.value.detail == "ARTIFACT_DETAIL_INVALID"
 
 
 def test_root_symlink_is_rejected_before_manifest_read(tmp_path, monkeypatch, gated_head):
