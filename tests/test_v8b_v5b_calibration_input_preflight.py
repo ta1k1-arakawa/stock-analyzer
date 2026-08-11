@@ -176,23 +176,59 @@ def test_old_ungated_public_entry_point_no_longer_exists():
     assert "run_v5b_calibration_input_preflight" not in dir(preflight)
 
 
-def test_private_filesystem_helper_is_not_exported():
-    assert "_run_v5b_calibration_input_preflight_against_root" not in preflight.__all__
+def test_old_private_filesystem_helper_no_longer_exists_at_all():
+    """The former module-level `_run_v5b_calibration_input_preflight_
+    against_root(cache_root=...)` bypass (private-by-naming-convention but
+    still externally callable) has been eliminated entirely, not merely
+    unexported: the cache-walking logic is now a closure nested inside
+    run_production_v5b_calibration_input_preflight and has no module-level
+    name at all."""
+    assert not hasattr(preflight, "_run_v5b_calibration_input_preflight_against_root")
+    assert "_run_v5b_calibration_input_preflight_against_root" not in dir(preflight)
+    assert not hasattr(preflight, "_walk_cache_root")
+    assert "_walk_cache_root" not in dir(preflight)
+
+
+def test_verify_implementation_matches_repository_head_is_not_exported():
     assert "_verify_implementation_matches_repository_head" not in preflight.__all__
 
 
-def test_no_exported_callable_accepts_arbitrary_filesystem_override():
-    """Adversarial API-surface test (finding 1): nothing this module
-    exports may be called with a cache_root/path/manifest_path/input_dir/
-    dataset argument -- the only way to reach real filesystem I/O is the
-    confirmation- and Git-HEAD-gated production entry point."""
-    forbidden_param_names = {"cache_root", "path", "manifest_path", "input_dir", "dataset"}
-    for name in preflight.__all__:
-        candidate = getattr(preflight, name)
+def _module_level_callables(module):
+    for name in dir(module):
+        if name.startswith("__"):
+            continue
+        candidate = getattr(module, name)
         if not callable(candidate) or inspect.isclass(candidate):
             continue
+        if getattr(candidate, "__module__", None) != module.__name__:
+            continue  # reused from elsewhere (e.g. the calibration core), not this module's own surface
+        yield name, candidate
+
+
+def test_no_module_level_callable_accepts_arbitrary_filesystem_override():
+    """Adversarial API-surface test (finding 1): scans the ENTIRE module
+    callable surface via dir(), not only __all__ -- nothing this module
+    defines, exported or not, may accept a cache_root/path/manifest_path/
+    input_dir/dataset argument. The only way to reach real V5-B filesystem
+    I/O is the confirmation- and Git-HEAD-gated production entry point,
+    whose cache-walking logic is a closure with no module-level name."""
+    forbidden_param_names = {"cache_root", "path", "manifest_path", "input_dir", "dataset"}
+    for name, candidate in _module_level_callables(preflight):
         params = set(inspect.signature(candidate).parameters)
         assert params.isdisjoint(forbidden_param_names), f"{name} exposes {params & forbidden_param_names}"
+
+
+def test_only_production_entry_point_is_filesystem_capable_by_name():
+    """Every OTHER module-level callable defined here either takes no
+    root/path-shaped argument at all, or (for the Git-repository
+    verification helpers) takes only `repo_root`/`relative_path` -- never
+    V5-B cache data -- which is a distinct, non-cache-access concern."""
+    v5b_cache_related_names = {"cache_root", "manifest_path", "path", "input_dir", "dataset"}
+    for name, candidate in _module_level_callables(preflight):
+        if name == "run_production_v5b_calibration_input_preflight":
+            continue
+        params = set(inspect.signature(candidate).parameters)
+        assert params.isdisjoint(v5b_cache_related_names), f"{name} exposes {params & v5b_cache_related_names}"
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +297,56 @@ def test_verify_implementation_head_rejects_dirty_relevant_file(tmp_path, relati
             repo_root=repo_root, implementation_git_commit=actual_head
         )
     assert excinfo.value.detail == "IMPLEMENTATION_FILE_DIRTY"
+
+
+# ---------------------------------------------------------------------------
+# Finding 2 (this round): the reused calibration-core dependency is bound
+# to Git HEAD exactly like the preflight's own three implementation files.
+# ---------------------------------------------------------------------------
+
+
+def test_calibration_core_dependency_is_in_the_relevant_bound_path_set():
+    assert "src/v8b_data_quality_calibration.py" in preflight._RELEVANT_IMPLEMENTATION_RELATIVE_PATHS
+
+
+def test_existing_three_relevant_files_remain_bound():
+    for expected in (
+        "src/v8b_v5b_calibration_input_preflight.py",
+        "scripts/preflight_v8b_v5b_calibration_input.py",
+        "V8B_V5B_CALIBRATION_INPUT_PREFLIGHT_SPEC.md",
+    ):
+        assert expected in preflight._RELEVANT_IMPLEMENTATION_RELATIVE_PATHS
+
+
+def test_dirty_calibration_core_dependency_blocks_before_cache_access(tmp_path):
+    repo_root, actual_head = _build_synthetic_repo(
+        tmp_path, mutate_relative_path="src/v8b_data_quality_calibration.py"
+    )
+    with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
+        preflight._verify_implementation_matches_repository_head(
+            repo_root=repo_root, implementation_git_commit=actual_head
+        )
+    assert excinfo.value.detail == "IMPLEMENTATION_FILE_DIRTY"
+
+
+def test_dirty_calibration_core_dependency_blocks_via_gated_entry_point_without_cache_access(tmp_path, monkeypatch):
+    repo_root, actual_head = _build_synthetic_repo(
+        tmp_path, mutate_relative_path="src/v8b_data_quality_calibration.py"
+    )
+    monkeypatch.setattr(preflight, "_REPO_ROOT", repo_root)
+    monkeypatch.setattr(preflight, "V5B_CACHE_ROOT", tmp_path / "never_reached")
+    with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
+        _pass_gate(implementation_git_commit=actual_head)
+    assert excinfo.value.detail == "IMPLEMENTATION_FILE_DIRTY"
+    assert "checked_payload_count" not in (excinfo.value.result or {})
+
+
+def test_clean_calibration_core_dependency_passes_git_verification(tmp_path):
+    repo_root, actual_head = _build_synthetic_repo(tmp_path)
+    returned_head = preflight._verify_implementation_matches_repository_head(
+        repo_root=repo_root, implementation_git_commit=actual_head
+    )
+    assert returned_head == actual_head
 
 
 def test_verify_implementation_head_rejects_missing_committed_file(tmp_path):
@@ -679,12 +765,19 @@ def test_static_check_detects_reintroduced_ungated_export(monkeypatch):
     assert excinfo.value.detail == "STATIC_CHECK_UNGATED_FILESYSTEM_RUNNER_EXPORTED"
 
 
-def test_static_check_detects_exported_function_with_cache_root_param(monkeypatch):
+def test_static_check_detects_module_level_function_with_cache_root_param(monkeypatch):
+    # The scan covers the ENTIRE module callable surface, not just
+    # __all__, so this regression check must NOT add the fake to __all__
+    # -- an unexported module-level bypass must be caught too. __module__
+    # is set to this preflight module's own name so the scan (which
+    # otherwise ignores names merely imported/reused from elsewhere, like
+    # validate_v5b_manifest_provenance) treats it as genuinely defined
+    # here, exactly as a real reintroduced bypass would be.
     def fake_runner(cache_root):  # pragma: no cover - never actually called
         return cache_root
 
+    fake_runner.__module__ = preflight.__name__
     monkeypatch.setattr(preflight, "fake_runner", fake_runner, raising=False)
-    monkeypatch.setattr(preflight, "__all__", list(preflight.__all__) + ["fake_runner"])
     with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
         preflight.run_static_check()
     assert excinfo.value.detail == "STATIC_CHECK_UNGATED_FILESYSTEM_RUNNER_EXPORTED"

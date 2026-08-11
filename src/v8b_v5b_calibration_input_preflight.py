@@ -11,28 +11,38 @@ single fixed cache root exist; does its manifest match the pinned hash and
 strictly validate; and do the manifest-designated 300 payload files exist,
 at their declared byte length, at their declared SHA-256 -- nothing else.
 
-There is exactly **one** filesystem-capable entry point in this module's
-public surface: ``run_production_v5b_calibration_input_preflight``. It:
+There is exactly **one** filesystem-capable entry point in this module,
+full stop -- not merely in its ``__all__``-advertised public surface, but
+among every callable this module defines at module level, exported or
+not: ``run_production_v5b_calibration_input_preflight``. It:
 
 1. validates the exact human-gate confirmation token FIRST -- before any
    other check, before any filesystem access;
 2. only then verifies that the caller-supplied ``implementation_git_commit``
    equals this repository's actual Git HEAD, and that the on-disk bytes of
-   every file in ``_RELEVANT_IMPLEMENTATION_RELATIVE_PATHS`` exactly match
-   what is committed at that HEAD (so dirty local edits cannot execute
-   while claiming a reviewed, committed HEAD);
+   every file in ``_RELEVANT_IMPLEMENTATION_RELATIVE_PATHS`` (which
+   includes the reused calibration-core dependency,
+   ``src/v8b_data_quality_calibration.py``, since this module imports and
+   executes ``validate_v5b_manifest_provenance()`` from it and reads its
+   fixed expected-provenance constants from it) exactly match what is
+   committed at that HEAD (so dirty local edits cannot execute while
+   claiming a reviewed, committed HEAD);
 3. only then reads the single fixed ``V5B_CACHE_ROOT``.
 
-There is no parameter, anywhere in this module's public surface or in the
-CLI that wraps it, that accepts an alternate cache path, manifest path,
-input directory, or dataset. The byte-binding logic against an arbitrary
-``cache_root`` (``_run_v5b_calibration_input_preflight_against_root``) is a
-private, unexported helper: it exists so the gated entry point above and
-this module's own tests can drive it against a real or synthetic root, but
-it is never advertised, never exported, and calling it does not, by
-itself, grant access to anything the gated entry point wouldn't -- there is
-no other way to reach real filesystem I/O in this module except through
-the confirmation- and Git-HEAD-gated production entry point.
+There is no parameter, anywhere in this module or in the CLI that wraps
+it, that accepts an alternate cache path, manifest path, input directory,
+or dataset. The byte-binding logic that actually walks ``V5B_CACHE_ROOT``
+is defined as a **local closure nested inside**
+``run_production_v5b_calibration_input_preflight`` itself -- it is not a
+module-level name at all, has no independent existence outside a call to
+the gated entry point, and cannot be imported, monkeypatched onto, or
+invoked separately from it. The only module-level helpers besides the
+gated entry point are the Git/repository-verification functions
+(``_resolve_actual_git_head``, ``_read_committed_bytes``,
+``_verify_implementation_matches_repository_head``); none of them reads
+the V5-B cache -- they only compare working-tree bytes of the fixed,
+named implementation files above against what Git has committed, which is
+a repository-provenance check, not V5-B cache access.
 """
 
 from __future__ import annotations
@@ -90,10 +100,16 @@ _REPO_ROOT: Path = Path(__file__).resolve().parents[1]
 
 # Every file whose on-disk bytes must exactly match what is committed at
 # the verified actual Git HEAD before real V5-B cache access is permitted.
+# src/v8b_data_quality_calibration.py is included because this module
+# imports and executes validate_v5b_manifest_provenance() from it and
+# reads its fixed EXPECTED_V5B_MANIFEST_SHA256 / EXPECTED_V5B_PAYLOAD_
+# HASH_LIST_SHA256 / EXPECTED_V5B_TICKER_COUNT constants from it -- a dirty
+# copy of that file could silently change what "PASS" means.
 _RELEVANT_IMPLEMENTATION_RELATIVE_PATHS: tuple[str, ...] = (
     "src/v8b_v5b_calibration_input_preflight.py",
     "scripts/preflight_v8b_v5b_calibration_input.py",
     "V8B_V5B_CALIBRATION_INPUT_PREFLIGHT_SPEC.md",
+    "src/v8b_data_quality_calibration.py",
 )
 
 _GIT_TIMEOUT_SECONDS = 30
@@ -241,156 +257,28 @@ def _verify_implementation_matches_repository_head(
     return actual_head
 
 
-# ---------------------------------------------------------------------------
-# Byte-binding logic against an arbitrary root (§3, §5). PRIVATE: never
-# exported, never advertised. The only caller in this module is the gated
-# production entry point below; tests exercise it directly only as a
-# focused unit under test, never as a substitute for the gated entry point.
-# ---------------------------------------------------------------------------
-
-
-def _run_v5b_calibration_input_preflight_against_root(
-    *,
-    cache_root: Path | str,
-    implementation_git_commit: str,
-    run_started_utc: str | None = None,
-) -> dict[str, Any]:
-    """Core preflight logic (§3, §5). The only I/O this function performs is
-    reading files under ``cache_root``: a stat/existence check on the root,
-    a read of its ``cache_manifest.json``, and -- for exactly the 300
-    manifest-designated payloads, never any other file -- an existence
-    check, a path-containment check, a raw byte read, and a SHA-256/byte-
-    count comparison against the validated manifest's own declared values.
-
-    Never JSON-parses a payload body, never inspects OHLCV, never touches
-    anything outside ``cache_root``. Raises ``V5BCalibrationInputPreflight
-    Blocked`` on any failure (§5); returns a safe aggregate-only dict (§6)
-    only on a full PASS.
-    """
-
-    run_started = run_started_utc or _utc_now_iso()
-    fields: dict[str, Any] = {
-        "schema_version": PREFLIGHT_RESULT_SCHEMA_VERSION,
-        "study": STUDY,
-        "role": PREFLIGHT_ROLE,
-        "status": "BLOCK",
-        "detail_reason": None,
-        "implementation_git_commit": implementation_git_commit,
-        "expected_manifest_sha256": _v8b_calibration_module.EXPECTED_V5B_MANIFEST_SHA256,
-        "observed_manifest_sha256": None,
-        "expected_payload_hash_list_sha256": _v8b_calibration_module.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256,
-        "observed_payload_hash_list_sha256": None,
-        "expected_payload_count": EXPECTED_V5B_TICKER_COUNT,
-        "checked_payload_count": 0,
-        "byte_count_mismatch_count": 0,
-        "sha256_mismatch_count": 0,
-        "missing_or_unreadable_count": 0,
-        "run_started_utc": run_started,
-        "run_completed_utc": None,
-    }
-
-    def block(detail: str) -> V5BCalibrationInputPreflightBlocked:
-        fields["status"] = "BLOCK"
-        fields["detail_reason"] = detail
-        fields["run_completed_utc"] = _utc_now_iso()
-        return V5BCalibrationInputPreflightBlocked(detail, result=_finalize(fields))
-
-    if not isinstance(implementation_git_commit, str) or not _COMMIT_RE.match(implementation_git_commit):
-        raise block("IMPLEMENTATION_COMMIT_INVALID")
-
-    root = Path(cache_root)
-    try:
-        root_resolved = root.resolve(strict=True)
-    except OSError:
-        raise block("CACHE_ROOT_INACCESSIBLE")
-    if not root_resolved.is_dir():
-        raise block("CACHE_ROOT_NOT_A_DIRECTORY")
-
-    manifest_path = root_resolved / _MANIFEST_FILENAME
-    try:
-        manifest_bytes = manifest_path.read_bytes()
-    except OSError:
-        raise block("MANIFEST_UNREADABLE")
-
-    fields["observed_manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
-
-    try:
-        validated_manifest = validate_v5b_manifest_provenance(manifest_bytes)
-    except V8BCalibrationBlocked as error:
-        raise block("MANIFEST_PROVENANCE_INVALID:" + error.reason) from error
-
-    fields["observed_payload_hash_list_sha256"] = validated_manifest["payload_hash_list_sha256"]
-
-    payloads = validated_manifest["payloads"]
-    if not isinstance(payloads, list) or len(payloads) != EXPECTED_V5B_TICKER_COUNT:
-        raise block("DESIGNATED_PAYLOAD_COUNT_MISMATCH")
-
-    checked_count = 0
-    missing_count = 0
-    byte_mismatch_count = 0
-    sha_mismatch_count = 0
-
-    for record in payloads:
-        relative_path = record["relative_path"]
-        candidate_path = root_resolved / relative_path
-        try:
-            resolved_candidate = candidate_path.resolve(strict=False)
-        except OSError:
-            raise block("PAYLOAD_PATH_RESOLUTION_FAILED")
-        if resolved_candidate != root_resolved and root_resolved not in resolved_candidate.parents:
-            raise block("PAYLOAD_PATH_ESCAPE_DETECTED")
-
-        if not resolved_candidate.is_file():
-            missing_count += 1
-            continue
-        try:
-            payload_bytes = resolved_candidate.read_bytes()
-        except OSError:
-            missing_count += 1
-            continue
-
-        checked_count += 1
-        if len(payload_bytes) != record["byte_count"]:
-            byte_mismatch_count += 1
-        if hashlib.sha256(payload_bytes).hexdigest() != record["sha256"]:
-            sha_mismatch_count += 1
-
-    fields["checked_payload_count"] = checked_count
-    fields["byte_count_mismatch_count"] = byte_mismatch_count
-    fields["sha256_mismatch_count"] = sha_mismatch_count
-    fields["missing_or_unreadable_count"] = missing_count
-    fields["run_completed_utc"] = _utc_now_iso()
-
-    if (
-        missing_count != 0
-        or byte_mismatch_count != 0
-        or sha_mismatch_count != 0
-        or checked_count != EXPECTED_V5B_TICKER_COUNT
-    ):
-        fields["status"] = "BLOCK"
-        fields["detail_reason"] = "PAYLOAD_BINDING_FAILED"
-        raise V5BCalibrationInputPreflightBlocked("PAYLOAD_BINDING_FAILED", result=_finalize(fields))
-
-    fields["status"] = "PASS"
-    fields["detail_reason"] = None
-    return _finalize(fields)
-
-
 def run_production_v5b_calibration_input_preflight(
     *,
     confirmation: str,
     implementation_git_commit: str,
 ) -> dict[str, Any]:
-    """The single gated, filesystem-capable production entry point (§2).
+    """The single filesystem-capable entry point in this module (§2), full
+    stop -- not merely the single *exported* one. The byte-binding logic
+    that walks ``V5B_CACHE_ROOT`` is defined as a local closure nested
+    inside this function's own body (see ``_walk_cache_root`` below): it
+    has no module-level name, cannot be imported, monkeypatched onto, or
+    invoked independently of a call to this function.
 
     Order is fixed and security-relevant: (1) exact confirmation token, (2)
     ``implementation_git_commit`` equals this repository's actual Git HEAD
-    and every relevant implementation file is byte-identical to what is
-    committed there, (3) only then read the single fixed ``V5B_CACHE_ROOT``
-    -- there is no parameter to override any of these. This implementation
-    task does not invoke this function against the real cache; it exists so
-    a future, separately authorized task can call it with the genuine
-    human-supplied confirmation token against a clean, committed HEAD.
+    and every relevant implementation file -- including the reused
+    calibration-core dependency, ``src/v8b_data_quality_calibration.py``
+    -- is byte-identical to what is committed there, (3) only then read the
+    single fixed ``V5B_CACHE_ROOT``. There is no parameter to override any
+    of these. This implementation task does not invoke this function
+    against the real cache; it exists so a future, separately authorized
+    task can call it with the genuine human-supplied confirmation token
+    against a clean, committed HEAD.
     """
 
     if confirmation != PREFLIGHT_GATE_CONFIRMATION:
@@ -408,10 +296,133 @@ def run_production_v5b_calibration_input_preflight(
         repo_root=_REPO_ROOT, implementation_git_commit=implementation_git_commit
     )
 
-    return _run_v5b_calibration_input_preflight_against_root(
-        cache_root=V5B_CACHE_ROOT,
-        implementation_git_commit=implementation_git_commit,
-    )
+    # ------------------------------------------------------------------
+    # Nested closure: the only code in this module that ever reads the
+    # V5-B cache. It exists only for the duration of this call; it is not
+    # a module attribute, so `preflight.<anything>` can never reach it,
+    # and it cannot be exercised without first passing both gates above.
+    # ------------------------------------------------------------------
+
+    def _walk_cache_root(cache_root: Path, run_started_utc: str | None = None) -> dict[str, Any]:
+        """Core preflight logic (§3, §5). The only I/O this closure
+        performs is reading files under ``cache_root``: a stat/existence
+        check on the root, a read of its ``cache_manifest.json``, and --
+        for exactly the 300 manifest-designated payloads, never any other
+        file -- an existence check, a path-containment check, a raw byte
+        read, and a SHA-256/byte-count comparison against the validated
+        manifest's own declared values.
+
+        Never JSON-parses a payload body, never inspects OHLCV, never
+        touches anything outside ``cache_root``. Raises
+        ``V5BCalibrationInputPreflightBlocked`` on any failure (§5);
+        returns a safe aggregate-only dict (§6) only on a full PASS.
+        """
+
+        run_started = run_started_utc or _utc_now_iso()
+        fields: dict[str, Any] = {
+            "schema_version": PREFLIGHT_RESULT_SCHEMA_VERSION,
+            "study": STUDY,
+            "role": PREFLIGHT_ROLE,
+            "status": "BLOCK",
+            "detail_reason": None,
+            "implementation_git_commit": implementation_git_commit,
+            "expected_manifest_sha256": _v8b_calibration_module.EXPECTED_V5B_MANIFEST_SHA256,
+            "observed_manifest_sha256": None,
+            "expected_payload_hash_list_sha256": _v8b_calibration_module.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256,
+            "observed_payload_hash_list_sha256": None,
+            "expected_payload_count": EXPECTED_V5B_TICKER_COUNT,
+            "checked_payload_count": 0,
+            "byte_count_mismatch_count": 0,
+            "sha256_mismatch_count": 0,
+            "missing_or_unreadable_count": 0,
+            "run_started_utc": run_started,
+            "run_completed_utc": None,
+        }
+
+        def block(detail: str) -> V5BCalibrationInputPreflightBlocked:
+            fields["status"] = "BLOCK"
+            fields["detail_reason"] = detail
+            fields["run_completed_utc"] = _utc_now_iso()
+            return V5BCalibrationInputPreflightBlocked(detail, result=_finalize(fields))
+
+        root = Path(cache_root)
+        try:
+            root_resolved = root.resolve(strict=True)
+        except OSError:
+            raise block("CACHE_ROOT_INACCESSIBLE")
+        if not root_resolved.is_dir():
+            raise block("CACHE_ROOT_NOT_A_DIRECTORY")
+
+        manifest_path = root_resolved / _MANIFEST_FILENAME
+        try:
+            manifest_bytes = manifest_path.read_bytes()
+        except OSError:
+            raise block("MANIFEST_UNREADABLE")
+
+        fields["observed_manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
+
+        try:
+            validated_manifest = validate_v5b_manifest_provenance(manifest_bytes)
+        except V8BCalibrationBlocked as error:
+            raise block("MANIFEST_PROVENANCE_INVALID:" + error.reason) from error
+
+        fields["observed_payload_hash_list_sha256"] = validated_manifest["payload_hash_list_sha256"]
+
+        payloads = validated_manifest["payloads"]
+        if not isinstance(payloads, list) or len(payloads) != EXPECTED_V5B_TICKER_COUNT:
+            raise block("DESIGNATED_PAYLOAD_COUNT_MISMATCH")
+
+        checked_count = 0
+        missing_count = 0
+        byte_mismatch_count = 0
+        sha_mismatch_count = 0
+
+        for record in payloads:
+            relative_path = record["relative_path"]
+            candidate_path = root_resolved / relative_path
+            try:
+                resolved_candidate = candidate_path.resolve(strict=False)
+            except OSError:
+                raise block("PAYLOAD_PATH_RESOLUTION_FAILED")
+            if resolved_candidate != root_resolved and root_resolved not in resolved_candidate.parents:
+                raise block("PAYLOAD_PATH_ESCAPE_DETECTED")
+
+            if not resolved_candidate.is_file():
+                missing_count += 1
+                continue
+            try:
+                payload_bytes = resolved_candidate.read_bytes()
+            except OSError:
+                missing_count += 1
+                continue
+
+            checked_count += 1
+            if len(payload_bytes) != record["byte_count"]:
+                byte_mismatch_count += 1
+            if hashlib.sha256(payload_bytes).hexdigest() != record["sha256"]:
+                sha_mismatch_count += 1
+
+        fields["checked_payload_count"] = checked_count
+        fields["byte_count_mismatch_count"] = byte_mismatch_count
+        fields["sha256_mismatch_count"] = sha_mismatch_count
+        fields["missing_or_unreadable_count"] = missing_count
+        fields["run_completed_utc"] = _utc_now_iso()
+
+        if (
+            missing_count != 0
+            or byte_mismatch_count != 0
+            or sha_mismatch_count != 0
+            or checked_count != EXPECTED_V5B_TICKER_COUNT
+        ):
+            fields["status"] = "BLOCK"
+            fields["detail_reason"] = "PAYLOAD_BINDING_FAILED"
+            raise V5BCalibrationInputPreflightBlocked("PAYLOAD_BINDING_FAILED", result=_finalize(fields))
+
+        fields["status"] = "PASS"
+        fields["detail_reason"] = None
+        return _finalize(fields)
+
+    return _walk_cache_root(V5B_CACHE_ROOT)
 
 
 # ---------------------------------------------------------------------------
@@ -437,16 +448,34 @@ def run_static_check() -> None:
     if production_params != {"confirmation", "implementation_git_commit"}:
         raise V5BCalibrationInputPreflightBlocked("STATIC_CHECK_PRODUCTION_API_SURFACE_DRIFT")
 
+    # Scan the ENTIRE module callable surface -- every module-level name,
+    # exported or not, not merely __all__ -- for a second filesystem-
+    # capable bypass. The only callable defined in this module that may
+    # accept a cache_root/path/manifest_path/input_dir/dataset parameter
+    # is none at all: the actual cache-walking logic is a closure nested
+    # inside run_production_v5b_calibration_input_preflight and therefore
+    # never appears at module level in the first place.
     module_globals = globals()
-    if "run_v5b_calibration_input_preflight" in __all__ or "run_v5b_calibration_input_preflight" in module_globals:
+    banned_names = {
+        "run_v5b_calibration_input_preflight",
+        "_run_v5b_calibration_input_preflight_against_root",
+        "_walk_cache_root",
+    }
+    if banned_names & set(module_globals) or banned_names & set(__all__):
         raise V5BCalibrationInputPreflightBlocked("STATIC_CHECK_UNGATED_FILESYSTEM_RUNNER_EXPORTED")
 
     forbidden_param_names = {"cache_root", "path", "manifest_path", "input_dir", "dataset"}
-    for name in __all__:
-        candidate = module_globals.get(name)
-        if not callable(candidate) or inspect.isclass(candidate):
+    for name, candidate in list(module_globals.items()):
+        if name.startswith("__") or not callable(candidate) or inspect.isclass(candidate):
             continue
-        params = set(inspect.signature(candidate).parameters)
+        if getattr(candidate, "__module__", None) != __name__:
+            # Defined elsewhere (e.g. reused from the calibration core) --
+            # not this module's own API surface.
+            continue
+        try:
+            params = set(inspect.signature(candidate).parameters)
+        except (TypeError, ValueError):
+            continue
         if params & forbidden_param_names:
             raise V5BCalibrationInputPreflightBlocked("STATIC_CHECK_UNGATED_FILESYSTEM_RUNNER_EXPORTED")
 

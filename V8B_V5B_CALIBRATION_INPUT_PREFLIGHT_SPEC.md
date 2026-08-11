@@ -10,7 +10,9 @@ approved_plan_version=V8B_DATA_QUALITY_CALIBRATION_PLAN_V1
 approved_plan_git_commit=8c15426166742c43745e604f6367788af6123c1a
 methodology_change=false
 real_v5b_cache_accessed_by_this_task=false
-revision=2 (hardened execution boundary per ChatGPT preflight-adapter review)
+revision=3 (closed the remaining module-level filesystem bypass and bound
+  the reused calibration-core dependency to Git HEAD, per ChatGPT
+  preflight-adapter review)
 ```
 
 This document specifies the V5-B calibration input preflight: an isolated,
@@ -85,19 +87,32 @@ cache root. All tests exercise the preflight logic only against synthetic,
 temporary fixtures with `V5B_CACHE_ROOT` (and, for the Git-HEAD binding in
 §4a below, `_REPO_ROOT`) monkeypatched.
 
-**No ungated filesystem entry point exists (hardened, revision 2).**
-`src/v8b_v5b_calibration_input_preflight.py` exports exactly one
-filesystem-capable callable:
+**No module-level filesystem-capable callable exists at all except the
+gated entry point (hardened, revision 3).** An earlier revision kept the
+byte-binding logic in a private-by-naming-convention but still
+module-level, still externally callable helper
+(`_run_v5b_calibration_input_preflight_against_root(cache_root=...)`).
+That helper no longer exists in any form. The cache-walking logic is now
+defined as a **closure nested inside**
+`run_production_v5b_calibration_input_preflight`'s own function body: it
+has no module-level name, cannot be imported, monkeypatched onto, or
+invoked separately from a call to the gated entry point, and does not
+appear in `dir()` of this module at all. `src/v8b_v5b_calibration_input_
+preflight.py` therefore has exactly one filesystem-capable callable, full
+stop -- not merely one *exported* one:
 `run_production_v5b_calibration_input_preflight(confirmation=...,
-implementation_git_commit=...)`. The byte-binding logic that actually
-walks an arbitrary `cache_root`
-(`_run_v5b_calibration_input_preflight_against_root`) is a private,
-unexported helper reachable only from that gated entry point (and from
-this module's own whitebox tests, which call it as a focused unit under
-test, never as a substitute for the gate). Nothing this module exports
+implementation_git_commit=...)`.
+
+The module's other private helpers
+(`_resolve_actual_git_head`, `_read_committed_bytes`,
+`_verify_implementation_matches_repository_head`) remain module-level
+because they are a distinct concern -- Git/repository provenance
+verification, not V5-B cache access -- and never read anything under
+`V5B_CACHE_ROOT`. `run_static_check()` (§11) scans the module's **entire**
+callable surface (via `dir()`, not merely `__all__`) on every invocation
+to enforce that no callable defined in this module, exported or not,
 accepts a `cache_root`/`path`/`manifest_path`/`input_dir`/`dataset`
-parameter; `run_static_check()` (§11) enforces this at every static-check
-invocation, not merely at review time.
+parameter.
 
 ---
 
@@ -137,7 +152,7 @@ an explicit, deliberate caller decision.
 
 ---
 
-## 4a. Implementation Git-HEAD binding (hardened, revision 2)
+## 4a. Implementation Git-HEAD binding (hardened, revision 2, extended revision 3)
 
 Immediately after the confirmation check passes, and strictly before any
 V5-B cache filesystem access, `run_production_v5b_calibration_input_
@@ -168,15 +183,28 @@ RELATIVE_PATHS`):
 src/v8b_v5b_calibration_input_preflight.py
 scripts/preflight_v8b_v5b_calibration_input.py
 V8B_V5B_CALIBRATION_INPUT_PREFLIGHT_SPEC.md
+src/v8b_data_quality_calibration.py     (added, revision 3)
 ```
 
+`src/v8b_data_quality_calibration.py` is bound for the same reason as the
+other three: this preflight imports and executes
+`validate_v5b_manifest_provenance()` from it, and reads its fixed
+`EXPECTED_V5B_MANIFEST_SHA256` / `EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256` /
+`EXPECTED_V5B_TICKER_COUNT` constants from it. A dirty, locally modified
+copy of that reused calibration-core dependency could silently change
+what a "PASS" from this preflight actually verified -- e.g. a locally
+loosened `EXPECTED_V5B_MANIFEST_SHA256` -- while the preflight's own three
+files stayed clean and reviewed. Binding it closes that gap the same way
+step 4 already closes it for the preflight's own implementation.
+
 This closes the gap where a dirty, locally modified copy of the
-preflight's own implementation could execute against the real cache while
-claiming the provenance of a clean, reviewed commit. The check reads only
-repository metadata (`git rev-parse`, `git show`) and the working-tree
-bytes of the three files above; it makes no network call and does not
-touch the V5-B cache. `_REPO_ROOT` (defaulting to this repository's real
-root) is monkeypatched by tests to a disposable synthetic Git repository,
+preflight's own implementation (or its reused calibration-core dependency)
+could execute against the real cache while claiming the provenance of a
+clean, reviewed commit. The check reads only repository metadata
+(`git rev-parse`, `git show`) and the working-tree bytes of the four files
+above; it makes no network call and does not touch the V5-B cache.
+`_REPO_ROOT` (defaulting to this repository's real root) is monkeypatched
+by tests to a disposable synthetic Git repository,
 exactly as `V5B_CACHE_ROOT` is monkeypatched -- never a public parameter.
 
 ---
@@ -359,22 +387,28 @@ src/v8b_data_quality_calibration.py::V8BCalibrationBlocked
 
 ---
 
-## 11. Static check (hardened, revision 2)
+## 11. Static check (hardened, revision 2, extended revision 3)
 
 `run_static_check()` is repository-only: it performs zero V5-B cache
 access and zero network access, reading only this module's own source and
-introspecting its own public API surface. `--static-check` on the CLI
-calls it and prints `V8B_V5B_CALIBRATION_INPUT_PREFLIGHT_STATIC_PASS` only
-after it returns without raising. It verifies, at minimum:
+introspecting its own **entire** module callable surface. `--static-check`
+on the CLI calls it and prints
+`V8B_V5B_CALIBRATION_INPUT_PREFLIGHT_STATIC_PASS` only after it returns
+without raising. It verifies, at minimum:
 
 ```text
 1. FIXED_V5B_CACHE_ROOT_WINDOWS_PATH equals the exact declared local path
 2. PREFLIGHT_GATE_CONFIRMATION equals the exact gate token
 3. run_production_v5b_calibration_input_preflight()'s parameter set is
    exactly {confirmation, implementation_git_commit} -- no path override
-4. no exported name is the old ungated public runner, and no exported
-   callable accepts a cache_root/path/manifest_path/input_dir/dataset
-   parameter
+4. no module-level name -- exported via __all__ or not -- is the old
+   ungated public runner or its former private-helper equivalent, and no
+   module-level callable DEFINED IN THIS MODULE (via dir(), not merely
+   __all__; reused calibration-core functions are excluded by __module__
+   identity) accepts a cache_root/path/manifest_path/input_dir/dataset
+   parameter -- this is the regression guard for both the original
+   ungated public function and the later private-but-still-module-level
+   bypass, neither of which may ever reappear at module scope again
 5. EXPECTED_V5B_TICKER_COUNT remains 300
 6. validate_v5b_manifest_provenance is still the exact function object
    reused from src/v8b_data_quality_calibration.py (not shadowed/redefined)
