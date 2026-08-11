@@ -1735,9 +1735,21 @@ def test_validate_result_artifact_semantics_accepts_genuinely_valid_artifact(cle
     )  # must not raise
 
 
-def test_validate_result_artifact_semantics_accepts_genuinely_invalid_artifact():
+def test_validate_result_artifact_semantics_rejects_genuinely_invalid_artifact_without_trusted_reason():
+    # A genuinely self-consistent INVALID artifact must still be rejected
+    # when the caller supplies no trusted expected_invalid_reason: the
+    # persisted artifact is never its own authority for which blocker fired.
     artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
-    calib.validate_result_artifact_semantics(artifact)  # must not raise
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(artifact)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_validate_result_artifact_semantics_accepts_genuinely_invalid_artifact_with_trusted_reason():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    calib.validate_result_artifact_semantics(
+        artifact, expected_invalid_reason="SYNTHETIC_BASE_SELECTION_BLOCKED"
+    )  # must not raise
 
 
 def test_validate_result_artifact_semantics_rejects_bad_self_hash(clean_valid_kwargs):
@@ -1780,22 +1792,58 @@ def test_is_recognized_invalid_reason_rejects_bool_int_float_and_unknown_strings
     assert calib._is_recognized_invalid_reason(None) is False
 
 
-def test_is_recognized_invalid_reason_accepts_known_reasons_and_manifest_prefix():
+def test_is_recognized_invalid_reason_accepts_known_reasons_and_exact_manifest_blockers():
     for known_reason in calib._RUN_INVALID_REASON_FLAGS:
         assert calib._is_recognized_invalid_reason(known_reason) is True
-    assert calib._is_recognized_invalid_reason("MANIFEST_ANYTHING_STRUCTURAL") is True
+    for manifest_reason in calib._RECOGNIZED_MANIFEST_BLOCKER_REASONS:
+        assert calib._is_recognized_invalid_reason(manifest_reason) is True
 
 
-def test_validate_result_artifact_semantics_accepts_recognized_invalid_reason():
-    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
-    calib.validate_result_artifact_semantics(artifact)  # must not raise
+def test_is_recognized_invalid_reason_rejects_arbitrary_manifest_prefixed_strings():
+    # The old wildcard rule (reason.startswith("MANIFEST_")) is gone: only
+    # the exact, finite set of manifest blocker strings current production
+    # validation code can actually raise is recognized.
+    assert calib._is_recognized_invalid_reason("MANIFEST_ANYTHING_STRUCTURAL") is False
+    assert calib._is_recognized_invalid_reason("MANIFEST_FAKE_REASON") is False
+    assert calib._is_recognized_invalid_reason("MANIFEST_") is False
 
 
-def test_validate_result_artifact_semantics_accepts_manifest_prefixed_invalid_reason():
+@pytest.mark.parametrize("manifest_reason", sorted(calib._RECOGNIZED_MANIFEST_BLOCKER_REASONS))
+def test_validate_result_artifact_semantics_accepts_every_real_manifest_blocker_with_trusted_reason(manifest_reason):
+    # Every real manifest blocker reason emitted by current production
+    # validation must be recognized and, when supplied as a trusted
+    # expected_invalid_reason matching the persisted reason, accepted.
     artifact = calib.build_result_artifact(
-        **_blocked_artifact_kwargs(run_validity=calib.run_validity_for_reason("MANIFEST_SCHEMA_VERSION_MISMATCH"))
+        **_blocked_artifact_kwargs(run_validity=calib.run_validity_for_reason(manifest_reason))
     )
-    calib.validate_result_artifact_semantics(artifact)  # must not raise
+    calib.validate_result_artifact_semantics(
+        artifact, expected_invalid_reason=manifest_reason
+    )  # must not raise
+
+
+def test_validate_result_artifact_semantics_rejects_recognized_invalid_reason_without_trusted_reason():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(artifact)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_validate_result_artifact_semantics_rejects_arbitrary_manifest_fake_reason_as_expected():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(artifact, expected_invalid_reason="MANIFEST_FAKE_REASON")
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_validate_result_artifact_semantics_rejects_rehashed_arbitrary_manifest_fake_persisted_reason():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    mutated = dict(artifact)
+    mutated["run_invalid_reason_or_null"] = "MANIFEST_FAKE_REASON"
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(mutated, expected_invalid_reason="MANIFEST_FAKE_REASON")
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 
 def test_validate_result_artifact_semantics_accepts_matching_expected_invalid_reason():
@@ -1858,7 +1906,24 @@ def test_rejects_rehashed_invalid_reason_arbitrary_unknown_string():
     assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 
+def test_rejects_rehashed_recognized_to_recognized_invalid_reason_without_trusted_reason():
+    # Attack: persisted reason swapped from one recognized blocker to
+    # another recognized blocker, self-hash recomputed over the mutation,
+    # and no trusted expected_invalid_reason supplied at all.
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    mutated = dict(artifact)
+    mutated["run_invalid_reason_or_null"] = "CALIBRATION_INPUT_EMPTY_SERIES_BLOCKED"  # recognized, but not what happened
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(mutated)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
 def test_rejects_rehashed_recognized_but_wrong_invalid_reason_when_expected_supplied():
+    # Same attack, but this time the caller does supply a trusted reason --
+    # the original, correct one. It must still be rejected because it no
+    # longer matches the (attacker-mutated) persisted reason.
     artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
     mutated = dict(artifact)
     mutated["run_invalid_reason_or_null"] = "CALIBRATION_INPUT_EMPTY_SERIES_BLOCKED"  # recognized, but not what happened
@@ -2133,7 +2198,7 @@ def test_rejects_candidate_selection_executed_as_int_not_bool():
     mutated["candidate_selection_executed"] = 0
     mutated = _rehash(mutated)
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
-        calib.validate_result_artifact_semantics(mutated)
+        calib.validate_result_artifact_semantics(mutated, expected_invalid_reason="SYNTHETIC_BASE_SELECTION_BLOCKED")
     assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 
@@ -2186,7 +2251,7 @@ def test_rejects_invalid_artifact_exact_int_field_as_float_or_bool(field, bad_va
     mutated[field] = bad_value
     mutated = _rehash(mutated)
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
-        calib.validate_result_artifact_semantics(mutated)
+        calib.validate_result_artifact_semantics(mutated, expected_invalid_reason="SYNTHETIC_BASE_SELECTION_BLOCKED")
     assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 

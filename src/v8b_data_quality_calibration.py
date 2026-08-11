@@ -812,11 +812,55 @@ def run_validity_for_reason(reason: str) -> RunValidity:
     return RunValidity(failure_reason=reason, **overrides)
 
 
+_RECOGNIZED_MANIFEST_BLOCKER_REASONS: frozenset[str] = frozenset(
+    {
+        # Emitted by validate_v5b_manifest_structure() / _validate_relative_path().
+        "MANIFEST_ROOT_INVALID",
+        "MANIFEST_SCHEMA_VERSION_MISMATCH",
+        "MANIFEST_NOT_COMPLETE",
+        "MANIFEST_NOT_USABLE",
+        "MANIFEST_ATTEMPTED_TICKER_COUNT_MISMATCH",
+        "MANIFEST_SUCCESS_COUNT_MISMATCH",
+        "MANIFEST_FAILED_COUNT_MISMATCH",
+        "MANIFEST_TICKER_COUNT_MISMATCH",
+        "MANIFEST_FAILED_TICKERS_NOT_EMPTY",
+        "MANIFEST_CIRCUIT_BREAKER_TRIGGERED",
+        "MANIFEST_REQUEST_START_MISMATCH",
+        "MANIFEST_REQUEST_END_MISMATCH",
+        "MANIFEST_RETRY_COUNT_INVALID",
+        "MANIFEST_HTTP_429_COUNT_INVALID",
+        "MANIFEST_HTTP_5XX_COUNT_INVALID",
+        "MANIFEST_PAYLOAD_COUNT_MISMATCH",
+        "MANIFEST_PAYLOAD_RECORD_INVALID",
+        "MANIFEST_PAYLOAD_TICKER_INVALID",
+        "MANIFEST_DUPLICATE_TICKER",
+        "MANIFEST_RELATIVE_PATH_INVALID",
+        "MANIFEST_DUPLICATE_RELATIVE_PATH",
+        "MANIFEST_PAYLOAD_SHA256_INVALID",
+        "MANIFEST_PAYLOAD_BYTE_COUNT_INVALID",
+        "MANIFEST_PAYLOAD_HASH_LIST_MISMATCH",
+        "MANIFEST_PAYLOAD_HASH_LIST_FIELD_MISMATCH",
+        # Emitted by validate_v5b_manifest_provenance().
+        "MANIFEST_SHA256_MISMATCH",
+        "MANIFEST_NOT_UTF8",
+        # Emitted by parse_strict_json(), reachable both from
+        # validate_v5b_manifest_provenance() and from the approval-JSON
+        # parsing inside verify_repository_contract(). Not MANIFEST_-
+        # prefixed, but genuinely producible by current production
+        # validation code, so a legitimately INVALID artifact must be able
+        # to name one of these as its trusted reason.
+        "STRICT_JSON_DUPLICATE_KEY",
+        "STRICT_JSON_MALFORMED",
+    }
+)
+
+
 def _is_recognized_invalid_reason(reason: Any) -> bool:
     """True only for a reason string that maps to a real, preregistered
-    calibration blocker (an explicit key in ``_RUN_INVALID_REASON_FLAGS``,
-    or the same ``MANIFEST_`` prefix rule ``run_validity_for_reason`` uses
-    for manifest-structural blockers).
+    calibration blocker: an explicit key in ``_RUN_INVALID_REASON_FLAGS``,
+    or an exact member of ``_RECOGNIZED_MANIFEST_BLOCKER_REASONS`` (the
+    finite set of manifest/strict-JSON blocker strings current production
+    validation code can actually raise).
 
     Deliberately narrower than ``run_validity_for_reason``, which also has
     a generic r9 fallback for any other string: that fallback exists so a
@@ -824,14 +868,15 @@ def _is_recognized_invalid_reason(reason: Any) -> bool:
     reason it hasn't enumerated yet, not to make every arbitrary string an
     acceptable claim from an untrusted, already-persisted artifact. A
     persisted ``run_invalid_reason_or_null`` must correspond to one of the
-    two principled, named categories below, not merely be a nonempty str.
+    two principled, named categories below, not merely be a nonempty str,
+    and not merely share the ``MANIFEST_`` prefix.
     """
 
     if type(reason) is not str or not reason:
         return False
     if reason in _RUN_INVALID_REASON_FLAGS:
         return True
-    return reason.startswith("MANIFEST_")
+    return reason in _RECOGNIZED_MANIFEST_BLOCKER_REASONS
 
 
 # ---------------------------------------------------------------------------
@@ -1750,11 +1795,16 @@ def _verify_invalid_artifact_fields(
     persisted_reason = artifact.get("run_invalid_reason_or_null")
     if not _is_recognized_invalid_reason(persisted_reason):
         raise V8BCalibrationBlocked(reason)
-    if expected_invalid_reason is not None:
-        if not _is_recognized_invalid_reason(expected_invalid_reason):
-            raise V8BCalibrationBlocked(reason)
-        if persisted_reason != expected_invalid_reason:
-            raise V8BCalibrationBlocked(reason)
+    # A persisted artifact is never its own authority for which invalid
+    # condition occurred: the caller must independently supply a trusted,
+    # recognized expected_invalid_reason that exactly matches. Omitting it
+    # is a rejection, not a lenient skip.
+    if expected_invalid_reason is None:
+        raise V8BCalibrationBlocked(reason)
+    if not _is_recognized_invalid_reason(expected_invalid_reason):
+        raise V8BCalibrationBlocked(reason)
+    if persisted_reason != expected_invalid_reason:
+        raise V8BCalibrationBlocked(reason)
 
     if (
         artifact.get("candidate_selection_executed") is not False
@@ -1921,12 +1971,13 @@ def validate_result_artifact_semantics(
     4. for an INVALID artifact: ``run_invalid_reason_or_null`` must be a
        *recognized* calibration blocker (see
        ``_is_recognized_invalid_reason`` — an explicit
-       ``_RUN_INVALID_REASON_FLAGS`` key or a ``MANIFEST_``-prefixed
-       reason), never merely a nonempty string. If the caller supplies a
-       trusted ``expected_invalid_reason``, it must itself be recognized
-       and must exactly equal the persisted reason — an untrusted
-       artifact's own claim is never used to infer which blocker fired
-       unless a trusted caller independently confirms it;
+       ``_RUN_INVALID_REASON_FLAGS`` key or an exact member of
+       ``_RECOGNIZED_MANIFEST_BLOCKER_REASONS``), never merely a nonempty
+       string. The caller MUST supply a trusted ``expected_invalid_reason``
+       — it is mandatory for an INVALID artifact, not optional — and it
+       must itself be recognized and must exactly equal the persisted
+       reason. The persisted artifact is never its own authority for which
+       blocker fired; omitting ``expected_invalid_reason`` is a rejection;
     5. for a VALID artifact: ``expected_invalid_reason`` must be ``None``
        (a valid run has no invalid-reason to bind); the global envelope
        recomputed from ``yearly_windows``/``full_span_windows``; all 30
@@ -2251,8 +2302,9 @@ def _verify_self_hash_round_trip() -> None:
         raise V8BCalibrationBlocked("CALIBRATION_ARTIFACT_SCHEMA_DRIFT")
 
     # The genuinely valid (self-consistent, correctly hashed) INVALID-state
-    # dummy must be accepted by the public semantic verifier.
-    validate_result_artifact_semantics(dummy)
+    # dummy must be accepted by the public semantic verifier, given its
+    # trusted reason.
+    validate_result_artifact_semantics(dummy, expected_invalid_reason="SYNTHETIC_BASE_SELECTION_BLOCKED")
 
     # A rehashed mutation of a fixed identifier must still be rejected by
     # the common metadata validator even though the self-hash matches.
