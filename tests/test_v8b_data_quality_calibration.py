@@ -1057,28 +1057,6 @@ def test_provenance_accepts_equal_started_and_completed():
 # ---------------------------------------------------------------------------
 
 
-def test_build_result_artifact_rejects_valid_state_with_wrong_candidate_count():
-    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
-        calib.build_result_artifact(
-            **_blocked_artifact_kwargs(
-                run_validity=calib.VALID_RUN,
-                selected_policy="F1_C1",
-                candidate_selection_executed=True,
-                candidate_results=[],  # should be exactly 30
-                m_fraction=Fraction(0, 1),
-                m_consecutive=0,
-                input_provenance_hashes={
-                    "manifest_sha256": "0" * 64,
-                    "payload_hash_list_sha256": "0" * 64,
-                    "manifest_payload_count": 300,
-                    "bound_payload_count": 300,
-                },
-                error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
-            )
-        )
-    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
-
-
 def test_build_result_artifact_rejects_invalid_state_with_nonempty_candidates():
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
         calib.build_result_artifact(**_blocked_artifact_kwargs(candidate_results=[{"candidate_id": "F1_C1"}]))
@@ -1091,117 +1069,449 @@ def test_build_result_artifact_rejects_invalid_state_that_executed_selection():
     assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 
-def _full_candidate_results(defensible_ids=frozenset(), m_fraction=Fraction(0, 1), m_consecutive=0):
-    rows = []
-    for candidate in calib.CANDIDATES:
-        rows.append(
-            {
-                "candidate_id": candidate.id,
-                "exact_fraction_rational": calib.fraction_to_json(calib.candidate_fraction_value(candidate)),
-                "declared_fraction": {
-                    "declared_numerator": candidate.declared_numerator,
-                    "declared_denominator": candidate.declared_denominator,
-                },
-                "max_consecutive": candidate.max_consecutive,
-                "observed_ticker_year_pass_count_over_denominator": {"pass_count": 0, "denominator": 0},
-                "observed_full_ticker_pass_count_over_denominator": {"pass_count": 0, "denominator": 0},
-                "DEFENSIBLE": candidate.id in defensible_ids,
-                "failed_criterion_ids": calib._failed_criterion_ids(candidate, m_fraction, m_consecutive),
-            }
+# ---------------------------------------------------------------------------
+# Deep semantic validation of VALID artifacts (independent recomputation).
+# ---------------------------------------------------------------------------
+
+
+def _make_windows(count, *, invalid=0, max_run=0, total=252):
+    return [
+        calib.WindowStats(
+            total_returned=total,
+            valid_returned=total - invalid,
+            invalid_returned=invalid,
+            invalid_fraction=Fraction(invalid, total),
+            max_consecutive_invalid_returned_rows=max_run,
         )
-    return rows
+        for _ in range(count)
+    ]
 
 
-def test_build_result_artifact_rejects_no_defensible_policy_with_a_defensible_row():
-    rows = _full_candidate_results(defensible_ids={"F1_C1"})
-    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
-        calib.build_result_artifact(
-            **_blocked_artifact_kwargs(
-                run_validity=calib.VALID_RUN,
-                selected_policy=calib.CALIBRATION_NO_DEFENSIBLE_POLICY,
-                candidate_selection_executed=True,
-                candidate_results=rows,
-                m_fraction=Fraction(0, 1),
-                m_consecutive=0,
-                input_provenance_hashes={
-                    "manifest_sha256": "0" * 64,
-                    "payload_hash_list_sha256": "0" * 64,
-                    "manifest_payload_count": 300,
-                    "bound_payload_count": 300,
-                },
-                error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
-            )
-        )
-    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+def _default_synthetic_base_metadata():
+    return [
+        {"base_index": i, "ticker_sha256": "0" * 64, "window_start": "2019-01-01", "window_end": "2019-09-09"}
+        for i in range(20)
+    ]
 
 
-def test_build_result_artifact_rejects_selected_candidate_not_marked_defensible():
-    rows = _full_candidate_results(defensible_ids=set())  # F1_C1 not marked defensible
-    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
-        calib.build_result_artifact(
-            **_blocked_artifact_kwargs(
-                run_validity=calib.VALID_RUN,
-                selected_policy="F1_C1",
-                candidate_selection_executed=True,
-                candidate_results=rows,
-                m_fraction=Fraction(0, 1),
-                m_consecutive=0,
-                input_provenance_hashes={
-                    "manifest_sha256": "0" * 64,
-                    "payload_hash_list_sha256": "0" * 64,
-                    "manifest_payload_count": 300,
-                    "bound_payload_count": 300,
-                },
-                error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
-            )
-        )
-    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+def _valid_artifact_kwargs(full_span_windows, yearly_windows, **overrides):
+    """Build a genuinely self-consistent VALID kwargs set by calling the
+    real recompute functions, not by hand-typing matching fake numbers."""
 
-
-def test_build_result_artifact_accepts_valid_no_defensible_policy_state():
-    rows = _full_candidate_results(defensible_ids=set())
-    artifact = calib.build_result_artifact(
-        **_blocked_artifact_kwargs(
-            run_validity=calib.VALID_RUN,
-            selected_policy=calib.CALIBRATION_NO_DEFENSIBLE_POLICY,
-            candidate_selection_executed=True,
-            candidate_results=rows,
-            m_fraction=Fraction(1, 1),
-            m_consecutive=999,
-            input_provenance_hashes={
-                "manifest_sha256": "0" * 64,
-                "payload_hash_list_sha256": "0" * 64,
-                "manifest_payload_count": 300,
-                "bound_payload_count": 300,
-            },
-            error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
-        )
+    envelope = calib.compute_global_envelope(list(yearly_windows) + list(full_span_windows))
+    candidate_results = calib._compute_candidate_results(
+        yearly_windows, full_span_windows, envelope.m_fraction, envelope.m_consecutive
     )
-    assert artifact["selected_policy"] == calib.CALIBRATION_NO_DEFENSIBLE_POLICY
+    selected_policy, _ = calib.select_policy(calib.VALID_RUN, envelope.m_fraction, envelope.m_consecutive)
+    fraction_headroom, consecutive_headroom = calib._compute_selected_headrooms(
+        selected_policy, envelope.m_fraction, envelope.m_consecutive
+    )
+    kwargs = dict(
+        run_validity=calib.VALID_RUN,
+        selected_policy=selected_policy,
+        candidate_selection_executed=True,
+        candidate_results=candidate_results,
+        yearly_windows=yearly_windows,
+        full_span_windows=full_span_windows,
+        m_fraction=envelope.m_fraction,
+        m_fraction_window_count=envelope.m_fraction_source_window_count,
+        m_consecutive=envelope.m_consecutive,
+        m_consecutive_window_count=envelope.m_consecutive_source_window_count,
+        synthetic_base_count=calib.SYNTHETIC_BASE_COUNT,
+        synthetic_scenario_count=calib.SYNTHETIC_SCENARIO_COUNT,
+        synthetic_candidate_comparison_count=calib.SYNTHETIC_CANDIDATE_COMPARISON_COUNT,
+        synthetic_truth_table_mismatch_count=0,
+        synthetic_base_metadata=_default_synthetic_base_metadata(),
+        input_provenance_hashes={
+            "manifest_sha256": calib.EXPECTED_V5B_MANIFEST_SHA256,
+            "payload_hash_list_sha256": calib.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256,
+            "manifest_payload_count": 300,
+            "bound_payload_count": 300,
+        },
+        error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
+        implementation_git_commit=VALID_COMMIT,
+        calibration_attempt_id="test",
+        run_started_utc="2026-01-01T00:00:00Z",
+        run_completed_or_blocked_utc="2026-01-01T00:00:01Z",
+        selected_candidate_fraction_headroom_exact_or_null=fraction_headroom,
+        selected_candidate_consecutive_headroom_or_null=consecutive_headroom,
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+@pytest.fixture
+def clean_valid_kwargs():
+    full_span = _make_windows(300, invalid=0, max_run=0)
+    yearly = _make_windows(300, invalid=0, max_run=0)
+    return _valid_artifact_kwargs(full_span, yearly)
+
+
+def test_build_result_artifact_accepts_genuinely_consistent_valid_state(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
     assert artifact["calibration_run_valid"] is True
-
-
-def test_build_result_artifact_accepts_valid_selected_candidate_state():
-    rows = _full_candidate_results(defensible_ids={"F1_C1"})
-    artifact = calib.build_result_artifact(
-        **_blocked_artifact_kwargs(
-            run_validity=calib.VALID_RUN,
-            selected_policy="F1_C1",
-            candidate_selection_executed=True,
-            candidate_results=rows,
-            m_fraction=Fraction(0, 1),
-            m_consecutive=0,
-            input_provenance_hashes={
-                "manifest_sha256": "0" * 64,
-                "payload_hash_list_sha256": "0" * 64,
-                "manifest_payload_count": 300,
-                "bound_payload_count": 300,
-            },
-            error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
-        )
-    )
     assert artifact["selected_policy"] == "F1_C1"
     assert len(artifact["candidate_results"]) == 30
+    assert calib.verify_artifact_self_hash(artifact) is True
+
+
+def test_build_result_artifact_accepts_no_defensible_policy_state():
+    full_span = _make_windows(300, invalid=252, total=252, max_run=252)  # worst possible envelope
+    yearly = _make_windows(300, invalid=252, total=252, max_run=252)
+    kwargs = _valid_artifact_kwargs(full_span, yearly)
+    artifact = calib.build_result_artifact(**kwargs)
+    assert artifact["selected_policy"] == calib.CALIBRATION_NO_DEFENSIBLE_POLICY
+    assert artifact["calibration_run_valid"] is True
+    assert all(row["DEFENSIBLE"] is False for row in artifact["candidate_results"])
+
+
+def test_build_result_artifact_rejects_wrong_full_span_window_count():
+    full_span = _make_windows(299)  # must be exactly 300
+    yearly = _make_windows(300)
+    kwargs = _valid_artifact_kwargs(_make_windows(300), yearly)
+    kwargs["full_span_windows"] = full_span
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_build_result_artifact_rejects_empty_yearly_windows(clean_valid_kwargs):
+    clean_valid_kwargs["yearly_windows"] = []
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# --- Point 10: adversarial candidate-result mutations -----------------
+
+
+def _mutate_row(kwargs, index, **row_overrides):
+    rows = [dict(row) for row in kwargs["candidate_results"]]
+    rows[index] = {**rows[index], **row_overrides}
+    kwargs["candidate_results"] = rows
+    return kwargs
+
+
+def test_rejects_duplicate_candidate_id(clean_valid_kwargs):
+    rows = [dict(row) for row in clean_valid_kwargs["candidate_results"]]
+    rows[1] = dict(rows[0])  # duplicate row 0's full content into slot 1
+    clean_valid_kwargs["candidate_results"] = rows
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_missing_candidate_row(clean_valid_kwargs):
+    rows = list(clean_valid_kwargs["candidate_results"])[:-1]
+    clean_valid_kwargs["candidate_results"] = rows
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_unknown_candidate_id(clean_valid_kwargs):
+    _mutate_row(clean_valid_kwargs, 0, candidate_id="BOGUS_CANDIDATE")
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_declared_fraction(clean_valid_kwargs):
+    _mutate_row(clean_valid_kwargs, 0, declared_fraction={"declared_numerator": 99, "declared_denominator": 252})
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_max_consecutive(clean_valid_kwargs):
+    _mutate_row(clean_valid_kwargs, 0, max_consecutive=999)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_ticker_year_pass_count(clean_valid_kwargs):
+    _mutate_row(
+        clean_valid_kwargs, 0, observed_ticker_year_pass_count_over_denominator={"pass_count": 0, "denominator": 300}
+    )
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_full_ticker_pass_denominator(clean_valid_kwargs):
+    _mutate_row(
+        clean_valid_kwargs, 0, observed_full_ticker_pass_count_over_denominator={"pass_count": 300, "denominator": 1}
+    )
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_defensible_flag(clean_valid_kwargs):
+    _mutate_row(clean_valid_kwargs, 0, DEFENSIBLE=not clean_valid_kwargs["candidate_results"][0]["DEFENSIBLE"])
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_failed_criterion_ids(clean_valid_kwargs):
+    _mutate_row(clean_valid_kwargs, 0, failed_criterion_ids=["D1", "D2"])
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_fraction_headroom(clean_valid_kwargs):
+    _mutate_row(clean_valid_kwargs, 0, fraction_headroom_exact={"numerator": 999, "denominator": 1})
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_consecutive_headroom(clean_valid_kwargs):
+    _mutate_row(clean_valid_kwargs, 0, consecutive_headroom=999)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# --- Point 10: adversarial M/envelope mutations ------------------------
+
+
+def test_rejects_wrong_m_fraction(clean_valid_kwargs):
+    clean_valid_kwargs["m_fraction"] = Fraction(1, 2)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_m_fraction_source_window_count(clean_valid_kwargs):
+    clean_valid_kwargs["m_fraction_window_count"] += 1
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_m_consecutive(clean_valid_kwargs):
+    clean_valid_kwargs["m_consecutive"] = 5
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_m_consecutive_source_window_count(clean_valid_kwargs):
+    clean_valid_kwargs["m_consecutive_window_count"] += 1
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_non_strictest_selected_candidate(clean_valid_kwargs):
+    # Every candidate is defensible for a zero envelope, so F1_C1 is the
+    # unique correct (strictest) answer; anything else must be rejected.
+    clean_valid_kwargs["selected_policy"] = "F2_C1"
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_headroom_present_for_no_defensible_policy():
+    full_span = _make_windows(300, invalid=252, total=252, max_run=252)
+    yearly = _make_windows(300, invalid=252, total=252, max_run=252)
+    kwargs = _valid_artifact_kwargs(full_span, yearly)
+    assert kwargs["selected_policy"] == calib.CALIBRATION_NO_DEFENSIBLE_POLICY
+    kwargs["selected_candidate_fraction_headroom_exact_or_null"] = {"numerator": 1, "denominator": 1}
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_selected_headroom(clean_valid_kwargs):
+    clean_valid_kwargs["selected_candidate_consecutive_headroom_or_null"] = 999
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# --- Point 10: adversarial synthetic-count mutations --------------------
+
+
+@pytest.mark.parametrize(
+    "field,bad_value",
+    [
+        ("synthetic_base_count", 0),
+        ("synthetic_base_count", 19),
+        ("synthetic_scenario_count", 0),
+        ("synthetic_scenario_count", 5999),
+        ("synthetic_candidate_comparison_count", 0),
+        ("synthetic_candidate_comparison_count", 179999),
+        ("synthetic_truth_table_mismatch_count", 1),
+    ],
+)
+def test_rejects_wrong_synthetic_counts(clean_valid_kwargs, field, bad_value):
+    clean_valid_kwargs[field] = bad_value
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# --- Point 10: malformed/duplicate synthetic base metadata --------------
+
+
+def test_rejects_synthetic_metadata_wrong_row_count(clean_valid_kwargs):
+    clean_valid_kwargs["synthetic_base_metadata"] = _default_synthetic_base_metadata()[:19]
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_synthetic_metadata_duplicate_base_index(clean_valid_kwargs):
+    rows = _default_synthetic_base_metadata()
+    rows[1] = dict(rows[1], base_index=0)  # duplicate of row 0's index; 19 unique instead of 20
+    clean_valid_kwargs["synthetic_base_metadata"] = rows
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_synthetic_metadata_base_index_out_of_range(clean_valid_kwargs):
+    rows = _default_synthetic_base_metadata()
+    rows[0] = dict(rows[0], base_index=20)
+    clean_valid_kwargs["synthetic_base_metadata"] = rows
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_synthetic_metadata_uppercase_ticker_hash(clean_valid_kwargs):
+    rows = _default_synthetic_base_metadata()
+    rows[0] = dict(rows[0], ticker_sha256="0" * 63 + "A")  # uppercase hex char must be rejected
+    clean_valid_kwargs["synthetic_base_metadata"] = rows
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_synthetic_metadata_malformed_date(clean_valid_kwargs):
+    rows = _default_synthetic_base_metadata()
+    rows[0] = dict(rows[0], window_start="not-a-date")
+    clean_valid_kwargs["synthetic_base_metadata"] = rows
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_synthetic_metadata_start_after_end(clean_valid_kwargs):
+    rows = _default_synthetic_base_metadata()
+    rows[0] = dict(rows[0], window_start="2019-12-01", window_end="2019-01-01")
+    clean_valid_kwargs["synthetic_base_metadata"] = rows
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_synthetic_metadata_date_outside_calibration_span(clean_valid_kwargs):
+    rows = _default_synthetic_base_metadata()
+    rows[0] = dict(rows[0], window_start="2018-12-31", window_end="2019-01-05")
+    clean_valid_kwargs["synthetic_base_metadata"] = rows
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_synthetic_metadata_extra_field(clean_valid_kwargs):
+    rows = _default_synthetic_base_metadata()
+    rows[0] = dict(rows[0], extra_field="unexpected")
+    clean_valid_kwargs["synthetic_base_metadata"] = rows
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# --- Point 10: empty/wrong provenance ------------------------------------
+
+
+def test_rejects_empty_provenance_on_valid_artifact(clean_valid_kwargs):
+    clean_valid_kwargs["input_provenance_hashes"] = {"invalid_reason_count": 1}
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_manifest_sha_in_provenance(clean_valid_kwargs):
+    provenance = dict(clean_valid_kwargs["input_provenance_hashes"])
+    provenance["manifest_sha256"] = "0" * 64
+    clean_valid_kwargs["input_provenance_hashes"] = provenance
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_bound_payload_count_in_provenance(clean_valid_kwargs):
+    provenance = dict(clean_valid_kwargs["input_provenance_hashes"])
+    provenance["bound_payload_count"] = 299
+    clean_valid_kwargs["input_provenance_hashes"] = provenance
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_float_payload_count_in_provenance(clean_valid_kwargs):
+    provenance = dict(clean_valid_kwargs["input_provenance_hashes"])
+    provenance["bound_payload_count"] = 300.0
+    clean_valid_kwargs["input_provenance_hashes"] = provenance
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# --- Point 10: wrong/error-count types/values ----------------------------
+
+
+def test_rejects_nonzero_failed_count(clean_valid_kwargs):
+    errors = dict(clean_valid_kwargs["error_counts"])
+    errors["failed_count"] = 1
+    clean_valid_kwargs["error_counts"] = errors
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_negative_error_count(clean_valid_kwargs):
+    errors = dict(clean_valid_kwargs["error_counts"])
+    errors["retry_count"] = -1
+    clean_valid_kwargs["error_counts"] = errors
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_float_error_count(clean_valid_kwargs):
+    errors = dict(clean_valid_kwargs["error_counts"])
+    errors["http_429_count"] = 1.0
+    clean_valid_kwargs["error_counts"] = errors
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_missing_error_count_key(clean_valid_kwargs):
+    errors = dict(clean_valid_kwargs["error_counts"])
+    del errors["http_5xx_count"]
+    clean_valid_kwargs["error_counts"] = errors
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_extra_error_count_key(clean_valid_kwargs):
+    errors = dict(clean_valid_kwargs["error_counts"])
+    errors["unexpected"] = 0
+    clean_valid_kwargs["error_counts"] = errors
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 
 # ---------------------------------------------------------------------------

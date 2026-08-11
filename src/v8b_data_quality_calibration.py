@@ -1019,6 +1019,8 @@ def _utc_now_iso() -> str:
 
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_LOWER_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _parse_utc_z(value: Any, reason: str) -> datetime:
@@ -1051,49 +1053,224 @@ def _validate_provenance_fields(
         raise V8BCalibrationBlocked("CALIBRATION_PROVENANCE_TIMESTAMP_INVALID")
 
 
+def _compute_candidate_results(
+    yearly_windows: Sequence[WindowStats],
+    full_span_windows: Sequence[WindowStats],
+    m_fraction: Fraction,
+    m_consecutive: int,
+) -> list[dict[str, Any]]:
+    """The single source of truth for candidate-result rows: every field is
+    derived purely from CANDIDATES + the windows + the envelope, so this is
+    called both to construct a VALID artifact's rows and to independently
+    recompute the expected rows when validating one before hashing."""
+
+    rows: list[dict[str, Any]] = []
+    for candidate in CANDIDATES:
+        fraction_headroom = candidate_fraction_value(candidate) - m_fraction
+        consecutive_headroom = candidate.max_consecutive - m_consecutive
+        year_pass_count = sum(1 for window in yearly_windows if _window_passes_candidate(window, candidate))
+        span_pass_count = sum(1 for window in full_span_windows if _window_passes_candidate(window, candidate))
+        rows.append(
+            {
+                "candidate_id": candidate.id,
+                "exact_fraction_rational": fraction_to_json(candidate_fraction_value(candidate)),
+                "declared_fraction": {
+                    "declared_numerator": candidate.declared_numerator,
+                    "declared_denominator": candidate.declared_denominator,
+                },
+                "max_consecutive": candidate.max_consecutive,
+                "observed_ticker_year_pass_count_over_denominator": {
+                    "pass_count": year_pass_count,
+                    "denominator": len(yearly_windows),
+                },
+                "observed_full_ticker_pass_count_over_denominator": {
+                    "pass_count": span_pass_count,
+                    "denominator": len(full_span_windows),
+                },
+                "DEFENSIBLE": is_candidate_defensible(candidate, m_fraction, m_consecutive),
+                "failed_criterion_ids": _failed_criterion_ids(candidate, m_fraction, m_consecutive),
+                "fraction_headroom_exact": fraction_to_json(fraction_headroom),
+                "consecutive_headroom": consecutive_headroom,
+            }
+        )
+    return rows
+
+
+def _compute_selected_headrooms(
+    selected_policy: str, m_fraction: Fraction, m_consecutive: int
+) -> tuple[dict[str, int] | None, int | None]:
+    if selected_policy == CALIBRATION_NO_DEFENSIBLE_POLICY:
+        return None, None
+    selected_candidate = next((c for c in CANDIDATES if c.id == selected_policy), None)
+    if selected_candidate is None:
+        return None, None
+    fraction_headroom = fraction_to_json(candidate_fraction_value(selected_candidate) - m_fraction)
+    consecutive_headroom = selected_candidate.max_consecutive - m_consecutive
+    return fraction_headroom, consecutive_headroom
+
+
+def _validate_synthetic_base_metadata(rows: Sequence[Mapping[str, Any]]) -> None:
+    reason = "CALIBRATION_RESULT_STATE_INVALID"
+    if len(rows) != SYNTHETIC_BASE_COUNT:
+        raise V8BCalibrationBlocked(reason)
+    seen_indices: set[int] = set()
+    for row in rows:
+        if set(row) != {"base_index", "ticker_sha256", "window_start", "window_end"}:
+            raise V8BCalibrationBlocked(reason)
+        base_index = row.get("base_index")
+        if type(base_index) is not int or not (0 <= base_index < SYNTHETIC_BASE_COUNT):
+            raise V8BCalibrationBlocked(reason)
+        if base_index in seen_indices:
+            raise V8BCalibrationBlocked(reason)
+        seen_indices.add(base_index)
+
+        ticker_hash = row.get("ticker_sha256")
+        if not isinstance(ticker_hash, str) or not _LOWER_HEX64_RE.match(ticker_hash):
+            raise V8BCalibrationBlocked(reason)
+
+        start = row.get("window_start")
+        end = row.get("window_end")
+        if not isinstance(start, str) or not _ISO_DATE_RE.match(start):
+            raise V8BCalibrationBlocked(reason)
+        if not isinstance(end, str) or not _ISO_DATE_RE.match(end):
+            raise V8BCalibrationBlocked(reason)
+        try:
+            datetime.strptime(start, "%Y-%m-%d")
+            datetime.strptime(end, "%Y-%m-%d")
+        except ValueError as error:
+            raise V8BCalibrationBlocked(reason) from error
+        if not (CALIBRATION_START <= start < CALIBRATION_END_EXCLUSIVE):
+            raise V8BCalibrationBlocked(reason)
+        if not (CALIBRATION_START <= end < CALIBRATION_END_EXCLUSIVE):
+            raise V8BCalibrationBlocked(reason)
+        if start > end:
+            raise V8BCalibrationBlocked(reason)
+    if seen_indices != set(range(SYNTHETIC_BASE_COUNT)):
+        raise V8BCalibrationBlocked(reason)
+
+
 def _validate_result_state(
     *,
     run_validity: RunValidity,
     selected_policy: str,
     candidate_selection_executed: bool,
     candidate_results: Sequence[Mapping[str, Any]],
+    yearly_windows: Sequence[WindowStats],
+    full_span_windows: Sequence[WindowStats],
     m_fraction: Fraction | None,
+    m_fraction_window_count: int,
     m_consecutive: int | None,
+    m_consecutive_window_count: int,
+    synthetic_base_count: int,
+    synthetic_scenario_count: int,
+    synthetic_candidate_comparison_count: int,
     synthetic_truth_table_mismatch_count: int,
+    synthetic_base_metadata: Sequence[Mapping[str, Any]],
+    input_provenance_hashes: Mapping[str, Any],
+    error_counts: Mapping[str, Any],
+    selected_candidate_fraction_headroom_exact_or_null: Mapping[str, int] | None,
+    selected_candidate_consecutive_headroom_or_null: int | None,
 ) -> None:
+    reason = "CALIBRATION_RESULT_STATE_INVALID"
+
     if not run_validity.valid:
         if (
             not run_validity.failure_reason
             or candidate_selection_executed is not False
             or selected_policy != NOT_EVALUATED
             or len(candidate_results) != 0
+            or len(yearly_windows) != 0
+            or len(full_span_windows) != 0
             or m_fraction is not None
             or m_consecutive is not None
+            or m_fraction_window_count != 0
+            or m_consecutive_window_count != 0
+            or synthetic_base_count != 0
+            or synthetic_scenario_count != 0
+            or synthetic_candidate_comparison_count != 0
+            or synthetic_truth_table_mismatch_count != 0
+            or len(synthetic_base_metadata) != 0
+            or selected_candidate_fraction_headroom_exact_or_null is not None
+            or selected_candidate_consecutive_headroom_or_null is not None
+            or dict(input_provenance_hashes) != {"invalid_reason_count": 1}
+            or dict(error_counts) != {"invalid_reason_count": 1}
         ):
-            raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
+            raise V8BCalibrationBlocked(reason)
         return
+
+    # --- VALID branch: independently recompute everything derivable and
+    # require it to exactly match what the caller supplied. Caller-provided
+    # candidate rows / envelope / selection are never trusted at face value.
+    if run_validity.failure_reason is not None or candidate_selection_executed is not True:
+        raise V8BCalibrationBlocked(reason)
+    if m_fraction is None or m_consecutive is None:
+        raise V8BCalibrationBlocked(reason)
+    if len(full_span_windows) != EXPECTED_V5B_TICKER_COUNT:
+        raise V8BCalibrationBlocked(reason)
+    if not yearly_windows:
+        raise V8BCalibrationBlocked(reason)
+
+    recomputed_envelope = compute_global_envelope(list(yearly_windows) + list(full_span_windows))
+    if (
+        m_fraction != recomputed_envelope.m_fraction
+        or m_fraction_window_count != recomputed_envelope.m_fraction_source_window_count
+        or m_consecutive != recomputed_envelope.m_consecutive
+        or m_consecutive_window_count != recomputed_envelope.m_consecutive_source_window_count
+    ):
+        raise V8BCalibrationBlocked(reason)
+
+    expected_candidate_results = _compute_candidate_results(
+        yearly_windows, full_span_windows, recomputed_envelope.m_fraction, recomputed_envelope.m_consecutive
+    )
+    if list(candidate_results) != expected_candidate_results:
+        raise V8BCalibrationBlocked(reason)
+
+    expected_selected_policy, _ = select_policy(
+        VALID_RUN, recomputed_envelope.m_fraction, recomputed_envelope.m_consecutive
+    )
+    if selected_policy != expected_selected_policy:
+        raise V8BCalibrationBlocked(reason)
+
+    expected_fraction_headroom, expected_consecutive_headroom = _compute_selected_headrooms(
+        selected_policy, recomputed_envelope.m_fraction, recomputed_envelope.m_consecutive
+    )
+    if (
+        selected_candidate_fraction_headroom_exact_or_null != expected_fraction_headroom
+        or selected_candidate_consecutive_headroom_or_null != expected_consecutive_headroom
+    ):
+        raise V8BCalibrationBlocked(reason)
 
     if (
-        run_validity.failure_reason is not None
-        or candidate_selection_executed is not True
-        or len(candidate_results) != len(CANDIDATES)
-        or m_fraction is None
-        or m_consecutive is None
+        synthetic_base_count != SYNTHETIC_BASE_COUNT
+        or synthetic_scenario_count != SYNTHETIC_SCENARIO_COUNT
+        or synthetic_candidate_comparison_count != SYNTHETIC_CANDIDATE_COMPARISON_COUNT
         or synthetic_truth_table_mismatch_count != 0
     ):
-        raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
+        raise V8BCalibrationBlocked(reason)
 
-    if selected_policy == CALIBRATION_NO_DEFENSIBLE_POLICY:
-        if any(row.get("DEFENSIBLE") for row in candidate_results):
-            raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
-        return
+    _validate_synthetic_base_metadata(synthetic_base_metadata)
 
-    valid_ids = {candidate.id for candidate in CANDIDATES}
-    if selected_policy not in valid_ids:
-        raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
-    matching = [row for row in candidate_results if row.get("candidate_id") == selected_policy]
-    if len(matching) != 1 or matching[0].get("DEFENSIBLE") is not True:
-        raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
+    provenance = dict(input_provenance_hashes)
+    if set(provenance) != {"manifest_sha256", "payload_hash_list_sha256", "manifest_payload_count", "bound_payload_count"}:
+        raise V8BCalibrationBlocked(reason)
+    if type(provenance.get("manifest_payload_count")) is not int or type(provenance.get("bound_payload_count")) is not int:
+        raise V8BCalibrationBlocked(reason)
+    if (
+        provenance.get("manifest_sha256") != EXPECTED_V5B_MANIFEST_SHA256
+        or provenance.get("payload_hash_list_sha256") != EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256
+        or provenance.get("manifest_payload_count") != EXPECTED_V5B_TICKER_COUNT
+        or provenance.get("bound_payload_count") != EXPECTED_V5B_TICKER_COUNT
+    ):
+        raise V8BCalibrationBlocked(reason)
+
+    errors = dict(error_counts)
+    if set(errors) != {"failed_count", "retry_count", "http_429_count", "http_5xx_count"}:
+        raise V8BCalibrationBlocked(reason)
+    for value in errors.values():
+        if type(value) is not int or value < 0:
+            raise V8BCalibrationBlocked(reason)
+    if errors["failed_count"] != 0:
+        raise V8BCalibrationBlocked(reason)
 
 
 def build_result_artifact(
@@ -1117,6 +1294,8 @@ def build_result_artifact(
     calibration_attempt_id: str,
     run_started_utc: str,
     run_completed_or_blocked_utc: str,
+    yearly_windows: Sequence[WindowStats] = (),
+    full_span_windows: Sequence[WindowStats] = (),
     selected_candidate_fraction_headroom_exact_or_null: Mapping[str, int] | None = None,
     selected_candidate_consecutive_headroom_or_null: int | None = None,
 ) -> dict[str, Any]:
@@ -1128,9 +1307,21 @@ def build_result_artifact(
         selected_policy=selected_policy,
         candidate_selection_executed=candidate_selection_executed,
         candidate_results=candidate_results,
+        yearly_windows=yearly_windows,
+        full_span_windows=full_span_windows,
         m_fraction=m_fraction,
+        m_fraction_window_count=m_fraction_window_count,
         m_consecutive=m_consecutive,
+        m_consecutive_window_count=m_consecutive_window_count,
+        synthetic_base_count=synthetic_base_count,
+        synthetic_scenario_count=synthetic_scenario_count,
+        synthetic_candidate_comparison_count=synthetic_candidate_comparison_count,
         synthetic_truth_table_mismatch_count=synthetic_truth_table_mismatch_count,
+        synthetic_base_metadata=synthetic_base_metadata,
+        input_provenance_hashes=input_provenance_hashes,
+        error_counts=error_counts,
+        selected_candidate_fraction_headroom_exact_or_null=selected_candidate_fraction_headroom_exact_or_null,
+        selected_candidate_consecutive_headroom_or_null=selected_candidate_consecutive_headroom_or_null,
     )
     artifact: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
@@ -1294,46 +1485,13 @@ def run_data_quality_calibration(
     run_validity = VALID_RUN
 
     # 9. candidate selection (selection itself requires a valid run)
-    selected_policy, defensible = select_policy(run_validity, envelope.m_fraction, envelope.m_consecutive)
-    defensible_ids = {candidate.id for candidate in defensible}
-
-    candidate_results = []
-    for candidate in CANDIDATES:
-        fraction_headroom = candidate_fraction_value(candidate) - envelope.m_fraction
-        consecutive_headroom = candidate.max_consecutive - envelope.m_consecutive
-        year_pass_count = sum(1 for window in yearly_windows if _window_passes_candidate(window, candidate))
-        span_pass_count = sum(1 for window in full_span_windows if _window_passes_candidate(window, candidate))
-        candidate_results.append(
-            {
-                "candidate_id": candidate.id,
-                "exact_fraction_rational": fraction_to_json(candidate_fraction_value(candidate)),
-                "declared_fraction": {
-                    "declared_numerator": candidate.declared_numerator,
-                    "declared_denominator": candidate.declared_denominator,
-                },
-                "max_consecutive": candidate.max_consecutive,
-                "observed_ticker_year_pass_count_over_denominator": {
-                    "pass_count": year_pass_count,
-                    "denominator": len(yearly_windows),
-                },
-                "observed_full_ticker_pass_count_over_denominator": {
-                    "pass_count": span_pass_count,
-                    "denominator": len(full_span_windows),
-                },
-                "DEFENSIBLE": candidate.id in defensible_ids,
-                "failed_criterion_ids": _failed_criterion_ids(candidate, envelope.m_fraction, envelope.m_consecutive),
-                "fraction_headroom_exact": fraction_to_json(fraction_headroom),
-                "consecutive_headroom": consecutive_headroom,
-            }
-        )
-
-    selected_candidate = next((c for c in CANDIDATES if c.id == selected_policy), None)
-    if selected_candidate is not None:
-        selected_fraction_headroom = fraction_to_json(candidate_fraction_value(selected_candidate) - envelope.m_fraction)
-        selected_consecutive_headroom = selected_candidate.max_consecutive - envelope.m_consecutive
-    else:
-        selected_fraction_headroom = None
-        selected_consecutive_headroom = None
+    selected_policy, _ = select_policy(run_validity, envelope.m_fraction, envelope.m_consecutive)
+    candidate_results = _compute_candidate_results(
+        yearly_windows, full_span_windows, envelope.m_fraction, envelope.m_consecutive
+    )
+    selected_fraction_headroom, selected_consecutive_headroom = _compute_selected_headrooms(
+        selected_policy, envelope.m_fraction, envelope.m_consecutive
+    )
 
     synthetic_base_metadata = [
         {
@@ -1364,6 +1522,8 @@ def run_data_quality_calibration(
         selected_policy=selected_policy,
         candidate_selection_executed=True,
         candidate_results=candidate_results,
+        yearly_windows=yearly_windows,
+        full_span_windows=full_span_windows,
         m_fraction=envelope.m_fraction,
         m_fraction_window_count=envelope.m_fraction_source_window_count,
         m_consecutive=envelope.m_consecutive,
