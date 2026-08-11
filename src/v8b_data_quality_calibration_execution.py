@@ -276,26 +276,44 @@ def _is_valid_utc_timestamp(value: Any) -> bool:
     return True
 
 
+def _is_valid_calibration_attempt_id_format(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= 128
+        and not any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value)
+    )
+
+
 def validate_execution_status_semantics(
     result: Mapping[str, Any],
     *,
     expected_implementation_git_commit: str,
+    expected_calibration_attempt_id: str,
 ) -> None:
     """Accept only a canonical, self-hashed, semantically valid gate-level
-    execution status, bound to a caller-trusted implementation commit.
+    execution status, bound to a caller-trusted implementation commit and
+    calibration attempt id.
 
-    This validates ONLY the "did not reach the frozen calibration at all"
-    status shape produced by this module (``_EXECUTION_STATUS_KEYS``). It
-    does not, and must not, replace ``src/v8b_data_quality_calibration.py``
-    ::``validate_result_artifact_semantics`` -- the acceptance API for the
-    calibration RESULT artifact this module returns unmodified once
-    ``run_data_quality_calibration()`` is actually invoked.
+    This validates ONLY the "did not reach the frozen calibration at all,
+    or reached it but got no canonical RESULT artifact back" status shape
+    produced by this module (``_EXECUTION_STATUS_KEYS``). It does not, and
+    must not, replace ``src/v8b_data_quality_calibration.py``::
+    ``validate_result_artifact_semantics`` -- the acceptance API for the
+    calibration RESULT artifact this module returns unmodified whenever
+    ``run_data_quality_calibration()`` actually returns one. A normal,
+    canonical INVALID calibration RESULT artifact (the core's own internal
+    "this run is invalid" determination) is never converted into an
+    execution status by this module; it is passed through unmodified as
+    RESULT_V1, and this function must never be used to validate it.
 
-    ``expected_implementation_git_commit`` is required with no default, for
-    exactly the reason it is required on the reviewed preflight's own
+    ``expected_implementation_git_commit`` and
+    ``expected_calibration_attempt_id`` are both required with no default,
+    for exactly the reason ``expected_implementation_git_commit`` is
+    required on the reviewed preflight's own
     ``validate_preflight_result_semantics``: a persisted status's own
-    ``implementation_git_commit`` field must never be its own authority for
-    which commit was reviewed.
+    ``implementation_git_commit`` / ``calibration_attempt_id`` fields must
+    never be their own authority for which commit/attempt was reviewed.
     """
 
     if (
@@ -303,6 +321,9 @@ def validate_execution_status_semantics(
         or _COMMIT_RE.fullmatch(expected_implementation_git_commit) is None
     ):
         raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_EXPECTED_COMMIT_INVALID")
+
+    if not _is_valid_calibration_attempt_id_format(expected_calibration_attempt_id):
+        raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_EXPECTED_ATTEMPT_ID_INVALID")
 
     if not isinstance(result, Mapping) or set(result) != _EXECUTION_STATUS_KEYS:
         raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_SCHEMA_INVALID")
@@ -334,13 +355,10 @@ def validate_execution_status_semantics(
         raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_COMMIT_MISMATCH")
 
     attempt_id = result["calibration_attempt_id"]
-    if attempt_id is not None and (
-        not isinstance(attempt_id, str)
-        or not attempt_id
-        or len(attempt_id) > 128
-        or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in attempt_id)
-    ):
+    if attempt_id is not None and not _is_valid_calibration_attempt_id_format(attempt_id):
         raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_ATTEMPT_ID_INVALID")
+    if attempt_id is not None and attempt_id != expected_calibration_attempt_id:
+        raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_ATTEMPT_ID_MISMATCH")
 
     expected_manifest = _v8b_calibration_module.EXPECTED_V5B_MANIFEST_SHA256
     expected_payload_list = _v8b_calibration_module.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256
@@ -420,7 +438,7 @@ def validate_execution_status_semantics(
             )
         ):
             raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_STATE_INVALID")
-    elif detail in {
+    payload_stage_details = {
         "DESIGNATED_PAYLOAD_COUNT_MISMATCH",
         "PAYLOAD_PATH_RESOLUTION_FAILED",
         "PAYLOAD_PATH_ESCAPE_DETECTED",
@@ -428,26 +446,48 @@ def validate_execution_status_semantics(
         "PAYLOAD_NOT_REGULAR",
         "PAYLOAD_READ_FAILED",
         "PAYLOAD_BINDING_FAILED",
-    }:
-        if (
-            result["observed_manifest_sha256"] != expected_manifest
-            or result["observed_payload_hash_list_sha256"] != expected_payload_list
-        ):
-            raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_STATE_INVALID")
-
-    _verify_execution_status_self_hash(result)
-
-    if (
+    }
+    is_calibration_core_blocked = detail.startswith(_CALIBRATION_CORE_BLOCKED_PREFIX)
+    fully_clean_bind = (
         result["observed_manifest_sha256"] == expected_manifest
         and result["observed_payload_hash_list_sha256"] == expected_payload_list
         and result["checked_payload_count"] == EXPECTED_V5B_TICKER_COUNT
         and result["byte_count_mismatch_count"] == 0
         and result["sha256_mismatch_count"] == 0
         and result["missing_or_unreadable_count"] == 0
-    ):
-        # A gate-level status may never claim a fully clean 300/300 bind --
-        # that state means calibration WAS invoked, and its result is the
-        # calibration result artifact (a different schema), never this one.
+    )
+
+    if detail in payload_stage_details:
+        if (
+            result["observed_manifest_sha256"] != expected_manifest
+            or result["observed_payload_hash_list_sha256"] != expected_payload_list
+        ):
+            raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_STATE_INVALID")
+        if fully_clean_bind:
+            # A payload-stage failure detail (e.g. "binding failed") can
+            # never legitimately co-occur with a fully clean 300/300 bind
+            # -- that combination is self-contradictory.
+            raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_STATE_INVALID")
+    elif is_calibration_core_blocked:
+        # CALIBRATION_CORE_BLOCKED:* records an unexpected exception from
+        # the frozen core AFTER it was genuinely invoked -- which, by this
+        # adapter's own design, only ever happens once the adapter's own
+        # from-scratch manifest/payload byte-binding has fully and cleanly
+        # succeeded. This is therefore the one detail category that MUST
+        # show a fully clean 300/300 bind; anything less is inconsistent
+        # with how this detail can ever legitimately be produced.
+        if not fully_clean_bind:
+            raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_STATE_INVALID")
+
+    _verify_execution_status_self_hash(result)
+
+    if fully_clean_bind and not is_calibration_core_blocked:
+        # Outside CALIBRATION_CORE_BLOCKED:*, a gate-level status may never
+        # claim a fully clean 300/300 bind -- every other detail category
+        # is, by construction, raised strictly before such a state could
+        # exist. A full clean bind under any other detail would mean
+        # calibration WAS invoked and returned a canonical RESULT artifact
+        # (the other schema), never this one.
         raise V8BCalibrationExecutionBlocked("EXECUTION_STATUS_STATE_INVALID")
     if detail == "PAYLOAD_BINDING_FAILED" and (
         result["checked_payload_count"] + result["missing_or_unreadable_count"] != EXPECTED_V5B_TICKER_COUNT
@@ -499,12 +539,7 @@ def run_production_v8b_data_quality_calibration(
             result=_canonical_execution_status("IMPLEMENTATION_COMMIT_INVALID"),
         )
 
-    if (
-        not isinstance(calibration_attempt_id, str)
-        or not calibration_attempt_id
-        or len(calibration_attempt_id) > 128
-        or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in calibration_attempt_id)
-    ):
+    if not _is_valid_calibration_attempt_id_format(calibration_attempt_id):
         raise V8BCalibrationExecutionBlocked(
             "CALIBRATION_ATTEMPT_ID_INVALID",
             result=_canonical_execution_status(

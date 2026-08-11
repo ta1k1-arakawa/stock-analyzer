@@ -290,22 +290,41 @@ artifact_self_hash
 ```
 
 Evidence acceptance for this shape must call the independent public
-`validate_execution_status_semantics()`, which requires a mandatory,
-externally trusted `expected_implementation_git_commit` argument -- the
-persisted status's own `implementation_git_commit` field is never its own
-authority, exactly as `validate_preflight_result_semantics()` already
-requires for the R1 preflight artifact. This validator checks ONLY this
-gate-level status shape; it is not, and must not be treated as, a
-substitute for `src/v8b_data_quality_calibration.py::
+`validate_execution_status_semantics()`, which requires two mandatory,
+externally trusted arguments: `expected_implementation_git_commit` and
+`expected_calibration_attempt_id` -- the persisted status's own
+`implementation_git_commit` / `calibration_attempt_id` fields are never
+their own authority, exactly as `validate_preflight_result_semantics()`
+already requires `expected_implementation_git_commit` for the R1
+preflight artifact. Whenever the persisted status carries a non-null
+`calibration_attempt_id`, it must equal `expected_calibration_attempt_id`
+exactly; early gate failures (raised before attempt-id format validation)
+may still legitimately persist a null `calibration_attempt_id`, but the
+caller must always supply the trusted expected value regardless. This
+validator checks ONLY this gate-level status shape; it is not, and must
+not be treated as, a substitute for `src/v8b_data_quality_calibration.py::
 validate_result_artifact_semantics()`, the existing acceptance API for
 the calibration RESULT artifact this adapter returns unmodified once
-`run_data_quality_calibration()` is actually reached.
+`run_data_quality_calibration()` actually returns one.
 
-A gate-level status can never claim a fully clean 300/300 bind (zero
-mismatches, zero missing, `checked_payload_count == 300`) -- that state
-means the frozen calibration WAS invoked, and its result is the
-calibration result artifact (a different schema), never this one; the
-semantic verifier enforces this exclusivity.
+`detail_reason` may additionally take the form
+`CALIBRATION_CORE_BLOCKED:<reason>`: this records the one case where
+`run_data_quality_calibration()` was genuinely invoked (after the
+adapter's own manifest/payload byte-binding fully and cleanly succeeded)
+but raised an exception instead of returning a canonical RESULT artifact
+-- an unexpected core failure, not the core's own internal "this run is
+invalid" determination (which instead returns a normal RESULT_V1 artifact
+that this adapter passes through unmodified and which is never converted
+into an execution status). Because this detail category can only ever be
+produced immediately after a fully clean 300/300 bind, it is the single
+exception to the following rule: outside `CALIBRATION_CORE_BLOCKED:*`, a
+gate-level status can never claim a fully clean 300/300 bind (zero
+mismatches, zero missing, `checked_payload_count == 300`) -- for every
+other detail category that state would mean the frozen calibration WAS
+invoked and returned a canonical RESULT artifact (a different schema),
+never this one. The semantic verifier enforces both directions of this
+exclusivity: `CALIBRATION_CORE_BLOCKED:*` must always show a fully clean
+bind, and no other detail may ever show one.
 
 ---
 

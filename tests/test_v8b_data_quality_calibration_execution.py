@@ -837,12 +837,24 @@ def _rehash(result: dict) -> dict:
 def test_semantic_validator_requires_expected_commit_argument():
     result = _valid_payload_binding_failed_status()
     with pytest.raises(TypeError):
-        execution.validate_execution_status_semantics(result)  # type: ignore[call-arg]
+        execution.validate_execution_status_semantics(
+            result, expected_calibration_attempt_id="attempt-1"
+        )  # type: ignore[call-arg]
+
+
+def test_semantic_validator_requires_expected_attempt_id_argument():
+    result = _valid_payload_binding_failed_status()
+    with pytest.raises(TypeError):
+        execution.validate_execution_status_semantics(
+            result, expected_implementation_git_commit="a" * 40
+        )  # type: ignore[call-arg]
 
 
 def test_semantic_validator_accepts_genuine_block_artifact():
     result = _valid_payload_binding_failed_status()
-    execution.validate_execution_status_semantics(result, expected_implementation_git_commit="a" * 40)  # must not raise
+    execution.validate_execution_status_semantics(
+        result, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+    )  # must not raise
 
 
 @pytest.mark.parametrize(
@@ -860,6 +872,17 @@ def test_semantic_validator_accepts_genuine_block_artifact():
         lambda item: item.update(detail_reason="UNKNOWN_DETAIL"),
         lambda item: item.update(status="PASS"),
         lambda item: item.update(calibration_attempt_id="a" * 200),
+        lambda item: item.update(calibration_attempt_id="attempt-EVIL"),
+        # Forging the clean-bind counts alone does not relabel the detail:
+        # this must still be rejected as an ordinary payload-stage failure
+        # falsely claiming a clean bind, not accepted as CALIBRATION_CORE_
+        # BLOCKED (which requires the detail itself to carry that prefix).
+        lambda item: item.update(
+            checked_payload_count=300,
+            byte_count_mismatch_count=0,
+            sha256_mismatch_count=0,
+            missing_or_unreadable_count=0,
+        ),
     ],
 )
 def test_rehashed_semantic_mutations_are_rejected(mutation):
@@ -867,12 +890,16 @@ def test_rehashed_semantic_mutations_are_rejected(mutation):
     mutation(mutated)
     mutated = _rehash(mutated)
     with pytest.raises(execution.V8BCalibrationExecutionBlocked):
-        execution.validate_execution_status_semantics(mutated, expected_implementation_git_commit="a" * 40)
+        execution.validate_execution_status_semantics(
+            mutated, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+        )
 
 
 def test_semantic_validator_rejects_rehashed_commit_substitution():
     genuine = _valid_payload_binding_failed_status()
-    execution.validate_execution_status_semantics(genuine, expected_implementation_git_commit="a" * 40)
+    execution.validate_execution_status_semantics(
+        genuine, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+    )
 
     mutated_fields = dict(genuine)
     mutated_fields["implementation_git_commit"] = "b" * 40
@@ -881,14 +908,39 @@ def test_semantic_validator_rejects_rehashed_commit_substitution():
     execution._verify_execution_status_self_hash(mutated_fields)  # integrity alone would pass
 
     with pytest.raises(execution.V8BCalibrationExecutionBlocked) as excinfo:
-        execution.validate_execution_status_semantics(mutated_fields, expected_implementation_git_commit="a" * 40)
+        execution.validate_execution_status_semantics(
+            mutated_fields, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+        )
     assert excinfo.value.detail == "EXECUTION_STATUS_COMMIT_MISMATCH"
 
 
-def test_semantic_validator_rejects_a_fully_clean_bind_state():
-    # A gate-level status may never claim a fully clean 300/300 bind: that
-    # state means calibration WAS invoked, and its result is the OTHER
-    # schema (the calibration result artifact), never this one.
+def test_semantic_validator_rejects_rehashed_attempt_id_substitution():
+    genuine = _valid_payload_binding_failed_status()  # calibration_attempt_id == "attempt-1"
+    execution.validate_execution_status_semantics(
+        genuine, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+    )
+
+    # A different, still well-formed attempt id, with the self-hash
+    # recomputed so integrity alone would pass.
+    mutated_fields = dict(genuine)
+    mutated_fields["calibration_attempt_id"] = "attempt-EVIL"
+    del mutated_fields["artifact_self_hash"]
+    mutated_fields["artifact_self_hash"] = execution.sha256_hex(execution.canonical_json_bytes(mutated_fields))
+    execution._verify_execution_status_self_hash(mutated_fields)  # integrity alone would pass
+
+    with pytest.raises(execution.V8BCalibrationExecutionBlocked) as excinfo:
+        execution.validate_execution_status_semantics(
+            mutated_fields, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+        )
+    assert excinfo.value.detail == "EXECUTION_STATUS_ATTEMPT_ID_MISMATCH"
+
+
+def test_semantic_validator_rejects_a_fully_clean_bind_state_outside_calibration_core_blocked():
+    # A gate-level status may claim a fully clean 300/300 bind ONLY under
+    # the CALIBRATION_CORE_BLOCKED:* detail category; for every other
+    # detail (including PAYLOAD_BINDING_FAILED here) that state means
+    # calibration WAS invoked and returned a canonical RESULT artifact (the
+    # other schema), never this one.
     forged = execution._canonical_execution_status(
         "PAYLOAD_BINDING_FAILED",
         implementation_git_commit="a" * 40,
@@ -901,7 +953,52 @@ def test_semantic_validator_rejects_a_fully_clean_bind_state():
         sha256_mismatch_count=0,
     )
     with pytest.raises(execution.V8BCalibrationExecutionBlocked) as excinfo:
-        execution.validate_execution_status_semantics(forged, expected_implementation_git_commit="a" * 40)
+        execution.validate_execution_status_semantics(
+            forged, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+        )
+    assert excinfo.value.detail == "EXECUTION_STATUS_STATE_INVALID"
+
+
+def test_calibration_core_blocked_requires_a_fully_clean_bind():
+    # The converse of the rule above: CALIBRATION_CORE_BLOCKED:* can only
+    # legitimately be produced immediately after a fully clean 300/300
+    # bind (the frozen core is invoked only then), so anything less is
+    # internally inconsistent and must be rejected too.
+    forged = execution._canonical_execution_status(
+        "CALIBRATION_CORE_BLOCKED:SYNTHETIC_CLASSIFIER_MISMATCH",
+        implementation_git_commit="a" * 40,
+        calibration_attempt_id="attempt-1",
+        observed_manifest_sha256=calib.EXPECTED_V5B_MANIFEST_SHA256,
+        observed_payload_hash_list_sha256=calib.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256,
+        checked_payload_count=299,
+        missing_or_unreadable_count=1,
+    )
+    with pytest.raises(execution.V8BCalibrationExecutionBlocked) as excinfo:
+        execution.validate_execution_status_semantics(
+            forged, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+        )
+    assert excinfo.value.detail == "EXECUTION_STATUS_STATE_INVALID"
+
+
+def test_rehashed_forgery_from_ordinary_gate_failure_to_calibration_core_blocked_is_rejected():
+    # An ordinary pre-manifest gate failure (no bytes ever bound) rehashed
+    # into claiming CALIBRATION_CORE_BLOCKED:* must still fail: that detail
+    # category requires a fully clean bind, which this state never had.
+    genuine = execution._canonical_execution_status(
+        "MANIFEST_UNREADABLE", implementation_git_commit="a" * 40, calibration_attempt_id="attempt-1"
+    )
+    execution.validate_execution_status_semantics(
+        genuine, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+    )
+
+    mutated = dict(genuine)
+    mutated["detail_reason"] = "CALIBRATION_CORE_BLOCKED:SYNTHETIC_CLASSIFIER_MISMATCH"
+    del mutated["artifact_self_hash"]
+    mutated["artifact_self_hash"] = execution.sha256_hex(execution.canonical_json_bytes(mutated))
+    with pytest.raises(execution.V8BCalibrationExecutionBlocked) as excinfo:
+        execution.validate_execution_status_semantics(
+            mutated, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+        )
     assert excinfo.value.detail == "EXECUTION_STATUS_STATE_INVALID"
 
 
@@ -909,16 +1006,37 @@ def test_semantic_validator_rejects_a_fully_clean_bind_state():
 def test_malformed_expected_commit_argument_is_rejected(bad_expected):
     genuine = _valid_payload_binding_failed_status()
     with pytest.raises(execution.V8BCalibrationExecutionBlocked) as excinfo:
-        execution.validate_execution_status_semantics(genuine, expected_implementation_git_commit=bad_expected)
+        execution.validate_execution_status_semantics(
+            genuine, expected_implementation_git_commit=bad_expected, expected_calibration_attempt_id="attempt-1"
+        )
     assert excinfo.value.detail == "EXECUTION_STATUS_EXPECTED_COMMIT_INVALID"
 
 
-def test_early_gate_status_allows_none_commit_but_still_requires_trusted_commit_argument():
+@pytest.mark.parametrize("bad_expected", ["", "x" * 129, "bad\x00id", "bad\x7fid", "bad\nid"])
+def test_malformed_expected_attempt_id_argument_is_rejected(bad_expected):
+    genuine = _valid_payload_binding_failed_status()
+    with pytest.raises(execution.V8BCalibrationExecutionBlocked) as excinfo:
+        execution.validate_execution_status_semantics(
+            genuine, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id=bad_expected
+        )
+    assert excinfo.value.detail == "EXECUTION_STATUS_EXPECTED_ATTEMPT_ID_INVALID"
+
+
+def test_early_gate_status_allows_none_commit_and_attempt_id_but_still_requires_both_trusted_arguments():
     early_block = execution._canonical_execution_status("EXECUTION_GATE_CONFIRMATION_REQUIRED")
     assert early_block["implementation_git_commit"] is None
+    assert early_block["calibration_attempt_id"] is None
     with pytest.raises(TypeError):
-        execution.validate_execution_status_semantics(early_block)  # type: ignore[call-arg]
-    execution.validate_execution_status_semantics(early_block, expected_implementation_git_commit="d" * 40)
+        execution.validate_execution_status_semantics(
+            early_block, expected_calibration_attempt_id="whatever-1"
+        )  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        execution.validate_execution_status_semantics(
+            early_block, expected_implementation_git_commit="d" * 40
+        )  # type: ignore[call-arg]
+    execution.validate_execution_status_semantics(
+        early_block, expected_implementation_git_commit="d" * 40, expected_calibration_attempt_id="whatever-1"
+    )
 
 
 def test_manifest_provenance_invalid_detail_requires_exact_recognized_inner_reason():
@@ -928,7 +1046,9 @@ def test_manifest_provenance_invalid_detail_requires_exact_recognized_inner_reas
         calibration_attempt_id="attempt-1",
         observed_manifest_sha256="0" * 64,
     )
-    execution.validate_execution_status_semantics(genuine, expected_implementation_git_commit="a" * 40)
+    execution.validate_execution_status_semantics(
+        genuine, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+    )
 
     fabricated = execution._canonical_execution_status(
         "MANIFEST_PROVENANCE_INVALID:TOTALLY_MADE_UP_REASON",
@@ -937,7 +1057,9 @@ def test_manifest_provenance_invalid_detail_requires_exact_recognized_inner_reas
         observed_manifest_sha256="0" * 64,
     )
     with pytest.raises(execution.V8BCalibrationExecutionBlocked) as excinfo:
-        execution.validate_execution_status_semantics(fabricated, expected_implementation_git_commit="a" * 40)
+        execution.validate_execution_status_semantics(
+            fabricated, expected_implementation_git_commit="a" * 40, expected_calibration_attempt_id="attempt-1"
+        )
     assert excinfo.value.detail == "EXECUTION_STATUS_DETAIL_INVALID"
 
 
@@ -948,8 +1070,49 @@ def test_validator_result_from_real_gate_failure_round_trips(tmp_path, monkeypat
     with pytest.raises(execution.V8BCalibrationExecutionBlocked) as excinfo:
         _pass_gate(implementation_git_commit=gated_head)
     execution.validate_execution_status_semantics(
-        excinfo.value.result, expected_implementation_git_commit=gated_head
+        excinfo.value.result,
+        expected_implementation_git_commit=gated_head,
+        expected_calibration_attempt_id="test-attempt-0001",
     )  # must not raise -- the adapter's own real output satisfies its own validator
+
+
+def test_calibration_core_blocked_round_trip_after_full_clean_bind(tmp_path, monkeypatch, gated_head):
+    """Adversarial round-trip for Finding 1: (1) reach a full, clean 300/300
+    byte bind using synthetic fixtures; (2) force the core call to raise a
+    recognized V8BCalibrationBlocked; (3) capture the adapter-emitted
+    execution status; (4) require validate_execution_status_semantics() to
+    accept that genuine status -- construction and validation must agree."""
+
+    root, manifest_bytes, manifest = _write_synthetic_cache(tmp_path)
+    _patch_expected_hashes(monkeypatch, manifest_bytes, manifest)
+    monkeypatch.setattr(execution, "V5B_CACHE_ROOT", root)
+
+    def raising_core(**kwargs):
+        raise calib.V8BCalibrationBlocked("SYNTHETIC_CLASSIFIER_MISMATCH")
+
+    monkeypatch.setattr(execution, "run_data_quality_calibration", raising_core)
+
+    with pytest.raises(execution.V8BCalibrationExecutionBlocked) as excinfo:
+        _pass_gate(implementation_git_commit=gated_head, calibration_attempt_id="core-raise-test")
+
+    assert excinfo.value.detail == "CALIBRATION_CORE_BLOCKED:SYNTHETIC_CLASSIFIER_MISMATCH"
+    result = excinfo.value.result
+    assert result["schema_version"] == execution.EXECUTION_STATUS_SCHEMA_VERSION
+    assert result["observed_manifest_sha256"] == hashlib.sha256(manifest_bytes).hexdigest()
+    assert result["observed_payload_hash_list_sha256"] == manifest["payload_hash_list_sha256"]
+    assert result["checked_payload_count"] == 300
+    assert result["byte_count_mismatch_count"] == 0
+    assert result["sha256_mismatch_count"] == 0
+    assert result["missing_or_unreadable_count"] == 0
+    assert _no_leakage(result)
+
+    # This is Finding 1's core requirement: the adapter's own genuine
+    # construction of this status must be accepted by its own validator.
+    execution.validate_execution_status_semantics(
+        result,
+        expected_implementation_git_commit=gated_head,
+        expected_calibration_attempt_id="core-raise-test",
+    )
 
 
 # ---------------------------------------------------------------------------
