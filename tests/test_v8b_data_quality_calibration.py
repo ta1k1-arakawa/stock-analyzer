@@ -1087,14 +1087,34 @@ def _make_windows(count, *, invalid=0, max_run=0, total=252):
     ]
 
 
-def _default_synthetic_base_metadata():
-    return [
-        {"base_index": i, "ticker_sha256": "0" * 64, "window_start": "2019-01-01", "window_end": "2019-09-09"}
-        for i in range(20)
-    ]
+def _make_synthetic_bases(count=20, seed="BASE"):
+    row = {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "adjclose": 100.25, "volume": 1000.0}
+    return tuple(
+        calib.CleanBase(
+            base_index=index,
+            ticker_sha256=hashlib.sha256(f"{seed}{index}\n".encode("utf-8")).hexdigest(),
+            window_start="2019-01-01",
+            window_end="2019-09-09",
+            rows=tuple(dict(row) for _ in range(calib.SYNTHETIC_SEQUENCE_LENGTH)),
+        )
+        for index in range(count)
+    )
 
 
-def _valid_artifact_kwargs(full_span_windows, yearly_windows, **overrides):
+def _default_synthetic_base_metadata(bases):
+    return calib._reference_synthetic_base_metadata(bases)
+
+
+def _build_synthetic_manifest_bytes(monkeypatch, **overrides):
+    payloads = _synthetic_manifest_payloads(300)
+    manifest = _synthetic_manifest(payloads=payloads, **overrides)
+    manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    monkeypatch.setattr(calib, "EXPECTED_V5B_MANIFEST_SHA256", hashlib.sha256(manifest_bytes).hexdigest())
+    monkeypatch.setattr(calib, "EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256", manifest["payload_hash_list_sha256"])
+    return manifest_bytes
+
+
+def _valid_artifact_kwargs(full_span_windows, yearly_windows, *, synthetic_bases, manifest_bytes, **overrides):
     """Build a genuinely self-consistent VALID kwargs set by calling the
     real recompute functions, not by hand-typing matching fake numbers."""
 
@@ -1106,6 +1126,8 @@ def _valid_artifact_kwargs(full_span_windows, yearly_windows, **overrides):
     fraction_headroom, consecutive_headroom = calib._compute_selected_headrooms(
         selected_policy, envelope.m_fraction, envelope.m_consecutive
     )
+    validated_manifest = calib.validate_v5b_manifest_provenance(manifest_bytes)
+    error_counts = calib._expected_error_counts_from_manifest(validated_manifest)
     kwargs = dict(
         run_validity=calib.VALID_RUN,
         selected_policy=selected_policy,
@@ -1113,6 +1135,8 @@ def _valid_artifact_kwargs(full_span_windows, yearly_windows, **overrides):
         candidate_results=candidate_results,
         yearly_windows=yearly_windows,
         full_span_windows=full_span_windows,
+        synthetic_bases=synthetic_bases,
+        manifest_bytes=manifest_bytes,
         m_fraction=envelope.m_fraction,
         m_fraction_window_count=envelope.m_fraction_source_window_count,
         m_consecutive=envelope.m_consecutive,
@@ -1121,14 +1145,14 @@ def _valid_artifact_kwargs(full_span_windows, yearly_windows, **overrides):
         synthetic_scenario_count=calib.SYNTHETIC_SCENARIO_COUNT,
         synthetic_candidate_comparison_count=calib.SYNTHETIC_CANDIDATE_COMPARISON_COUNT,
         synthetic_truth_table_mismatch_count=0,
-        synthetic_base_metadata=_default_synthetic_base_metadata(),
+        synthetic_base_metadata=_default_synthetic_base_metadata(synthetic_bases),
         input_provenance_hashes={
             "manifest_sha256": calib.EXPECTED_V5B_MANIFEST_SHA256,
             "payload_hash_list_sha256": calib.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256,
             "manifest_payload_count": 300,
             "bound_payload_count": 300,
         },
-        error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
+        error_counts=error_counts,
         implementation_git_commit=VALID_COMMIT,
         calibration_attempt_id="test",
         run_started_utc="2026-01-01T00:00:00Z",
@@ -1141,10 +1165,12 @@ def _valid_artifact_kwargs(full_span_windows, yearly_windows, **overrides):
 
 
 @pytest.fixture
-def clean_valid_kwargs():
+def clean_valid_kwargs(monkeypatch):
     full_span = _make_windows(300, invalid=0, max_run=0)
     yearly = _make_windows(300, invalid=0, max_run=0)
-    return _valid_artifact_kwargs(full_span, yearly)
+    bases = _make_synthetic_bases()
+    manifest_bytes = _build_synthetic_manifest_bytes(monkeypatch)
+    return _valid_artifact_kwargs(full_span, yearly, synthetic_bases=bases, manifest_bytes=manifest_bytes)
 
 
 def test_build_result_artifact_accepts_genuinely_consistent_valid_state(clean_valid_kwargs):
@@ -1155,23 +1181,22 @@ def test_build_result_artifact_accepts_genuinely_consistent_valid_state(clean_va
     assert calib.verify_artifact_self_hash(artifact) is True
 
 
-def test_build_result_artifact_accepts_no_defensible_policy_state():
+def test_build_result_artifact_accepts_no_defensible_policy_state(monkeypatch):
     full_span = _make_windows(300, invalid=252, total=252, max_run=252)  # worst possible envelope
     yearly = _make_windows(300, invalid=252, total=252, max_run=252)
-    kwargs = _valid_artifact_kwargs(full_span, yearly)
+    bases = _make_synthetic_bases()
+    manifest_bytes = _build_synthetic_manifest_bytes(monkeypatch)
+    kwargs = _valid_artifact_kwargs(full_span, yearly, synthetic_bases=bases, manifest_bytes=manifest_bytes)
     artifact = calib.build_result_artifact(**kwargs)
     assert artifact["selected_policy"] == calib.CALIBRATION_NO_DEFENSIBLE_POLICY
     assert artifact["calibration_run_valid"] is True
     assert all(row["DEFENSIBLE"] is False for row in artifact["candidate_results"])
 
 
-def test_build_result_artifact_rejects_wrong_full_span_window_count():
-    full_span = _make_windows(299)  # must be exactly 300
-    yearly = _make_windows(300)
-    kwargs = _valid_artifact_kwargs(_make_windows(300), yearly)
-    kwargs["full_span_windows"] = full_span
+def test_build_result_artifact_rejects_wrong_full_span_window_count(clean_valid_kwargs):
+    clean_valid_kwargs["full_span_windows"] = _make_windows(299)  # must be exactly 300
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
-        calib.build_result_artifact(**kwargs)
+        calib.build_result_artifact(**clean_valid_kwargs)
     assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 
@@ -1316,10 +1341,12 @@ def test_rejects_non_strictest_selected_candidate(clean_valid_kwargs):
     assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 
-def test_rejects_headroom_present_for_no_defensible_policy():
+def test_rejects_headroom_present_for_no_defensible_policy(monkeypatch):
     full_span = _make_windows(300, invalid=252, total=252, max_run=252)
     yearly = _make_windows(300, invalid=252, total=252, max_run=252)
-    kwargs = _valid_artifact_kwargs(full_span, yearly)
+    bases = _make_synthetic_bases()
+    manifest_bytes = _build_synthetic_manifest_bytes(monkeypatch)
+    kwargs = _valid_artifact_kwargs(full_span, yearly, synthetic_bases=bases, manifest_bytes=manifest_bytes)
     assert kwargs["selected_policy"] == calib.CALIBRATION_NO_DEFENSIBLE_POLICY
     kwargs["selected_candidate_fraction_headroom_exact_or_null"] = {"numerator": 1, "denominator": 1}
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
@@ -1360,14 +1387,14 @@ def test_rejects_wrong_synthetic_counts(clean_valid_kwargs, field, bad_value):
 
 
 def test_rejects_synthetic_metadata_wrong_row_count(clean_valid_kwargs):
-    clean_valid_kwargs["synthetic_base_metadata"] = _default_synthetic_base_metadata()[:19]
+    clean_valid_kwargs["synthetic_base_metadata"] = _default_synthetic_base_metadata(clean_valid_kwargs["synthetic_bases"])[:19]
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
         calib.build_result_artifact(**clean_valid_kwargs)
     assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 
 def test_rejects_synthetic_metadata_duplicate_base_index(clean_valid_kwargs):
-    rows = _default_synthetic_base_metadata()
+    rows = _default_synthetic_base_metadata(clean_valid_kwargs["synthetic_bases"])
     rows[1] = dict(rows[1], base_index=0)  # duplicate of row 0's index; 19 unique instead of 20
     clean_valid_kwargs["synthetic_base_metadata"] = rows
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
@@ -1376,7 +1403,7 @@ def test_rejects_synthetic_metadata_duplicate_base_index(clean_valid_kwargs):
 
 
 def test_rejects_synthetic_metadata_base_index_out_of_range(clean_valid_kwargs):
-    rows = _default_synthetic_base_metadata()
+    rows = _default_synthetic_base_metadata(clean_valid_kwargs["synthetic_bases"])
     rows[0] = dict(rows[0], base_index=20)
     clean_valid_kwargs["synthetic_base_metadata"] = rows
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
@@ -1385,7 +1412,7 @@ def test_rejects_synthetic_metadata_base_index_out_of_range(clean_valid_kwargs):
 
 
 def test_rejects_synthetic_metadata_uppercase_ticker_hash(clean_valid_kwargs):
-    rows = _default_synthetic_base_metadata()
+    rows = _default_synthetic_base_metadata(clean_valid_kwargs["synthetic_bases"])
     rows[0] = dict(rows[0], ticker_sha256="0" * 63 + "A")  # uppercase hex char must be rejected
     clean_valid_kwargs["synthetic_base_metadata"] = rows
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
@@ -1394,7 +1421,7 @@ def test_rejects_synthetic_metadata_uppercase_ticker_hash(clean_valid_kwargs):
 
 
 def test_rejects_synthetic_metadata_malformed_date(clean_valid_kwargs):
-    rows = _default_synthetic_base_metadata()
+    rows = _default_synthetic_base_metadata(clean_valid_kwargs["synthetic_bases"])
     rows[0] = dict(rows[0], window_start="not-a-date")
     clean_valid_kwargs["synthetic_base_metadata"] = rows
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
@@ -1403,7 +1430,7 @@ def test_rejects_synthetic_metadata_malformed_date(clean_valid_kwargs):
 
 
 def test_rejects_synthetic_metadata_start_after_end(clean_valid_kwargs):
-    rows = _default_synthetic_base_metadata()
+    rows = _default_synthetic_base_metadata(clean_valid_kwargs["synthetic_bases"])
     rows[0] = dict(rows[0], window_start="2019-12-01", window_end="2019-01-01")
     clean_valid_kwargs["synthetic_base_metadata"] = rows
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
@@ -1412,7 +1439,7 @@ def test_rejects_synthetic_metadata_start_after_end(clean_valid_kwargs):
 
 
 def test_rejects_synthetic_metadata_date_outside_calibration_span(clean_valid_kwargs):
-    rows = _default_synthetic_base_metadata()
+    rows = _default_synthetic_base_metadata(clean_valid_kwargs["synthetic_bases"])
     rows[0] = dict(rows[0], window_start="2018-12-31", window_end="2019-01-05")
     clean_valid_kwargs["synthetic_base_metadata"] = rows
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
@@ -1421,7 +1448,7 @@ def test_rejects_synthetic_metadata_date_outside_calibration_span(clean_valid_kw
 
 
 def test_rejects_synthetic_metadata_extra_field(clean_valid_kwargs):
-    rows = _default_synthetic_base_metadata()
+    rows = _default_synthetic_base_metadata(clean_valid_kwargs["synthetic_bases"])
     rows[0] = dict(rows[0], extra_field="unexpected")
     clean_valid_kwargs["synthetic_base_metadata"] = rows
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
@@ -1511,6 +1538,286 @@ def test_rejects_extra_error_count_key(clean_valid_kwargs):
     clean_valid_kwargs["error_counts"] = errors
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
         calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# ---------------------------------------------------------------------------
+# Point 1: circular candidate validation removed.
+#
+# _reference_candidate_row / _verify_candidate_rows_independently must never
+# call _compute_candidate_results, _window_passes_candidate,
+# is_candidate_defensible, or _failed_criterion_ids. The oracle test below
+# is hand-computed, not derived from _compute_candidate_results, so it is a
+# genuine independent check rather than the implementation agreeing with
+# itself.
+# ---------------------------------------------------------------------------
+
+
+def test_reference_functions_never_call_forbidden_helpers():
+    source = (REPO_ROOT / "src" / "v8b_data_quality_calibration.py").read_text(encoding="utf-8")
+    start = source.index("def _reference_window_pass(")
+    end = source.index("def _validate_synthetic_base_metadata(")
+    reference_block = source[start:end]
+    forbidden = ["_compute_candidate_results(", "_window_passes_candidate(", "is_candidate_defensible(", "_failed_criterion_ids("]
+    for token in forbidden:
+        assert token not in reference_block, f"forbidden call found in reference block: {token}"
+
+
+def test_reference_candidate_row_matches_hand_computed_oracle():
+    # Hand-computed oracle for F1_C1 (1/252, max_consecutive=1) against a
+    # fully worked-out scenario. Computed by hand -- not via
+    # _compute_candidate_results -- to avoid testing the implementation
+    # against itself.
+    candidate = next(c for c in calib.CANDIDATES if c.id == "F1_C1")
+    yearly = [
+        calib.WindowStats(
+            total_returned=252, valid_returned=251, invalid_returned=1,
+            invalid_fraction=Fraction(1, 252), max_consecutive_invalid_returned_rows=1,
+        )
+    ]  # exactly at F1's boundary on both axes -> passes
+    full_span = [
+        calib.WindowStats(
+            total_returned=252, valid_returned=250, invalid_returned=2,
+            invalid_fraction=Fraction(2, 252), max_consecutive_invalid_returned_rows=2,
+        )
+    ]  # exceeds F1 on both axes -> fails
+    m_fraction = Fraction(2, 252)
+    m_consecutive = 2
+
+    row = calib._reference_candidate_row(candidate, yearly, full_span, m_fraction, m_consecutive)
+
+    assert row == {
+        "candidate_id": "F1_C1",
+        "exact_fraction_rational": {"numerator": 1, "denominator": 252},
+        "declared_fraction": {"declared_numerator": 1, "declared_denominator": 252},
+        "max_consecutive": 1,
+        "observed_ticker_year_pass_count_over_denominator": {"pass_count": 1, "denominator": 1},
+        "observed_full_ticker_pass_count_over_denominator": {"pass_count": 0, "denominator": 1},
+        "DEFENSIBLE": False,
+        "failed_criterion_ids": ["D1", "D2"],
+        "fraction_headroom_exact": {"numerator": -1, "denominator": 252},
+        "consecutive_headroom": -1,
+    }
+
+
+def test_semantic_validation_rejects_scientifically_wrong_row_from_compromised_constructor(monkeypatch, clean_valid_kwargs):
+    """Even if _compute_candidate_results() itself were buggy/compromised
+    and produced an internally well-formed but scientifically wrong row, a
+    caller who (mistakenly) used it to build candidate_results must still
+    be rejected by build_result_artifact()'s independent semantic check."""
+
+    original = calib._compute_candidate_results
+
+    def compromised(yearly_windows, full_span_windows, m_fraction, m_consecutive):
+        rows = [dict(row) for row in original(yearly_windows, full_span_windows, m_fraction, m_consecutive)]
+        rows[0] = dict(rows[0], observed_ticker_year_pass_count_over_denominator={"pass_count": 999, "denominator": 300})
+        return rows
+
+    monkeypatch.setattr(calib, "_compute_candidate_results", compromised)
+
+    envelope = calib.compute_global_envelope(
+        list(clean_valid_kwargs["yearly_windows"]) + list(clean_valid_kwargs["full_span_windows"])
+    )
+    clean_valid_kwargs["candidate_results"] = calib._compute_candidate_results(  # picks up the monkeypatch
+        clean_valid_kwargs["yearly_windows"], clean_valid_kwargs["full_span_windows"], envelope.m_fraction, envelope.m_consecutive
+    )
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# ---------------------------------------------------------------------------
+# Point 2: synthetic metadata bound to actual bases (structural validity
+# alone is insufficient -- it must match the actual CleanBase objects used).
+# ---------------------------------------------------------------------------
+
+
+def test_rejects_synthetic_metadata_structurally_valid_but_not_matching_actual_bases(clean_valid_kwargs):
+    other_bases = _make_synthetic_bases(seed="ROGUE")
+    clean_valid_kwargs["synthetic_base_metadata"] = calib._reference_synthetic_base_metadata(other_bases)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_wrong_synthetic_bases_count(clean_valid_kwargs):
+    clean_valid_kwargs["synthetic_bases"] = _make_synthetic_bases(count=19)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# ---------------------------------------------------------------------------
+# Point 3: error_counts bound to the exact validated manifest.
+# ---------------------------------------------------------------------------
+
+
+def test_rejects_error_counts_not_matching_validated_manifest(monkeypatch):
+    full_span = _make_windows(300, invalid=0, max_run=0)
+    yearly = _make_windows(300, invalid=0, max_run=0)
+    bases = _make_synthetic_bases()
+    manifest_bytes = _build_synthetic_manifest_bytes(monkeypatch, retry_count=5)
+    kwargs = _valid_artifact_kwargs(full_span, yearly, synthetic_bases=bases, manifest_bytes=manifest_bytes)
+    assert kwargs["error_counts"]["retry_count"] == 5  # sanity: derived correctly from the real manifest
+    wrong_errors = dict(kwargs["error_counts"])
+    wrong_errors["retry_count"] = 0  # caller claims something other than the manifest says
+    kwargs["error_counts"] = wrong_errors
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_valid_artifact_with_wrong_manifest_bytes(clean_valid_kwargs):
+    clean_valid_kwargs["manifest_bytes"] = b"{}"
+    with pytest.raises(calib.V8BCalibrationBlocked):
+        calib.build_result_artifact(**clean_valid_kwargs)
+
+
+@pytest.mark.parametrize("field", ["retry_count", "http_429_count", "http_5xx_count"])
+def test_manifest_structural_validation_rejects_negative_optional_counter(field):
+    manifest = _synthetic_manifest(**{field: -1})
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_v5b_manifest_structure(manifest)
+    assert excinfo.value.reason == f"MANIFEST_{field.upper()}_INVALID"
+
+
+@pytest.mark.parametrize("field", ["retry_count", "http_429_count", "http_5xx_count"])
+def test_manifest_structural_validation_rejects_float_optional_counter(field):
+    manifest = _synthetic_manifest(**{field: 1.0})
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_v5b_manifest_structure(manifest)
+    assert excinfo.value.reason == f"MANIFEST_{field.upper()}_INVALID"
+
+
+def test_manifest_structural_validation_accepts_valid_optional_counters(monkeypatch):
+    payloads = _synthetic_manifest_payloads(300)
+    manifest = _synthetic_manifest(payloads=payloads, retry_count=2, http_429_count=0, http_5xx_count=1)
+    monkeypatch.setattr(calib, "EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256", manifest["payload_hash_list_sha256"])
+    result = calib.validate_v5b_manifest_structure(manifest)
+    assert result["retry_count"] == 2
+    assert result["http_429_count"] == 0
+    assert result["http_5xx_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Point 4: public full persisted-artifact semantic verifier.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_result_artifact_semantics_accepts_genuinely_valid_artifact(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    calib.validate_result_artifact_semantics(
+        artifact,
+        yearly_windows=clean_valid_kwargs["yearly_windows"],
+        full_span_windows=clean_valid_kwargs["full_span_windows"],
+        synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+        manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+    )  # must not raise
+
+
+def test_validate_result_artifact_semantics_accepts_genuinely_invalid_artifact():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    calib.validate_result_artifact_semantics(artifact)  # must not raise
+
+
+def test_validate_result_artifact_semantics_rejects_bad_self_hash(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    tampered = dict(artifact)
+    tampered["artifact_self_hash"] = "0" * 64
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            tampered,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_ARTIFACT_SELF_HASH_MISMATCH"
+
+
+def test_validate_result_artifact_semantics_is_not_implemented_via_build_result_artifact():
+    source = (REPO_ROOT / "src" / "v8b_data_quality_calibration.py").read_text(encoding="utf-8")
+    start = source.index("def validate_result_artifact_semantics(")
+    end = source.index("\n# ---", start)
+    body = source[start:end]
+    assert "build_result_artifact(" not in body
+
+
+# ---------------------------------------------------------------------------
+# Point 5: self-hash is integrity-only, never acceptance.
+# ---------------------------------------------------------------------------
+
+
+def test_verify_artifact_self_hash_not_in_public_api():
+    assert "verify_artifact_self_hash" not in calib.__all__
+
+
+def test_validate_result_artifact_semantics_in_public_api():
+    assert "validate_result_artifact_semantics" in calib.__all__
+
+
+def _rehash(artifact):
+    without_hash = {key: value for key, value in artifact.items() if key != "artifact_self_hash"}
+    digest = calib.sha256_hex(calib.canonical_json_bytes(without_hash))
+    return {**without_hash, "artifact_self_hash": digest}
+
+
+def test_self_hash_integrity_insufficient_for_candidate_pass_count_mutation(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    mutated["candidate_results"] = [dict(row) for row in mutated["candidate_results"]]
+    mutated["candidate_results"][0] = dict(
+        mutated["candidate_results"][0],
+        observed_ticker_year_pass_count_over_denominator={"pass_count": 999, "denominator": 300},
+    )
+    mutated = _rehash(mutated)
+
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_self_hash_integrity_insufficient_for_synthetic_metadata_mutation(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    other_bases = _make_synthetic_bases(seed="ROGUE")
+    mutated["synthetic_base_window_start_and_end_metadata"] = calib._reference_synthetic_base_metadata(other_bases)
+    mutated = _rehash(mutated)
+
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_self_hash_integrity_insufficient_for_error_counts_mutation(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    mutated["error_counts"] = {"failed_count": 0, "retry_count": 999, "http_429_count": 0, "http_5xx_count": 0}
+    mutated = _rehash(mutated)
+
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
     assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 

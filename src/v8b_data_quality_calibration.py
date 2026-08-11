@@ -871,6 +871,12 @@ def validate_v5b_manifest_structure(data: Any) -> dict[str, Any]:
     if data.get("request_end") != V5B_MANIFEST_REQUEST_END:
         raise V8BCalibrationBlocked("MANIFEST_REQUEST_END_MISMATCH")
 
+    for optional_counter in ("retry_count", "http_429_count", "http_5xx_count"):
+        if optional_counter in data:
+            value = data[optional_counter]
+            if type(value) is not int or value < 0:
+                raise V8BCalibrationBlocked(f"MANIFEST_{optional_counter.upper()}_INVALID")
+
     payloads = data.get("payloads")
     if not isinstance(payloads, list) or len(payloads) != EXPECTED_V5B_TICKER_COUNT:
         raise V8BCalibrationBlocked("MANIFEST_PAYLOAD_COUNT_MISMATCH")
@@ -1109,6 +1115,134 @@ def _compute_selected_headrooms(
     return fraction_headroom, consecutive_headroom
 
 
+# ---------------------------------------------------------------------------
+# Independent reference computation for semantic validation.
+#
+# These functions deliberately reimplement the candidate-row and selection
+# arithmetic from scratch, using direct integer/Fraction comparisons, and
+# never call _compute_candidate_results, _window_passes_candidate,
+# is_candidate_defensible, or _failed_criterion_ids. This is what makes
+# semantic validation a genuine cross-check rather than a circular
+# construction-equals-construction comparison: a bug in the construction
+# helpers would not also be present here, and vice versa.
+# ---------------------------------------------------------------------------
+
+
+def _reference_window_pass(window: WindowStats, numerator: int, denominator: int, max_consecutive: int) -> bool:
+    if window.total_returned == 0:
+        return False
+    if window.invalid_returned * denominator > window.total_returned * numerator:
+        return False
+    return window.max_consecutive_invalid_returned_rows <= max_consecutive
+
+
+def _reference_candidate_row(
+    candidate: Candidate,
+    yearly_windows: Sequence[WindowStats],
+    full_span_windows: Sequence[WindowStats],
+    m_fraction: Fraction,
+    m_consecutive: int,
+) -> dict[str, Any]:
+    numerator = candidate.declared_numerator
+    denominator = candidate.declared_denominator
+    max_consecutive = candidate.max_consecutive
+    exact_fraction = Fraction(numerator, denominator)
+
+    year_pass_count = sum(
+        1 for window in yearly_windows if _reference_window_pass(window, numerator, denominator, max_consecutive)
+    )
+    span_pass_count = sum(
+        1 for window in full_span_windows if _reference_window_pass(window, numerator, denominator, max_consecutive)
+    )
+
+    fraction_defensible = exact_fraction > m_fraction
+    consecutive_defensible = max_consecutive > m_consecutive
+    failed_criterion_ids: list[str] = []
+    if not fraction_defensible:
+        failed_criterion_ids.append("D1")
+    if not consecutive_defensible:
+        failed_criterion_ids.append("D2")
+
+    fraction_headroom = exact_fraction - m_fraction
+    consecutive_headroom = max_consecutive - m_consecutive
+
+    return {
+        "candidate_id": candidate.id,
+        "exact_fraction_rational": fraction_to_json(exact_fraction),
+        "declared_fraction": {"declared_numerator": numerator, "declared_denominator": denominator},
+        "max_consecutive": max_consecutive,
+        "observed_ticker_year_pass_count_over_denominator": {
+            "pass_count": year_pass_count,
+            "denominator": len(yearly_windows),
+        },
+        "observed_full_ticker_pass_count_over_denominator": {
+            "pass_count": span_pass_count,
+            "denominator": len(full_span_windows),
+        },
+        "DEFENSIBLE": fraction_defensible and consecutive_defensible,
+        "failed_criterion_ids": failed_criterion_ids,
+        "fraction_headroom_exact": fraction_to_json(fraction_headroom),
+        "consecutive_headroom": consecutive_headroom,
+    }
+
+
+def _verify_candidate_rows_independently(
+    candidate_results: Sequence[Mapping[str, Any]],
+    yearly_windows: Sequence[WindowStats],
+    full_span_windows: Sequence[WindowStats],
+    m_fraction: Fraction,
+    m_consecutive: int,
+) -> None:
+    reason = "CALIBRATION_RESULT_STATE_INVALID"
+    if len(candidate_results) != len(CANDIDATES):
+        raise V8BCalibrationBlocked(reason)
+    seen_ids: set[str] = set()
+    for candidate, row in zip(CANDIDATES, candidate_results):
+        if not isinstance(row, Mapping) or row.get("candidate_id") != candidate.id:
+            raise V8BCalibrationBlocked(reason)
+        if candidate.id in seen_ids:
+            raise V8BCalibrationBlocked(reason)
+        seen_ids.add(candidate.id)
+        expected_row = _reference_candidate_row(candidate, yearly_windows, full_span_windows, m_fraction, m_consecutive)
+        if dict(row) != expected_row:
+            raise V8BCalibrationBlocked(reason)
+    if seen_ids != {candidate.id for candidate in CANDIDATES}:
+        raise V8BCalibrationBlocked(reason)
+
+
+def _reference_select_policy(m_fraction: Fraction, m_consecutive: int) -> str:
+    for candidate in CANDIDATES:
+        exact_fraction = Fraction(candidate.declared_numerator, candidate.declared_denominator)
+        if exact_fraction > m_fraction and candidate.max_consecutive > m_consecutive:
+            return candidate.id
+    return CALIBRATION_NO_DEFENSIBLE_POLICY
+
+
+def _reference_synthetic_base_metadata(bases: Sequence[CleanBase]) -> list[dict[str, Any]]:
+    return [
+        {
+            "base_index": base.base_index,
+            "ticker_sha256": base.ticker_sha256,
+            "window_start": base.window_start,
+            "window_end": base.window_end,
+        }
+        for base in bases
+    ]
+
+
+def _verify_synthetic_base_metadata_against_bases(
+    synthetic_base_metadata: Sequence[Mapping[str, Any]],
+    bases: Sequence[CleanBase],
+) -> None:
+    reason = "CALIBRATION_RESULT_STATE_INVALID"
+    if len(bases) != SYNTHETIC_BASE_COUNT:
+        raise V8BCalibrationBlocked(reason)
+    _validate_synthetic_base_metadata(synthetic_base_metadata)
+    expected = _reference_synthetic_base_metadata(bases)
+    if list(synthetic_base_metadata) != expected:
+        raise V8BCalibrationBlocked(reason)
+
+
 def _validate_synthetic_base_metadata(rows: Sequence[Mapping[str, Any]]) -> None:
     reason = "CALIBRATION_RESULT_STATE_INVALID"
     if len(rows) != SYNTHETIC_BASE_COUNT:
@@ -1149,6 +1283,15 @@ def _validate_synthetic_base_metadata(rows: Sequence[Mapping[str, Any]]) -> None
         raise V8BCalibrationBlocked(reason)
 
 
+def _expected_error_counts_from_manifest(manifest: Mapping[str, Any]) -> dict[str, int]:
+    return {
+        "failed_count": manifest.get("failed_count", 0),
+        "retry_count": manifest.get("retry_count", 0),
+        "http_429_count": manifest.get("http_429_count", 0),
+        "http_5xx_count": manifest.get("http_5xx_count", 0),
+    }
+
+
 def _validate_result_state(
     *,
     run_validity: RunValidity,
@@ -1157,6 +1300,8 @@ def _validate_result_state(
     candidate_results: Sequence[Mapping[str, Any]],
     yearly_windows: Sequence[WindowStats],
     full_span_windows: Sequence[WindowStats],
+    synthetic_bases: Sequence[CleanBase],
+    manifest_bytes: bytes | None,
     m_fraction: Fraction | None,
     m_fraction_window_count: int,
     m_consecutive: int | None,
@@ -1181,6 +1326,7 @@ def _validate_result_state(
             or len(candidate_results) != 0
             or len(yearly_windows) != 0
             or len(full_span_windows) != 0
+            or len(synthetic_bases) != 0
             or m_fraction is not None
             or m_consecutive is not None
             or m_fraction_window_count != 0
@@ -1200,7 +1346,10 @@ def _validate_result_state(
 
     # --- VALID branch: independently recompute everything derivable and
     # require it to exactly match what the caller supplied. Caller-provided
-    # candidate rows / envelope / selection are never trusted at face value.
+    # candidate rows / envelope / selection / synthetic metadata / error
+    # counts are never trusted at face value — each is cross-checked against
+    # its own independent source of truth (windows, CANDIDATES, the actual
+    # CleanBase objects, and the R1-validated manifest bytes).
     if run_validity.failure_reason is not None or candidate_selection_executed is not True:
         raise V8BCalibrationBlocked(reason)
     if m_fraction is None or m_consecutive is None:
@@ -1219,26 +1368,34 @@ def _validate_result_state(
     ):
         raise V8BCalibrationBlocked(reason)
 
-    expected_candidate_results = _compute_candidate_results(
-        yearly_windows, full_span_windows, recomputed_envelope.m_fraction, recomputed_envelope.m_consecutive
+    _verify_candidate_rows_independently(
+        candidate_results, yearly_windows, full_span_windows, recomputed_envelope.m_fraction, recomputed_envelope.m_consecutive
     )
-    if list(candidate_results) != expected_candidate_results:
-        raise V8BCalibrationBlocked(reason)
 
-    expected_selected_policy, _ = select_policy(
-        VALID_RUN, recomputed_envelope.m_fraction, recomputed_envelope.m_consecutive
-    )
+    expected_selected_policy = _reference_select_policy(recomputed_envelope.m_fraction, recomputed_envelope.m_consecutive)
     if selected_policy != expected_selected_policy:
         raise V8BCalibrationBlocked(reason)
 
-    expected_fraction_headroom, expected_consecutive_headroom = _compute_selected_headrooms(
-        selected_policy, recomputed_envelope.m_fraction, recomputed_envelope.m_consecutive
-    )
-    if (
-        selected_candidate_fraction_headroom_exact_or_null != expected_fraction_headroom
-        or selected_candidate_consecutive_headroom_or_null != expected_consecutive_headroom
-    ):
-        raise V8BCalibrationBlocked(reason)
+    if selected_policy == CALIBRATION_NO_DEFENSIBLE_POLICY:
+        if (
+            selected_candidate_fraction_headroom_exact_or_null is not None
+            or selected_candidate_consecutive_headroom_or_null is not None
+        ):
+            raise V8BCalibrationBlocked(reason)
+    else:
+        selected_candidate = next((c for c in CANDIDATES if c.id == selected_policy), None)
+        if selected_candidate is None:
+            raise V8BCalibrationBlocked(reason)
+        expected_row = _reference_candidate_row(
+            selected_candidate, yearly_windows, full_span_windows, recomputed_envelope.m_fraction, recomputed_envelope.m_consecutive
+        )
+        if not expected_row["DEFENSIBLE"]:
+            raise V8BCalibrationBlocked(reason)
+        if (
+            selected_candidate_fraction_headroom_exact_or_null != expected_row["fraction_headroom_exact"]
+            or selected_candidate_consecutive_headroom_or_null != expected_row["consecutive_headroom"]
+        ):
+            raise V8BCalibrationBlocked(reason)
 
     if (
         synthetic_base_count != SYNTHETIC_BASE_COUNT
@@ -1248,7 +1405,7 @@ def _validate_result_state(
     ):
         raise V8BCalibrationBlocked(reason)
 
-    _validate_synthetic_base_metadata(synthetic_base_metadata)
+    _verify_synthetic_base_metadata_against_bases(synthetic_base_metadata, synthetic_bases)
 
     provenance = dict(input_provenance_hashes)
     if set(provenance) != {"manifest_sha256", "payload_hash_list_sha256", "manifest_payload_count", "bound_payload_count"}:
@@ -1263,13 +1420,17 @@ def _validate_result_state(
     ):
         raise V8BCalibrationBlocked(reason)
 
+    if manifest_bytes is None:
+        raise V8BCalibrationBlocked(reason)
+    validated_manifest = validate_v5b_manifest_provenance(manifest_bytes)
+    expected_errors = _expected_error_counts_from_manifest(validated_manifest)
     errors = dict(error_counts)
     if set(errors) != {"failed_count", "retry_count", "http_429_count", "http_5xx_count"}:
         raise V8BCalibrationBlocked(reason)
     for value in errors.values():
         if type(value) is not int or value < 0:
             raise V8BCalibrationBlocked(reason)
-    if errors["failed_count"] != 0:
+    if errors != expected_errors:
         raise V8BCalibrationBlocked(reason)
 
 
@@ -1296,6 +1457,8 @@ def build_result_artifact(
     run_completed_or_blocked_utc: str,
     yearly_windows: Sequence[WindowStats] = (),
     full_span_windows: Sequence[WindowStats] = (),
+    synthetic_bases: Sequence[CleanBase] = (),
+    manifest_bytes: bytes | None = None,
     selected_candidate_fraction_headroom_exact_or_null: Mapping[str, int] | None = None,
     selected_candidate_consecutive_headroom_or_null: int | None = None,
 ) -> dict[str, Any]:
@@ -1309,6 +1472,8 @@ def build_result_artifact(
         candidate_results=candidate_results,
         yearly_windows=yearly_windows,
         full_span_windows=full_span_windows,
+        synthetic_bases=synthetic_bases,
+        manifest_bytes=manifest_bytes,
         m_fraction=m_fraction,
         m_fraction_window_count=m_fraction_window_count,
         m_consecutive=m_consecutive,
@@ -1367,11 +1532,231 @@ def build_result_artifact(
 
 
 def verify_artifact_self_hash(artifact: Mapping[str, Any]) -> bool:
+    """INTEGRITY CHECK ONLY — not an acceptance check.
+
+    This only proves the artifact's fields are internally self-consistent
+    with its own recorded hash (i.e. nothing was corrupted/edited without
+    also updating the hash). It says nothing about whether the *content* is
+    scientifically correct: an attacker (or a bug) can mutate a semantic
+    field and simply recompute a new, mathematically valid self-hash over
+    the mutated content, and this function will still return True. The
+    public acceptance API is ``validate_result_artifact_semantics``, which
+    independently re-derives every semantic field from its own source of
+    truth (windows, CANDIDATES, the actual CleanBase objects, and the
+    R1-validated manifest bytes) instead of trusting the artifact's content.
+    """
+
     if "artifact_self_hash" not in artifact:
         return False
     claimed = artifact["artifact_self_hash"]
     without_hash = {key: value for key, value in artifact.items() if key != "artifact_self_hash"}
     return sha256_hex(canonical_json_bytes(without_hash)) == claimed
+
+
+# ---------------------------------------------------------------------------
+# Public acceptance API: full persisted-artifact semantic verification.
+#
+# This is deliberately NOT implemented by calling build_result_artifact()
+# and diffing the result — it is a verification path over the artifact's
+# own JSON-shaped fields (as returned by run_data_quality_calibration, or
+# as loaded back from wherever it was persisted), re-deriving every
+# semantic field from its own independent source of truth. Self-hash
+# integrity (verify_artifact_self_hash) is checked first but is not by
+# itself sufficient: an attacker who mutates content and re-signs the hash
+# passes that check while still failing everything below.
+# ---------------------------------------------------------------------------
+
+
+def _fraction_from_json(value: Any) -> Fraction:
+    reason = "CALIBRATION_RESULT_STATE_INVALID"
+    if not isinstance(value, Mapping) or set(value) != {"numerator", "denominator"}:
+        raise V8BCalibrationBlocked(reason)
+    numerator, denominator = value.get("numerator"), value.get("denominator")
+    if type(numerator) is not int or type(denominator) is not int or denominator <= 0:
+        raise V8BCalibrationBlocked(reason)
+    return Fraction(numerator, denominator)
+
+
+def _verify_invalid_artifact_fields(artifact: Mapping[str, Any]) -> None:
+    reason = "CALIBRATION_RESULT_STATE_INVALID"
+    if (
+        not artifact.get("run_invalid_reason_or_null")
+        or artifact.get("candidate_selection_executed") is not False
+        or artifact.get("selected_policy") != NOT_EVALUATED
+        or artifact.get("mechanically_selected_candidate_or_NO_DEFENSIBLE_POLICY_or_NOT_EVALUATED") != NOT_EVALUATED
+        or artifact.get("candidate_results") != []
+        or artifact.get("M_fraction_exact") is not None
+        or artifact.get("M_consecutive") is not None
+        or artifact.get("M_fraction_source_window_count") != 0
+        or artifact.get("M_consecutive_source_window_count") != 0
+        or artifact.get("synthetic_base_count") != 0
+        or artifact.get("synthetic_base_ticker_count") != 0
+        or artifact.get("synthetic_scenario_count") != 0
+        or artifact.get("synthetic_candidate_comparison_count") != 0
+        or artifact.get("full_expected_vs_observed_synthetic_truth_table_mismatch_count") != 0
+        or artifact.get("synthetic_base_window_start_and_end_metadata") != []
+        or artifact.get("selected_candidate_fraction_headroom_exact_or_null") is not None
+        or artifact.get("selected_candidate_consecutive_headroom_or_null") is not None
+        or artifact.get("input_provenance_hashes") != {"invalid_reason_count": 1}
+        or artifact.get("error_counts") != {"invalid_reason_count": 1}
+    ):
+        raise V8BCalibrationBlocked(reason)
+
+
+def _verify_valid_artifact_fields(
+    artifact: Mapping[str, Any],
+    yearly_windows: Sequence[WindowStats],
+    full_span_windows: Sequence[WindowStats],
+    synthetic_bases: Sequence[CleanBase],
+    manifest_bytes: bytes | None,
+) -> None:
+    reason = "CALIBRATION_RESULT_STATE_INVALID"
+
+    if artifact.get("run_invalid_reason_or_null") is not None:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("candidate_selection_executed") is not True:
+        raise V8BCalibrationBlocked(reason)
+    if len(full_span_windows) != EXPECTED_V5B_TICKER_COUNT:
+        raise V8BCalibrationBlocked(reason)
+    if not yearly_windows:
+        raise V8BCalibrationBlocked(reason)
+
+    recomputed_envelope = compute_global_envelope(list(yearly_windows) + list(full_span_windows))
+
+    m_fraction = _fraction_from_json(artifact.get("M_fraction_exact"))
+    if m_fraction != recomputed_envelope.m_fraction:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("M_fraction_source_window_count") != recomputed_envelope.m_fraction_source_window_count:
+        raise V8BCalibrationBlocked(reason)
+    m_consecutive = artifact.get("M_consecutive")
+    if type(m_consecutive) is not int or m_consecutive != recomputed_envelope.m_consecutive:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("M_consecutive_source_window_count") != recomputed_envelope.m_consecutive_source_window_count:
+        raise V8BCalibrationBlocked(reason)
+
+    candidate_results = artifact.get("candidate_results")
+    if not isinstance(candidate_results, list):
+        raise V8BCalibrationBlocked(reason)
+    _verify_candidate_rows_independently(
+        candidate_results, yearly_windows, full_span_windows, recomputed_envelope.m_fraction, recomputed_envelope.m_consecutive
+    )
+
+    selected_policy = artifact.get("selected_policy")
+    expected_selected_policy = _reference_select_policy(recomputed_envelope.m_fraction, recomputed_envelope.m_consecutive)
+    if selected_policy != expected_selected_policy:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("mechanically_selected_candidate_or_NO_DEFENSIBLE_POLICY_or_NOT_EVALUATED") != selected_policy:
+        raise V8BCalibrationBlocked(reason)
+
+    if selected_policy == CALIBRATION_NO_DEFENSIBLE_POLICY:
+        if (
+            artifact.get("selected_candidate_fraction_headroom_exact_or_null") is not None
+            or artifact.get("selected_candidate_consecutive_headroom_or_null") is not None
+        ):
+            raise V8BCalibrationBlocked(reason)
+    else:
+        matching_row = next((row for row in candidate_results if row.get("candidate_id") == selected_policy), None)
+        if matching_row is None or matching_row.get("DEFENSIBLE") is not True:
+            raise V8BCalibrationBlocked(reason)
+        if (
+            artifact.get("selected_candidate_fraction_headroom_exact_or_null") != matching_row.get("fraction_headroom_exact")
+            or artifact.get("selected_candidate_consecutive_headroom_or_null") != matching_row.get("consecutive_headroom")
+        ):
+            raise V8BCalibrationBlocked(reason)
+
+    if (
+        artifact.get("synthetic_base_count") != SYNTHETIC_BASE_COUNT
+        or artifact.get("synthetic_base_ticker_count") != SYNTHETIC_BASE_COUNT
+        or artifact.get("synthetic_scenario_count") != SYNTHETIC_SCENARIO_COUNT
+        or artifact.get("synthetic_candidate_comparison_count") != SYNTHETIC_CANDIDATE_COMPARISON_COUNT
+        or artifact.get("full_expected_vs_observed_synthetic_truth_table_mismatch_count") != 0
+    ):
+        raise V8BCalibrationBlocked(reason)
+
+    synthetic_metadata = artifact.get("synthetic_base_window_start_and_end_metadata")
+    if not isinstance(synthetic_metadata, list):
+        raise V8BCalibrationBlocked(reason)
+    _verify_synthetic_base_metadata_against_bases(synthetic_metadata, synthetic_bases)
+
+    provenance = artifact.get("input_provenance_hashes")
+    if not isinstance(provenance, dict) or set(provenance) != {
+        "manifest_sha256",
+        "payload_hash_list_sha256",
+        "manifest_payload_count",
+        "bound_payload_count",
+    }:
+        raise V8BCalibrationBlocked(reason)
+    if type(provenance.get("manifest_payload_count")) is not int or type(provenance.get("bound_payload_count")) is not int:
+        raise V8BCalibrationBlocked(reason)
+    if (
+        provenance.get("manifest_sha256") != EXPECTED_V5B_MANIFEST_SHA256
+        or provenance.get("payload_hash_list_sha256") != EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256
+        or provenance.get("manifest_payload_count") != EXPECTED_V5B_TICKER_COUNT
+        or provenance.get("bound_payload_count") != EXPECTED_V5B_TICKER_COUNT
+    ):
+        raise V8BCalibrationBlocked(reason)
+
+    if manifest_bytes is None:
+        raise V8BCalibrationBlocked(reason)
+    validated_manifest = validate_v5b_manifest_provenance(manifest_bytes)
+    expected_errors = _expected_error_counts_from_manifest(validated_manifest)
+    error_counts = artifact.get("error_counts")
+    if not isinstance(error_counts, dict) or set(error_counts) != {
+        "failed_count",
+        "retry_count",
+        "http_429_count",
+        "http_5xx_count",
+    }:
+        raise V8BCalibrationBlocked(reason)
+    for value in error_counts.values():
+        if type(value) is not int or value < 0:
+            raise V8BCalibrationBlocked(reason)
+    if dict(error_counts) != expected_errors:
+        raise V8BCalibrationBlocked(reason)
+
+
+def validate_result_artifact_semantics(
+    artifact: Mapping[str, Any],
+    *,
+    yearly_windows: Sequence[WindowStats] = (),
+    full_span_windows: Sequence[WindowStats] = (),
+    synthetic_bases: Sequence[CleanBase] = (),
+    manifest_bytes: bytes | None = None,
+) -> None:
+    """The public acceptance API for a V8B calibration result artifact.
+
+    Raises ``V8BCalibrationBlocked`` on any semantic inconsistency; returns
+    ``None`` (accepts) only if every field is independently verifiable
+    against its own source of truth. Checks, in order:
+
+    1. self-hash integrity (necessary, not sufficient — see
+       ``verify_artifact_self_hash``'s docstring);
+    2. legal run-state shape (INVALID / VALID-D-empty / VALID-D-nonempty);
+    3. for a VALID artifact: the global envelope recomputed from
+       ``yearly_windows``/``full_span_windows``; all 30 candidate rows
+       recomputed independently (see ``_reference_candidate_row``); the
+       selected policy recomputed independently (see
+       ``_reference_select_policy``); the synthetic base metadata bound to
+       the actual ``synthetic_bases`` (``CleanBase``) objects used in the
+       run; and ``error_counts`` bound to a fresh
+       ``validate_v5b_manifest_provenance(manifest_bytes)`` re-run against
+       the exact manifest bytes, not the caller's unverified claim.
+
+    For an INVALID artifact, ``yearly_windows``/``full_span_windows``/
+    ``synthetic_bases``/``manifest_bytes`` are not required and are ignored.
+    """
+
+    if not verify_artifact_self_hash(artifact):
+        raise V8BCalibrationBlocked("CALIBRATION_ARTIFACT_SELF_HASH_MISMATCH")
+
+    calibration_run_valid = artifact.get("calibration_run_valid")
+    if calibration_run_valid is False:
+        _verify_invalid_artifact_fields(artifact)
+        return
+    if calibration_run_valid is not True:
+        raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
+
+    _verify_valid_artifact_fields(artifact, yearly_windows, full_span_windows, synthetic_bases, manifest_bytes)
 
 
 # ---------------------------------------------------------------------------
@@ -1524,6 +1909,8 @@ def run_data_quality_calibration(
         candidate_results=candidate_results,
         yearly_windows=yearly_windows,
         full_span_windows=full_span_windows,
+        synthetic_bases=bases,
+        manifest_bytes=manifest_bytes,
         m_fraction=envelope.m_fraction,
         m_fraction_window_count=envelope.m_fraction_source_window_count,
         m_consecutive=envelope.m_consecutive,
@@ -1743,8 +2130,16 @@ __all__ = [
     "select_synthetic_bases",
     "sha256_hex",
     "ticker_sha256",
+    "validate_result_artifact_semantics",
     "validate_v5b_manifest_provenance",
     "validate_v5b_manifest_structure",
-    "verify_artifact_self_hash",
     "verify_repository_contract",
 ]
+
+# NOTE: verify_artifact_self_hash is deliberately NOT exported here. It is
+# an integrity-only check (see its docstring) and must not be mistaken for
+# the acceptance API. It remains directly importable
+# (``from src.v8b_data_quality_calibration import verify_artifact_self_hash``)
+# for callers/tests that specifically want the integrity check, but the
+# public acceptance API advertised by this module is
+# ``validate_result_artifact_semantics``.
