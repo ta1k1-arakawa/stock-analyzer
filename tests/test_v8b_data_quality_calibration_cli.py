@@ -50,6 +50,8 @@ def test_cli_script_source_has_no_network_or_real_cache_strings():
         "--cache",
         "--input-dir",
         "--execute-real",
+        "spec_from_file_location",
+        "exec_module",
     ]
     for token in forbidden:
         assert token not in source, f"forbidden token found: {token}"

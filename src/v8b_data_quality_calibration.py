@@ -11,10 +11,10 @@ argument rather than reading them from a caller-chosen path.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import posixpath
 import re
+import types
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from fractions import Fraction
@@ -50,6 +50,9 @@ V5B_MANIFEST_REQUEST_END = "2026-01-31"
 
 SYNTHETIC_BASE_COUNT = 20
 SYNTHETIC_SEQUENCE_LENGTH = 252
+
+SYNTHETIC_BASE_SELECTION_RULE_VERSION = "V8B_SYNTHETIC_BASE_SELECTION_V1"
+SYNTHETIC_PLACEMENT_FORMULAS_VERSION = "V8B_SYNTHETIC_PLACEMENT_FORMULAS_V1"
 
 RESULT_SCHEMA_VERSION = "V8B_DATA_QUALITY_CALIBRATION_RESULT_V1"
 
@@ -186,15 +189,24 @@ def verify_repository_contract(repository_root: Path) -> dict[str, str]:
 
 
 def _load_pinned_collector(repository_root: Path) -> Any:
+    """Verify the pinned collector's exact bytes once, then execute those
+    exact bytes. The file is never reopened after verification: the object
+    compiled and exec'd is built directly from the ``raw`` bytes that were
+    hashed, so a TOCTOU swap of the on-disk file cannot change what runs.
+    """
+
     raw = _read_repository_file(repository_root, PINNED_COLLECTOR_PATH, "CALIBRATION_CLASSIFIER_VERSION_MISMATCH")
     if git_blob_sha1(raw) != PINNED_COLLECTOR_BLOB_SHA:
         raise V8BCalibrationBlocked("CALIBRATION_CLASSIFIER_VERSION_MISMATCH")
-    path = repository_root / PINNED_COLLECTOR_PATH
-    spec = importlib.util.spec_from_file_location("v8b_pinned_v7_yahoo_collector", path)
-    if spec is None or spec.loader is None:
-        raise V8BCalibrationBlocked("CALIBRATION_CLASSIFIER_VERSION_MISMATCH")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = types.ModuleType("v8b_pinned_v7_yahoo_collector")
+    module.__file__ = str(repository_root / PINNED_COLLECTOR_PATH)
+    try:
+        code_object = compile(raw, module.__file__, "exec")
+        exec(code_object, module.__dict__)
+    except V8BCalibrationBlocked:
+        raise
+    except Exception as error:
+        raise V8BCalibrationBlocked("CALIBRATION_CLASSIFIER_VERSION_MISMATCH") from error
     return module
 
 
@@ -505,6 +517,27 @@ def is_candidate_defensible(candidate: Candidate, m_fraction: Fraction, m_consec
     return candidate_fraction_value(candidate) > m_fraction and candidate.max_consecutive > m_consecutive
 
 
+def _window_passes_candidate(window: WindowStats, candidate: Candidate) -> bool:
+    """Exactly equivalent to quality_policy_pass() on the window's original
+    per-row flags: it depends only on total/invalid-count/max-run, which
+    WindowStats already captures losslessly for this purpose."""
+
+    if window.total_returned == 0:
+        return False
+    if window.invalid_returned * candidate.declared_denominator > window.total_returned * candidate.declared_numerator:
+        return False
+    return window.max_consecutive_invalid_returned_rows <= candidate.max_consecutive
+
+
+def _failed_criterion_ids(candidate: Candidate, m_fraction: Fraction, m_consecutive: int) -> list[str]:
+    failed: list[str] = []
+    if not (candidate_fraction_value(candidate) > m_fraction):
+        failed.append("D1")
+    if not (candidate.max_consecutive > m_consecutive):
+        failed.append("D2")
+    return failed
+
+
 # ---------------------------------------------------------------------------
 # 20. Selection
 # ---------------------------------------------------------------------------
@@ -513,7 +546,13 @@ CALIBRATION_NO_DEFENSIBLE_POLICY = "CALIBRATION_NO_DEFENSIBLE_POLICY"
 NOT_EVALUATED = "NOT_EVALUATED"
 
 
-def select_policy(m_fraction: Fraction, m_consecutive: int) -> tuple[str, tuple[Candidate, ...]]:
+def select_policy(
+    run_validity: RunValidity,
+    m_fraction: Fraction | None,
+    m_consecutive: int | None,
+) -> tuple[str, tuple[Candidate, ...]]:
+    if not run_validity.valid or m_fraction is None or m_consecutive is None:
+        raise V8BCalibrationBlocked("CALIBRATION_SELECTION_REQUIRES_VALID_RUN")
     defensible = tuple(c for c in CANDIDATES if is_candidate_defensible(c, m_fraction, m_consecutive))
     if not defensible:
         return CALIBRATION_NO_DEFENSIBLE_POLICY, defensible
@@ -552,12 +591,23 @@ def find_earliest_clean_slice(observations: Sequence[Observation], length: int) 
 
 def select_synthetic_bases(
     observations_by_ticker: Mapping[str, Sequence[Observation]],
+    pinned_module: Any,
 ) -> tuple[CleanBase, ...]:
+    canonical_map: dict[str, Sequence[Observation]] = {}
+    for raw_ticker, observations in observations_by_ticker.items():
+        try:
+            canonical = pinned_module.canonical_ticker(raw_ticker)
+        except pinned_module.V7YahooCollectorBlocked as error:
+            raise V8BCalibrationBlocked("CALIBRATION_INPUT_CANONICAL_TICKER_COLLISION") from error
+        if canonical in canonical_map:
+            raise V8BCalibrationBlocked("CALIBRATION_INPUT_CANONICAL_TICKER_COLLISION")
+        canonical_map[canonical] = observations
+
     bases: list[CleanBase] = []
-    for ticker in sorted(observations_by_ticker):
+    for ticker in sorted(canonical_map):
         if len(bases) >= SYNTHETIC_BASE_COUNT:
             break
-        observations = observations_by_ticker[ticker]
+        observations = canonical_map[ticker]
         start = find_earliest_clean_slice(observations, SYNTHETIC_SEQUENCE_LENGTH)
         if start is None:
             continue
@@ -721,12 +771,25 @@ class RunValidity:
             and self.r9_plan_conformance
         )
 
+    def __post_init__(self) -> None:
+        if self.valid:
+            if self.failure_reason is not None:
+                raise V8BCalibrationBlocked("CALIBRATION_RUN_VALIDITY_STATE_INVALID")
+        else:
+            if not self.failure_reason:
+                raise V8BCalibrationBlocked("CALIBRATION_RUN_VALIDITY_STATE_INVALID")
+
 
 VALID_RUN = RunValidity()
 
 _RUN_INVALID_REASON_FLAGS: dict[str, tuple[str, ...]] = {
     "CALIBRATION_CLASSIFIER_VERSION_MISMATCH": ("r0_classifier_pinned",),
     "V5B_CALIBRATION_INPUT_PREFLIGHT_BLOCKED": ("r1_v5b_preflight",),
+    "CALIBRATION_INPUT_PAYLOAD_SET_MISMATCH": ("r1_v5b_preflight",),
+    "CALIBRATION_INPUT_PAYLOAD_PATH_MISMATCH": ("r1_v5b_preflight",),
+    "CALIBRATION_INPUT_PAYLOAD_BYTE_COUNT_MISMATCH": ("r1_v5b_preflight",),
+    "CALIBRATION_INPUT_PAYLOAD_SHA256_MISMATCH": ("r1_v5b_preflight",),
+    "CALIBRATION_INPUT_CANONICAL_TICKER_COLLISION": ("r1_v5b_preflight",),
     "CALIBRATION_INPUT_CANONICAL_PARSE_BLOCKED": ("r2_payload_reconstruction", "r8_no_masked_hard_failure"),
     "CALIBRATION_INPUT_EMPTY_SERIES_BLOCKED": ("r3_nonempty_full_span",),
     "SYNTHETIC_BASE_SELECTION_BLOCKED": ("r4_synthetic_base_selection",),
@@ -739,7 +802,12 @@ _RUN_INVALID_REASON_FLAGS: dict[str, tuple[str, ...]] = {
 
 
 def run_validity_for_reason(reason: str) -> RunValidity:
-    flagged = _RUN_INVALID_REASON_FLAGS.get(reason, ("r9_plan_conformance",))
+    if reason in _RUN_INVALID_REASON_FLAGS:
+        flagged = _RUN_INVALID_REASON_FLAGS[reason]
+    elif reason.startswith("MANIFEST_"):
+        flagged = ("r1_v5b_preflight",)
+    else:
+        flagged = ("r9_plan_conformance",)
     overrides = {name: False for name in flagged}
     return RunValidity(failure_reason=reason, **overrides)
 
@@ -780,19 +848,19 @@ def validate_v5b_manifest_structure(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise V8BCalibrationBlocked("MANIFEST_ROOT_INVALID")
 
-    if data.get("schema_version") != 2:
+    if type(data.get("schema_version")) is not int or data.get("schema_version") != 2:
         raise V8BCalibrationBlocked("MANIFEST_SCHEMA_VERSION_MISMATCH")
     if data.get("complete") is not True:
         raise V8BCalibrationBlocked("MANIFEST_NOT_COMPLETE")
     if data.get("usable_for_evaluation") is not True:
         raise V8BCalibrationBlocked("MANIFEST_NOT_USABLE")
-    if data.get("attempted_ticker_count") != EXPECTED_V5B_TICKER_COUNT:
+    if type(data.get("attempted_ticker_count")) is not int or data.get("attempted_ticker_count") != EXPECTED_V5B_TICKER_COUNT:
         raise V8BCalibrationBlocked("MANIFEST_ATTEMPTED_TICKER_COUNT_MISMATCH")
-    if data.get("success_count") != EXPECTED_V5B_TICKER_COUNT:
+    if type(data.get("success_count")) is not int or data.get("success_count") != EXPECTED_V5B_TICKER_COUNT:
         raise V8BCalibrationBlocked("MANIFEST_SUCCESS_COUNT_MISMATCH")
-    if data.get("failed_count") != 0:
+    if type(data.get("failed_count")) is not int or data.get("failed_count") != 0:
         raise V8BCalibrationBlocked("MANIFEST_FAILED_COUNT_MISMATCH")
-    if data.get("ticker_count") != EXPECTED_V5B_TICKER_COUNT:
+    if type(data.get("ticker_count")) is not int or data.get("ticker_count") != EXPECTED_V5B_TICKER_COUNT:
         raise V8BCalibrationBlocked("MANIFEST_TICKER_COUNT_MISMATCH")
     if data.get("failed_tickers") != []:
         raise V8BCalibrationBlocked("MANIFEST_FAILED_TICKERS_NOT_EMPTY")
@@ -809,6 +877,7 @@ def validate_v5b_manifest_structure(data: Any) -> dict[str, Any]:
 
     seen_tickers: set[str] = set()
     seen_paths: set[str] = set()
+    normalized_payloads: list[dict[str, Any]] = []
     for payload in payloads:
         if not isinstance(payload, dict):
             raise V8BCalibrationBlocked("MANIFEST_PAYLOAD_RECORD_INVALID")
@@ -827,18 +896,30 @@ def validate_v5b_manifest_structure(data: Any) -> dict[str, Any]:
         digest = payload.get("sha256")
         if not isinstance(digest, str) or not _HEX64_RE.match(digest):
             raise V8BCalibrationBlocked("MANIFEST_PAYLOAD_SHA256_INVALID")
+        normalized_digest = digest.lower()
 
         byte_count = payload.get("byte_count")
-        if isinstance(byte_count, bool) or not isinstance(byte_count, int) or byte_count < 0:
+        if type(byte_count) is not int or byte_count < 0:
             raise V8BCalibrationBlocked("MANIFEST_PAYLOAD_BYTE_COUNT_INVALID")
 
-    recomputed = _recompute_payload_hash_list_sha256(payloads)
+        normalized_payloads.append({**payload, "sha256": normalized_digest})
+
+    # Normalize every valid payload SHA to lowercase BEFORE recomputation.
+    recomputed = _recompute_payload_hash_list_sha256(normalized_payloads)
     if recomputed != EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256:
         raise V8BCalibrationBlocked("MANIFEST_PAYLOAD_HASH_LIST_MISMATCH")
-    if data.get("payload_hash_list_sha256") != EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256:
+
+    stored_hash_list = data.get("payload_hash_list_sha256")
+    if not isinstance(stored_hash_list, str) or not _HEX64_RE.match(stored_hash_list):
+        raise V8BCalibrationBlocked("MANIFEST_PAYLOAD_HASH_LIST_FIELD_MISMATCH")
+    normalized_stored_hash_list = stored_hash_list.lower()
+    if normalized_stored_hash_list != EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256:
         raise V8BCalibrationBlocked("MANIFEST_PAYLOAD_HASH_LIST_FIELD_MISMATCH")
 
-    return dict(data)
+    result = dict(data)
+    result["payloads"] = normalized_payloads
+    result["payload_hash_list_sha256"] = normalized_stored_hash_list
+    return result
 
 
 def validate_v5b_manifest_provenance(manifest_bytes: bytes) -> dict[str, Any]:
@@ -859,6 +940,71 @@ def validate_v5b_manifest_provenance(manifest_bytes: bytes) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Payload binding: every supplied in-memory payload must bind exactly to a
+# record in the R1-validated manifest before any parsing happens.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class InMemoryPayload:
+    relative_path: str
+    payload_bytes: bytes
+
+
+def bind_payloads_to_manifest(
+    manifest: Mapping[str, Any],
+    ticker_payloads: Mapping[str, InMemoryPayload],
+    pinned_module: Any,
+) -> dict[str, bytes]:
+    """Bind caller-supplied in-memory payloads to a validated manifest.
+
+    Both ``manifest`` (already R1-validated) and ``ticker_payloads`` are
+    caller-supplied in-memory data; no filesystem access happens here. Every
+    manifest payload record must match exactly one supplied payload by
+    canonical ticker, with exact relative_path/byte_count/SHA-256 agreement.
+    """
+
+    manifest_payloads = manifest.get("payloads")
+    if not isinstance(manifest_payloads, list):
+        raise V8BCalibrationBlocked("CALIBRATION_INPUT_PAYLOAD_SET_MISMATCH")
+
+    manifest_by_canonical: dict[str, Mapping[str, Any]] = {}
+    for record in manifest_payloads:
+        try:
+            canonical = pinned_module.canonical_ticker(record.get("ticker"))
+        except pinned_module.V7YahooCollectorBlocked as error:
+            raise V8BCalibrationBlocked("CALIBRATION_INPUT_PAYLOAD_SET_MISMATCH") from error
+        if canonical in manifest_by_canonical:
+            raise V8BCalibrationBlocked("CALIBRATION_INPUT_CANONICAL_TICKER_COLLISION")
+        manifest_by_canonical[canonical] = record
+
+    supplied_by_canonical: dict[str, InMemoryPayload] = {}
+    for raw_ticker, payload in ticker_payloads.items():
+        try:
+            canonical = pinned_module.canonical_ticker(raw_ticker)
+        except pinned_module.V7YahooCollectorBlocked as error:
+            raise V8BCalibrationBlocked("CALIBRATION_INPUT_PAYLOAD_SET_MISMATCH") from error
+        if canonical in supplied_by_canonical:
+            raise V8BCalibrationBlocked("CALIBRATION_INPUT_CANONICAL_TICKER_COLLISION")
+        supplied_by_canonical[canonical] = payload
+
+    if set(manifest_by_canonical) != set(supplied_by_canonical):
+        raise V8BCalibrationBlocked("CALIBRATION_INPUT_PAYLOAD_SET_MISMATCH")
+
+    bound: dict[str, bytes] = {}
+    for canonical, record in manifest_by_canonical.items():
+        payload = supplied_by_canonical[canonical]
+        if payload.relative_path != record.get("relative_path"):
+            raise V8BCalibrationBlocked("CALIBRATION_INPUT_PAYLOAD_PATH_MISMATCH")
+        if len(payload.payload_bytes) != record.get("byte_count"):
+            raise V8BCalibrationBlocked("CALIBRATION_INPUT_PAYLOAD_BYTE_COUNT_MISMATCH")
+        if sha256_hex(payload.payload_bytes) != record.get("sha256"):
+            raise V8BCalibrationBlocked("CALIBRATION_INPUT_PAYLOAD_SHA256_MISMATCH")
+        bound[canonical] = payload.payload_bytes
+    return bound
+
+
+# ---------------------------------------------------------------------------
 # 27-28. Fraction JSON representation / artifact self-hash
 # ---------------------------------------------------------------------------
 
@@ -869,6 +1015,85 @@ def fraction_to_json(value: Fraction) -> dict[str, int]:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def _parse_utc_z(value: Any, reason: str) -> datetime:
+    if not isinstance(value, str) or not _TIMESTAMP_RE.match(value):
+        raise V8BCalibrationBlocked(reason)
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as error:
+        raise V8BCalibrationBlocked(reason) from error
+
+
+def _validate_provenance_fields(
+    implementation_git_commit: str,
+    calibration_attempt_id: str,
+    run_started_utc: str,
+    run_completed_or_blocked_utc: str,
+) -> None:
+    if not isinstance(implementation_git_commit, str) or not _COMMIT_RE.match(implementation_git_commit):
+        raise V8BCalibrationBlocked("CALIBRATION_PROVENANCE_COMMIT_INVALID")
+    if (
+        not isinstance(calibration_attempt_id, str)
+        or not calibration_attempt_id
+        or len(calibration_attempt_id) > 128
+        or any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in calibration_attempt_id)
+    ):
+        raise V8BCalibrationBlocked("CALIBRATION_PROVENANCE_ATTEMPT_ID_INVALID")
+    started = _parse_utc_z(run_started_utc, "CALIBRATION_PROVENANCE_TIMESTAMP_INVALID")
+    completed = _parse_utc_z(run_completed_or_blocked_utc, "CALIBRATION_PROVENANCE_TIMESTAMP_INVALID")
+    if completed < started:
+        raise V8BCalibrationBlocked("CALIBRATION_PROVENANCE_TIMESTAMP_INVALID")
+
+
+def _validate_result_state(
+    *,
+    run_validity: RunValidity,
+    selected_policy: str,
+    candidate_selection_executed: bool,
+    candidate_results: Sequence[Mapping[str, Any]],
+    m_fraction: Fraction | None,
+    m_consecutive: int | None,
+    synthetic_truth_table_mismatch_count: int,
+) -> None:
+    if not run_validity.valid:
+        if (
+            not run_validity.failure_reason
+            or candidate_selection_executed is not False
+            or selected_policy != NOT_EVALUATED
+            or len(candidate_results) != 0
+            or m_fraction is not None
+            or m_consecutive is not None
+        ):
+            raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
+        return
+
+    if (
+        run_validity.failure_reason is not None
+        or candidate_selection_executed is not True
+        or len(candidate_results) != len(CANDIDATES)
+        or m_fraction is None
+        or m_consecutive is None
+        or synthetic_truth_table_mismatch_count != 0
+    ):
+        raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
+
+    if selected_policy == CALIBRATION_NO_DEFENSIBLE_POLICY:
+        if any(row.get("DEFENSIBLE") for row in candidate_results):
+            raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
+        return
+
+    valid_ids = {candidate.id for candidate in CANDIDATES}
+    if selected_policy not in valid_ids:
+        raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
+    matching = [row for row in candidate_results if row.get("candidate_id") == selected_policy]
+    if len(matching) != 1 or matching[0].get("DEFENSIBLE") is not True:
+        raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
 
 
 def build_result_artifact(
@@ -886,7 +1111,8 @@ def build_result_artifact(
     synthetic_candidate_comparison_count: int,
     synthetic_truth_table_mismatch_count: int,
     synthetic_base_metadata: Sequence[Mapping[str, Any]],
-    input_provenance: Mapping[str, Any],
+    input_provenance_hashes: Mapping[str, Any],
+    error_counts: Mapping[str, Any],
     implementation_git_commit: str,
     calibration_attempt_id: str,
     run_started_utc: str,
@@ -894,10 +1120,23 @@ def build_result_artifact(
     selected_candidate_fraction_headroom_exact_or_null: Mapping[str, int] | None = None,
     selected_candidate_consecutive_headroom_or_null: int | None = None,
 ) -> dict[str, Any]:
+    _validate_provenance_fields(
+        implementation_git_commit, calibration_attempt_id, run_started_utc, run_completed_or_blocked_utc
+    )
+    _validate_result_state(
+        run_validity=run_validity,
+        selected_policy=selected_policy,
+        candidate_selection_executed=candidate_selection_executed,
+        candidate_results=candidate_results,
+        m_fraction=m_fraction,
+        m_consecutive=m_consecutive,
+        synthetic_truth_table_mismatch_count=synthetic_truth_table_mismatch_count,
+    )
     artifact: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "study": STUDY,
         "calibration_plan_version": PLAN_VERSION,
+        "calibration_plan_commit_or_hash": APPROVED_PLAN_COMMIT,
         "approved_plan_commit": APPROVED_PLAN_COMMIT,
         "approved_plan_blob_sha": APPROVED_PLAN_BLOB_SHA,
         "approval_artifact_blob_sha": APPROVAL_ARTIFACT_BLOB_SHA,
@@ -907,7 +1146,9 @@ def build_result_artifact(
         "run_invalid_reason_or_null": run_validity.failure_reason,
         "candidate_selection_executed": candidate_selection_executed,
         "selected_policy": selected_policy,
-        "input_provenance": dict(input_provenance),
+        "mechanically_selected_candidate_or_NO_DEFENSIBLE_POLICY_or_NOT_EVALUATED": selected_policy,
+        "input_provenance_hashes": dict(input_provenance_hashes),
+        "error_counts": dict(error_counts),
         "calibration_start": CALIBRATION_START,
         "calibration_end_exclusive": CALIBRATION_END_EXCLUSIVE,
         "calibration_years": list(CALIBRATION_YEARS),
@@ -920,10 +1161,13 @@ def build_result_artifact(
         "selected_candidate_fraction_headroom_exact_or_null": selected_candidate_fraction_headroom_exact_or_null,
         "selected_candidate_consecutive_headroom_or_null": selected_candidate_consecutive_headroom_or_null,
         "synthetic_base_count": synthetic_base_count,
+        "synthetic_base_ticker_count": synthetic_base_count,
+        "synthetic_base_selection_rule": SYNTHETIC_BASE_SELECTION_RULE_VERSION,
+        "exact_synthetic_placement_formulas_version": SYNTHETIC_PLACEMENT_FORMULAS_VERSION,
         "synthetic_scenario_count": synthetic_scenario_count,
         "synthetic_candidate_comparison_count": synthetic_candidate_comparison_count,
-        "synthetic_truth_table_mismatch_count": synthetic_truth_table_mismatch_count,
-        "synthetic_base_metadata": list(synthetic_base_metadata),
+        "full_expected_vs_observed_synthetic_truth_table_mismatch_count": synthetic_truth_table_mismatch_count,
+        "synthetic_base_window_start_and_end_metadata": list(synthetic_base_metadata),
         "run_started_utc": run_started_utc,
         "run_completed_or_blocked_utc": run_completed_or_blocked_utc,
     }
@@ -948,22 +1192,22 @@ def run_data_quality_calibration(
     *,
     repository_root: Path,
     manifest_bytes: bytes,
-    ticker_payloads: Mapping[str, bytes],
+    ticker_payloads: Mapping[str, InMemoryPayload],
     implementation_git_commit: str,
     calibration_attempt_id: str,
     run_started_utc: str | None = None,
 ) -> dict[str, Any]:
     """Pure (no filesystem write) end-to-end calibration run.
 
-    ``ticker_payloads`` and ``manifest_bytes`` are supplied entirely by the
-    caller as in-memory bytes; this function never opens a V5-B cache path.
+    ``manifest_bytes`` and every payload in ``ticker_payloads`` are supplied
+    entirely by the caller as in-memory bytes; this function never opens a
+    V5-B cache path. R1 (manifest provenance) is enforced here, before any
+    payload is parsed, and every supplied payload must bind exactly to the
+    R1-validated manifest (ticker/relative_path/byte_count/SHA-256) before
+    parsing — a future adapter cannot route data around either check.
     """
 
     started = run_started_utc or _utc_now_iso()
-    provenance = {
-        "manifest_sha256": sha256_hex(manifest_bytes),
-        "ticker_count": len(ticker_payloads),
-    }
 
     def blocked(reason: str) -> dict[str, Any]:
         return build_result_artifact(
@@ -980,47 +1224,63 @@ def run_data_quality_calibration(
             synthetic_candidate_comparison_count=0,
             synthetic_truth_table_mismatch_count=0,
             synthetic_base_metadata=[],
-            input_provenance=provenance,
+            input_provenance_hashes={"invalid_reason_count": 1},
+            error_counts={"invalid_reason_count": 1},
             implementation_git_commit=implementation_git_commit,
             calibration_attempt_id=calibration_attempt_id,
             run_started_utc=started,
             run_completed_or_blocked_utc=_utc_now_iso(),
         )
 
+    # 1. repository contract
     try:
         verify_repository_contract(repository_root)
+    except V8BCalibrationBlocked as error:
+        return blocked(error.reason)
+
+    # 2. pinned parser (verified bytes compiled and exec'd directly)
+    try:
         pinned_module = _load_pinned_collector(repository_root)
     except V8BCalibrationBlocked as error:
         return blocked(error.reason)
 
-    # R1 (V5-B cache provenance/preflight) is exposed only through the pure
-    # validate_v5b_manifest_provenance()/validate_v5b_manifest_structure()
-    # helpers for a future real-data adapter to call. This phase has no such
-    # adapter and never reads the real V5-B cache, so R1 is not exercised
-    # here against manifest_bytes; only its SHA-256 is recorded below for
-    # provenance metadata.
+    # 3. R1: manifest provenance against the fixed, non-overridable real hash
+    try:
+        manifest = validate_v5b_manifest_provenance(manifest_bytes)
+    except V8BCalibrationBlocked as error:
+        return blocked(error.reason)
 
+    # 4. bind every supplied payload to the R1-validated manifest
+    try:
+        bound_payloads = bind_payloads_to_manifest(manifest, ticker_payloads, pinned_module)
+    except V8BCalibrationBlocked as error:
+        return blocked(error.reason)
+
+    # 5. parse payloads
     observations_by_ticker: dict[str, tuple[Observation, ...]] = {}
     try:
-        for ticker, payload_bytes in ticker_payloads.items():
-            canonical, restricted = parse_ticker_observations(ticker, payload_bytes, pinned_module)
+        for canonical, payload_bytes in bound_payloads.items():
+            _, restricted = parse_ticker_observations(canonical, payload_bytes, pinned_module)
             observations_by_ticker[canonical] = restricted
     except V8BCalibrationBlocked as error:
         return blocked(error.reason)
 
-    windows: list[WindowStats] = []
+    # 6. stats / envelope
+    yearly_windows: list[WindowStats] = []
+    full_span_windows: list[WindowStats] = []
     try:
         for observations in observations_by_ticker.values():
-            windows.append(compute_full_span_stats(observations))
+            full_span_windows.append(compute_full_span_stats(observations))
             yearly = compute_yearly_window_stats(observations)
-            windows.extend(stats for stats in yearly.values() if stats is not None)
+            yearly_windows.extend(stats for stats in yearly.values() if stats is not None)
     except V8BCalibrationBlocked as error:
         return blocked(error.reason)
 
-    envelope = compute_global_envelope(windows)
+    envelope = compute_global_envelope(yearly_windows + full_span_windows)
 
+    # 7. synthetic verification
     try:
-        bases = select_synthetic_bases(observations_by_ticker)
+        bases = select_synthetic_bases(observations_by_ticker, pinned_module)
     except V8BCalibrationBlocked as error:
         return blocked(error.reason)
 
@@ -1030,20 +1290,38 @@ def run_data_quality_calibration(
     if verification.truth_table_mismatch_count:
         return blocked("SYNTHETIC_POLICY_SEMANTICS_MISMATCH")
 
-    selected_policy, defensible = select_policy(envelope.m_fraction, envelope.m_consecutive)
+    # 8. establish valid run
+    run_validity = VALID_RUN
+
+    # 9. candidate selection (selection itself requires a valid run)
+    selected_policy, defensible = select_policy(run_validity, envelope.m_fraction, envelope.m_consecutive)
     defensible_ids = {candidate.id for candidate in defensible}
 
     candidate_results = []
     for candidate in CANDIDATES:
         fraction_headroom = candidate_fraction_value(candidate) - envelope.m_fraction
         consecutive_headroom = candidate.max_consecutive - envelope.m_consecutive
+        year_pass_count = sum(1 for window in yearly_windows if _window_passes_candidate(window, candidate))
+        span_pass_count = sum(1 for window in full_span_windows if _window_passes_candidate(window, candidate))
         candidate_results.append(
             {
                 "candidate_id": candidate.id,
-                "declared_numerator": candidate.declared_numerator,
-                "declared_denominator": candidate.declared_denominator,
+                "exact_fraction_rational": fraction_to_json(candidate_fraction_value(candidate)),
+                "declared_fraction": {
+                    "declared_numerator": candidate.declared_numerator,
+                    "declared_denominator": candidate.declared_denominator,
+                },
                 "max_consecutive": candidate.max_consecutive,
-                "defensible": candidate.id in defensible_ids,
+                "observed_ticker_year_pass_count_over_denominator": {
+                    "pass_count": year_pass_count,
+                    "denominator": len(yearly_windows),
+                },
+                "observed_full_ticker_pass_count_over_denominator": {
+                    "pass_count": span_pass_count,
+                    "denominator": len(full_span_windows),
+                },
+                "DEFENSIBLE": candidate.id in defensible_ids,
+                "failed_criterion_ids": _failed_criterion_ids(candidate, envelope.m_fraction, envelope.m_consecutive),
                 "fraction_headroom_exact": fraction_to_json(fraction_headroom),
                 "consecutive_headroom": consecutive_headroom,
             }
@@ -1067,8 +1345,22 @@ def run_data_quality_calibration(
         for base in bases
     ]
 
+    input_provenance_hashes = {
+        "manifest_sha256": EXPECTED_V5B_MANIFEST_SHA256,
+        "payload_hash_list_sha256": EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256,
+        "manifest_payload_count": EXPECTED_V5B_TICKER_COUNT,
+        "bound_payload_count": len(bound_payloads),
+    }
+    error_counts = {
+        "failed_count": manifest.get("failed_count", 0),
+        "retry_count": manifest.get("retry_count", 0),
+        "http_429_count": manifest.get("http_429_count", 0),
+        "http_5xx_count": manifest.get("http_5xx_count", 0),
+    }
+
+    # 10. artifact
     return build_result_artifact(
-        run_validity=VALID_RUN,
+        run_validity=run_validity,
         selected_policy=selected_policy,
         candidate_selection_executed=True,
         candidate_results=candidate_results,
@@ -1081,7 +1373,8 @@ def run_data_quality_calibration(
         synthetic_candidate_comparison_count=verification.comparison_count,
         synthetic_truth_table_mismatch_count=verification.truth_table_mismatch_count,
         synthetic_base_metadata=synthetic_base_metadata,
-        input_provenance=provenance,
+        input_provenance_hashes=input_provenance_hashes,
+        error_counts=error_counts,
         implementation_git_commit=implementation_git_commit,
         calibration_attempt_id=calibration_attempt_id,
         run_started_utc=started,
@@ -1175,20 +1468,21 @@ def _verify_policy_boundary_cases() -> None:
 
 def _verify_self_hash_round_trip() -> None:
     dummy = build_result_artifact(
-        run_validity=VALID_RUN,
-        selected_policy="F1_C1",
-        candidate_selection_executed=True,
+        run_validity=run_validity_for_reason("SYNTHETIC_BASE_SELECTION_BLOCKED"),
+        selected_policy=NOT_EVALUATED,
+        candidate_selection_executed=False,
         candidate_results=[],
-        m_fraction=Fraction(0, 1),
-        m_fraction_window_count=1,
-        m_consecutive=0,
-        m_consecutive_window_count=1,
+        m_fraction=None,
+        m_fraction_window_count=0,
+        m_consecutive=None,
+        m_consecutive_window_count=0,
         synthetic_base_count=0,
         synthetic_scenario_count=0,
         synthetic_candidate_comparison_count=0,
         synthetic_truth_table_mismatch_count=0,
         synthetic_base_metadata=[],
-        input_provenance={"manifest_sha256": "0" * 64, "ticker_count": 0},
+        input_provenance_hashes={"invalid_reason_count": 1},
+        error_counts={"invalid_reason_count": 1},
         implementation_git_commit="0" * 40,
         calibration_attempt_id="static-check",
         run_started_utc=_utc_now_iso(),
@@ -1197,7 +1491,7 @@ def _verify_self_hash_round_trip() -> None:
     if not verify_artifact_self_hash(dummy):
         raise V8BCalibrationBlocked("CALIBRATION_ARTIFACT_SELF_HASH_MISMATCH")
     mutated = dict(dummy)
-    mutated["selected_policy"] = "F2_C1"
+    mutated["calibration_attempt_id"] = "mutated"
     if verify_artifact_self_hash(mutated):
         raise V8BCalibrationBlocked("CALIBRATION_ARTIFACT_SELF_HASH_MISMATCH")
 
@@ -1237,6 +1531,7 @@ __all__ = [
     "EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256",
     "EXPECTED_V5B_TICKER_COUNT",
     "GlobalEnvelope",
+    "InMemoryPayload",
     "NOT_EVALUATED",
     "Observation",
     "PINNED_COLLECTOR_BLOB_SHA",
@@ -1247,7 +1542,9 @@ __all__ = [
     "RunValidity",
     "STUDY",
     "SYNTHETIC_BASE_COUNT",
+    "SYNTHETIC_BASE_SELECTION_RULE_VERSION",
     "SYNTHETIC_CANDIDATE_COMPARISON_COUNT",
+    "SYNTHETIC_PLACEMENT_FORMULAS_VERSION",
     "SYNTHETIC_SCENARIO_COUNT",
     "SYNTHETIC_SEQUENCE_LENGTH",
     "SyntheticScenario",
@@ -1256,6 +1553,7 @@ __all__ = [
     "VALID_RUN",
     "WindowStats",
     "apply_corruption",
+    "bind_payloads_to_manifest",
     "build_result_artifact",
     "candidate_fraction_value",
     "canonical_json_bytes",

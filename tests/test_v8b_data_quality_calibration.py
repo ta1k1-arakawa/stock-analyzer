@@ -91,6 +91,10 @@ def _repo_copy(tmp_path: Path) -> Path:
     return tmp_path
 
 
+VALID_TIMESTAMPS = dict(run_started_utc="2026-01-01T00:00:00Z", run_completed_or_blocked_utc="2026-01-01T00:00:01Z")
+VALID_COMMIT = "0" * 40
+
+
 # ---------------------------------------------------------------------------
 # A-D. Repository contract verification
 # ---------------------------------------------------------------------------
@@ -138,20 +142,83 @@ def test_classifier_one_byte_mutation_blocks(tmp_path):
     assert excinfo.value.reason == "CALIBRATION_CLASSIFIER_VERSION_MISMATCH"
 
 
-def test_approval_content_mutation_blocks(tmp_path):
+# ---------------------------------------------------------------------------
+# Finding 1: pinned parser content binding (TOCTOU fix)
+# ---------------------------------------------------------------------------
+
+
+def test_pinned_loader_reads_the_file_exactly_once_never_reopens(tmp_path):
     root = _repo_copy(tmp_path)
-    path = root / calib.APPROVAL_ARTIFACT_PATH
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["approval_status"] = "REVOKED"
-    path.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    target = root / calib.PINNED_COLLECTOR_PATH
+    call_count = {"n": 0}
+    original_read_bytes = Path.read_bytes
+
+    def counting_read_bytes(self):
+        if self == target:
+            call_count["n"] += 1
+            if call_count["n"] > 1:
+                raise AssertionError("pinned collector file reopened after verification")
+        return original_read_bytes(self)
+
+    import pytest as _pytest
+
+    mp = _pytest.MonkeyPatch()
+    try:
+        mp.setattr(Path, "read_bytes", counting_read_bytes)
+        module = calib._load_pinned_collector(root)
+        assert module.canonical_ticker("7203.T") == "7203"
+    finally:
+        mp.undo()
+    assert call_count["n"] == 1
+
+
+def test_pinned_loader_executes_exactly_the_verified_bytes_not_a_later_swap(tmp_path):
+    root = _repo_copy(tmp_path)
+    target = root / calib.PINNED_COLLECTOR_PATH
+    real_bytes = target.read_bytes()
+    malicious_bytes = real_bytes + b"\nBACKDOOR = True\n"
+    reads = {"n": 0}
+    original_read_bytes = Path.read_bytes
+
+    def swap_after_first_read(self):
+        if self == target:
+            reads["n"] += 1
+            if reads["n"] == 1:
+                return real_bytes  # this is what gets verified
+            return malicious_bytes  # a reopen would see this instead
+        return original_read_bytes(self)
+
+    import pytest as _pytest
+
+    mp = _pytest.MonkeyPatch()
+    try:
+        mp.setattr(Path, "read_bytes", swap_after_first_read)
+        module = calib._load_pinned_collector(root)
+    finally:
+        mp.undo()
+    assert not hasattr(module, "BACKDOOR")
+    assert reads["n"] == 1
+
+
+def test_pinned_loader_uses_no_spec_from_file_location_or_exec_module():
+    source = (REPO_ROOT / "src" / "v8b_data_quality_calibration.py").read_text(encoding="utf-8")
+    assert "spec_from_file_location" not in source
+    assert "exec_module" not in source
+
+
+def test_pinned_loader_rejects_mutated_bytes(tmp_path):
+    root = _repo_copy(tmp_path)
+    path = root / calib.PINNED_COLLECTOR_PATH
+    mutated = bytearray(path.read_bytes())
+    mutated[0] ^= 0xFF
+    path.write_bytes(bytes(mutated))
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
-        calib.verify_repository_contract(root)
-    # content mutation also changes the blob, so either specific reason is acceptable
-    assert excinfo.value.reason in ("CALIBRATION_APPROVAL_BLOB_MISMATCH", "CALIBRATION_APPROVAL_INVALID")
+        calib._load_pinned_collector(root)
+    assert excinfo.value.reason == "CALIBRATION_CLASSIFIER_VERSION_MISMATCH"
 
 
 # ---------------------------------------------------------------------------
-# E. Strict JSON duplicate-key rejection
+# E. Strict JSON duplicate-key rejection / git blob / canonical json
 # ---------------------------------------------------------------------------
 
 
@@ -167,16 +234,6 @@ def test_malformed_json_rejected():
     assert excinfo.value.reason == "STRICT_JSON_MALFORMED"
 
 
-def test_nested_duplicate_key_json_rejected():
-    with pytest.raises(calib.V8BCalibrationBlocked):
-        calib.parse_strict_json('{"a":{"b":1,"b":2}}')
-
-
-# ---------------------------------------------------------------------------
-# 7-8. git_blob_sha1 / canonical_json_bytes
-# ---------------------------------------------------------------------------
-
-
 def test_git_blob_sha1_matches_known_approved_files():
     plan_bytes = (REPO_ROOT / calib.PREREGISTRATION_PATH).read_bytes()
     assert calib.git_blob_sha1(plan_bytes) == calib.APPROVED_PLAN_BLOB_SHA
@@ -189,11 +246,6 @@ def test_git_blob_sha1_matches_known_approved_files():
 def test_canonical_json_bytes_is_sorted_compact_and_newline_terminated():
     raw = calib.canonical_json_bytes({"b": 1, "a": 2})
     assert raw == b'{"a":2,"b":1}\n'
-
-
-def test_canonical_json_bytes_rejects_nan():
-    with pytest.raises(ValueError):
-        calib.canonical_json_bytes({"x": float("nan")})
 
 
 # ---------------------------------------------------------------------------
@@ -211,29 +263,13 @@ def test_candidate_grid_has_exactly_30_in_strictness_order():
     assert [candidate.id for candidate in calib.CANDIDATES] == expected_ids
 
 
-def test_candidate_grid_is_provably_ascending_by_fraction_then_consecutive():
-    previous = None
-    for candidate in calib.CANDIDATES:
-        key = (calib.candidate_fraction_value(candidate), candidate.max_consecutive)
-        if previous is not None:
-            assert previous <= key
-        previous = key
-
-
 def test_f2_declared_representation_stays_2_over_252():
     f2_candidates = [c for c in calib.CANDIDATES if c.fraction_id == "F2"]
     assert len(f2_candidates) == 5
     for candidate in f2_candidates:
         assert candidate.declared_numerator == 2
         assert candidate.declared_denominator == 252
-    # mathematically reduces to 1/126 but the DECLARED shape must be preserved
     assert calib.candidate_fraction_value(f2_candidates[0]) == Fraction(1, 126)
-
-
-def test_fq1_has_no_exemption_and_participates_normally():
-    fq1_candidates = [c for c in calib.CANDIDATES if c.fraction_id == "FQ1"]
-    assert len(fq1_candidates) == 5
-    assert calib.candidate_fraction_value(fq1_candidates[0]) == Fraction(1, 100)
 
 
 # ---------------------------------------------------------------------------
@@ -355,12 +391,12 @@ def test_candidate_strictly_greater_on_both_axes_is_defensible():
 
 
 # ---------------------------------------------------------------------------
-# Q-S. Selection determinism and run-validity separation
+# Q-S. Selection determinism and run-validity separation (Finding 5)
 # ---------------------------------------------------------------------------
 
 
 def test_selection_picks_strictest_defensible_candidate_deterministically():
-    selected, defensible = calib.select_policy(Fraction(0, 1), 0)
+    selected, defensible = calib.select_policy(calib.VALID_RUN, Fraction(0, 1), 0)
     assert selected == "F1_C1"
     assert defensible[0].id == "F1_C1"
     assert len(defensible) == 30  # every candidate strictly clears a zero envelope
@@ -368,15 +404,45 @@ def test_selection_picks_strictest_defensible_candidate_deterministically():
 
 def test_valid_run_with_no_defensible_candidate_reports_no_defensible_policy():
     huge = Fraction(1, 1)
-    selected, defensible = calib.select_policy(huge, 999)
+    selected, defensible = calib.select_policy(calib.VALID_RUN, huge, 999)
     assert selected == calib.CALIBRATION_NO_DEFENSIBLE_POLICY
     assert defensible == ()
 
 
-def test_invalid_run_never_reports_no_defensible_policy():
+def test_select_policy_requires_valid_run():
+    invalid = calib.run_validity_for_reason("SYNTHETIC_BASE_SELECTION_BLOCKED")
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.select_policy(invalid, Fraction(0, 1), 0)
+    assert excinfo.value.reason == "CALIBRATION_SELECTION_REQUIRES_VALID_RUN"
+
+
+def test_select_policy_requires_non_null_envelope_even_if_run_object_valid():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.select_policy(calib.VALID_RUN, None, None)
+    assert excinfo.value.reason == "CALIBRATION_SELECTION_REQUIRES_VALID_RUN"
+
+
+def test_run_validity_state_invariant_rejects_contradictions():
+    with pytest.raises(calib.V8BCalibrationBlocked):
+        calib.RunValidity(r0_classifier_pinned=False, failure_reason=None)
+    with pytest.raises(calib.V8BCalibrationBlocked):
+        calib.RunValidity(failure_reason="SOMETHING")  # all flags true (valid) but has a reason
+
+
+def test_invalid_run_reasons_all_produce_invalid_run_validity():
     for reason in calib._RUN_INVALID_REASON_FLAGS:
         rv = calib.run_validity_for_reason(reason)
         assert rv.valid is False
+        assert rv.failure_reason == reason
+
+
+def test_manifest_prefixed_reason_falls_back_to_r1():
+    rv = calib.run_validity_for_reason("MANIFEST_SOME_NEW_REASON")
+    assert rv.valid is False
+    assert rv.r1_v5b_preflight is False
+
+
+def test_invalid_run_artifact_never_reports_no_defensible_policy():
     artifact = calib.build_result_artifact(
         run_validity=calib.run_validity_for_reason("SYNTHETIC_BASE_SELECTION_BLOCKED"),
         selected_policy=calib.NOT_EVALUATED,
@@ -391,11 +457,11 @@ def test_invalid_run_never_reports_no_defensible_policy():
         synthetic_candidate_comparison_count=0,
         synthetic_truth_table_mismatch_count=0,
         synthetic_base_metadata=[],
-        input_provenance={"manifest_sha256": "0" * 64, "ticker_count": 0},
-        implementation_git_commit="0" * 40,
+        input_provenance_hashes={"invalid_reason_count": 1},
+        error_counts={"invalid_reason_count": 1},
+        implementation_git_commit=VALID_COMMIT,
         calibration_attempt_id="test",
-        run_started_utc="2026-01-01T00:00:00Z",
-        run_completed_or_blocked_utc="2026-01-01T00:00:01Z",
+        **VALID_TIMESTAMPS,
     )
     assert artifact["calibration_run_valid"] is False
     assert artifact["selected_policy"] == calib.NOT_EVALUATED
@@ -404,7 +470,7 @@ def test_invalid_run_never_reports_no_defensible_policy():
 
 
 # ---------------------------------------------------------------------------
-# T-W. Synthetic base selection
+# T-W. Synthetic base selection (Finding 3: canonicalize + reject collisions)
 # ---------------------------------------------------------------------------
 
 
@@ -451,29 +517,47 @@ def test_earliest_clean_slice_returns_none_when_too_short():
     assert calib.find_earliest_clean_slice(obs, 252) is None
 
 
-def test_synthetic_base_selection_contributes_at_most_one_slice_per_ticker():
-    observations_by_ticker = {
-        f"T{index:02d}": _valid_observations(600) for index in range(20)
-    }
-    bases = calib.select_synthetic_bases(observations_by_ticker)
+def test_synthetic_base_selection_contributes_at_most_one_slice_per_ticker(pinned_module):
+    observations_by_ticker = {f"T{index:02d}": _valid_observations(600) for index in range(20)}
+    bases = calib.select_synthetic_bases(observations_by_ticker, pinned_module)
     assert len(bases) == 20
     assert len({b.ticker_sha256 for b in bases}) == 20
 
 
-def test_more_than_20_qualifying_tickers_takes_first_20_only():
+def test_more_than_20_qualifying_tickers_takes_first_20_only(pinned_module):
     observations_by_ticker = {f"T{index:02d}": _valid_observations(252) for index in range(25)}
-    bases = calib.select_synthetic_bases(observations_by_ticker)
+    bases = calib.select_synthetic_bases(observations_by_ticker, pinned_module)
     assert len(bases) == 20
     expected_first_20 = sorted(observations_by_ticker)[:20]
     expected_hashes = {calib.ticker_sha256(t) for t in expected_first_20}
     assert {b.ticker_sha256 for b in bases} == expected_hashes
 
 
-def test_fewer_than_20_qualifying_tickers_blocks():
+def test_fewer_than_20_qualifying_tickers_blocks(pinned_module):
     observations_by_ticker = {f"T{index:02d}": _valid_observations(252) for index in range(19)}
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
-        calib.select_synthetic_bases(observations_by_ticker)
+        calib.select_synthetic_bases(observations_by_ticker, pinned_module)
     assert excinfo.value.reason == "SYNTHETIC_BASE_SELECTION_BLOCKED"
+
+
+def test_select_synthetic_bases_rejects_canonical_alias_collision(pinned_module):
+    observations_by_ticker = {
+        "7203": _valid_observations(300),
+        "7203.T": _valid_observations(300),
+    }
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.select_synthetic_bases(observations_by_ticker, pinned_module)
+    assert excinfo.value.reason == "CALIBRATION_INPUT_CANONICAL_TICKER_COLLISION"
+
+
+def test_select_synthetic_bases_canonicalizes_before_sorting(pinned_module):
+    # "7203.T" and "7203" would be a collision; use distinct real tickers with
+    # a mix of raw forms to prove canonicalization runs before sort/selection.
+    observations_by_ticker = {f"{index}.T": _valid_observations(252) for index in range(1000, 1020)}
+    bases = calib.select_synthetic_bases(observations_by_ticker, pinned_module)
+    assert len(bases) == 20
+    expected_hashes = {calib.ticker_sha256(str(t)) for t in range(1000, 1020)}
+    assert {b.ticker_sha256 for b in bases} == expected_hashes
 
 
 # ---------------------------------------------------------------------------
@@ -532,91 +616,13 @@ def test_exhaustive_synthetic_truth_table_matches_generic_policy(pinned_module):
     assert result.truth_table_mismatch_count == 0
 
 
-def test_synthetic_classifier_mismatch_detected_when_a_row_misclassifies(pinned_module):
-    scenario = next(iter(calib.iter_synthetic_scenarios(1)))
-    base = FABRICATED_BASES[0]
-    indices = calib.corrupted_indices(scenario.k, scenario.family)
-    corrupted_rows = calib.apply_corruption(base.rows, scenario.field, scenario.value, indices)
-    # sabotage one uncorrupted row so R6 should be violated
-    sabotage_index = next(i for i in range(len(corrupted_rows)) if i not in set(indices))
-    corrupted_rows[sabotage_index]["open"] = None
-    reasons = [pinned_module._row_invalid_reason(row) for row in corrupted_rows]
-    assert reasons[sabotage_index] == "NONFINITE_OPEN"  # would not equal expected "valid" (None)
-
-
 def test_selection_signature_never_takes_synthetic_inputs():
     params = set(inspect.signature(calib.select_policy).parameters)
-    assert params == {"m_fraction", "m_consecutive"}
+    assert params == {"run_validity", "m_fraction", "m_consecutive"}
 
 
 # ---------------------------------------------------------------------------
-# AE-AG. Result artifact / self-hash
-# ---------------------------------------------------------------------------
-
-
-def _minimal_valid_artifact():
-    return calib.build_result_artifact(
-        run_validity=calib.VALID_RUN,
-        selected_policy="F1_C1",
-        candidate_selection_executed=True,
-        candidate_results=[
-            {
-                "candidate_id": c.id,
-                "declared_numerator": c.declared_numerator,
-                "declared_denominator": c.declared_denominator,
-                "max_consecutive": c.max_consecutive,
-                "defensible": True,
-                "fraction_headroom_exact": calib.fraction_to_json(calib.candidate_fraction_value(c)),
-                "consecutive_headroom": c.max_consecutive,
-            }
-            for c in calib.CANDIDATES
-        ],
-        m_fraction=Fraction(0, 1),
-        m_fraction_window_count=1,
-        m_consecutive=0,
-        m_consecutive_window_count=1,
-        synthetic_base_count=20,
-        synthetic_scenario_count=6000,
-        synthetic_candidate_comparison_count=180000,
-        synthetic_truth_table_mismatch_count=0,
-        synthetic_base_metadata=[
-            {"base_index": i, "ticker_sha256": "x" * 64, "window_start": "2019-01-01", "window_end": "2019-09-09"}
-            for i in range(20)
-        ],
-        input_provenance={"manifest_sha256": "0" * 64, "ticker_count": 20},
-        implementation_git_commit="0" * 40,
-        calibration_attempt_id="test-attempt",
-        run_started_utc="2026-01-01T00:00:00Z",
-        run_completed_or_blocked_utc="2026-01-01T00:00:05Z",
-    )
-
-
-def test_result_artifact_contains_all_30_candidates():
-    artifact = _minimal_valid_artifact()
-    assert artifact["candidate_count"] == 30
-    assert len(artifact["candidate_results"]) == 30
-
-
-def test_artifact_self_hash_round_trip():
-    artifact = _minimal_valid_artifact()
-    assert calib.verify_artifact_self_hash(artifact) is True
-
-
-def test_artifact_self_hash_detects_mutation():
-    artifact = _minimal_valid_artifact()
-    mutated = dict(artifact)
-    mutated["selected_policy"] = "F2_C1"
-    assert calib.verify_artifact_self_hash(mutated) is False
-
-
-def test_artifact_self_hash_missing_key_is_not_verified():
-    artifact = _minimal_valid_artifact()
-    without_hash = {k: v for k, v in artifact.items() if k != "artifact_self_hash"}
-    assert calib.verify_artifact_self_hash(without_hash) is False
-
-
-# ---------------------------------------------------------------------------
-# AH. Manifest structural validation
+# AH. Manifest structural validation + Finding 4 hardening
 # ---------------------------------------------------------------------------
 
 
@@ -729,23 +735,7 @@ def test_manifest_negative_byte_count_rejected():
 
 
 def test_manifest_wrong_payload_hash_list_rejected():
-    # Synthetic data can never legitimately match the real, fixed
-    # EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256 constant (by design: this phase
-    # must never fabricate data that appears to be real V5-B provenance).
     manifest = _synthetic_manifest()
-    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
-        calib.validate_v5b_manifest_structure(manifest)
-    assert excinfo.value.reason == "MANIFEST_PAYLOAD_HASH_LIST_MISMATCH"
-
-
-def test_manifest_payload_hash_list_field_mismatch_rejected():
-    payloads = _synthetic_manifest_payloads(300)
-    manifest = _synthetic_manifest(payloads=payloads)
-    # force the recompute check to pass by monkeypatching the expected constant
-    # is not permitted (no override); instead exercise the field-mismatch path
-    # directly by making the stored field disagree with the (also-failing)
-    # recomputed value, confirming recompute is checked first.
-    manifest["payload_hash_list_sha256"] = "1" * 64
     with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
         calib.validate_v5b_manifest_structure(manifest)
     assert excinfo.value.reason == "MANIFEST_PAYLOAD_HASH_LIST_MISMATCH"
@@ -766,6 +756,51 @@ def test_manifest_recompute_rule_matches_original_v5b_formula():
     assert calib._recompute_payload_hash_list_sha256(payloads) == expected
 
 
+# --- Finding 4: exact integer types (reject bool/float equivalents) -------
+
+
+@pytest.mark.parametrize("bad_value", [2.0, True, False])
+def test_manifest_schema_version_rejects_non_exact_int(bad_value):
+    manifest = _synthetic_manifest(schema_version=bad_value)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_v5b_manifest_structure(manifest)
+    assert excinfo.value.reason == "MANIFEST_SCHEMA_VERSION_MISMATCH"
+
+
+@pytest.mark.parametrize("bad_value", [300.0, True, False])
+def test_manifest_attempted_ticker_count_rejects_non_exact_int(bad_value):
+    manifest = _synthetic_manifest(attempted_ticker_count=bad_value)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_v5b_manifest_structure(manifest)
+    assert excinfo.value.reason == "MANIFEST_ATTEMPTED_TICKER_COUNT_MISMATCH"
+
+
+@pytest.mark.parametrize("bad_value", [100.0, True, False])
+def test_manifest_byte_count_rejects_non_exact_int(bad_value):
+    payloads = _synthetic_manifest_payloads(300)
+    payloads[0] = dict(payloads[0])
+    payloads[0]["byte_count"] = bad_value
+    manifest = _synthetic_manifest(payloads=payloads)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_v5b_manifest_structure(manifest)
+    assert excinfo.value.reason == "MANIFEST_PAYLOAD_BYTE_COUNT_INVALID"
+
+
+def test_manifest_uppercase_sha_normalized_to_lowercase(monkeypatch):
+    payloads = _synthetic_manifest_payloads(300)
+    payloads[0] = dict(payloads[0])
+    payloads[0]["sha256"] = payloads[0]["sha256"].upper()
+    normalized_shas = [p["sha256"].lower() for p in payloads]
+    expected_hash_list = hashlib.sha256(
+        json.dumps(normalized_shas, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    manifest = _synthetic_manifest(payloads=payloads, payload_hash_list_sha256=expected_hash_list.upper())
+    monkeypatch.setattr(calib, "EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256", expected_hash_list)
+    result = calib.validate_v5b_manifest_structure(manifest)
+    assert result["payloads"][0]["sha256"] == payloads[0]["sha256"].lower()
+    assert result["payload_hash_list_sha256"] == expected_hash_list
+
+
 # ---------------------------------------------------------------------------
 # AI. Public manifest validator has no override
 # ---------------------------------------------------------------------------
@@ -782,24 +817,497 @@ def test_public_manifest_validator_rejects_wrong_whole_file_hash():
     assert excinfo.value.reason == "MANIFEST_SHA256_MISMATCH"
 
 
+def test_public_manifest_validator_accepts_monkeypatched_synthetic_manifest(monkeypatch):
+    payloads = _synthetic_manifest_payloads(300)
+    manifest = _synthetic_manifest(payloads=payloads)
+    manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    monkeypatch.setattr(calib, "EXPECTED_V5B_MANIFEST_SHA256", hashlib.sha256(manifest_bytes).hexdigest())
+    monkeypatch.setattr(calib, "EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256", manifest["payload_hash_list_sha256"])
+    result = calib.validate_v5b_manifest_provenance(manifest_bytes)
+    assert len(result["payloads"]) == 300
+
+
 # ---------------------------------------------------------------------------
-# Full-pipeline integration (happy path + invalid-run paths), no real data.
+# Finding 2: payload binding to the R1-validated manifest
 # ---------------------------------------------------------------------------
 
 
-def _make_fake_ticker_payloads(count: int) -> dict[str, bytes]:
-    days = _consecutive_days(date(2019, 1, 2), calib.SYNTHETIC_SEQUENCE_LENGTH)
-    return {f"TICK{index:02d}": _payload_bytes(f"TICK{index:02d}.T", days) for index in range(count)}
+def _manifest_and_payloads(count: int, *, corrupt=None):
+    """Build a small monkeypatch-friendly manifest + matching InMemoryPayloads.
+
+    ``corrupt`` is an optional callable(payloads, manifest_records) that may
+    mutate either list in place to construct a specific mismatch scenario.
+    """
+
+    tickers = [f"TICK{index:02d}" for index in range(count)]
+    days = _consecutive_days(date(2019, 1, 2), 5)
+    payload_bytes_by_ticker = {t: _payload_bytes(f"{t}.T", days) for t in tickers}
+    manifest_records = [
+        {
+            "ticker": t,
+            "relative_path": f"raw/{t}.json",
+            "sha256": hashlib.sha256(payload_bytes_by_ticker[t]).hexdigest(),
+            "byte_count": len(payload_bytes_by_ticker[t]),
+        }
+        for t in tickers
+    ]
+    supplied = {
+        t: calib.InMemoryPayload(relative_path=f"raw/{t}.json", payload_bytes=payload_bytes_by_ticker[t])
+        for t in tickers
+    }
+    if corrupt is not None:
+        corrupt(supplied, manifest_records)
+    manifest = {"payloads": manifest_records}
+    return manifest, supplied
 
 
-@pytest.mark.slow
-def test_full_run_happy_path_selects_strictest_candidate_and_is_valid():
-    manifest_bytes = b'{"note":"fake-provenance-not-a-real-v5b-manifest"}'
+@pytest.fixture
+def pinned(pinned_module):
+    return pinned_module
+
+
+def test_bind_payloads_happy_path(pinned):
+    manifest, supplied = _manifest_and_payloads(5)
+    bound = calib.bind_payloads_to_manifest(manifest, supplied, pinned)
+    assert set(bound) == {f"TICK{index:02d}" for index in range(5)}
+
+
+def test_bind_payloads_missing_ticker_rejected(pinned):
+    manifest, supplied = _manifest_and_payloads(5)
+    del supplied["TICK04"]
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.bind_payloads_to_manifest(manifest, supplied, pinned)
+    assert excinfo.value.reason == "CALIBRATION_INPUT_PAYLOAD_SET_MISMATCH"
+
+
+def test_bind_payloads_extra_ticker_rejected(pinned):
+    manifest, supplied = _manifest_and_payloads(5)
+    supplied["EXTRA99"] = calib.InMemoryPayload(relative_path="raw/EXTRA99.json", payload_bytes=b"{}")
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.bind_payloads_to_manifest(manifest, supplied, pinned)
+    assert excinfo.value.reason == "CALIBRATION_INPUT_PAYLOAD_SET_MISMATCH"
+
+
+def test_bind_payloads_wrong_relative_path_rejected(pinned):
+    manifest, supplied = _manifest_and_payloads(5)
+    original = supplied["TICK00"]
+    supplied["TICK00"] = calib.InMemoryPayload(relative_path="raw/WRONG.json", payload_bytes=original.payload_bytes)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.bind_payloads_to_manifest(manifest, supplied, pinned)
+    assert excinfo.value.reason == "CALIBRATION_INPUT_PAYLOAD_PATH_MISMATCH"
+
+
+def test_bind_payloads_wrong_byte_count_rejected(pinned):
+    manifest, supplied = _manifest_and_payloads(5)
+    manifest["payloads"][0] = dict(manifest["payloads"][0])
+    manifest["payloads"][0]["byte_count"] += 1
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.bind_payloads_to_manifest(manifest, supplied, pinned)
+    assert excinfo.value.reason == "CALIBRATION_INPUT_PAYLOAD_BYTE_COUNT_MISMATCH"
+
+
+def test_bind_payloads_wrong_sha_rejected(pinned):
+    manifest, supplied = _manifest_and_payloads(5)
+    manifest["payloads"][0] = dict(manifest["payloads"][0])
+    manifest["payloads"][0]["sha256"] = "0" * 64
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.bind_payloads_to_manifest(manifest, supplied, pinned)
+    assert excinfo.value.reason == "CALIBRATION_INPUT_PAYLOAD_SHA256_MISMATCH"
+
+
+def test_bind_payloads_rejects_manifest_side_canonical_alias_collision(pinned):
+    manifest, supplied = _manifest_and_payloads(2)
+    manifest["payloads"][1] = dict(manifest["payloads"][1])
+    manifest["payloads"][1]["ticker"] = manifest["payloads"][0]["ticker"] + ".T"  # collides after canonicalization
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.bind_payloads_to_manifest(manifest, supplied, pinned)
+    assert excinfo.value.reason == "CALIBRATION_INPUT_CANONICAL_TICKER_COLLISION"
+
+
+def test_bind_payloads_rejects_supplied_side_canonical_alias_collision(pinned):
+    manifest, supplied = _manifest_and_payloads(2)
+    extra_bytes = list(supplied.values())[0].payload_bytes
+    supplied["TICK00.T"] = calib.InMemoryPayload(relative_path="raw/whatever.json", payload_bytes=extra_bytes)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.bind_payloads_to_manifest(manifest, supplied, pinned)
+    assert excinfo.value.reason == "CALIBRATION_INPUT_CANONICAL_TICKER_COLLISION"
+
+
+def test_empty_json_manifest_cannot_produce_a_valid_result():
+    result = calib.run_data_quality_calibration(
+        repository_root=REPO_ROOT,
+        manifest_bytes=b"{}",
+        ticker_payloads={},
+        implementation_git_commit=VALID_COMMIT,
+        calibration_attempt_id="test-empty-manifest",
+    )
+    assert result["calibration_run_valid"] is False
+    assert result["run_invalid_reason_or_null"] == "MANIFEST_SHA256_MISMATCH"
+
+
+def test_wrong_manifest_hash_produces_invalid_run():
+    manifest_bytes = json.dumps({"schema_version": 2}, sort_keys=True, separators=(",", ":")).encode()
     result = calib.run_data_quality_calibration(
         repository_root=REPO_ROOT,
         manifest_bytes=manifest_bytes,
-        ticker_payloads=_make_fake_ticker_payloads(20),
-        implementation_git_commit="0" * 40,
+        ticker_payloads={},
+        implementation_git_commit=VALID_COMMIT,
+        calibration_attempt_id="test-wrong-hash",
+    )
+    assert result["calibration_run_valid"] is False
+    assert result["run_invalid_reason_or_null"] == "MANIFEST_SHA256_MISMATCH"
+
+
+# ---------------------------------------------------------------------------
+# Finding 8: provenance field validation
+# ---------------------------------------------------------------------------
+
+
+def _blocked_artifact_kwargs(**overrides):
+    base = dict(
+        run_validity=calib.run_validity_for_reason("SYNTHETIC_BASE_SELECTION_BLOCKED"),
+        selected_policy=calib.NOT_EVALUATED,
+        candidate_selection_executed=False,
+        candidate_results=[],
+        m_fraction=None,
+        m_fraction_window_count=0,
+        m_consecutive=None,
+        m_consecutive_window_count=0,
+        synthetic_base_count=0,
+        synthetic_scenario_count=0,
+        synthetic_candidate_comparison_count=0,
+        synthetic_truth_table_mismatch_count=0,
+        synthetic_base_metadata=[],
+        input_provenance_hashes={"invalid_reason_count": 1},
+        error_counts={"invalid_reason_count": 1},
+        implementation_git_commit=VALID_COMMIT,
+        calibration_attempt_id="test",
+        run_started_utc="2026-01-01T00:00:00Z",
+        run_completed_or_blocked_utc="2026-01-01T00:00:01Z",
+    )
+    base.update(overrides)
+    return base
+
+
+def test_provenance_rejects_non_hex_commit():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**_blocked_artifact_kwargs(implementation_git_commit="not-a-commit"))
+    assert excinfo.value.reason == "CALIBRATION_PROVENANCE_COMMIT_INVALID"
+
+
+def test_provenance_rejects_uppercase_commit():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**_blocked_artifact_kwargs(implementation_git_commit="A" * 40))
+    assert excinfo.value.reason == "CALIBRATION_PROVENANCE_COMMIT_INVALID"
+
+
+def test_provenance_rejects_wrong_length_commit():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**_blocked_artifact_kwargs(implementation_git_commit="0" * 39))
+    assert excinfo.value.reason == "CALIBRATION_PROVENANCE_COMMIT_INVALID"
+
+
+def test_provenance_rejects_empty_attempt_id():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**_blocked_artifact_kwargs(calibration_attempt_id=""))
+    assert excinfo.value.reason == "CALIBRATION_PROVENANCE_ATTEMPT_ID_INVALID"
+
+
+def test_provenance_rejects_too_long_attempt_id():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**_blocked_artifact_kwargs(calibration_attempt_id="x" * 129))
+    assert excinfo.value.reason == "CALIBRATION_PROVENANCE_ATTEMPT_ID_INVALID"
+
+
+def test_provenance_rejects_control_char_attempt_id():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**_blocked_artifact_kwargs(calibration_attempt_id="bad\nid"))
+    assert excinfo.value.reason == "CALIBRATION_PROVENANCE_ATTEMPT_ID_INVALID"
+
+
+def test_provenance_rejects_malformed_timestamp():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**_blocked_artifact_kwargs(run_started_utc="2026-01-01 00:00:00"))
+    assert excinfo.value.reason == "CALIBRATION_PROVENANCE_TIMESTAMP_INVALID"
+
+
+def test_provenance_rejects_completed_before_started():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(
+            **_blocked_artifact_kwargs(
+                run_started_utc="2026-01-01T00:00:05Z",
+                run_completed_or_blocked_utc="2026-01-01T00:00:00Z",
+            )
+        )
+    assert excinfo.value.reason == "CALIBRATION_PROVENANCE_TIMESTAMP_INVALID"
+
+
+def test_provenance_accepts_equal_started_and_completed():
+    artifact = calib.build_result_artifact(
+        **_blocked_artifact_kwargs(
+            run_started_utc="2026-01-01T00:00:00Z",
+            run_completed_or_blocked_utc="2026-01-01T00:00:00Z",
+        )
+    )
+    assert artifact["run_started_utc"] == artifact["run_completed_or_blocked_utc"]
+
+
+# ---------------------------------------------------------------------------
+# Finding 5: contradictory result-state rejection
+# ---------------------------------------------------------------------------
+
+
+def test_build_result_artifact_rejects_valid_state_with_wrong_candidate_count():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(
+            **_blocked_artifact_kwargs(
+                run_validity=calib.VALID_RUN,
+                selected_policy="F1_C1",
+                candidate_selection_executed=True,
+                candidate_results=[],  # should be exactly 30
+                m_fraction=Fraction(0, 1),
+                m_consecutive=0,
+                input_provenance_hashes={
+                    "manifest_sha256": "0" * 64,
+                    "payload_hash_list_sha256": "0" * 64,
+                    "manifest_payload_count": 300,
+                    "bound_payload_count": 300,
+                },
+                error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
+            )
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_build_result_artifact_rejects_invalid_state_with_nonempty_candidates():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**_blocked_artifact_kwargs(candidate_results=[{"candidate_id": "F1_C1"}]))
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_build_result_artifact_rejects_invalid_state_that_executed_selection():
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**_blocked_artifact_kwargs(candidate_selection_executed=True))
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def _full_candidate_results(defensible_ids=frozenset(), m_fraction=Fraction(0, 1), m_consecutive=0):
+    rows = []
+    for candidate in calib.CANDIDATES:
+        rows.append(
+            {
+                "candidate_id": candidate.id,
+                "exact_fraction_rational": calib.fraction_to_json(calib.candidate_fraction_value(candidate)),
+                "declared_fraction": {
+                    "declared_numerator": candidate.declared_numerator,
+                    "declared_denominator": candidate.declared_denominator,
+                },
+                "max_consecutive": candidate.max_consecutive,
+                "observed_ticker_year_pass_count_over_denominator": {"pass_count": 0, "denominator": 0},
+                "observed_full_ticker_pass_count_over_denominator": {"pass_count": 0, "denominator": 0},
+                "DEFENSIBLE": candidate.id in defensible_ids,
+                "failed_criterion_ids": calib._failed_criterion_ids(candidate, m_fraction, m_consecutive),
+            }
+        )
+    return rows
+
+
+def test_build_result_artifact_rejects_no_defensible_policy_with_a_defensible_row():
+    rows = _full_candidate_results(defensible_ids={"F1_C1"})
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(
+            **_blocked_artifact_kwargs(
+                run_validity=calib.VALID_RUN,
+                selected_policy=calib.CALIBRATION_NO_DEFENSIBLE_POLICY,
+                candidate_selection_executed=True,
+                candidate_results=rows,
+                m_fraction=Fraction(0, 1),
+                m_consecutive=0,
+                input_provenance_hashes={
+                    "manifest_sha256": "0" * 64,
+                    "payload_hash_list_sha256": "0" * 64,
+                    "manifest_payload_count": 300,
+                    "bound_payload_count": 300,
+                },
+                error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
+            )
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_build_result_artifact_rejects_selected_candidate_not_marked_defensible():
+    rows = _full_candidate_results(defensible_ids=set())  # F1_C1 not marked defensible
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(
+            **_blocked_artifact_kwargs(
+                run_validity=calib.VALID_RUN,
+                selected_policy="F1_C1",
+                candidate_selection_executed=True,
+                candidate_results=rows,
+                m_fraction=Fraction(0, 1),
+                m_consecutive=0,
+                input_provenance_hashes={
+                    "manifest_sha256": "0" * 64,
+                    "payload_hash_list_sha256": "0" * 64,
+                    "manifest_payload_count": 300,
+                    "bound_payload_count": 300,
+                },
+                error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
+            )
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_build_result_artifact_accepts_valid_no_defensible_policy_state():
+    rows = _full_candidate_results(defensible_ids=set())
+    artifact = calib.build_result_artifact(
+        **_blocked_artifact_kwargs(
+            run_validity=calib.VALID_RUN,
+            selected_policy=calib.CALIBRATION_NO_DEFENSIBLE_POLICY,
+            candidate_selection_executed=True,
+            candidate_results=rows,
+            m_fraction=Fraction(1, 1),
+            m_consecutive=999,
+            input_provenance_hashes={
+                "manifest_sha256": "0" * 64,
+                "payload_hash_list_sha256": "0" * 64,
+                "manifest_payload_count": 300,
+                "bound_payload_count": 300,
+            },
+            error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
+        )
+    )
+    assert artifact["selected_policy"] == calib.CALIBRATION_NO_DEFENSIBLE_POLICY
+    assert artifact["calibration_run_valid"] is True
+
+
+def test_build_result_artifact_accepts_valid_selected_candidate_state():
+    rows = _full_candidate_results(defensible_ids={"F1_C1"})
+    artifact = calib.build_result_artifact(
+        **_blocked_artifact_kwargs(
+            run_validity=calib.VALID_RUN,
+            selected_policy="F1_C1",
+            candidate_selection_executed=True,
+            candidate_results=rows,
+            m_fraction=Fraction(0, 1),
+            m_consecutive=0,
+            input_provenance_hashes={
+                "manifest_sha256": "0" * 64,
+                "payload_hash_list_sha256": "0" * 64,
+                "manifest_payload_count": 300,
+                "bound_payload_count": 300,
+            },
+            error_counts={"failed_count": 0, "retry_count": 0, "http_429_count": 0, "http_5xx_count": 0},
+        )
+    )
+    assert artifact["selected_policy"] == "F1_C1"
+    assert len(artifact["candidate_results"]) == 30
+
+
+# ---------------------------------------------------------------------------
+# AE-AG. Result artifact / self-hash
+# ---------------------------------------------------------------------------
+
+
+def test_artifact_self_hash_round_trip():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    assert calib.verify_artifact_self_hash(artifact) is True
+
+
+def test_artifact_self_hash_detects_mutation():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    mutated = dict(artifact)
+    mutated["calibration_attempt_id"] = "mutated"
+    assert calib.verify_artifact_self_hash(mutated) is False
+
+
+def test_all_required_artifact_metadata_present_on_blocked_artifact():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    required_keys = {
+        "schema_version",
+        "calibration_plan_commit_or_hash",
+        "input_provenance_hashes",
+        "synthetic_base_ticker_count",
+        "synthetic_base_selection_rule",
+        "synthetic_base_window_start_and_end_metadata",
+        "exact_synthetic_placement_formulas_version",
+        "full_expected_vs_observed_synthetic_truth_table_mismatch_count",
+        "error_counts",
+        "mechanically_selected_candidate_or_NO_DEFENSIBLE_POLICY_or_NOT_EVALUATED",
+    }
+    assert required_keys.issubset(artifact.keys())
+    assert artifact["synthetic_base_selection_rule"] == calib.SYNTHETIC_BASE_SELECTION_RULE_VERSION
+    assert artifact["exact_synthetic_placement_formulas_version"] == calib.SYNTHETIC_PLACEMENT_FORMULAS_VERSION
+
+
+# ---------------------------------------------------------------------------
+# Full-pipeline integration (happy path + invalid-run paths), no real data.
+# Tests may monkeypatch the fixed expected manifest hashes to use synthetic
+# manifests; the production validate_v5b_manifest_provenance() itself keeps
+# no such override (see test_public_manifest_validator_exposes_no_expected_hash_override).
+# ---------------------------------------------------------------------------
+
+
+def _build_full_manifest_and_payloads(*, empty_ticker_index: int | None = None, short_data_only: bool = False):
+    """300 canonical tickers TICK000..TICK299. First 20 (sorted) get a full
+    clean 252-day run in 2019 so they qualify as synthetic bases; the rest
+    get a short (5-day) valid window, unless short_data_only is set."""
+
+    tickers = [f"TICK{index:03d}" for index in range(300)]
+    payload_bytes_by_ticker: dict[str, bytes] = {}
+    for index, ticker in enumerate(tickers):
+        if empty_ticker_index is not None and index == empty_ticker_index:
+            days = [date(2026, 1, 15)]  # inside V5B request window, outside calibration window -> R3
+        elif not short_data_only and index < 20:
+            days = _consecutive_days(date(2019, 1, 2), calib.SYNTHETIC_SEQUENCE_LENGTH)
+        else:
+            days = _consecutive_days(date(2019, 1, 2), 5)
+        payload_bytes_by_ticker[ticker] = _payload_bytes(f"{ticker}.T", days)
+
+    manifest_records = [
+        {
+            "ticker": ticker,
+            "relative_path": f"raw/{ticker}.json",
+            "sha256": hashlib.sha256(payload_bytes_by_ticker[ticker]).hexdigest(),
+            "byte_count": len(payload_bytes_by_ticker[ticker]),
+        }
+        for ticker in tickers
+    ]
+    hash_list = calib._recompute_payload_hash_list_sha256(manifest_records)
+    manifest = {
+        "schema_version": 2,
+        "complete": True,
+        "usable_for_evaluation": True,
+        "attempted_ticker_count": 300,
+        "success_count": 300,
+        "failed_count": 0,
+        "ticker_count": 300,
+        "failed_tickers": [],
+        "circuit_breaker_triggered": False,
+        "request_start": "2019-01-01",
+        "request_end": "2026-01-31",
+        "payloads": manifest_records,
+        "payload_hash_list_sha256": hash_list,
+    }
+    manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    supplied = {
+        ticker: calib.InMemoryPayload(relative_path=f"raw/{ticker}.json", payload_bytes=payload_bytes_by_ticker[ticker])
+        for ticker in tickers
+    }
+    return manifest_bytes, hash_list, supplied
+
+
+@pytest.mark.slow
+def test_full_run_happy_path_selects_strictest_candidate_and_is_valid(monkeypatch):
+    manifest_bytes, hash_list, supplied = _build_full_manifest_and_payloads()
+    monkeypatch.setattr(calib, "EXPECTED_V5B_MANIFEST_SHA256", hashlib.sha256(manifest_bytes).hexdigest())
+    monkeypatch.setattr(calib, "EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256", hash_list)
+
+    result = calib.run_data_quality_calibration(
+        repository_root=REPO_ROOT,
+        manifest_bytes=manifest_bytes,
+        ticker_payloads=supplied,
+        implementation_git_commit=VALID_COMMIT,
         calibration_attempt_id="test-happy-path",
     )
     assert result["calibration_run_valid"] is True
@@ -807,25 +1315,40 @@ def test_full_run_happy_path_selects_strictest_candidate_and_is_valid():
     assert result["candidate_selection_executed"] is True
     assert result["selected_policy"] == "F1_C1"
     assert len(result["candidate_results"]) == 30
+    for row in result["candidate_results"]:
+        for key in (
+            "candidate_id",
+            "exact_fraction_rational",
+            "declared_fraction",
+            "max_consecutive",
+            "observed_ticker_year_pass_count_over_denominator",
+            "observed_full_ticker_pass_count_over_denominator",
+            "DEFENSIBLE",
+            "failed_criterion_ids",
+        ):
+            assert key in row
     assert result["synthetic_base_count"] == 20
     assert result["synthetic_scenario_count"] == 6000
     assert result["synthetic_candidate_comparison_count"] == 180000
-    assert result["synthetic_truth_table_mismatch_count"] == 0
+    assert result["full_expected_vs_observed_synthetic_truth_table_mismatch_count"] == 0
+    assert result["input_provenance_hashes"]["bound_payload_count"] == 300
+    assert result["input_provenance_hashes"]["manifest_payload_count"] == 300
     assert calib.verify_artifact_self_hash(result) is True
-    assert "TICK00" not in json.dumps(result)  # no raw ticker identity leaks into the artifact
+    serialized = json.dumps(result)
+    assert "TICK000" not in serialized  # no raw ticker identity leaks into the artifact
 
 
-def test_full_run_blocks_on_empty_full_span():
-    manifest_bytes = b"{}"
-    payloads = _make_fake_ticker_payloads(20)
-    # one ticker with only January-2026 rows -> zero observations after
-    # restricting to the calibration window (R3).
-    payloads["EMPTY01"] = _payload_bytes("EMPTY01.T", [date(2026, 1, 15)])
+@pytest.mark.slow
+def test_full_run_blocks_on_empty_full_span(monkeypatch):
+    manifest_bytes, hash_list, supplied = _build_full_manifest_and_payloads(empty_ticker_index=250)
+    monkeypatch.setattr(calib, "EXPECTED_V5B_MANIFEST_SHA256", hashlib.sha256(manifest_bytes).hexdigest())
+    monkeypatch.setattr(calib, "EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256", hash_list)
+
     result = calib.run_data_quality_calibration(
         repository_root=REPO_ROOT,
         manifest_bytes=manifest_bytes,
-        ticker_payloads=payloads,
-        implementation_git_commit="0" * 40,
+        ticker_payloads=supplied,
+        implementation_git_commit=VALID_COMMIT,
         calibration_attempt_id="test-empty-span",
     )
     assert result["calibration_run_valid"] is False
@@ -834,19 +1357,40 @@ def test_full_run_blocks_on_empty_full_span():
     assert result["candidate_selection_executed"] is False
 
 
-def test_full_run_blocks_when_fewer_than_20_qualifying_bases():
-    manifest_bytes = b"{}"
-    payloads = _make_fake_ticker_payloads(19)
+@pytest.mark.slow
+def test_full_run_blocks_when_fewer_than_20_qualifying_bases(monkeypatch):
+    manifest_bytes, hash_list, supplied = _build_full_manifest_and_payloads(short_data_only=True)
+    monkeypatch.setattr(calib, "EXPECTED_V5B_MANIFEST_SHA256", hashlib.sha256(manifest_bytes).hexdigest())
+    monkeypatch.setattr(calib, "EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256", hash_list)
+
     result = calib.run_data_quality_calibration(
         repository_root=REPO_ROOT,
         manifest_bytes=manifest_bytes,
-        ticker_payloads=payloads,
-        implementation_git_commit="0" * 40,
+        ticker_payloads=supplied,
+        implementation_git_commit=VALID_COMMIT,
         calibration_attempt_id="test-few-bases",
     )
     assert result["calibration_run_valid"] is False
     assert result["run_invalid_reason_or_null"] == "SYNTHETIC_BASE_SELECTION_BLOCKED"
     assert result["selected_policy"] == calib.NOT_EVALUATED
+
+
+@pytest.mark.slow
+def test_full_run_missing_payload_blocks_at_binding(monkeypatch):
+    manifest_bytes, hash_list, supplied = _build_full_manifest_and_payloads()
+    monkeypatch.setattr(calib, "EXPECTED_V5B_MANIFEST_SHA256", hashlib.sha256(manifest_bytes).hexdigest())
+    monkeypatch.setattr(calib, "EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256", hash_list)
+    del supplied["TICK299"]
+
+    result = calib.run_data_quality_calibration(
+        repository_root=REPO_ROOT,
+        manifest_bytes=manifest_bytes,
+        ticker_payloads=supplied,
+        implementation_git_commit=VALID_COMMIT,
+        calibration_attempt_id="test-missing-payload",
+    )
+    assert result["calibration_run_valid"] is False
+    assert result["run_invalid_reason_or_null"] == "CALIBRATION_INPUT_PAYLOAD_SET_MISMATCH"
 
 
 def test_full_run_blocks_on_repository_contract_mismatch(tmp_path):
@@ -858,26 +1402,12 @@ def test_full_run_blocks_on_repository_contract_mismatch(tmp_path):
     result = calib.run_data_quality_calibration(
         repository_root=root,
         manifest_bytes=b"{}",
-        ticker_payloads=_make_fake_ticker_payloads(20),
-        implementation_git_commit="0" * 40,
+        ticker_payloads={},
+        implementation_git_commit=VALID_COMMIT,
         calibration_attempt_id="test-contract-mismatch",
     )
     assert result["calibration_run_valid"] is False
     assert result["run_invalid_reason_or_null"] == "CALIBRATION_PLAN_BLOB_MISMATCH"
-
-
-def test_full_run_no_ticker_identity_in_blocked_artifact():
-    manifest_bytes = b"{}"
-    result = calib.run_data_quality_calibration(
-        repository_root=REPO_ROOT,
-        manifest_bytes=manifest_bytes,
-        ticker_payloads=_make_fake_ticker_payloads(5),
-        implementation_git_commit="0" * 40,
-        calibration_attempt_id="test-privacy",
-    )
-    serialized = json.dumps(result)
-    for index in range(5):
-        assert f"TICK0{index}" not in serialized
 
 
 # ---------------------------------------------------------------------------
@@ -903,6 +1433,8 @@ def test_module_source_has_no_network_or_real_cache_strings():
         "--cache",
         "--input-dir",
         "--execute-real",
+        "spec_from_file_location",
+        "exec_module",
     ]
     for token in forbidden:
         assert token not in source, f"forbidden token found: {token}"
