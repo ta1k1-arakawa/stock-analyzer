@@ -225,7 +225,67 @@ incorrect model name from a report template.
 
 ---
 
-## 9. Rule application
+## 9. Repository-first concise prompt protocol
+
+```text
+prompt_style=REPOSITORY_FIRST_DELTA_ONLY
+stable_rules_live_in_repo=true
+repeat_stable_rules_in_every_prompt=false
+execution_agent_must_read_referenced_docs=true
+```
+
+Stable, reusable instructions (methodology, security constraints, phase
+history, authority hierarchy, fail-closed behavior) belong in
+version-controlled Markdown in this repository, not in repeated prompt
+prose. `CLAUDE.md`, this file, and `AGENTS.md` are the canonical
+locations for that stable material.
+
+Claude Code, Codex, and any reviewer agent must read `AGENTS.md`, this
+file, and every task-specific authoritative doc named in the current
+prompt before acting.
+
+A future ChatGPT prompt should normally contain only the task-specific
+delta:
+
+- model / reasoning effort
+- branch and expected HEAD
+- docs to read for this task
+- the exact current objective
+- allowed scope (files, actions)
+- any new prohibition or gate not already documented in repository
+  Markdown
+- tests to run
+- required final report / next action
+
+Do not repeatedly paste long frozen methodology, security rules, or
+project history when it already exists in repository Markdown; reference
+it instead.
+
+If a long new instruction contains rules meant to be reused across future
+tasks, the stable part must be moved into repository Markdown first, and
+future prompts should reference it rather than restate it.
+
+A short prompt must never create ambiguity. If a rule a task depends on
+is not yet captured in repository Markdown, the prompt must either state
+it explicitly in full, or add it to the canonical Markdown before relying
+on it implicitly.
+
+If a task prompt and a frozen repository rule conflict, fail closed (§7)
+unless an explicit human-authorized change resolves the conflict.
+
+Independent-review prompts follow this same repository-first,
+delta-only principle: they name which docs to (re)read and what changed;
+they do not re-derive the full methodology from scratch in the prompt.
+
+This protocol does not change the authority hierarchy in §1: the human
+remains the ultimate gate authority, ChatGPT remains the research
+planner / decision authority, and Claude Code / Codex remain execution
+agents. Shortening prompts must never be read as weakening any rule in
+this document.
+
+---
+
+## 10. Rule application
 
 This file is the canonical collaboration rule for this repository unless
 a later explicit human decision supersedes it. Future ChatGPT prompts

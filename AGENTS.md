@@ -10,6 +10,14 @@ Evaluator v2 rules below, remain in force; where a task-specific prompt
 is more restrictive than either document, the more restrictive rule
 applies.
 
+Reusable/stable prompt rules — including the repository-first,
+delta-only prompt protocol — live in `AI_RESEARCH_EXECUTION_RULES.md`
+(see its "Repository-first concise prompt protocol" section) and in
+`CLAUDE.md`. Task prompts are expected to contain only the task-specific
+delta (objective, scope, docs to read, new prohibitions/gates, tests,
+required report) and should not repeat frozen methodology or governance
+text that already exists in those files.
+
 ---
 
 # Evaluator v2 rules
