@@ -28,6 +28,7 @@ from src.v8b_v5b_calibration_input_preflight import (  # noqa: E402
     V5BCalibrationInputPreflightBlocked,
     canonical_json_bytes,
     run_production_v5b_calibration_input_preflight,
+    run_static_check,
 )
 
 STATIC_SUCCESS_MESSAGE = "V8B_V5B_CALIBRATION_INPUT_PREFLIGHT_STATIC_PASS"
@@ -60,6 +61,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.static_check:
         if args.confirm is not None or args.implementation_git_commit is not None:
             print("STATIC_CHECK_TAKES_NO_OTHER_ARGUMENTS", file=sys.stderr)
+            return 2
+        try:
+            run_static_check()
+        except V5BCalibrationInputPreflightBlocked as error:
+            print(error.detail, file=sys.stderr)
             return 2
         print(STATIC_SUCCESS_MESSAGE)
         return 0

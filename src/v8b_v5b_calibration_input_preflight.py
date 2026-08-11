@@ -11,23 +11,39 @@ single fixed cache root exist; does its manifest match the pinned hash and
 strictly validate; and do the manifest-designated 300 payload files exist,
 at their declared byte length, at their declared SHA-256 -- nothing else.
 
-The production entry point (``run_production_v5b_calibration_input_
-preflight``) may read only the single fixed cache root below. There is no
-parameter, in this module or in the CLI that wraps it, that accepts an
-alternate cache path, manifest path, input directory, or dataset. Real
-execution additionally requires an exact human-gate confirmation token;
-presence of that token in this source file does not itself authorize
-execution -- see the module docstring note on ``PREFLIGHT_GATE_
-CONFIRMATION`` below.
+There is exactly **one** filesystem-capable entry point in this module's
+public surface: ``run_production_v5b_calibration_input_preflight``. It:
+
+1. validates the exact human-gate confirmation token FIRST -- before any
+   other check, before any filesystem access;
+2. only then verifies that the caller-supplied ``implementation_git_commit``
+   equals this repository's actual Git HEAD, and that the on-disk bytes of
+   every file in ``_RELEVANT_IMPLEMENTATION_RELATIVE_PATHS`` exactly match
+   what is committed at that HEAD (so dirty local edits cannot execute
+   while claiming a reviewed, committed HEAD);
+3. only then reads the single fixed ``V5B_CACHE_ROOT``.
+
+There is no parameter, anywhere in this module's public surface or in the
+CLI that wraps it, that accepts an alternate cache path, manifest path,
+input directory, or dataset. The byte-binding logic against an arbitrary
+``cache_root`` (``_run_v5b_calibration_input_preflight_against_root``) is a
+private, unexported helper: it exists so the gated entry point above and
+this module's own tests can drive it against a real or synthetic root, but
+it is never advertised, never exported, and calling it does not, by
+itself, grant access to anything the gated entry point wouldn't -- there is
+no other way to reach real filesystem I/O in this module except through
+the confirmation- and Git-HEAD-gated production entry point.
 """
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 try:
     from . import v8b_data_quality_calibration as _v8b_calibration_module
@@ -65,11 +81,30 @@ V5B_CACHE_ROOT: Path = Path(FIXED_V5B_CACHE_ROOT_WINDOWS_PATH)
 _MANIFEST_FILENAME = "cache_manifest.json"
 
 # ---------------------------------------------------------------------------
+# Repository / Git-HEAD binding (finding 2). Tests monkeypatch _REPO_ROOT to
+# a temporary synthetic Git repository, exactly as V5B_CACHE_ROOT is
+# monkeypatched, rather than exposing either as a public parameter.
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT: Path = Path(__file__).resolve().parents[1]
+
+# Every file whose on-disk bytes must exactly match what is committed at
+# the verified actual Git HEAD before real V5-B cache access is permitted.
+_RELEVANT_IMPLEMENTATION_RELATIVE_PATHS: tuple[str, ...] = (
+    "src/v8b_v5b_calibration_input_preflight.py",
+    "scripts/preflight_v8b_v5b_calibration_input.py",
+    "V8B_V5B_CALIBRATION_INPUT_PREFLIGHT_SPEC.md",
+)
+
+_GIT_TIMEOUT_SECONDS = 30
+
+# ---------------------------------------------------------------------------
 # Human gate (§2). Matching this token is necessary but not sufficient: its
 # mere presence in this source file does not authorize real execution. This
 # implementation task does not invoke run_production_v5b_calibration_input_
 # preflight() against the real fixed cache root; only tests exercise it,
-# and only with V5B_CACHE_ROOT monkeypatched to a synthetic fixture.
+# and only with V5B_CACHE_ROOT and _REPO_ROOT monkeypatched to synthetic
+# fixtures.
 # ---------------------------------------------------------------------------
 
 PREFLIGHT_GATE_CONFIRMATION = "V5B_CALIBRATION_INPUT_PREFLIGHT_GATE"
@@ -114,7 +149,107 @@ def _finalize(fields: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def run_v5b_calibration_input_preflight(
+def _minimal_block_result(detail: str) -> dict[str, Any]:
+    return {
+        "schema_version": PREFLIGHT_RESULT_SCHEMA_VERSION,
+        "study": STUDY,
+        "role": PREFLIGHT_ROLE,
+        "status": "BLOCK",
+        "detail_reason": detail,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Repository / Git-HEAD binding (finding 2)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_actual_git_head(repo_root: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    head = completed.stdout.strip()
+    if not _COMMIT_RE.match(head):
+        return None
+    return head
+
+
+def _read_committed_bytes(repo_root: Path, commit: str, relative_path: str) -> bytes | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "show", f"{commit}:{relative_path}"],
+            capture_output=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def _verify_implementation_matches_repository_head(
+    *,
+    repo_root: Path,
+    implementation_git_commit: str,
+    relevant_relative_paths: Sequence[str] = _RELEVANT_IMPLEMENTATION_RELATIVE_PATHS,
+) -> str:
+    """Require ``implementation_git_commit`` to equal this repository's
+    actual Git HEAD, and every relevant implementation file's on-disk bytes
+    to exactly match what is committed at that HEAD. Returns the verified
+    HEAD on success; raises ``V5BCalibrationInputPreflightBlocked`` (never
+    returning a partial/ambiguous result) on any failure, including
+    detached/unresolvable/malformed Git state.
+    """
+
+    actual_head = _resolve_actual_git_head(repo_root)
+    if actual_head is None:
+        raise V5BCalibrationInputPreflightBlocked(
+            "GIT_HEAD_UNRESOLVABLE", result=_minimal_block_result("GIT_HEAD_UNRESOLVABLE")
+        )
+    if implementation_git_commit != actual_head:
+        raise V5BCalibrationInputPreflightBlocked(
+            "IMPLEMENTATION_COMMIT_HEAD_MISMATCH",
+            result=_minimal_block_result("IMPLEMENTATION_COMMIT_HEAD_MISMATCH"),
+        )
+    for relative_path in relevant_relative_paths:
+        committed_bytes = _read_committed_bytes(repo_root, actual_head, relative_path)
+        if committed_bytes is None:
+            raise V5BCalibrationInputPreflightBlocked(
+                "IMPLEMENTATION_FILE_UNVERIFIABLE",
+                result=_minimal_block_result("IMPLEMENTATION_FILE_UNVERIFIABLE"),
+            )
+        try:
+            working_tree_bytes = (repo_root / relative_path).read_bytes()
+        except OSError:
+            raise V5BCalibrationInputPreflightBlocked(
+                "IMPLEMENTATION_FILE_UNVERIFIABLE",
+                result=_minimal_block_result("IMPLEMENTATION_FILE_UNVERIFIABLE"),
+            )
+        if working_tree_bytes != committed_bytes:
+            raise V5BCalibrationInputPreflightBlocked(
+                "IMPLEMENTATION_FILE_DIRTY", result=_minimal_block_result("IMPLEMENTATION_FILE_DIRTY")
+            )
+    return actual_head
+
+
+# ---------------------------------------------------------------------------
+# Byte-binding logic against an arbitrary root (§3, §5). PRIVATE: never
+# exported, never advertised. The only caller in this module is the gated
+# production entry point below; tests exercise it directly only as a
+# focused unit under test, never as a substitute for the gated entry point.
+# ---------------------------------------------------------------------------
+
+
+def _run_v5b_calibration_input_preflight_against_root(
     *,
     cache_root: Path | str,
     implementation_git_commit: str,
@@ -246,28 +381,105 @@ def run_production_v5b_calibration_input_preflight(
     confirmation: str,
     implementation_git_commit: str,
 ) -> dict[str, Any]:
-    """Human-gated production entry point (§2). Accesses only the single
-    fixed ``V5B_CACHE_ROOT`` -- there is no parameter to override it. This
-    implementation task does not invoke this function against the real
-    cache; it exists so a future, separately authorized task can call it
-    with the genuine human-supplied confirmation token.
+    """The single gated, filesystem-capable production entry point (§2).
+
+    Order is fixed and security-relevant: (1) exact confirmation token, (2)
+    ``implementation_git_commit`` equals this repository's actual Git HEAD
+    and every relevant implementation file is byte-identical to what is
+    committed there, (3) only then read the single fixed ``V5B_CACHE_ROOT``
+    -- there is no parameter to override any of these. This implementation
+    task does not invoke this function against the real cache; it exists so
+    a future, separately authorized task can call it with the genuine
+    human-supplied confirmation token against a clean, committed HEAD.
     """
 
     if confirmation != PREFLIGHT_GATE_CONFIRMATION:
         raise V5BCalibrationInputPreflightBlocked(
             "PREFLIGHT_GATE_CONFIRMATION_REQUIRED",
-            result={
-                "schema_version": PREFLIGHT_RESULT_SCHEMA_VERSION,
-                "study": STUDY,
-                "role": PREFLIGHT_ROLE,
-                "status": "BLOCK",
-                "detail_reason": "PREFLIGHT_GATE_CONFIRMATION_REQUIRED",
-            },
+            result=_minimal_block_result("PREFLIGHT_GATE_CONFIRMATION_REQUIRED"),
         )
-    return run_v5b_calibration_input_preflight(
+
+    if not isinstance(implementation_git_commit, str) or not _COMMIT_RE.match(implementation_git_commit):
+        raise V5BCalibrationInputPreflightBlocked(
+            "IMPLEMENTATION_COMMIT_INVALID", result=_minimal_block_result("IMPLEMENTATION_COMMIT_INVALID")
+        )
+
+    _verify_implementation_matches_repository_head(
+        repo_root=_REPO_ROOT, implementation_git_commit=implementation_git_commit
+    )
+
+    return _run_v5b_calibration_input_preflight_against_root(
         cache_root=V5B_CACHE_ROOT,
         implementation_git_commit=implementation_git_commit,
     )
+
+
+# ---------------------------------------------------------------------------
+# §3 (LOW finding): meaningful, repository-only static check. Zero V5-B
+# cache access, zero network access -- reads only this module's own source
+# and introspects its own public API surface.
+# ---------------------------------------------------------------------------
+
+
+def run_static_check() -> None:
+    """Repository-only verification. Raises ``V5BCalibrationInputPreflight
+    Blocked`` on any drift; returns ``None`` (passes) otherwise. Never
+    touches the V5-B cache and never makes a network call.
+    """
+
+    if FIXED_V5B_CACHE_ROOT_WINDOWS_PATH != r"C:\taiki\hobbies\v5-b-evaluation-cache-retry1":
+        raise V5BCalibrationInputPreflightBlocked("STATIC_CHECK_CACHE_ROOT_DRIFT")
+
+    if PREFLIGHT_GATE_CONFIRMATION != "V5B_CALIBRATION_INPUT_PREFLIGHT_GATE":
+        raise V5BCalibrationInputPreflightBlocked("STATIC_CHECK_GATE_TOKEN_DRIFT")
+
+    production_params = set(inspect.signature(run_production_v5b_calibration_input_preflight).parameters)
+    if production_params != {"confirmation", "implementation_git_commit"}:
+        raise V5BCalibrationInputPreflightBlocked("STATIC_CHECK_PRODUCTION_API_SURFACE_DRIFT")
+
+    module_globals = globals()
+    if "run_v5b_calibration_input_preflight" in __all__ or "run_v5b_calibration_input_preflight" in module_globals:
+        raise V5BCalibrationInputPreflightBlocked("STATIC_CHECK_UNGATED_FILESYSTEM_RUNNER_EXPORTED")
+
+    forbidden_param_names = {"cache_root", "path", "manifest_path", "input_dir", "dataset"}
+    for name in __all__:
+        candidate = module_globals.get(name)
+        if not callable(candidate) or inspect.isclass(candidate):
+            continue
+        params = set(inspect.signature(candidate).parameters)
+        if params & forbidden_param_names:
+            raise V5BCalibrationInputPreflightBlocked("STATIC_CHECK_UNGATED_FILESYSTEM_RUNNER_EXPORTED")
+
+    if EXPECTED_V5B_TICKER_COUNT != 300:
+        raise V5BCalibrationInputPreflightBlocked("STATIC_CHECK_PAYLOAD_COUNT_DRIFT")
+
+    if validate_v5b_manifest_provenance is not _v8b_calibration_module.validate_v5b_manifest_provenance:
+        raise V5BCalibrationInputPreflightBlocked("STATIC_CHECK_MANIFEST_VALIDATOR_DRIFT")
+
+    # Scan only the functional/security-relevant code above this function's
+    # own definition -- NOT this function's own body, which necessarily
+    # names these same tokens as literal strings in order to check for
+    # them, and would otherwise always self-match.
+    source = Path(__file__).read_text(encoding="utf-8")
+    functional_source = source[: source.index("\ndef run_static_check")]
+    forbidden_source_tokens = [
+        "parse_ticker_observations(",
+        "run_data_quality_calibration(",
+        "_row_invalid_reason(",
+        "select_synthetic_bases(",
+        "compute_global_envelope(",
+        "select_policy(",
+        "apply_corruption(",
+        "urllib",
+        "requests",
+        "yfinance",
+        "query1.finance.yahoo.com",
+        "http://",
+        "https://",
+    ]
+    for token in forbidden_source_tokens:
+        if token in functional_source:
+            raise V5BCalibrationInputPreflightBlocked("STATIC_CHECK_FORBIDDEN_SOURCE_TOKEN")
 
 
 __all__ = [
@@ -279,5 +491,5 @@ __all__ = [
     "V5BCalibrationInputPreflightBlocked",
     "V5B_CACHE_ROOT",
     "run_production_v5b_calibration_input_preflight",
-    "run_v5b_calibration_input_preflight",
+    "run_static_check",
 ]
