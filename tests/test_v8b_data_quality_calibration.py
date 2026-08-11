@@ -1361,6 +1361,26 @@ def test_rejects_wrong_selected_headroom(clean_valid_kwargs):
     assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 
+def test_rejects_float_equivalent_consecutive_headroom_at_construction(clean_valid_kwargs):
+    # True numeric equality (1 == 1.0) must not be enough at construction
+    # time either -- the headroom comparison must be exact-type-aware.
+    clean_valid_kwargs["selected_candidate_consecutive_headroom_or_null"] = float(
+        clean_valid_kwargs["selected_candidate_consecutive_headroom_or_null"]
+    )
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_float_numerator_in_fraction_headroom_at_construction(clean_valid_kwargs):
+    headroom = dict(clean_valid_kwargs["selected_candidate_fraction_headroom_exact_or_null"])
+    headroom["numerator"] = float(headroom["numerator"])
+    clean_valid_kwargs["selected_candidate_fraction_headroom_exact_or_null"] = headroom
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.build_result_artifact(**clean_valid_kwargs)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
 # --- Point 10: adversarial synthetic-count mutations --------------------
 
 
@@ -1741,6 +1761,193 @@ def test_validate_result_artifact_semantics_is_not_implemented_via_build_result_
     end = source.index("\n# ---", start)
     body = source[start:end]
     assert "build_result_artifact(" not in body
+
+
+# ---------------------------------------------------------------------------
+# Invalid-reason binding: run_invalid_reason_or_null must be a recognized
+# calibration blocker, and an optional trusted expected_invalid_reason must
+# match exactly (and itself be recognized). An untrusted artifact field
+# alone never dictates a retry/governance meaning.
+# ---------------------------------------------------------------------------
+
+
+def test_is_recognized_invalid_reason_rejects_bool_int_float_and_unknown_strings():
+    assert calib._is_recognized_invalid_reason(True) is False
+    assert calib._is_recognized_invalid_reason(1) is False
+    assert calib._is_recognized_invalid_reason(1.0) is False
+    assert calib._is_recognized_invalid_reason("") is False
+    assert calib._is_recognized_invalid_reason("SOMETHING_MADE_UP") is False
+    assert calib._is_recognized_invalid_reason(None) is False
+
+
+def test_is_recognized_invalid_reason_accepts_known_reasons_and_manifest_prefix():
+    for known_reason in calib._RUN_INVALID_REASON_FLAGS:
+        assert calib._is_recognized_invalid_reason(known_reason) is True
+    assert calib._is_recognized_invalid_reason("MANIFEST_ANYTHING_STRUCTURAL") is True
+
+
+def test_validate_result_artifact_semantics_accepts_recognized_invalid_reason():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    calib.validate_result_artifact_semantics(artifact)  # must not raise
+
+
+def test_validate_result_artifact_semantics_accepts_manifest_prefixed_invalid_reason():
+    artifact = calib.build_result_artifact(
+        **_blocked_artifact_kwargs(run_validity=calib.run_validity_for_reason("MANIFEST_SCHEMA_VERSION_MISMATCH"))
+    )
+    calib.validate_result_artifact_semantics(artifact)  # must not raise
+
+
+def test_validate_result_artifact_semantics_accepts_matching_expected_invalid_reason():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    calib.validate_result_artifact_semantics(
+        artifact, expected_invalid_reason="SYNTHETIC_BASE_SELECTION_BLOCKED"
+    )  # must not raise
+
+
+def test_validate_result_artifact_semantics_rejects_mismatched_expected_invalid_reason():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            artifact, expected_invalid_reason="CALIBRATION_INPUT_EMPTY_SERIES_BLOCKED"
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_validate_result_artifact_semantics_rejects_unrecognized_expected_invalid_reason():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(artifact, expected_invalid_reason="TOTALLY_MADE_UP_REASON")
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_validate_result_artifact_semantics_rejects_non_null_expected_reason_on_valid_artifact(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            artifact,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+            expected_invalid_reason="SYNTHETIC_BASE_SELECTION_BLOCKED",
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+@pytest.mark.parametrize("bad_reason", [1, True, 1.0])
+def test_rejects_rehashed_invalid_reason_as_non_str(bad_reason):
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    mutated = dict(artifact)
+    mutated["run_invalid_reason_or_null"] = bad_reason
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(mutated)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_rehashed_invalid_reason_arbitrary_unknown_string():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    mutated = dict(artifact)
+    mutated["run_invalid_reason_or_null"] = "NOT_A_REAL_BLOCKER_CODE"
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(mutated)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_rehashed_recognized_but_wrong_invalid_reason_when_expected_supplied():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    mutated = dict(artifact)
+    mutated["run_invalid_reason_or_null"] = "CALIBRATION_INPUT_EMPTY_SERIES_BLOCKED"  # recognized, but not what happened
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(mutated, expected_invalid_reason="SYNTHETIC_BASE_SELECTION_BLOCKED")
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# ---------------------------------------------------------------------------
+# Exact typing for selected headroom in persisted semantic validation
+# (float numerator/denominator, bool-as-int consecutive headroom).
+# ---------------------------------------------------------------------------
+
+
+def test_rejects_selected_fraction_headroom_float_numerator_persisted(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    headroom = dict(mutated["selected_candidate_fraction_headroom_exact_or_null"])
+    headroom["numerator"] = float(headroom["numerator"])
+    mutated["selected_candidate_fraction_headroom_exact_or_null"] = headroom
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_selected_fraction_headroom_float_denominator_persisted(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    headroom = dict(mutated["selected_candidate_fraction_headroom_exact_or_null"])
+    headroom["denominator"] = float(headroom["denominator"])
+    mutated["selected_candidate_fraction_headroom_exact_or_null"] = headroom
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_selected_consecutive_headroom_bool_instead_of_int_persisted(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    assert mutated["selected_candidate_consecutive_headroom_or_null"] == 1  # F1_C1 vs a zero envelope
+    mutated["selected_candidate_consecutive_headroom_or_null"] = True  # True == 1 under plain ==
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_selected_consecutive_headroom_float_instead_of_int_persisted(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    mutated["selected_candidate_consecutive_headroom_or_null"] = float(
+        mutated["selected_candidate_consecutive_headroom_or_null"]
+    )
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
 
 
 # ---------------------------------------------------------------------------

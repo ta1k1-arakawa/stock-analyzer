@@ -812,6 +812,28 @@ def run_validity_for_reason(reason: str) -> RunValidity:
     return RunValidity(failure_reason=reason, **overrides)
 
 
+def _is_recognized_invalid_reason(reason: Any) -> bool:
+    """True only for a reason string that maps to a real, preregistered
+    calibration blocker (an explicit key in ``_RUN_INVALID_REASON_FLAGS``,
+    or the same ``MANIFEST_`` prefix rule ``run_validity_for_reason`` uses
+    for manifest-structural blockers).
+
+    Deliberately narrower than ``run_validity_for_reason``, which also has
+    a generic r9 fallback for any other string: that fallback exists so a
+    *construction-time* caller inside this module fails closed even for a
+    reason it hasn't enumerated yet, not to make every arbitrary string an
+    acceptable claim from an untrusted, already-persisted artifact. A
+    persisted ``run_invalid_reason_or_null`` must correspond to one of the
+    two principled, named categories below, not merely be a nonempty str.
+    """
+
+    if type(reason) is not str or not reason:
+        return False
+    if reason in _RUN_INVALID_REASON_FLAGS:
+        return True
+    return reason.startswith("MANIFEST_")
+
+
 # ---------------------------------------------------------------------------
 # 25. Pure V5-B manifest validation
 # ---------------------------------------------------------------------------
@@ -1391,10 +1413,9 @@ def _validate_result_state(
         )
         if not expected_row["DEFENSIBLE"]:
             raise V8BCalibrationBlocked(reason)
-        if (
-            selected_candidate_fraction_headroom_exact_or_null != expected_row["fraction_headroom_exact"]
-            or selected_candidate_consecutive_headroom_or_null != expected_row["consecutive_headroom"]
-        ):
+        if not _strict_equal(
+            selected_candidate_fraction_headroom_exact_or_null, expected_row["fraction_headroom_exact"]
+        ) or not _strict_equal(selected_candidate_consecutive_headroom_or_null, expected_row["consecutive_headroom"]):
             raise V8BCalibrationBlocked(reason)
 
     if (
@@ -1720,11 +1741,23 @@ def _verify_common_persisted_artifact_metadata(artifact: Mapping[str, Any]) -> N
     )
 
 
-def _verify_invalid_artifact_fields(artifact: Mapping[str, Any]) -> None:
+def _verify_invalid_artifact_fields(
+    artifact: Mapping[str, Any],
+    expected_invalid_reason: str | None = None,
+) -> None:
     reason = "CALIBRATION_RESULT_STATE_INVALID"
+
+    persisted_reason = artifact.get("run_invalid_reason_or_null")
+    if not _is_recognized_invalid_reason(persisted_reason):
+        raise V8BCalibrationBlocked(reason)
+    if expected_invalid_reason is not None:
+        if not _is_recognized_invalid_reason(expected_invalid_reason):
+            raise V8BCalibrationBlocked(reason)
+        if persisted_reason != expected_invalid_reason:
+            raise V8BCalibrationBlocked(reason)
+
     if (
-        not artifact.get("run_invalid_reason_or_null")
-        or artifact.get("candidate_selection_executed") is not False
+        artifact.get("candidate_selection_executed") is not False
         or artifact.get("selected_policy") != NOT_EVALUATED
         or artifact.get("mechanically_selected_candidate_or_NO_DEFENSIBLE_POLICY_or_NOT_EVALUATED") != NOT_EVALUATED
         or not _strict_equal(artifact.get("candidate_results"), [])
@@ -1803,9 +1836,10 @@ def _verify_valid_artifact_fields(
         matching_row = next((row for row in candidate_results if row.get("candidate_id") == selected_policy), None)
         if matching_row is None or matching_row.get("DEFENSIBLE") is not True:
             raise V8BCalibrationBlocked(reason)
-        if (
-            artifact.get("selected_candidate_fraction_headroom_exact_or_null") != matching_row.get("fraction_headroom_exact")
-            or artifact.get("selected_candidate_consecutive_headroom_or_null") != matching_row.get("consecutive_headroom")
+        if not _strict_equal(
+            artifact.get("selected_candidate_fraction_headroom_exact_or_null"), matching_row.get("fraction_headroom_exact")
+        ) or not _strict_equal(
+            artifact.get("selected_candidate_consecutive_headroom_or_null"), matching_row.get("consecutive_headroom")
         ):
             raise V8BCalibrationBlocked(reason)
 
@@ -1864,6 +1898,7 @@ def validate_result_artifact_semantics(
     full_span_windows: Sequence[WindowStats] = (),
     synthetic_bases: Sequence[CleanBase] = (),
     manifest_bytes: bytes | None = None,
+    expected_invalid_reason: str | None = None,
 ) -> None:
     """The public acceptance API for a V8B calibration result artifact.
 
@@ -1883,12 +1918,24 @@ def validate_result_artifact_semantics(
        ``calibration_attempt_id``, timestamps) via the same validator used
        at construction time;
     3. legal run-state shape (INVALID / VALID-D-empty / VALID-D-nonempty);
-    4. for a VALID artifact: the global envelope recomputed from
-       ``yearly_windows``/``full_span_windows``; all 30 candidate rows
-       recomputed independently (see ``_reference_candidate_row``); the
-       selected policy recomputed independently (see
-       ``_reference_select_policy``); the synthetic base metadata bound to
-       the actual ``synthetic_bases`` (``CleanBase``) objects used in the
+    4. for an INVALID artifact: ``run_invalid_reason_or_null`` must be a
+       *recognized* calibration blocker (see
+       ``_is_recognized_invalid_reason`` — an explicit
+       ``_RUN_INVALID_REASON_FLAGS`` key or a ``MANIFEST_``-prefixed
+       reason), never merely a nonempty string. If the caller supplies a
+       trusted ``expected_invalid_reason``, it must itself be recognized
+       and must exactly equal the persisted reason — an untrusted
+       artifact's own claim is never used to infer which blocker fired
+       unless a trusted caller independently confirms it;
+    5. for a VALID artifact: ``expected_invalid_reason`` must be ``None``
+       (a valid run has no invalid-reason to bind); the global envelope
+       recomputed from ``yearly_windows``/``full_span_windows``; all 30
+       candidate rows recomputed independently (see
+       ``_reference_candidate_row``); the selected policy recomputed
+       independently (see ``_reference_select_policy``); the selected
+       candidate's headroom compared with exact type-aware equality (see
+       ``_strict_equal``); the synthetic base metadata bound to the
+       actual ``synthetic_bases`` (``CleanBase``) objects used in the
        run; and ``error_counts`` bound to a fresh
        ``validate_v5b_manifest_provenance(manifest_bytes)`` re-run against
        the exact manifest bytes, not the caller's unverified claim.
@@ -1904,9 +1951,12 @@ def validate_result_artifact_semantics(
 
     calibration_run_valid = artifact.get("calibration_run_valid")
     if calibration_run_valid is False:
-        _verify_invalid_artifact_fields(artifact)
+        _verify_invalid_artifact_fields(artifact, expected_invalid_reason)
         return
     if calibration_run_valid is not True:
+        raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
+
+    if expected_invalid_reason is not None:
         raise V8BCalibrationBlocked("CALIBRATION_RESULT_STATE_INVALID")
 
     _verify_valid_artifact_fields(artifact, yearly_windows, full_span_windows, synthetic_bases, manifest_bytes)
