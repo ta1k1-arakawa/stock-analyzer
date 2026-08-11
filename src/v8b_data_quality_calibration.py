@@ -889,6 +889,8 @@ _HEX64_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 def _validate_relative_path(value: Any) -> str:
     if not isinstance(value, str) or not value.startswith("raw/"):
         raise V8BCalibrationBlocked("MANIFEST_RELATIVE_PATH_INVALID")
+    if "\x00" in value or ":" in value:
+        raise V8BCalibrationBlocked("MANIFEST_RELATIVE_PATH_INVALID")
     if "\\" in value:
         raise V8BCalibrationBlocked("MANIFEST_RELATIVE_PATH_INVALID")
     parts = value.split("/")

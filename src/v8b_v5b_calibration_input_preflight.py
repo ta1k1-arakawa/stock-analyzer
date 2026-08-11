@@ -49,7 +49,9 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import os
 import re
+import stat
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -134,6 +136,44 @@ PREFLIGHT_ROLE = "R1_V5B_CALIBRATION_INPUT_PREFLIGHT"
 PREFLIGHT_RESULT_SCHEMA_VERSION = "V5B_CALIBRATION_INPUT_PREFLIGHT_RESULT_V1"
 
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+_ARTIFACT_KEYS = frozenset(
+    {
+        "schema_version",
+        "study",
+        "role",
+        "status",
+        "detail_reason",
+        "implementation_git_commit",
+        "expected_manifest_sha256",
+        "observed_manifest_sha256",
+        "expected_payload_hash_list_sha256",
+        "observed_payload_hash_list_sha256",
+        "expected_payload_count",
+        "checked_payload_count",
+        "byte_count_mismatch_count",
+        "sha256_mismatch_count",
+        "missing_or_unreadable_count",
+        "run_started_utc",
+        "run_completed_utc",
+        "artifact_self_hash",
+    }
+)
+
+_PREFLIGHT_DETAIL_RE = re.compile(
+    r"^(?:"
+    r"PREFLIGHT_GATE_CONFIRMATION_REQUIRED|IMPLEMENTATION_COMMIT_INVALID|"
+    r"GIT_HEAD_UNRESOLVABLE|GIT_REPOSITORY_IDENTITY_MISMATCH|"
+    r"IMPLEMENTATION_COMMIT_HEAD_MISMATCH|IMPLEMENTATION_FILE_UNVERIFIABLE|"
+    r"IMPLEMENTATION_FILE_DIRTY|CACHE_ROOT_INACCESSIBLE|CACHE_ROOT_NOT_A_DIRECTORY|"
+    r"CACHE_ROOT_REPARSE_POINT|MANIFEST_UNREADABLE|MANIFEST_NOT_REGULAR|MANIFEST_REPARSE_POINT|"
+    r"MANIFEST_PATH_ESCAPE_DETECTED|DESIGNATED_PAYLOAD_COUNT_MISMATCH|"
+    r"PAYLOAD_PATH_RESOLUTION_FAILED|PAYLOAD_PATH_ESCAPE_DETECTED|"
+    r"PAYLOAD_REPARSE_POINT|PAYLOAD_NOT_REGULAR|PAYLOAD_READ_FAILED|"
+    r"PAYLOAD_BINDING_FAILED|MANIFEST_PROVENANCE_INVALID:[A-Z0-9_]+)"
+    r"$"
+)
 
 
 class V5BCalibrationInputPreflightBlocked(RuntimeError):
@@ -165,19 +205,243 @@ def _finalize(fields: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _minimal_block_result(detail: str) -> dict[str, Any]:
-    return {
+def _canonical_block_result(
+    detail: str,
+    *,
+    implementation_git_commit: str | None = None,
+    observed_manifest_sha256: str | None = None,
+    observed_payload_hash_list_sha256: str | None = None,
+    checked_payload_count: int = 0,
+    byte_count_mismatch_count: int = 0,
+    sha256_mismatch_count: int = 0,
+    missing_or_unreadable_count: int = 0,
+) -> dict[str, Any]:
+    started = _utc_now_iso()
+    fields = {
         "schema_version": PREFLIGHT_RESULT_SCHEMA_VERSION,
         "study": STUDY,
         "role": PREFLIGHT_ROLE,
         "status": "BLOCK",
         "detail_reason": detail,
+        "implementation_git_commit": implementation_git_commit,
+        "expected_manifest_sha256": _v8b_calibration_module.EXPECTED_V5B_MANIFEST_SHA256,
+        "observed_manifest_sha256": observed_manifest_sha256,
+        "expected_payload_hash_list_sha256": _v8b_calibration_module.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256,
+        "observed_payload_hash_list_sha256": observed_payload_hash_list_sha256,
+        "expected_payload_count": EXPECTED_V5B_TICKER_COUNT,
+        "checked_payload_count": checked_payload_count,
+        "byte_count_mismatch_count": byte_count_mismatch_count,
+        "sha256_mismatch_count": sha256_mismatch_count,
+        "missing_or_unreadable_count": missing_or_unreadable_count,
+        "run_started_utc": started,
+        "run_completed_utc": started,
     }
+    return _finalize(fields)
+
+
+def _verify_artifact_self_hash(result: Mapping[str, Any]) -> None:
+    supplied = result.get("artifact_self_hash")
+    if not isinstance(supplied, str) or _SHA256_RE.fullmatch(supplied) is None:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_SELF_HASH_INVALID")
+    fields = dict(result)
+    del fields["artifact_self_hash"]
+    if sha256_hex(canonical_json_bytes(fields)) != supplied:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_SELF_HASH_MISMATCH")
+
+
+def _is_exact_nonnegative_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_valid_utc_timestamp(value: Any) -> bool:
+    if not isinstance(value, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value) is None:
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return True
+
+
+def validate_preflight_result_semantics(
+    result: Mapping[str, Any],
+    *,
+    expected_implementation_git_commit: str | None = None,
+) -> None:
+    """Accept only a canonical, self-hashed, semantically valid artifact.
+
+    This is intentionally an independent acceptance API. It never invokes
+    the production preflight constructor and does not perform filesystem or
+    network I/O.
+    """
+
+    if not isinstance(result, Mapping) or set(result) != _ARTIFACT_KEYS:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_SCHEMA_INVALID")
+    if result["schema_version"] != PREFLIGHT_RESULT_SCHEMA_VERSION:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_SCHEMA_INVALID")
+    if result["study"] != STUDY or result["role"] != PREFLIGHT_ROLE:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_SCHEMA_INVALID")
+    if result["status"] not in {"PASS", "BLOCK"}:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_STATUS_INVALID")
+    detail = result["detail_reason"]
+    if result["status"] == "PASS":
+        if detail is not None:
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_STATE_INVALID")
+    elif not isinstance(detail, str) or _PREFLIGHT_DETAIL_RE.fullmatch(detail) is None:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_DETAIL_INVALID")
+
+    commit = result["implementation_git_commit"]
+    if commit is not None and (not isinstance(commit, str) or _COMMIT_RE.fullmatch(commit) is None):
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_COMMIT_INVALID")
+    if expected_implementation_git_commit is not None:
+        if (
+            not isinstance(expected_implementation_git_commit, str)
+            or _COMMIT_RE.fullmatch(expected_implementation_git_commit) is None
+            or commit != expected_implementation_git_commit
+        ):
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_COMMIT_MISMATCH")
+
+    expected_manifest = _v8b_calibration_module.EXPECTED_V5B_MANIFEST_SHA256
+    expected_payload_list = _v8b_calibration_module.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256
+    if result["expected_manifest_sha256"] != expected_manifest:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_PROVENANCE_INVALID")
+    if result["expected_payload_hash_list_sha256"] != expected_payload_list:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_PROVENANCE_INVALID")
+    for key in ("expected_manifest_sha256", "expected_payload_hash_list_sha256"):
+        if not isinstance(result[key], str) or _SHA256_RE.fullmatch(result[key]) is None:
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_PROVENANCE_INVALID")
+    for key in ("observed_manifest_sha256", "observed_payload_hash_list_sha256"):
+        value = result[key]
+        if value is not None and (not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None):
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_PROVENANCE_INVALID")
+    if (
+        result["observed_manifest_sha256"] is not None
+        and result["observed_manifest_sha256"] != expected_manifest
+        and not (isinstance(detail, str) and detail.startswith("MANIFEST_PROVENANCE_INVALID:"))
+    ):
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_PROVENANCE_INVALID")
+    if (
+        result["observed_payload_hash_list_sha256"] is not None
+        and result["observed_payload_hash_list_sha256"] != expected_payload_list
+    ):
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_PROVENANCE_INVALID")
+    for key in (
+        "expected_payload_count",
+        "checked_payload_count",
+        "byte_count_mismatch_count",
+        "sha256_mismatch_count",
+        "missing_or_unreadable_count",
+    ):
+        if not _is_exact_nonnegative_int(result[key]):
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_COUNT_INVALID")
+    if result["expected_payload_count"] != EXPECTED_V5B_TICKER_COUNT:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_COUNT_INVALID")
+    if result["checked_payload_count"] > result["expected_payload_count"]:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_COUNT_INVALID")
+    if not _is_valid_utc_timestamp(result["run_started_utc"]):
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_TIMESTAMP_INVALID")
+    if not _is_valid_utc_timestamp(result["run_completed_utc"]):
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_TIMESTAMP_INVALID")
+    if result["run_completed_utc"] < result["run_started_utc"]:
+        raise V5BCalibrationInputPreflightBlocked("ARTIFACT_TIMESTAMP_INVALID")
+
+    pre_manifest_details = {
+        "PREFLIGHT_GATE_CONFIRMATION_REQUIRED",
+        "IMPLEMENTATION_COMMIT_INVALID",
+        "GIT_HEAD_UNRESOLVABLE",
+        "GIT_REPOSITORY_IDENTITY_MISMATCH",
+        "IMPLEMENTATION_COMMIT_HEAD_MISMATCH",
+        "IMPLEMENTATION_FILE_UNVERIFIABLE",
+        "IMPLEMENTATION_FILE_DIRTY",
+        "CACHE_ROOT_INACCESSIBLE",
+        "CACHE_ROOT_NOT_A_DIRECTORY",
+        "CACHE_ROOT_REPARSE_POINT",
+        "MANIFEST_UNREADABLE",
+        "MANIFEST_NOT_REGULAR",
+        "MANIFEST_REPARSE_POINT",
+        "MANIFEST_PATH_ESCAPE_DETECTED",
+    }
+    if detail in pre_manifest_details:
+        if any(
+            result[key] is not None
+            for key in ("observed_manifest_sha256", "observed_payload_hash_list_sha256")
+        ) or any(
+            result[key] != 0
+            for key in (
+                "checked_payload_count",
+                "byte_count_mismatch_count",
+                "sha256_mismatch_count",
+                "missing_or_unreadable_count",
+            )
+        ):
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_STATE_INVALID")
+    elif isinstance(detail, str) and detail.startswith("MANIFEST_PROVENANCE_INVALID:"):
+        if result["observed_manifest_sha256"] is None or result["observed_payload_hash_list_sha256"] is not None:
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_STATE_INVALID")
+        if any(
+            result[key] != 0
+            for key in (
+                "checked_payload_count",
+                "byte_count_mismatch_count",
+                "sha256_mismatch_count",
+                "missing_or_unreadable_count",
+            )
+        ):
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_STATE_INVALID")
+    elif detail in {
+        "DESIGNATED_PAYLOAD_COUNT_MISMATCH",
+        "PAYLOAD_PATH_RESOLUTION_FAILED",
+        "PAYLOAD_PATH_ESCAPE_DETECTED",
+        "PAYLOAD_REPARSE_POINT",
+        "PAYLOAD_NOT_REGULAR",
+        "PAYLOAD_READ_FAILED",
+        "PAYLOAD_BINDING_FAILED",
+    }:
+        if (
+            result["observed_manifest_sha256"] != expected_manifest
+            or result["observed_payload_hash_list_sha256"] != expected_payload_list
+        ):
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_STATE_INVALID")
+
+    _verify_artifact_self_hash(result)
+
+    if result["status"] == "PASS":
+        if (
+            commit is None
+            or result["observed_manifest_sha256"] != expected_manifest
+            or result["observed_payload_hash_list_sha256"] != expected_payload_list
+            or result["checked_payload_count"] != EXPECTED_V5B_TICKER_COUNT
+            or result["byte_count_mismatch_count"] != 0
+            or result["sha256_mismatch_count"] != 0
+            or result["missing_or_unreadable_count"] != 0
+        ):
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_STATE_INVALID")
+    else:
+        if (
+            result["observed_manifest_sha256"] == expected_manifest
+            and result["observed_payload_hash_list_sha256"] == expected_payload_list
+            and result["checked_payload_count"] == EXPECTED_V5B_TICKER_COUNT
+            and result["byte_count_mismatch_count"] == 0
+            and result["sha256_mismatch_count"] == 0
+            and result["missing_or_unreadable_count"] == 0
+        ):
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_STATE_INVALID")
+        if detail == "PAYLOAD_BINDING_FAILED" and (
+            result["checked_payload_count"] + result["missing_or_unreadable_count"]
+            != EXPECTED_V5B_TICKER_COUNT
+        ):
+            raise V5BCalibrationInputPreflightBlocked("ARTIFACT_STATE_INVALID")
 
 
 # ---------------------------------------------------------------------------
 # Repository / Git-HEAD binding (finding 2)
 # ---------------------------------------------------------------------------
+
+
+def _sanitized_git_environment() -> dict[str, str]:
+    """Return an environment that cannot redirect Git repository routing."""
+
+    return {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
 
 
 def _resolve_actual_git_head(repo_root: Path) -> str | None:
@@ -187,6 +451,7 @@ def _resolve_actual_git_head(repo_root: Path) -> str | None:
             capture_output=True,
             text=True,
             timeout=_GIT_TIMEOUT_SECONDS,
+            env=_sanitized_git_environment(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -198,12 +463,35 @@ def _resolve_actual_git_head(repo_root: Path) -> str | None:
     return head
 
 
+def _resolve_git_top_level(repo_root: Path) -> Path | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+            env=_sanitized_git_environment(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    value = completed.stdout.strip()
+    if not value:
+        return None
+    try:
+        return Path(value).resolve(strict=True)
+    except OSError:
+        return None
+
+
 def _read_committed_bytes(repo_root: Path, commit: str, relative_path: str) -> bytes | None:
     try:
         completed = subprocess.run(
             ["git", "-C", str(repo_root), "show", f"{commit}:{relative_path}"],
             capture_output=True,
             timeout=_GIT_TIMEOUT_SECONDS,
+            env=_sanitized_git_environment(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -229,30 +517,43 @@ def _verify_implementation_matches_repository_head(
     actual_head = _resolve_actual_git_head(repo_root)
     if actual_head is None:
         raise V5BCalibrationInputPreflightBlocked(
-            "GIT_HEAD_UNRESOLVABLE", result=_minimal_block_result("GIT_HEAD_UNRESOLVABLE")
+            "GIT_HEAD_UNRESOLVABLE", result=_canonical_block_result("GIT_HEAD_UNRESOLVABLE")
+        )
+    try:
+        expected_root = repo_root.resolve(strict=True)
+    except OSError:
+        raise V5BCalibrationInputPreflightBlocked(
+            "GIT_REPOSITORY_IDENTITY_MISMATCH",
+            result=_canonical_block_result("GIT_REPOSITORY_IDENTITY_MISMATCH"),
+        )
+    actual_root = _resolve_git_top_level(repo_root)
+    if actual_root is None or actual_root != expected_root:
+        raise V5BCalibrationInputPreflightBlocked(
+            "GIT_REPOSITORY_IDENTITY_MISMATCH",
+            result=_canonical_block_result("GIT_REPOSITORY_IDENTITY_MISMATCH"),
         )
     if implementation_git_commit != actual_head:
         raise V5BCalibrationInputPreflightBlocked(
             "IMPLEMENTATION_COMMIT_HEAD_MISMATCH",
-            result=_minimal_block_result("IMPLEMENTATION_COMMIT_HEAD_MISMATCH"),
+            result=_canonical_block_result("IMPLEMENTATION_COMMIT_HEAD_MISMATCH"),
         )
     for relative_path in relevant_relative_paths:
         committed_bytes = _read_committed_bytes(repo_root, actual_head, relative_path)
         if committed_bytes is None:
             raise V5BCalibrationInputPreflightBlocked(
                 "IMPLEMENTATION_FILE_UNVERIFIABLE",
-                result=_minimal_block_result("IMPLEMENTATION_FILE_UNVERIFIABLE"),
+                result=_canonical_block_result("IMPLEMENTATION_FILE_UNVERIFIABLE"),
             )
         try:
             working_tree_bytes = (repo_root / relative_path).read_bytes()
         except OSError:
             raise V5BCalibrationInputPreflightBlocked(
                 "IMPLEMENTATION_FILE_UNVERIFIABLE",
-                result=_minimal_block_result("IMPLEMENTATION_FILE_UNVERIFIABLE"),
+                result=_canonical_block_result("IMPLEMENTATION_FILE_UNVERIFIABLE"),
             )
         if working_tree_bytes != committed_bytes:
             raise V5BCalibrationInputPreflightBlocked(
-                "IMPLEMENTATION_FILE_DIRTY", result=_minimal_block_result("IMPLEMENTATION_FILE_DIRTY")
+                "IMPLEMENTATION_FILE_DIRTY", result=_canonical_block_result("IMPLEMENTATION_FILE_DIRTY")
             )
     return actual_head
 
@@ -284,12 +585,12 @@ def run_production_v5b_calibration_input_preflight(
     if confirmation != PREFLIGHT_GATE_CONFIRMATION:
         raise V5BCalibrationInputPreflightBlocked(
             "PREFLIGHT_GATE_CONFIRMATION_REQUIRED",
-            result=_minimal_block_result("PREFLIGHT_GATE_CONFIRMATION_REQUIRED"),
+            result=_canonical_block_result("PREFLIGHT_GATE_CONFIRMATION_REQUIRED"),
         )
 
     if not isinstance(implementation_git_commit, str) or not _COMMIT_RE.match(implementation_git_commit):
         raise V5BCalibrationInputPreflightBlocked(
-            "IMPLEMENTATION_COMMIT_INVALID", result=_minimal_block_result("IMPLEMENTATION_COMMIT_INVALID")
+            "IMPLEMENTATION_COMMIT_INVALID", result=_canonical_block_result("IMPLEMENTATION_COMMIT_INVALID")
         )
 
     _verify_implementation_matches_repository_head(
@@ -343,20 +644,224 @@ def run_production_v5b_calibration_input_preflight(
             fields["status"] = "BLOCK"
             fields["detail_reason"] = detail
             fields["run_completed_utc"] = _utc_now_iso()
-            return V5BCalibrationInputPreflightBlocked(detail, result=_finalize(fields))
+            result = _finalize(fields)
+            validate_preflight_result_semantics(
+                result, expected_implementation_git_commit=implementation_git_commit
+            )
+            return V5BCalibrationInputPreflightBlocked(detail, result=result)
+
+        def is_reparse_point(path: Path) -> bool:
+            try:
+                stat_result = path.lstat()
+            except OSError:
+                return False
+            if path.is_symlink():
+                return True
+            return bool(getattr(stat_result, "st_file_attributes", 0) & 0x400)
+
+        def verify_root(path: Path) -> Path:
+            # Check every existing component without following it. On
+            # Windows this rejects junction/reparse redirection in parents;
+            # on POSIX it rejects symlink parents as the portable equivalent.
+            try:
+                absolute = path.absolute()
+                for component in (absolute, *absolute.parents):
+                    if is_reparse_point(component):
+                        raise block("CACHE_ROOT_REPARSE_POINT")
+                resolved = absolute.resolve(strict=True)
+                if os.name == "nt" and normalized_path(resolved) != normalized_path(absolute):
+                    raise block("CACHE_ROOT_REPARSE_POINT")
+            except V5BCalibrationInputPreflightBlocked:
+                raise
+            except OSError:
+                raise block("CACHE_ROOT_INACCESSIBLE")
+            try:
+                if not resolved.is_dir() or is_reparse_point(resolved):
+                    raise block("CACHE_ROOT_NOT_A_DIRECTORY" if not resolved.is_dir() else "CACHE_ROOT_REPARSE_POINT")
+            except OSError:
+                raise block("CACHE_ROOT_INACCESSIBLE")
+            return resolved
+
+        def normalized_path(value: str | Path) -> str:
+            text = os.fspath(value)
+            if os.name == "nt":
+                if text.startswith("\\\\?\\UNC\\"):
+                    text = "\\\\" + text[8:]
+                elif text.startswith("\\\\?\\"):
+                    text = text[4:]
+            return os.path.normcase(os.path.normpath(text))
+
+        def is_within(path: str | Path, root_path: str | Path) -> bool:
+            candidate = normalized_path(path)
+            root_name = normalized_path(root_path)
+            try:
+                return os.path.commonpath((candidate, root_name)) == root_name
+            except ValueError:
+                return False
+
+        def reject_reparse_components(path: Path, root_path: Path) -> None:
+            current = path
+            while True:
+                if is_reparse_point(current):
+                    raise block("PAYLOAD_REPARSE_POINT")
+                if current == root_path or current.parent == current:
+                    break
+                current = current.parent
+
+        def read_verified_file(path: Path, root_path: Path, *, kind: str = "PAYLOAD") -> bytes | None:
+            """Read/hash one already-designated file through one checked handle."""
+
+            def detail(suffix: str) -> str:
+                if kind == "MANIFEST":
+                    return {
+                        "REPARSE_POINT": "MANIFEST_REPARSE_POINT",
+                        "NOT_REGULAR": "MANIFEST_NOT_REGULAR",
+                        "PATH_ESCAPE_DETECTED": "MANIFEST_PATH_ESCAPE_DETECTED",
+                        "READ_FAILED": "MANIFEST_UNREADABLE",
+                    }[suffix]
+                return "PAYLOAD_" + suffix
+
+            if os.name == "nt":
+                import ctypes
+                from ctypes import wintypes
+                import msvcrt
+
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                create_file = kernel32.CreateFileW
+                create_file.argtypes = [
+                    wintypes.LPCWSTR,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.LPVOID,
+                    wintypes.DWORD,
+                    wintypes.DWORD,
+                    wintypes.HANDLE,
+                ]
+                create_file.restype = wintypes.HANDLE
+                close_handle = kernel32.CloseHandle
+                close_handle.argtypes = [wintypes.HANDLE]
+                close_handle.restype = wintypes.BOOL
+                get_attrs = kernel32.GetFileInformationByHandle
+                get_attrs.restype = wintypes.BOOL
+                get_final = kernel32.GetFinalPathNameByHandleW
+                get_final.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+                get_final.restype = wintypes.DWORD
+                get_file_type = kernel32.GetFileType
+                get_file_type.argtypes = [wintypes.HANDLE]
+                get_file_type.restype = wintypes.DWORD
+                invalid_handle = wintypes.HANDLE(-1).value
+                handle = create_file(
+                    str(path),
+                    0x80000000,  # GENERIC_READ
+                    0x00000007,  # share read/write/delete
+                    None,
+                    3,  # OPEN_EXISTING
+                    0x00200000 | 0x02000000,  # OPEN_REPARSE_POINT | BACKUP_SEMANTICS
+                    None,
+                )
+                if handle == invalid_handle:
+                    error = ctypes.get_last_error()
+                    if error in (2, 3, 5, 32):
+                        return None
+                    raise block(detail("READ_FAILED"))
+                try:
+                    class _ByHandleFileInformation(ctypes.Structure):
+                        _fields_ = [
+                            ("file_attributes", wintypes.DWORD),
+                            ("creation_time_low", wintypes.DWORD),
+                            ("creation_time_high", wintypes.DWORD),
+                            ("last_access_low", wintypes.DWORD),
+                            ("last_access_high", wintypes.DWORD),
+                            ("last_write_low", wintypes.DWORD),
+                            ("last_write_high", wintypes.DWORD),
+                            ("volume_serial", wintypes.DWORD),
+                            ("file_size_high", wintypes.DWORD),
+                            ("file_size_low", wintypes.DWORD),
+                            ("number_of_links", wintypes.DWORD),
+                            ("file_index_high", wintypes.DWORD),
+                            ("file_index_low", wintypes.DWORD),
+                        ]
+
+                    info = _ByHandleFileInformation()
+                    if not get_attrs(handle, ctypes.byref(info)):
+                        raise block(detail("READ_FAILED"))
+                    if get_file_type(handle) != 1:  # FILE_TYPE_DISK
+                        raise block(detail("NOT_REGULAR"))
+                    if info.file_attributes & 0x400:
+                        raise block(detail("REPARSE_POINT"))
+                    if info.file_attributes & 0x10:
+                        raise block(detail("NOT_REGULAR"))
+                    buffer = ctypes.create_unicode_buffer(32768)
+                    length = get_final(handle, buffer, len(buffer), 0)
+                    if length == 0 or not is_within(buffer.value, root_path):
+                        raise block(detail("PATH_ESCAPE_DETECTED"))
+                    fd = msvcrt.open_osfhandle(int(handle), os.O_RDONLY | os.O_BINARY)
+                    handle = invalid_handle
+                    with os.fdopen(fd, "rb", closefd=True) as stream:
+                        return stream.read()
+                finally:
+                    if handle != invalid_handle:
+                        close_handle(handle)
+
+            # POSIX: walk directories without following symlinks, open the
+            # final file with O_NOFOLLOW, then validate and read that fd.
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            if not nofollow:
+                raise block(detail("READ_FAILED"))
+            relative = os.path.relpath(path, root_path)
+            if relative == os.curdir or relative.startswith(".."):
+                raise block(detail("PATH_ESCAPE_DETECTED"))
+            directory_fd: int | None = None
+            file_fd = -1
+            try:
+                directory_fd = os.open(root_path, flags | os.O_DIRECTORY | nofollow)
+                parts = Path(relative).parts
+                for part in parts[:-1]:
+                    next_fd = os.open(part, flags | os.O_DIRECTORY | nofollow, dir_fd=directory_fd)
+                    os.close(directory_fd)
+                    directory_fd = next_fd
+                file_fd = os.open(parts[-1], flags | nofollow, dir_fd=directory_fd)
+                stat_result = os.fstat(file_fd)
+                if not stat_result:
+                    raise block(detail("READ_FAILED"))
+                if not stat.S_ISREG(stat_result.st_mode):
+                    raise block(detail("NOT_REGULAR"))
+                proc_path = f"/proc/self/fd/{file_fd}"
+                if os.path.exists(proc_path) and not is_within(os.path.realpath(proc_path), root_path):
+                    raise block(detail("PATH_ESCAPE_DETECTED"))
+                with os.fdopen(file_fd, "rb", closefd=True) as stream:
+                    file_fd = -1
+                    return stream.read()
+            except FileNotFoundError:
+                return None
+            except V5BCalibrationInputPreflightBlocked:
+                raise
+            except OSError:
+                return None
+            finally:
+                if file_fd >= 0:
+                    try:
+                        os.close(file_fd)
+                    except OSError:
+                        pass
+                if directory_fd is not None:
+                    try:
+                        os.close(directory_fd)
+                    except OSError:
+                        pass
 
         root = Path(cache_root)
-        try:
-            root_resolved = root.resolve(strict=True)
-        except OSError:
-            raise block("CACHE_ROOT_INACCESSIBLE")
-        if not root_resolved.is_dir():
-            raise block("CACHE_ROOT_NOT_A_DIRECTORY")
+        root_resolved = verify_root(root)
 
         manifest_path = root_resolved / _MANIFEST_FILENAME
+        if is_reparse_point(manifest_path):
+            raise block("MANIFEST_REPARSE_POINT")
         try:
-            manifest_bytes = manifest_path.read_bytes()
+            manifest_bytes = read_verified_file(manifest_path, root_resolved, kind="MANIFEST")
         except OSError:
+            raise block("MANIFEST_UNREADABLE")
+        if manifest_bytes is None:
             raise block("MANIFEST_UNREADABLE")
 
         fields["observed_manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
@@ -380,19 +885,19 @@ def run_production_v5b_calibration_input_preflight(
         for record in payloads:
             relative_path = record["relative_path"]
             candidate_path = root_resolved / relative_path
+            reject_reparse_components(candidate_path, root_resolved)
             try:
                 resolved_candidate = candidate_path.resolve(strict=False)
             except OSError:
                 raise block("PAYLOAD_PATH_RESOLUTION_FAILED")
             if resolved_candidate != root_resolved and root_resolved not in resolved_candidate.parents:
                 raise block("PAYLOAD_PATH_ESCAPE_DETECTED")
-
-            if not resolved_candidate.is_file():
+            try:
+                payload_bytes = read_verified_file(candidate_path, root_resolved)
+            except OSError:
                 missing_count += 1
                 continue
-            try:
-                payload_bytes = resolved_candidate.read_bytes()
-            except OSError:
+            if payload_bytes is None:
                 missing_count += 1
                 continue
 
@@ -420,7 +925,11 @@ def run_production_v5b_calibration_input_preflight(
 
         fields["status"] = "PASS"
         fields["detail_reason"] = None
-        return _finalize(fields)
+        result = _finalize(fields)
+        validate_preflight_result_semantics(
+            result, expected_implementation_git_commit=implementation_git_commit
+        )
+        return result
 
     return _walk_cache_root(V5B_CACHE_ROOT)
 
@@ -519,6 +1028,7 @@ __all__ = [
     "PREFLIGHT_ROLE",
     "V5BCalibrationInputPreflightBlocked",
     "V5B_CACHE_ROOT",
+    "validate_preflight_result_semantics",
     "run_production_v5b_calibration_input_preflight",
     "run_static_check",
 ]

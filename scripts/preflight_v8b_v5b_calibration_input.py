@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.v8b_v5b_calibration_input_preflight import (  # noqa: E402
     V5BCalibrationInputPreflightBlocked,
+    _canonical_block_result,
     canonical_json_bytes,
     run_production_v5b_calibration_input_preflight,
     run_static_check,
@@ -80,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
             implementation_git_commit=args.implementation_git_commit,
         )
     except V5BCalibrationInputPreflightBlocked as error:
-        payload = error.result if error.result is not None else {"status": "BLOCK", "reason": error.reason, "detail_reason": error.detail}
+        payload = error.result if error.result is not None else _canonical_block_result(error.detail)
         sys.stdout.buffer.write(canonical_json_bytes(payload))
         return 2
 

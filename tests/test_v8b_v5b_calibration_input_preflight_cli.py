@@ -256,7 +256,6 @@ def test_cli_wrong_git_head_blocks_without_touching_cache(monkeypatch, tmp_path,
     payload = json.loads(captured.out)
     assert payload["status"] == "BLOCK"
     assert payload["detail_reason"] == "IMPLEMENTATION_COMMIT_HEAD_MISMATCH"
-    assert "checked_payload_count" not in payload
 
 
 def test_cli_correct_confirmation_against_synthetic_fixture_via_monkeypatched_root(monkeypatch, tmp_path, capsys):

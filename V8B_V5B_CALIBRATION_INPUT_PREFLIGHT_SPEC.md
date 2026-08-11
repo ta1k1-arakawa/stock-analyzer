@@ -346,6 +346,22 @@ INVALID:<inner reason>`, `DESIGNATED_PAYLOAD_COUNT_MISMATCH`, `PAYLOAD_
 PATH_ESCAPE_DETECTED`, `PAYLOAD_BINDING_FAILED`) -- none of these values
 ever contain a ticker symbol or a file path.
 
+Every result uses the exact field set above, including early BLOCK results,
+and is self-hashed. `artifact_self_hash` is an integrity check only. Evidence
+acceptance must call the independent public
+`validate_preflight_result_semantics()` verifier, which checks the canonical
+schema, exact types, frozen provenance pins, timestamp ordering, PASS/BLOCK
+state machine, and the PASS zero-mismatch/300-payload invariants. Rehashing a
+mutated artifact does not make it semantically acceptable. An evidence caller
+may additionally supply the expected implementation commit; it must match
+the artifact exactly.
+
+The preflight reads each manifest or designated payload through the same
+security-checked file handle used for its byte count and SHA-256. On Windows,
+root and parent/final reparse-point redirection is rejected and the final
+handle path is checked for containment. On platforms without an equivalent
+no-follow descriptor primitive, the read fails closed.
+
 ---
 
 ## 9. No methodology change (fixed)

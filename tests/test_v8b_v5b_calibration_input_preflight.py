@@ -57,7 +57,12 @@ def _write_synthetic_cache(tmp_path: Path, *, count: int = 300, corrupt_index: i
             outside_target = tmp_path / "outside_secret.txt"
             outside_target.write_bytes(b"not part of the designated cache")
             path.unlink()
-            path.symlink_to(outside_target)
+            try:
+                path.symlink_to(outside_target)
+            except OSError as error:
+                if getattr(error, "winerror", None) == 1314:
+                    pytest.skip("Windows symlink creation requires unavailable privilege")
+                raise
         else:
             raise AssertionError(f"unknown corrupt_kind {corrupt_kind}")
 
@@ -338,7 +343,6 @@ def test_dirty_calibration_core_dependency_blocks_via_gated_entry_point_without_
     with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
         _pass_gate(implementation_git_commit=actual_head)
     assert excinfo.value.detail == "IMPLEMENTATION_FILE_DIRTY"
-    assert "checked_payload_count" not in (excinfo.value.result or {})
 
 
 def test_clean_calibration_core_dependency_passes_git_verification(tmp_path):
@@ -380,7 +384,6 @@ def test_wrong_git_head_blocks_before_cache_access_via_gated_entry_point(tmp_pat
         _pass_gate(implementation_git_commit=WRONG_COMMIT)
     assert excinfo.value.detail == "IMPLEMENTATION_COMMIT_HEAD_MISMATCH"
     assert excinfo.value.result is not None
-    assert "checked_payload_count" not in excinfo.value.result
 
 
 def test_arbitrary_syntactically_valid_sha_cannot_be_recorded_as_provenance(tmp_path, monkeypatch):
@@ -405,7 +408,6 @@ def test_dirty_relevant_file_blocks_before_cache_access_via_gated_entry_point(tm
     with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
         _pass_gate(implementation_git_commit=actual_head)
     assert excinfo.value.detail == "IMPLEMENTATION_FILE_DIRTY"
-    assert "checked_payload_count" not in (excinfo.value.result or {})
 
 
 def test_git_head_unresolvable_blocks_before_cache_access_via_gated_entry_point(tmp_path, monkeypatch):
@@ -440,6 +442,9 @@ def test_genuine_synthetic_pass(tmp_path, monkeypatch, gated_head):
     assert result["role"] == "R1_V5B_CALIBRATION_INPUT_PREFLIGHT"
     assert result["schema_version"] == "V5B_CALIBRATION_INPUT_PREFLIGHT_RESULT_V1"
     assert isinstance(result["artifact_self_hash"], str) and len(result["artifact_self_hash"]) == 64
+    preflight.validate_preflight_result_semantics(
+        result, expected_implementation_git_commit=gated_head
+    )
 
 
 def test_pass_result_never_parses_payload_body_as_json(tmp_path, monkeypatch, gated_head):
@@ -791,3 +796,120 @@ def test_static_check_detects_production_api_surface_drift(monkeypatch):
     with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
         preflight.run_static_check()
     assert excinfo.value.detail == "STATIC_CHECK_PRODUCTION_API_SURFACE_DRIFT"
+
+
+def test_git_routing_environment_cannot_redirect_head_or_commit_reads(tmp_path, monkeypatch):
+    repo_root, actual_head = _build_synthetic_repo(tmp_path)
+    external_parent = tmp_path / "external"
+    external_parent.mkdir()
+    external_root, external_head = _build_synthetic_repo(external_parent)
+    (external_root / "external-marker.txt").write_bytes(b"external repository")
+    _run_git_or_fail(["add", "external-marker.txt"], external_root)
+    _run_git_or_fail(["commit", "-q", "-m", "external repository commit"], external_root)
+    external_head = subprocess.run(
+        ["git", "-C", str(external_root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    monkeypatch.setattr(preflight, "_REPO_ROOT", repo_root)
+    monkeypatch.setattr(preflight, "V5B_CACHE_ROOT", tmp_path / "never_reached")
+
+    for variable, value in {
+        "GIT_DIR": str(external_root / ".git"),
+        "GIT_WORK_TREE": str(external_root),
+        "GIT_INDEX_FILE": str(external_root / ".git" / "index"),
+        "GIT_OBJECT_DIRECTORY": str(external_root / ".git" / "objects"),
+        "GIT_COMMON_DIR": str(external_root / ".git"),
+    }.items():
+        monkeypatch.setenv(variable, value)
+        assert preflight._resolve_actual_git_head(repo_root) == actual_head
+        with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
+            _pass_gate(implementation_git_commit=external_head)
+        assert excinfo.value.detail == "IMPLEMENTATION_COMMIT_HEAD_MISMATCH"
+        assert excinfo.value.result["checked_payload_count"] == 0
+        monkeypatch.delenv(variable, raising=False)
+
+
+def _rehash_artifact(result: dict) -> dict:
+    mutated = dict(result)
+    mutated.pop("artifact_self_hash")
+    mutated["artifact_self_hash"] = preflight.sha256_hex(preflight.canonical_json_bytes(mutated))
+    return mutated
+
+
+def _valid_payload_block_artifact() -> dict:
+    return preflight._canonical_block_result(
+        "PAYLOAD_BINDING_FAILED",
+        implementation_git_commit="a" * 40,
+        observed_manifest_sha256=calib.EXPECTED_V5B_MANIFEST_SHA256,
+        observed_payload_hash_list_sha256=calib.EXPECTED_V5B_PAYLOAD_HASH_LIST_SHA256,
+        checked_payload_count=300,
+        sha256_mismatch_count=1,
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda item: item.update(status="PASS", detail_reason=None),
+        lambda item: item.update(checked_payload_count=299),
+        lambda item: item.update(checked_payload_count=300, sha256_mismatch_count=0),
+        lambda item: item.update(observed_manifest_sha256="0" * 64),
+        lambda item: item.update(observed_payload_hash_list_sha256="0" * 64),
+        lambda item: item.update(implementation_git_commit="b" * 40),
+        lambda item: item.update(checked_payload_count=True),
+        lambda item: item.update(sha256_mismatch_count=1.0),
+        lambda item: item.pop("detail_reason"),
+        lambda item: item.update(extra_field="unexpected"),
+        lambda item: item.update(run_completed_utc="2020-01-01T00:00:00Z"),
+        lambda item: item.update(detail_reason="UNKNOWN_DETAIL"),
+    ],
+)
+def test_rehashed_semantic_mutations_are_rejected(mutation):
+    mutated = _valid_payload_block_artifact()
+    mutation(mutated)
+    mutated = _rehash_artifact(mutated)
+    with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked):
+        preflight.validate_preflight_result_semantics(
+            mutated, expected_implementation_git_commit="a" * 40
+        )
+
+
+def test_semantic_verifier_accepts_valid_block_and_rejects_self_hash_only():
+    result = _valid_payload_block_artifact()
+    preflight.validate_preflight_result_semantics(result, expected_implementation_git_commit="a" * 40)
+    malformed = dict(result)
+    malformed["sha256_mismatch_count"] = 0
+    with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked):
+        preflight.validate_preflight_result_semantics(malformed)
+
+
+def test_root_symlink_is_rejected_before_manifest_read(tmp_path, monkeypatch, gated_head):
+    real_root, _, _ = _write_synthetic_cache(tmp_path)
+    alias = tmp_path / "cache-alias"
+    try:
+        alias.symlink_to(real_root, target_is_directory=True)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink creation requires unavailable privilege")
+        raise
+    monkeypatch.setattr(preflight, "V5B_CACHE_ROOT", alias)
+    with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
+        _pass_gate(implementation_git_commit=gated_head)
+    assert excinfo.value.detail == "CACHE_ROOT_REPARSE_POINT"
+
+
+def test_manifest_symlink_is_rejected_before_manifest_read(tmp_path, monkeypatch, gated_head):
+    root, manifest_bytes, _ = _write_synthetic_cache(tmp_path)
+    manifest_path = root / "cache_manifest.json"
+    outside = tmp_path / "manifest-outside.json"
+    outside.write_bytes(manifest_bytes)
+    manifest_path.unlink()
+    try:
+        manifest_path.symlink_to(outside)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows symlink creation requires unavailable privilege")
+        raise
+    monkeypatch.setattr(preflight, "V5B_CACHE_ROOT", root)
+    with pytest.raises(preflight.V5BCalibrationInputPreflightBlocked) as excinfo:
+        _pass_gate(implementation_git_commit=gated_head)
+    assert excinfo.value.detail == "MANIFEST_REPARSE_POINT"
