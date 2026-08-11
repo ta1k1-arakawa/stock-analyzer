@@ -1204,7 +1204,7 @@ def _verify_candidate_rows_independently(
             raise V8BCalibrationBlocked(reason)
         seen_ids.add(candidate.id)
         expected_row = _reference_candidate_row(candidate, yearly_windows, full_span_windows, m_fraction, m_consecutive)
-        if dict(row) != expected_row:
+        if not _strict_equal(dict(row), expected_row):
             raise V8BCalibrationBlocked(reason)
     if seen_ids != {candidate.id for candidate in CANDIDATES}:
         raise V8BCalibrationBlocked(reason)
@@ -1239,7 +1239,7 @@ def _verify_synthetic_base_metadata_against_bases(
         raise V8BCalibrationBlocked(reason)
     _validate_synthetic_base_metadata(synthetic_base_metadata)
     expected = _reference_synthetic_base_metadata(bases)
-    if list(synthetic_base_metadata) != expected:
+    if not _strict_equal(list(synthetic_base_metadata), expected):
         raise V8BCalibrationBlocked(reason)
 
 
@@ -1577,6 +1577,149 @@ def _fraction_from_json(value: Any) -> Fraction:
     return Fraction(numerator, denominator)
 
 
+def _strict_equal(a: Any, b: Any) -> bool:
+    """Structural equality that also requires exact scalar type identity.
+
+    Plain ``==``/``!=`` on Python containers treats ``1 == 1.0 == True`` as
+    equal, which would let a persisted artifact substitute a float or bool
+    for a required exact int and still pass a naive dict/list comparison.
+    This recurses through dict/list structure but requires ``type(a) is
+    type(b)`` at every scalar leaf.
+    """
+
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    if isinstance(a, dict) and isinstance(b, dict):
+        return set(a) == set(b) and all(_strict_equal(a[key], b[key]) for key in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_strict_equal(x, y) for x, y in zip(a, b))
+    if isinstance(a, (int, float)) or isinstance(b, (int, float)):
+        return type(a) is type(b) and a == b
+    return type(a) is type(b) and a == b
+
+
+def _require_exact_int(value: Any, expected: int, reason: str) -> None:
+    if type(value) is not int or value != expected:
+        raise V8BCalibrationBlocked(reason)
+
+
+# The exact top-level key set emitted by build_result_artifact(). A
+# persisted artifact must have exactly these keys -- no fewer, no more --
+# before any valid/invalid-specific check runs. run_static_check()
+# independently re-derives a dummy artifact's key set and asserts it still
+# equals this constant, so the two cannot silently drift apart.
+_CANONICAL_ARTIFACT_KEYS = frozenset(
+    {
+        "schema_version",
+        "study",
+        "calibration_plan_version",
+        "calibration_plan_commit_or_hash",
+        "approved_plan_commit",
+        "approved_plan_blob_sha",
+        "approval_artifact_blob_sha",
+        "implementation_git_commit",
+        "calibration_attempt_id",
+        "calibration_run_valid",
+        "run_invalid_reason_or_null",
+        "candidate_selection_executed",
+        "selected_policy",
+        "mechanically_selected_candidate_or_NO_DEFENSIBLE_POLICY_or_NOT_EVALUATED",
+        "input_provenance_hashes",
+        "error_counts",
+        "calibration_start",
+        "calibration_end_exclusive",
+        "calibration_years",
+        "candidate_count",
+        "candidate_results",
+        "M_fraction_exact",
+        "M_fraction_source_window_count",
+        "M_consecutive",
+        "M_consecutive_source_window_count",
+        "selected_candidate_fraction_headroom_exact_or_null",
+        "selected_candidate_consecutive_headroom_or_null",
+        "synthetic_base_count",
+        "synthetic_base_ticker_count",
+        "synthetic_base_selection_rule",
+        "exact_synthetic_placement_formulas_version",
+        "synthetic_scenario_count",
+        "synthetic_candidate_comparison_count",
+        "full_expected_vs_observed_synthetic_truth_table_mismatch_count",
+        "synthetic_base_window_start_and_end_metadata",
+        "run_started_utc",
+        "run_completed_or_blocked_utc",
+        "artifact_self_hash",
+    }
+)
+
+
+def _verify_common_persisted_artifact_metadata(artifact: Mapping[str, Any]) -> None:
+    """Checks that apply identically to VALID and INVALID artifacts, run
+    before any valid/invalid-specific branching. Rejects missing/unknown
+    top-level keys, every fixed identifier/constant, the calibration
+    window/years, candidate_count, the synthetic rule/formula version
+    strings, the self-hash's own format, and (by delegating to the same
+    validator used at construction time) the provenance fields."""
+
+    reason = "CALIBRATION_RESULT_STATE_INVALID"
+    if not isinstance(artifact, Mapping):
+        raise V8BCalibrationBlocked(reason)
+    if set(artifact.keys()) != _CANONICAL_ARTIFACT_KEYS:
+        raise V8BCalibrationBlocked(reason)
+
+    if artifact.get("schema_version") != RESULT_SCHEMA_VERSION:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("study") != STUDY:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("calibration_plan_version") != PLAN_VERSION:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("calibration_plan_commit_or_hash") != APPROVED_PLAN_COMMIT:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("approved_plan_commit") != APPROVED_PLAN_COMMIT:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("approved_plan_blob_sha") != APPROVED_PLAN_BLOB_SHA:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("approval_artifact_blob_sha") != APPROVAL_ARTIFACT_BLOB_SHA:
+        raise V8BCalibrationBlocked(reason)
+
+    if artifact.get("calibration_start") != CALIBRATION_START:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("calibration_end_exclusive") != CALIBRATION_END_EXCLUSIVE:
+        raise V8BCalibrationBlocked(reason)
+
+    years = artifact.get("calibration_years")
+    if not isinstance(years, list) or len(years) != len(CALIBRATION_YEARS):
+        raise V8BCalibrationBlocked(reason)
+    for expected_year, actual_year in zip(CALIBRATION_YEARS, years):
+        if type(actual_year) is not int or actual_year != expected_year:
+            raise V8BCalibrationBlocked(reason)
+
+    _require_exact_int(artifact.get("candidate_count"), len(CANDIDATES), reason)
+
+    if artifact.get("synthetic_base_selection_rule") != SYNTHETIC_BASE_SELECTION_RULE_VERSION:
+        raise V8BCalibrationBlocked(reason)
+    if artifact.get("exact_synthetic_placement_formulas_version") != SYNTHETIC_PLACEMENT_FORMULAS_VERSION:
+        raise V8BCalibrationBlocked(reason)
+
+    self_hash = artifact.get("artifact_self_hash")
+    if not isinstance(self_hash, str) or not _LOWER_HEX64_RE.match(self_hash):
+        raise V8BCalibrationBlocked(reason)
+
+    if type(artifact.get("calibration_run_valid")) is not bool:
+        raise V8BCalibrationBlocked(reason)
+    if type(artifact.get("candidate_selection_executed")) is not bool:
+        raise V8BCalibrationBlocked(reason)
+
+    # Reuse the exact same validator used at construction time so semantic
+    # acceptance independently re-validates the persisted provenance
+    # fields rather than trusting that they were ever checked.
+    _validate_provenance_fields(
+        artifact.get("implementation_git_commit"),
+        artifact.get("calibration_attempt_id"),
+        artifact.get("run_started_utc"),
+        artifact.get("run_completed_or_blocked_utc"),
+    )
+
+
 def _verify_invalid_artifact_fields(artifact: Mapping[str, Any]) -> None:
     reason = "CALIBRATION_RESULT_STATE_INVALID"
     if (
@@ -1584,23 +1727,23 @@ def _verify_invalid_artifact_fields(artifact: Mapping[str, Any]) -> None:
         or artifact.get("candidate_selection_executed") is not False
         or artifact.get("selected_policy") != NOT_EVALUATED
         or artifact.get("mechanically_selected_candidate_or_NO_DEFENSIBLE_POLICY_or_NOT_EVALUATED") != NOT_EVALUATED
-        or artifact.get("candidate_results") != []
+        or not _strict_equal(artifact.get("candidate_results"), [])
         or artifact.get("M_fraction_exact") is not None
         or artifact.get("M_consecutive") is not None
-        or artifact.get("M_fraction_source_window_count") != 0
-        or artifact.get("M_consecutive_source_window_count") != 0
-        or artifact.get("synthetic_base_count") != 0
-        or artifact.get("synthetic_base_ticker_count") != 0
-        or artifact.get("synthetic_scenario_count") != 0
-        or artifact.get("synthetic_candidate_comparison_count") != 0
-        or artifact.get("full_expected_vs_observed_synthetic_truth_table_mismatch_count") != 0
         or artifact.get("synthetic_base_window_start_and_end_metadata") != []
         or artifact.get("selected_candidate_fraction_headroom_exact_or_null") is not None
         or artifact.get("selected_candidate_consecutive_headroom_or_null") is not None
-        or artifact.get("input_provenance_hashes") != {"invalid_reason_count": 1}
-        or artifact.get("error_counts") != {"invalid_reason_count": 1}
+        or not _strict_equal(artifact.get("input_provenance_hashes"), {"invalid_reason_count": 1})
+        or not _strict_equal(artifact.get("error_counts"), {"invalid_reason_count": 1})
     ):
         raise V8BCalibrationBlocked(reason)
+    _require_exact_int(artifact.get("M_fraction_source_window_count"), 0, reason)
+    _require_exact_int(artifact.get("M_consecutive_source_window_count"), 0, reason)
+    _require_exact_int(artifact.get("synthetic_base_count"), 0, reason)
+    _require_exact_int(artifact.get("synthetic_base_ticker_count"), 0, reason)
+    _require_exact_int(artifact.get("synthetic_scenario_count"), 0, reason)
+    _require_exact_int(artifact.get("synthetic_candidate_comparison_count"), 0, reason)
+    _require_exact_int(artifact.get("full_expected_vs_observed_synthetic_truth_table_mismatch_count"), 0, reason)
 
 
 def _verify_valid_artifact_fields(
@@ -1626,13 +1769,15 @@ def _verify_valid_artifact_fields(
     m_fraction = _fraction_from_json(artifact.get("M_fraction_exact"))
     if m_fraction != recomputed_envelope.m_fraction:
         raise V8BCalibrationBlocked(reason)
-    if artifact.get("M_fraction_source_window_count") != recomputed_envelope.m_fraction_source_window_count:
-        raise V8BCalibrationBlocked(reason)
+    _require_exact_int(
+        artifact.get("M_fraction_source_window_count"), recomputed_envelope.m_fraction_source_window_count, reason
+    )
     m_consecutive = artifact.get("M_consecutive")
     if type(m_consecutive) is not int or m_consecutive != recomputed_envelope.m_consecutive:
         raise V8BCalibrationBlocked(reason)
-    if artifact.get("M_consecutive_source_window_count") != recomputed_envelope.m_consecutive_source_window_count:
-        raise V8BCalibrationBlocked(reason)
+    _require_exact_int(
+        artifact.get("M_consecutive_source_window_count"), recomputed_envelope.m_consecutive_source_window_count, reason
+    )
 
     candidate_results = artifact.get("candidate_results")
     if not isinstance(candidate_results, list):
@@ -1664,14 +1809,11 @@ def _verify_valid_artifact_fields(
         ):
             raise V8BCalibrationBlocked(reason)
 
-    if (
-        artifact.get("synthetic_base_count") != SYNTHETIC_BASE_COUNT
-        or artifact.get("synthetic_base_ticker_count") != SYNTHETIC_BASE_COUNT
-        or artifact.get("synthetic_scenario_count") != SYNTHETIC_SCENARIO_COUNT
-        or artifact.get("synthetic_candidate_comparison_count") != SYNTHETIC_CANDIDATE_COMPARISON_COUNT
-        or artifact.get("full_expected_vs_observed_synthetic_truth_table_mismatch_count") != 0
-    ):
-        raise V8BCalibrationBlocked(reason)
+    _require_exact_int(artifact.get("synthetic_base_count"), SYNTHETIC_BASE_COUNT, reason)
+    _require_exact_int(artifact.get("synthetic_base_ticker_count"), SYNTHETIC_BASE_COUNT, reason)
+    _require_exact_int(artifact.get("synthetic_scenario_count"), SYNTHETIC_SCENARIO_COUNT, reason)
+    _require_exact_int(artifact.get("synthetic_candidate_comparison_count"), SYNTHETIC_CANDIDATE_COMPARISON_COUNT, reason)
+    _require_exact_int(artifact.get("full_expected_vs_observed_synthetic_truth_table_mismatch_count"), 0, reason)
 
     synthetic_metadata = artifact.get("synthetic_base_window_start_and_end_metadata")
     if not isinstance(synthetic_metadata, list):
@@ -1711,7 +1853,7 @@ def _verify_valid_artifact_fields(
     for value in error_counts.values():
         if type(value) is not int or value < 0:
             raise V8BCalibrationBlocked(reason)
-    if dict(error_counts) != expected_errors:
+    if not _strict_equal(dict(error_counts), expected_errors):
         raise V8BCalibrationBlocked(reason)
 
 
@@ -1731,8 +1873,17 @@ def validate_result_artifact_semantics(
 
     1. self-hash integrity (necessary, not sufficient — see
        ``verify_artifact_self_hash``'s docstring);
-    2. legal run-state shape (INVALID / VALID-D-empty / VALID-D-nonempty);
-    3. for a VALID artifact: the global envelope recomputed from
+    2. common persisted-artifact metadata, identically for VALID and
+       INVALID artifacts (see ``_verify_common_persisted_artifact_metadata``):
+       the exact top-level key set, every fixed identifier/constant
+       (schema/study/plan version/commit/blob shas), the calibration
+       window and years, ``candidate_count``, the synthetic rule/formula
+       version strings, the self-hash's own hex format, and the
+       provenance fields (``implementation_git_commit``,
+       ``calibration_attempt_id``, timestamps) via the same validator used
+       at construction time;
+    3. legal run-state shape (INVALID / VALID-D-empty / VALID-D-nonempty);
+    4. for a VALID artifact: the global envelope recomputed from
        ``yearly_windows``/``full_span_windows``; all 30 candidate rows
        recomputed independently (see ``_reference_candidate_row``); the
        selected policy recomputed independently (see
@@ -1748,6 +1899,8 @@ def validate_result_artifact_semantics(
 
     if not verify_artifact_self_hash(artifact):
         raise V8BCalibrationBlocked("CALIBRATION_ARTIFACT_SELF_HASH_MISMATCH")
+
+    _verify_common_persisted_artifact_metadata(artifact)
 
     calibration_run_valid = artifact.get("calibration_run_valid")
     if calibration_run_valid is False:
@@ -2041,6 +2194,30 @@ def _verify_self_hash_round_trip() -> None:
     mutated["calibration_attempt_id"] = "mutated"
     if verify_artifact_self_hash(mutated):
         raise V8BCalibrationBlocked("CALIBRATION_ARTIFACT_SELF_HASH_MISMATCH")
+
+    # _CANONICAL_ARTIFACT_KEYS must never silently drift from what
+    # build_result_artifact() actually emits.
+    if set(dummy.keys()) != _CANONICAL_ARTIFACT_KEYS:
+        raise V8BCalibrationBlocked("CALIBRATION_ARTIFACT_SCHEMA_DRIFT")
+
+    # The genuinely valid (self-consistent, correctly hashed) INVALID-state
+    # dummy must be accepted by the public semantic verifier.
+    validate_result_artifact_semantics(dummy)
+
+    # A rehashed mutation of a fixed identifier must still be rejected by
+    # the common metadata validator even though the self-hash matches.
+    tampered = dict(dummy)
+    tampered["schema_version"] = "NOT_" + RESULT_SCHEMA_VERSION
+    tampered_without_hash = {key: value for key, value in tampered.items() if key != "artifact_self_hash"}
+    tampered["artifact_self_hash"] = sha256_hex(canonical_json_bytes(tampered_without_hash))
+    if not verify_artifact_self_hash(tampered):
+        raise V8BCalibrationBlocked("CALIBRATION_ARTIFACT_SELF_HASH_MISMATCH")
+    try:
+        validate_result_artifact_semantics(tampered)
+    except V8BCalibrationBlocked:
+        pass
+    else:
+        raise V8BCalibrationBlocked("CALIBRATION_ARTIFACT_SCHEMA_DRIFT")
 
 
 def run_static_check(repository_root: Path) -> None:

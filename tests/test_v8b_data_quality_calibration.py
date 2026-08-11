@@ -1744,6 +1744,302 @@ def test_validate_result_artifact_semantics_is_not_implemented_via_build_result_
 
 
 # ---------------------------------------------------------------------------
+# Complete persisted-artifact metadata validation: a single common validator
+# runs BEFORE valid/invalid branching, identically for both artifact kinds,
+# rejecting missing/unknown keys, mutated fixed identifiers, mutated
+# calibration window/years, wrong candidate_count, mutated synthetic
+# rule/formula version strings, malformed self-hash format, and malformed
+# provenance -- all via a rehashed artifact where integrity alone passes.
+# ---------------------------------------------------------------------------
+
+
+_COMMON_METADATA_MUTATIONS = [
+    ("schema_version", "NOT_" + calib.RESULT_SCHEMA_VERSION),
+    ("study", "NOT_" + calib.STUDY),
+    ("calibration_plan_version", "NOT_" + calib.PLAN_VERSION),
+    ("calibration_plan_commit_or_hash", "0" * 40),
+    ("approved_plan_commit", "0" * 40),
+    ("approved_plan_blob_sha", "0" * 40),
+    ("approval_artifact_blob_sha", "0" * 40),
+    ("calibration_start", "2019-01-02"),
+    ("calibration_end_exclusive", "2026-01-02"),
+    ("candidate_count", 29),
+    ("candidate_count", 30.0),
+    ("synthetic_base_selection_rule", "NOT_" + calib.SYNTHETIC_BASE_SELECTION_RULE_VERSION),
+    ("exact_synthetic_placement_formulas_version", "NOT_" + calib.SYNTHETIC_PLACEMENT_FORMULAS_VERSION),
+    ("implementation_git_commit", "not-a-commit"),
+    ("calibration_attempt_id", ""),
+    ("run_started_utc", "not-a-timestamp"),
+]
+
+_ACCEPTABLE_COMMON_METADATA_REASONS = (
+    "CALIBRATION_RESULT_STATE_INVALID",
+    "CALIBRATION_PROVENANCE_COMMIT_INVALID",
+    "CALIBRATION_PROVENANCE_ATTEMPT_ID_INVALID",
+    "CALIBRATION_PROVENANCE_TIMESTAMP_INVALID",
+)
+
+
+@pytest.mark.parametrize("field,bad_value", _COMMON_METADATA_MUTATIONS)
+def test_rehashed_valid_artifact_with_mutated_common_metadata_is_rejected(clean_valid_kwargs, field, bad_value):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    mutated[field] = bad_value
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True  # integrity alone would pass
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason in _ACCEPTABLE_COMMON_METADATA_REASONS
+
+
+@pytest.mark.parametrize("field,bad_value", _COMMON_METADATA_MUTATIONS)
+def test_rehashed_invalid_artifact_with_mutated_common_metadata_is_rejected(field, bad_value):
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    mutated = dict(artifact)
+    mutated[field] = bad_value
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(mutated)
+    assert excinfo.value.reason in _ACCEPTABLE_COMMON_METADATA_REASONS
+
+
+def test_rejects_mutated_calibration_years_wrong_list(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    mutated["calibration_years"] = [2019, 2020, 2021, 2022, 2023, 2024]  # missing 2025
+    mutated = _rehash(mutated)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_mutated_calibration_years_float_element(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    years = list(mutated["calibration_years"])
+    years[0] = float(years[0])
+    mutated["calibration_years"] = years
+    mutated = _rehash(mutated)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_missing_top_level_key(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = {key: value for key, value in artifact.items() if key != "study"}
+    mutated = _rehash(mutated)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_extra_top_level_key(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    mutated["unexpected_extra_field"] = "surprise"
+    mutated = _rehash(mutated)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_missing_top_level_key_on_invalid_artifact():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    mutated = {key: value for key, value in artifact.items() if key != "study"}
+    mutated = _rehash(mutated)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(mutated)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_common_metadata_validator_rejects_uppercase_self_hash_format(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    mutated["artifact_self_hash"] = mutated["artifact_self_hash"].upper()
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib._verify_common_persisted_artifact_metadata(mutated)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_completed_before_started_on_persisted_artifact(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    mutated["run_started_utc"] = "2026-01-01T00:00:05Z"
+    mutated["run_completed_or_blocked_utc"] = "2026-01-01T00:00:00Z"
+    mutated = _rehash(mutated)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_PROVENANCE_TIMESTAMP_INVALID"
+
+
+def test_rejects_calibration_run_valid_as_int_not_bool():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    mutated = dict(artifact)
+    mutated["calibration_run_valid"] = 0  # int, not bool
+    mutated = _rehash(mutated)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(mutated)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_candidate_selection_executed_as_int_not_bool():
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    mutated = dict(artifact)
+    mutated["candidate_selection_executed"] = 0
+    mutated = _rehash(mutated)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(mutated)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# --- exact JSON numeric typing on VALID artifacts (float/bool substitutes) -
+
+
+@pytest.mark.parametrize(
+    "field,bad_value",
+    [
+        ("M_fraction_source_window_count", 300.0),
+        ("M_consecutive_source_window_count", True),
+        ("synthetic_base_count", 20.0),
+        ("synthetic_base_ticker_count", 20.0),
+        ("synthetic_scenario_count", 6000.0),
+        ("synthetic_candidate_comparison_count", 180000.0),
+        ("full_expected_vs_observed_synthetic_truth_table_mismatch_count", False),
+    ],
+)
+def test_rejects_valid_artifact_exact_int_field_as_float_or_bool(clean_valid_kwargs, field, bad_value):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    mutated[field] = bad_value
+    mutated = _rehash(mutated)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+@pytest.mark.parametrize(
+    "field,bad_value",
+    [
+        ("M_fraction_source_window_count", 0.0),
+        ("M_consecutive_source_window_count", False),
+        ("synthetic_base_count", 0.0),
+        ("synthetic_base_ticker_count", False),
+        ("synthetic_scenario_count", 0.0),
+        ("synthetic_candidate_comparison_count", False),
+        ("full_expected_vs_observed_synthetic_truth_table_mismatch_count", 0.0),
+    ],
+)
+def test_rejects_invalid_artifact_exact_int_field_as_float_or_bool(field, bad_value):
+    artifact = calib.build_result_artifact(**_blocked_artifact_kwargs())
+    mutated = dict(artifact)
+    mutated[field] = bad_value
+    mutated = _rehash(mutated)
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(mutated)
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+# --- candidate-row numeric fields: float/bool substitutes must not pass ---
+# naive dict equality (1.0 == 1, True == 1 in Python).
+
+
+def test_rejects_candidate_row_float_equivalent_max_consecutive(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    mutated["candidate_results"] = [dict(row) for row in mutated["candidate_results"]]
+    mutated["candidate_results"][0] = dict(mutated["candidate_results"][0], max_consecutive=1.0)
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_rejects_candidate_row_defensible_as_int_not_bool(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    mutated = dict(artifact)
+    mutated["candidate_results"] = [dict(row) for row in mutated["candidate_results"]]
+    original_flag = mutated["candidate_results"][0]["DEFENSIBLE"]
+    mutated["candidate_results"][0] = dict(mutated["candidate_results"][0], DEFENSIBLE=int(original_flag))
+    mutated = _rehash(mutated)
+    assert calib.verify_artifact_self_hash(mutated) is True
+    with pytest.raises(calib.V8BCalibrationBlocked) as excinfo:
+        calib.validate_result_artifact_semantics(
+            mutated,
+            yearly_windows=clean_valid_kwargs["yearly_windows"],
+            full_span_windows=clean_valid_kwargs["full_span_windows"],
+            synthetic_bases=clean_valid_kwargs["synthetic_bases"],
+            manifest_bytes=clean_valid_kwargs["manifest_bytes"],
+        )
+    assert excinfo.value.reason == "CALIBRATION_RESULT_STATE_INVALID"
+
+
+def test_strict_equal_rejects_float_int_and_bool_int_substitution():
+    assert calib._strict_equal(1, 1.0) is False
+    assert calib._strict_equal(True, 1) is False
+    assert calib._strict_equal({"x": 1}, {"x": 1.0}) is False
+    assert calib._strict_equal({"x": True}, {"x": 1}) is False
+    assert calib._strict_equal([1, 2], [1.0, 2]) is False
+    assert calib._strict_equal({"x": 1}, {"x": 1}) is True
+    assert calib._strict_equal([1, "a", True], [1, "a", True]) is True
+
+
+def test_canonical_artifact_keys_matches_actual_build_result_artifact_output(clean_valid_kwargs):
+    artifact = calib.build_result_artifact(**clean_valid_kwargs)
+    assert set(artifact.keys()) == calib._CANONICAL_ARTIFACT_KEYS
+
+
+# ---------------------------------------------------------------------------
 # Point 5: self-hash is integrity-only, never acceptance.
 # ---------------------------------------------------------------------------
 
