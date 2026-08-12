@@ -1,0 +1,18 @@
+{
+  "schema_version": "V8B_T2_AUTHORITY_BRIDGE_V1",
+  "study": "V8B_HISTORICAL_RESEARCH",
+  "role": "SEALED_HOLDOUT",
+  "source_authority": "ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY",
+  "v8_trust_anchor_git_path": "V8_TRUSTED_PARTITION.json",
+  "v8_trust_anchor_git_identity": "61faade0625139cec3fb61216ab2f97f572a7028",
+  "authorized_parent_v8_partition_manifest_sha256": "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62",
+  "expected_t2_ticker_list_sha256": "e7578db7202dcb6407d7bcd98d6365fc65f22e30aa05467313a347f9cc3d6500",
+  "t2_acquired_before_authorized_acquisition": false,
+  "t2_research_open_count_before_official_opening": 0,
+  "v8b_frozen_design_commit": "eedf198b93185b963b825170ed0be97e93f923b7",
+  "t2_membership_reassignment": "PROHIBITED",
+  "v8_trusted_partition_json_mutated_or_repinned": false,
+  "option": "OPTION_2",
+  "human_gate": "V8B_T2_AUTHORITY_INTEGRATION_OPTION_2_APPROVED",
+  "authorization_note": "This bridge records V8B's claim on the existing, immutable T2 block and re-verifies T2's existing V8 provenance (V8B_HISTORICAL_RESEARCH_DESIGN_DRAFT.md §11.3.E). It never mutates, reinterprets, or re-pins V8_TRUSTED_PARTITION.json or the original V8 partition manifest. v8_trust_anchor_git_identity is the exact Git blob object ID of V8_TRUSTED_PARTITION.json as read at the commit this bridge file was authored against; production acquisition re-resolves this same path from its own freshly-verified Git HEAD on every run and must find identical content, not merely a matching path."
+}
