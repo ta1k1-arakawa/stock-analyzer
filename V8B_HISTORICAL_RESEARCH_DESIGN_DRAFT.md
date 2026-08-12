@@ -1,26 +1,33 @@
 # V8B_HISTORICAL_RESEARCH_DESIGN_DRAFT
 
 ```text
-status=DRAFT_AWAITING_HUMAN_GATE
+status=V8B_FINAL_DESIGN_DRAFT_READY_FOR_INDEPENDENT_REVIEW
 document_type=DESIGN_DRAFT_ONLY
 implementation_performed=false
 data_acquisition_performed=false
 partition_creation_performed=false
 real_network_requests_this_document=0
-v8b_successor_trust_authority_model=HUMAN_DECISION_REQUIRED_BEFORE_V8B_DESIGN_FREEZE
+calibration_result_review=PASS (V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md)
+v8b_malformed_ohlcv_policy=Q2 (selected candidate F1_C1; see §7.4)
+v8b_successor_trust_authority_model=RESOLVED (OPTION_2; human-approved via V8B_T2_AUTHORITY_INTEGRATION_APPROVAL.json; see §11)
+design_frozen=false
+human_design_freeze_complete=false
+t1b_allocation_authorized=false
 ```
 
 This is a **design draft**, not a frozen design. Nothing in this document
 authorizes acquisition, partition allocation, implementation, or any real
 network request. It becomes actionable only by following the full gate
-sequence in §12. The **immediate next gate** is
-`DATA_QUALITY_CALIBRATION_PLAN_APPROVED` — not `HUMAN_DESIGN_FREEZE`.
-Calibration execution itself still requires that approved preregistration
-first (§6.1) and is not authorized by this document. The successor
-trust/authority model for `T1B` (§11) must be resolved later in the
-sequence, before `V8B_DESIGN_FINALIZED` and `HUMAN_DESIGN_FREEZE`, and
-remains explicitly unresolved and marked
-`HUMAN_DECISION_REQUIRED_BEFORE_V8B_DESIGN_FREEZE`; see §11.
+sequence in §12. `DATA_QUALITY_CALIBRATION_PLAN_APPROVED`,
+`CALIBRATION_IMPLEMENTED_ON_ALLOWED_DATA_ONLY`, `CALIBRATION_RESULT_REVIEW`,
+and `SUCCESSOR_TRUST_AUTHORITY_MODEL_RESOLVED` have all now passed (§6, §7.4,
+§11, and the standalone `V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md` /
+`V8B_T2_AUTHORITY_INTEGRATION_APPROVAL.json` audit records). The
+**immediate next gate** is independent review of this final design draft
+itself, ahead of `V8B_DESIGN_FINALIZED` and the separate, still-unreached
+`HUMAN_DESIGN_FREEZE` gate. Nothing in this document marks the design
+frozen, authorizes `T1B` allocation, or performs any acquisition — those
+remain gated exactly as §12 already sequences them.
 
 This document does not edit, reinterpret, delete, or supersede
 `V8_HISTORICAL_RESEARCH_DESIGN.md`. That document remains the frozen,
@@ -40,7 +47,7 @@ predecessor_design_document=V8_HISTORICAL_RESEARCH_DESIGN.md (unmodified)
 predecessor_status=CLOSED_IMMUTABLE_PROVENANCE
 predecessor_design_document_editable_by_this_draft=false
 successor_study=V8B_HISTORICAL_RESEARCH
-successor_status=DRAFT_AWAITING_HUMAN_GATE
+successor_status=V8B_FINAL_DESIGN_DRAFT_READY_FOR_INDEPENDENT_REVIEW
 new_study_identity_required=true
 ```
 
@@ -580,6 +587,9 @@ membership_rule=T1B_drawn_once_from_T_spare_per_section_4
 - **Risk this is chosen for the wrong reason:** none, provided it is
   chosen *because calibration found no independent basis for a different
   number* (§6.4), not merely because inertia is easiest.
+- **Outcome:** not selected. Calibration (§7.4) found a stricter candidate,
+  `F1_C1`, independently `DEFENSIBLE`, so §18's mechanical
+  `STRICTEST_DEFENSIBLE` rule selected it over Q1's unchanged threshold.
 
 ### Q2 — new, independently-calibrated threshold; membership still frozen before acquisition
 
@@ -607,11 +617,14 @@ membership_rule=T1B_drawn_once_from_T_spare_per_section_4 (unchanged)
 - **Operational feasibility:** lower than Q1 — requires the full
   calibration phase (§6) and its own independent review before design
   freeze.
-- **Explicit non-selection:** this draft does **not** select Q2 merely
-  because `POLICY_G_PRIME_V1` failed on old `T1`. Q2 becomes preferred
-  over Q1 only if the calibration phase (§6) produces a specific,
-  independently defensible number; absent that, §7's default is Q1 or the
-  explicit placeholder below.
+- **Explicit non-selection basis:** Q2 is not selected merely because
+  `POLICY_G_PRIME_V1` failed on old `T1` — it is selected because the
+  calibration phase (§6), run on allowed material only (never old `T1`),
+  produced a specific, independently defensible number.
+- **Outcome:** selected. §7.4 records the adopted policy:
+  `invalid_fraction_threshold=1/252`,
+  `max_consecutive_invalid_returned_rows=1` (candidate `F1_C1`), reviewed
+  `PASS` in `V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md`.
 
 ### Q3 — pre-partition data-quality eligibility screen
 
@@ -657,18 +670,30 @@ membership_rule=CHANGES (eligible universe itself is filtered pre-partition)
 ### 7.4 Threshold decision for this draft
 
 ```text
-V8B_MALFORMED_OHLCV_THRESHOLD=TO_BE_CALIBRATED_BEFORE_DESIGN_FREEZE
-V8B_MALFORMED_OHLCV_POLICY_PREFERENCE_PENDING_CALIBRATION=Q1_OR_Q2
+calibration_result_review=PASS (V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md)
+V8B_MALFORMED_OHLCV_POLICY_ADOPTED=Q2
+V8B_MALFORMED_OHLCV_SELECTED_CANDIDATE=F1_C1
+V8B_MALFORMED_OHLCV_THRESHOLD=invalid_fraction_threshold=1/252, max_consecutive_invalid_returned_rows=1
+V8B_MALFORMED_OHLCV_THRESHOLD_SOURCE=approved V8B data-quality calibration (V8B_DATA_QUALITY_CALIBRATION_PLAN_V1, attempt V8B_CALIBRATION_REAL_ATTEMPT_2); NOT derived from old T1
+V8B_MALFORMED_OHLCV_POLICY_Q1_SELECTED=false (a stricter preregistered candidate, F1_C1, was DEFENSIBLE, so §18's STRICTEST_DEFENSIBLE rule mechanically selected it over Q1's unchanged 1%/5 threshold)
 V8B_MALFORMED_OHLCV_POLICY_Q3_ADOPTED=false
 numeric_threshold_invented_in_this_draft=false
 ```
 
-No number is set here. §6's calibration phase, not this draft, produces
-either a defensible new number (→ Q2) or no defensible basis for a new
-number (→ Q1 retained). Both outcomes are legitimate; inventing a number
-in this document to avoid running the calibration phase would itself be
-exactly the kind of post-outcome/ungrounded adaptation this whole
-successor study exists to avoid.
+§6's calibration phase produced a defensible new number: of the 30
+preregistered candidates, all were `DEFENSIBLE` (strict headroom over an
+observed calibration envelope of `M_fraction=0/1`, `M_consecutive=0` across
+2352 applicable windows), and §18's mechanical `STRICTEST_DEFENSIBLE` rule
+selected candidate `F1_C1` (`invalid_fraction_threshold=1/252`,
+`max_consecutive_invalid_returned_rows=1`). This is Option Q2, not Q1:
+`POLICY_G_PRIME_V1`'s unchanged 1%/5 threshold is not selected, because a
+strictly stricter candidate was independently defensible under the frozen
+calibration plan — not because of any post-outcome preference for a
+stricter number. Option Q3 (pre-partition eligibility screen) remains not
+adopted (§7, Q3). No number was invented in this document; the number
+above is carried unmodified from the independently reviewed calibration
+result (`V8B_DATA_QUALITY_CALIBRATION_ADJUDICATION.md`,
+`V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md`).
 
 ### 7.5 Extension of prohibited claim language (§12.3 inheritance)
 
@@ -822,7 +847,7 @@ reachable from the raw-acquisition path.
 ## 11. Successor trust/authority model for `T1B`
 
 ```text
-v8b_successor_trust_authority_model=HUMAN_DECISION_REQUIRED_BEFORE_V8B_DESIGN_FREEZE
+v8b_successor_trust_authority_model=RESOLVED (§11.3.A-E decided; §11.3.E's T2-integration choice is OPTION_2, human-approved via V8B_T2_AUTHORITY_INTEGRATION_APPROVAL.json)
 existing_v8_trust_anchor_sufficient_for_t1b=false
 implementation_performed_by_this_section=false
 ```
@@ -936,14 +961,15 @@ through (B) and (C), exactly as the existing code rejects a `T1`/`T2`
 acquisition that cannot verify its chain back through
 `V8_TRUSTED_PARTITION.json`.
 
-**E. `T2` authority integration — preferred pre-freeze design, pending
-human approval.** The independent reviewer's recommendation is
-`OPTION_2`, and this draft adopts it as the **preferred design**, not as
-an already-approved decision:
+**E. `T2` authority integration — approved.** The independent reviewer's
+recommendation was `OPTION_2`. It is now the approved successor
+`T2` authority-integration design, per the explicit human decision
+`V8B_T2_AUTHORITY_INTEGRATION_OPTION_2_APPROVED`
+(`V8B_T2_AUTHORITY_INTEGRATION_APPROVAL.json`):
 
 ```text
-v8b_t2_authority_integration_preferred=OPTION_2
-v8b_t2_authority_integration_human_approved=false
+v8b_t2_authority_integration=OPTION_2
+v8b_t2_authority_integration_human_approved=true
 ```
 
 **`OPTION_2` semantics, fully specified.** `T1B` uses the new V8B-specific
@@ -983,7 +1009,7 @@ This bridge records V8B's *claim* on `T2` and re-verifies `T2`'s
 *existing* V8 provenance; it never mutates, reinterprets, or re-pins the
 V8 trust anchor itself.
 
-**Why `OPTION_2` is preferred (not yet approved).** Least privilege — it
+**Why `OPTION_2` was chosen.** Least privilege — it
 grants `T1B` a new authority scoped only to itself, rather than folding
 `T2` into that new scope. It avoids mutating or replacing any part of
 V8's existing authority. It keeps the two study-authority scopes
@@ -1007,10 +1033,10 @@ chain, where `OPTION_2` keeps that chain exactly as V8 already
 established it.
 
 No production code implementing (A)–(E) is written, proposed in diff
-form, or scheduled against a specific commit by this document. This
-remains a conceptual requirement — with `OPTION_2` as the preferred but
-not human-approved design for the `T2` piece — to be resolved, and then
-implemented and independently reviewed, before `ONE_TIME_HUMAN_
+form, or scheduled against a specific commit by this document. The design
+decision for (A)–(E), including the `T2` piece's `OPTION_2` choice, is now
+resolved and human-approved; implementation and independent review of that
+implementation remain future work, still required before `ONE_TIME_HUMAN_
 AUTHORIZATION_TO_ALLOCATE_T1B` in §12's gate sequence.
 
 ### 11.4 Required allocation invariants (future verification requirement)
@@ -1052,19 +1078,23 @@ zero-discretion rule §4 already freezes.
 ## 12. V8B gate sequence
 
 ```text
-V8B_DESIGN_DRAFT                                   <- this document
+V8B_DESIGN_DRAFT                                   <- this document, initial draft
   ↓
-DATA_QUALITY_CALIBRATION_PLAN_APPROVED             (human gate; §6 plan, no run yet)
+DATA_QUALITY_CALIBRATION_PLAN_APPROVED             [COMPLETE] (human gate; §6 plan, no run yet; V8B_DATA_QUALITY_CALIBRATION_PLAN_APPROVAL.json)
   ↓
-CALIBRATION_IMPLEMENTED_ON_ALLOWED_DATA_ONLY        (T0 / synthetic / provider-doc / independent data only; §6)
+CALIBRATION_IMPLEMENTED_ON_ALLOWED_DATA_ONLY        [COMPLETE] (T0 / synthetic / provider-doc / independent data only; §6; V8B_DATA_QUALITY_CALIBRATION_ADJUDICATION.md)
   ↓
-CALIBRATION_RESULT_REVIEW                          (independent review of calibration output; full distribution, not just chosen point)
+CALIBRATION_RESULT_REVIEW                          [COMPLETE: PASS] (independent review of calibration output; full distribution, not just chosen point; V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md; selected candidate F1_C1, §7.4)
   ↓
-SUCCESSOR_TRUST_AUTHORITY_MODEL_RESOLVED            (§11 A-E decided, including the §11.3.E T2-integration choice; human decision, not assumed by this draft; the authority model is itself part of what V8B_DESIGN_FINALIZED/HUMAN_DESIGN_FREEZE freeze, so it must resolve first)
+SUCCESSOR_TRUST_AUTHORITY_MODEL_RESOLVED            [COMPLETE] (§11 A-E decided, including the §11.3.E T2-integration choice; human decision, not assumed by this draft; OPTION_2 approved via V8B_T2_AUTHORITY_INTEGRATION_APPROVAL.json; the authority model is itself part of what V8B_DESIGN_FINALIZED/HUMAN_DESIGN_FREEZE freeze, so it had to resolve first)
   ↓
-V8B_DESIGN_FINALIZED                                (Q1 retained, or Q2 with a specific reviewed number; never Q3 by default per §7; includes the now-resolved successor trust/authority model)
+V8B_FINAL_DESIGN_DRAFT_READY_FOR_INDEPENDENT_REVIEW [CURRENT POSITION] (this document, as updated; calibration result and successor authority model both incorporated; not yet V8B_DESIGN_FINALIZED)
   ↓
-HUMAN_DESIGN_FREEZE                                 (separate human gate; freezes V8B exactly as V8_HISTORICAL_RESEARCH_DESIGN.md §1 froze V8)
+INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT        (independent review of this updated draft as a whole; not yet performed)
+  ↓
+V8B_DESIGN_FINALIZED                                (Q2 with the specific reviewed number F1_C1 adopted; never Q3 by default per §7; includes the now-resolved successor trust/authority model)
+  ↓
+HUMAN_DESIGN_FREEZE                                 (separate human gate, not yet reached; freezes V8B exactly as V8_HISTORICAL_RESEARCH_DESIGN.md §1 froze V8)
   ↓
 T1B_ALLOCATION_IMPLEMENTATION                       (code implementing §4's frozen zero-discretion slice rule and §11.3.B's private allocation artifact schema; fake-only tests)
   ↓
@@ -1149,19 +1179,24 @@ for this task before branching from it.
 ## 15. What this draft does not decide
 
 For completeness, restating what remains open and requires a future,
-separate human decision beyond this draft:
+separate decision beyond this draft. Two items from the prior revision —
+the calibrated numeric threshold and the `T2`-integration authority
+choice — are now resolved (§7.4, §11.3.E) and are removed from this list;
+what remains open is:
 
-- The exact numeric threshold (if any) that emerges from §6's calibration
-  phase.
 - Whether `T2`/`T3` preservation (§3.3/§3.4) still holds at the moment
   design actually freezes — this draft only confirms it holds as of the
   reviewed HEAD.
 - The concrete code changes implementing §10's two security requirements.
-- **The successor trust/authority model for `T1B` (§11)** — this draft
-  proposes a conceptual shape (§11.3.A–D) but does not implement it, and
-  for the `T2`-integration piece (§11.3.E) states `OPTION_2` as the
-  preferred pre-freeze design while explicitly leaving
-  `v8b_t2_authority_integration_human_approved=false` —
-  `HUMAN_DECISION_REQUIRED_BEFORE_V8B_DESIGN_FREEZE`.
-- Any and all real network authorization — none is granted by this
-  document.
+- **The concrete implementation of the successor trust/authority model for
+  `T1B` (§11.3.A–D, and the now-approved §11.3.E `OPTION_2` bridge)** —
+  the design decision is resolved and human-approved, but no production
+  code implementing (A)–(E) exists yet; implementation and its own
+  independent review remain future work, required before `ONE_TIME_HUMAN_
+  AUTHORIZATION_TO_ALLOCATE_T1B` (§12).
+- Independent review of this updated final design draft itself
+  (`INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT`, §12), and the separate
+  `V8B_DESIGN_FINALIZED` / `HUMAN_DESIGN_FREEZE` human gates that follow it
+  — none of which this draft performs or grants.
+- Any and all real network authorization, `T1B` allocation, or
+  acquisition — none is granted by this document.

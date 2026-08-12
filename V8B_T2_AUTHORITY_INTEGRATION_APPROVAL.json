@@ -1,0 +1,27 @@
+{
+  "schema_version": "V8B_T2_AUTHORITY_INTEGRATION_APPROVAL_V1",
+  "study": "V8B_HISTORICAL_RESEARCH",
+  "artifact_role": "T2_AUTHORITY_INTEGRATION_APPROVAL",
+  "decision_scope": "V8B_HISTORICAL_RESEARCH_DESIGN_DRAFT.md §11.3.E successor T2 authority-integration choice",
+  "decision": "OPTION_2",
+  "approval_status": "APPROVED",
+  "human_gate": "V8B_T2_AUTHORITY_INTEGRATION_OPTION_2_APPROVED",
+  "option_1_status": "REJECTED_NOT_SELECTED",
+  "option_2_semantics": {
+    "t1b_authority": "NEW_V8B_SPECIFIC_ALLOCATION_AUTHORITY_CHAIN",
+    "t2_authority": "ORIGINAL_IMMUTABLE_V8_AUTHORITY_UNCHANGED",
+    "t2_bridge": "EXPLICIT_V8B_SEALED_HOLDOUT_BRIDGE_RECORD_REQUIRED",
+    "v8_trusted_partition_json_mutated_or_repinned": false
+  },
+  "human_approval_received_at": null,
+  "human_approval_timestamp_repository_grounded": false,
+  "implementation_performed_by_this_artifact": false,
+  "authorizes_t1b_allocation": false,
+  "authorizes_t2_access": false,
+  "authorizes_acquisition": false,
+  "authorizes_research_opening": false,
+  "authorizes_v8b_design_freeze": false,
+  "authorizes_human_design_freeze": false,
+  "methodology_change_requires_new_human_gate": true,
+  "next_required_action": "INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT"
+}
