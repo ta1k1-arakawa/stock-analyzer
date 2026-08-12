@@ -403,6 +403,8 @@ layer, and this rule closes it there.
 calibration_required_before_design_freeze=true
 calibration_may_use_old_t1_outcome_as_calibration_input=false
 calibration_may_retain_old_t1_outcome_as_provenance_narrative=true
+calibration_phase_complete=true
+calibration_result_review=PASS
 ```
 
 **Permitted calibration bases** (any combination):
@@ -462,8 +464,8 @@ either fact does not satisfy this section.
 3. The calibration result — including the full distribution of outcomes
    at multiple candidate thresholds, not just the one selected — is
    reviewed independently before it is adopted into V8B's frozen policy,
-   mirroring §9.3's "full trial distribution, not only the maximum"
-   requirement.
+   mirroring `V8_HISTORICAL_RESEARCH_DESIGN.md` §9.3's "full trial
+   distribution, not only the maximum" requirement.
 4. If, after calibration, no defensible independent basis for a specific
    number emerges, V8B's design freezes with `POLICY_G_PRIME_V1` retained
    unchanged (Option Q1, §7) rather than an invented number — **unless**
@@ -471,14 +473,38 @@ either fact does not satisfy this section.
    predeclared a different scientifically justified no-selection outcome
    (§6.2).
 
-### 6.1 Calibration preregistration requirements (binding on any future plan)
+**Current status: all four sub-gates above are `COMPLETE`.** A
+calibration preregistration/plan (`V8B_DATA_QUALITY_CALIBRATION_PLAN_V1`)
+was written and approved (sub-gate 1); it was implemented and executed
+exactly as preregistered (sub-gate 2); its result, including the full
+30-candidate distribution, was reviewed independently and PASSed
+(sub-gate 3, `V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md`); and a
+defensible independent basis for a specific number did emerge (candidate
+`F1_C1`), so sub-gate 4's `POLICY_G_PRIME_V1`-retained fallback did not
+trigger — see §7.4 for the adopted result. `DATA_QUALITY_CALIBRATION_
+PLAN_APPROVED` and `CALIBRATION_RESULT_REVIEW` (§12) have both passed.
 
-This draft does **not** perform calibration and does **not** invent the
-numeric candidate grid — that remains for the future
-`DATA_QUALITY_CALIBRATION_PLAN_APPROVED` gate. What this draft fixes now
-is the **shape** every future calibration plan must satisfy before it may
-be approved. A plan missing any of the following is not a valid
-preregistration and does not satisfy sub-gate 1 above.
+### 6.1 Calibration preregistration requirements (historical ex-ante contract; now instantiated)
+
+At drafting time, this draft did **not** perform calibration itself and
+did **not** invent the numeric candidate grid — fixing that grid was
+reserved for a future `DATA_QUALITY_CALIBRATION_PLAN_APPROVED` gate. What
+this section fixed, ex ante, is the **shape** every calibration plan had
+to satisfy before it could be approved; a plan missing any of the
+following would not have been a valid preregistration and would not have
+satisfied sub-gate 1 above.
+
+**Current status.** Those shape requirements were subsequently
+instantiated by the separately approved `V8B_DATA_QUALITY_CALIBRATION_
+PLAN_V1` (approved plan commit `8c15426166742c43745e604f6367788af6123c1a`;
+`V8B_DATA_QUALITY_CALIBRATION_PLAN_APPROVAL.json`). Plan approval,
+implementation, real-attempt execution, and the formal `CALIBRATION_
+RESULT_REVIEW` are all now `COMPLETE` (`PASS`;
+`V8B_DATA_QUALITY_CALIBRATION_ADJUDICATION.md`,
+`V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md`). The requirement list
+below is retained unchanged, exactly as originally frozen, as the audit
+standard the completed plan had to satisfy — it is not weakened,
+deleted, or rewritten by this status update.
 
 Before any calibration execution, a separate calibration
 preregistration/plan document must freeze, in writing, all of:
@@ -513,9 +539,14 @@ t2_input=PROHIBITED
 t3_input=PROHIBITED
 ```
 
-No value for any of these fields is invented or filled in by this draft.
-They are requirements on the *shape* of a future document, not the
-content of one.
+No value for any of these fields was invented or filled in by this draft
+at drafting time — they were, and remain, requirements on the *shape* a
+calibration plan document must satisfy, not on its content. They were
+later instantiated by the separately approved `V8B_DATA_QUALITY_
+CALIBRATION_PLAN_V1` (see above). This final design draft does not
+retroactively invent or change any of their values; it only records, in
+§7.4, the specific values that approved, independently reviewed plan
+produced.
 
 ### 6.2 Prohibition on adaptive threshold shopping
 
@@ -554,6 +585,15 @@ afterward to match whichever result looks best.
 
 ## 7. Policy options comparison
 
+**PRE-CALIBRATION OPTION DEFINITION / EX-ANTE COMPARISON.** The Q1/Q2/Q3
+definitions and bias/reproducibility/feasibility analysis below were
+written before calibration ran, to compare the options on their general
+shape rather than on any specific number. They are retained unchanged for
+audit history. The current adopted outcome — Q2, candidate `F1_C1`,
+`invalid_fraction_threshold=1/252`, `max_consecutive_invalid_returned_
+rows=1`, `CALIBRATION_RESULT_REVIEW=PASS` — is stated in §7.4, and each
+"Outcome" line below cross-references it.
+
 ### Q1 — retain `POLICY_G_PRIME_V1` unchanged
 
 ```text
@@ -586,16 +626,17 @@ membership_rule=T1B_drawn_once_from_T_spare_per_section_4
   indefinite retries).
 - **Risk this is chosen for the wrong reason:** none, provided it is
   chosen *because calibration found no independent basis for a different
-  number* (§6.4), not merely because inertia is easiest.
+  number* (§6.2's fallback rule), not merely because inertia is easiest.
 - **Outcome:** not selected. Calibration (§7.4) found a stricter candidate,
-  `F1_C1`, independently `DEFENSIBLE`, so §18's mechanical
-  `STRICTEST_DEFENSIBLE` rule selected it over Q1's unchanged threshold.
+  `F1_C1`, independently `DEFENSIBLE`, so `V8B_DATA_QUALITY_CALIBRATION_
+  PREREGISTRATION_DRAFT.md` §18's mechanical `STRICTEST_DEFENSIBLE` rule
+  selected it over Q1's unchanged threshold.
 
 ### Q2 — new, independently-calibrated threshold; membership still frozen before acquisition
 
 ```text
-invalid_fraction_threshold=<from calibration, if defensible>
-max_consecutive_invalid_returned_rows=<from calibration, if defensible>
+invalid_fraction_threshold=<from calibration, if defensible>  [EX-ANTE PLACEHOLDER; resolved value is 1/252 -- §7.4]
+max_consecutive_invalid_returned_rows=<from calibration, if defensible>  [EX-ANTE PLACEHOLDER; resolved value is 1 -- §7.4]
 membership_rule=T1B_drawn_once_from_T_spare_per_section_4 (unchanged)
 ```
 
@@ -610,13 +651,15 @@ membership_rule=T1B_drawn_once_from_T_spare_per_section_4 (unchanged)
 - **Reproducibility:** lower than Q1 until the calibration record itself
   is independently reviewed and reproducible; equal to Q1 after that
   review passes.
-- **Single-ticker brittleness:** potentially reduced or increased
-  depending on the calibrated number's direction and rationale — not
-  knowable in advance, which is exactly why this draft does not preselect
-  a number (see below).
-- **Operational feasibility:** lower than Q1 — requires the full
-  calibration phase (§6) and its own independent review before design
-  freeze.
+- **Single-ticker brittleness (ex-ante analysis):** potentially reduced or
+  increased depending on the calibrated number's direction and
+  rationale — this was not knowable in advance of calibration, which is
+  exactly why this draft did not preselect a number ex ante (see the
+  resolved outcome below and in §7.4).
+- **Operational feasibility (ex-ante analysis):** lower than Q1 —
+  required the full calibration phase (§6) and its own independent
+  review before design freeze; both are now complete (§7.4,
+  `V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md`).
 - **Explicit non-selection basis:** Q2 is not selected merely because
   `POLICY_G_PRIME_V1` failed on old `T1` — it is selected because the
   calibration phase (§6), run on allowed material only (never old `T1`),
@@ -675,7 +718,7 @@ V8B_MALFORMED_OHLCV_POLICY_ADOPTED=Q2
 V8B_MALFORMED_OHLCV_SELECTED_CANDIDATE=F1_C1
 V8B_MALFORMED_OHLCV_THRESHOLD=invalid_fraction_threshold=1/252, max_consecutive_invalid_returned_rows=1
 V8B_MALFORMED_OHLCV_THRESHOLD_SOURCE=approved V8B data-quality calibration (V8B_DATA_QUALITY_CALIBRATION_PLAN_V1, attempt V8B_CALIBRATION_REAL_ATTEMPT_2); NOT derived from old T1
-V8B_MALFORMED_OHLCV_POLICY_Q1_SELECTED=false (a stricter preregistered candidate, F1_C1, was DEFENSIBLE, so §18's STRICTEST_DEFENSIBLE rule mechanically selected it over Q1's unchanged 1%/5 threshold)
+V8B_MALFORMED_OHLCV_POLICY_Q1_SELECTED=false (a stricter preregistered candidate, F1_C1, was DEFENSIBLE, so V8B_DATA_QUALITY_CALIBRATION_PREREGISTRATION_DRAFT.md §18's STRICTEST_DEFENSIBLE rule mechanically selected it over Q1's unchanged 1%/5 threshold)
 V8B_MALFORMED_OHLCV_POLICY_Q3_ADOPTED=false
 numeric_threshold_invented_in_this_draft=false
 ```
@@ -683,7 +726,8 @@ numeric_threshold_invented_in_this_draft=false
 §6's calibration phase produced a defensible new number: of the 30
 preregistered candidates, all were `DEFENSIBLE` (strict headroom over an
 observed calibration envelope of `M_fraction=0/1`, `M_consecutive=0` across
-2352 applicable windows), and §18's mechanical `STRICTEST_DEFENSIBLE` rule
+2352 applicable windows), and `V8B_DATA_QUALITY_CALIBRATION_
+PREREGISTRATION_DRAFT.md` §18's mechanical `STRICTEST_DEFENSIBLE` rule
 selected candidate `F1_C1` (`invalid_fraction_threshold=1/252`,
 `max_consecutive_invalid_returned_rows=1`). This is Option Q2, not Q1:
 `POLICY_G_PRIME_V1`'s unchanged 1%/5 threshold is not selected, because a
@@ -741,7 +785,8 @@ t2_reuse_recommended=CONDITIONAL_YES (see conditions below; final confirmation d
 ```
 
 **Why old `T1`'s failure does not contaminate `T2`.** Contamination in
-this design's sense (§5.4, §9) means information flow from an outcome
+this design's sense (`V8_HISTORICAL_RESEARCH_DESIGN.md` §5.4, and this
+draft's own §9) means information flow from an outcome
 into a decision that should have been made blind to it. The information
 `T1` attempt #2 specifically produced (§0.1 — attempt #1 predates
 `POLICY_G_PRIME_V1` and does not establish this) is: *"under

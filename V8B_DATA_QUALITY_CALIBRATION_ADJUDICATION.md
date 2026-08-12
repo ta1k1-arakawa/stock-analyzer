@@ -151,11 +151,16 @@ design_freeze_implied=false
 research_or_validation_opening_implied=false
 ```
 
-This record does not constitute `CALIBRATION_RESULT_REVIEW`
+This record does not itself constitute `CALIBRATION_RESULT_REVIEW`
 (`V8B_DATA_QUALITY_CALIBRATION_PREREGISTRATION_DRAFT.md` §26) and does not
 itself authorize `V8B_DESIGN_FINALIZED`. It is an audit/adjudication record
-of the already-executed attempts, pending the independent review named
-below.
+of the already-executed attempts.
+
+**Status update.** The independent review of this record has since been
+completed and PASSed: `V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md`
+(`V8B_CALIBRATION_RESULT_REVIEW_PASS`). This adjudication record itself is
+retained unchanged, as the underlying fact record that review verified
+against.
 
 ---
 
@@ -183,5 +188,6 @@ production_code_modified_by_this_task=false
 
 ```text
 status=RECORDED
-next_action=INDEPENDENT_REVIEW_OF_CALIBRATION_ADJUDICATION
+calibration_result_review=PASS (V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md)
+next_action=INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT
 ```
