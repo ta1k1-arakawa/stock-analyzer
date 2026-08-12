@@ -171,8 +171,8 @@ each citation is the sole authoritative source.
 | Search-overfitting controls and registry requirements | §6, §7, §9 | none |
 | Promotion gate sequence and invariants | §10 | none, except the new pre-`T1B` calibration sub-gate this draft adds (§12) |
 | Real-money / deployment policy | §11 (V8) | none |
-| Permanent prohibitions | §12.1 | none |
-| Prohibited claim language | §12.3 | none, and extended — see §7.4 below |
+| Permanent prohibitions | §12.1 (V8) | none |
+| Prohibited claim language | §12.3 (V8) | none, and extended — see §7.5 below |
 | Deterministic ticker-block ordering rule (`sort eligible_current_only by (SHA-256(UTF-8 code), code) ascending`) | §5.1 | none — reused to draw `T1B` (§4) |
 | Yahoo Chart parser and transport (`src/v7_yahoo_collector.py`) | implementation | none — reused read-only, as V8 itself reused it from V7 |
 | Production acquisition security boundary (Git-provenance pin, trust-anchor read, strict-origin transport, atomic staging/publish) | `src/v8_historical_acquisition.py`, `src/v8_partition.py` | none as a mechanism; see §10 for the two deferred hardening items that must land before it is reused for research-opening |
@@ -247,9 +247,13 @@ v8b_data_quality_policy_frozen_before_any_t2_acquisition=true
 
 All of these hold today (verified from `V8_STATE.json` /
 `V8_PROJECT_STATE.md` at the reviewed HEAD: `T2_real_data_acquired=false`,
-`T2_opened=false`, no `T2` content has ever been read by any V8 process).
-`T2` is therefore **conditionally reusable** as V8B's Layer C sealed
-holdout — see §9 for why old-`T1`'s failure does not contaminate it.
+`T2_opened=false`; precisely: no `T2` market-data/raw-OHLCV/feature/
+outcome/research content has been opened or observed — partition
+membership materialization/hashing, which did occur during original V8
+partition build (§9 item 1), is not itself research exposure and is not
+what this condition asserts). `T2` is therefore **conditionally
+reusable** as V8B's Layer C sealed holdout — see §9 for why old-`T1`'s
+failure does not contaminate it.
 
 ### 3.4 Existing `T3` — `REUSE_WITH_CAVEAT`, preservable as reserve
 
@@ -681,8 +685,8 @@ membership_rule=CHANGES (eligible universe itself is filtered pre-partition)
   *before* partitioning correlates study inclusion with data
   observability — a distinct but structurally similar mechanism to the
   survivorship bias `V8_HISTORICAL_RESEARCH_DESIGN.md` §5.9 already
-  discloses as unresolved, and which §12.3 explicitly forbids claiming is
-  "resolved by fresh tickers."
+  discloses as unresolved, and which that same document's §12.3
+  explicitly forbids claiming is "resolved by fresh tickers."
 - **Data-availability bias:** by construction, this *is* a
   data-availability-conditioned selection rule; it must be treated and
   disclosed as its own named bias, not folded into or confused with
@@ -739,7 +743,7 @@ above is carried unmodified from the independently reviewed calibration
 result (`V8B_DATA_QUALITY_CALIBRATION_ADJUDICATION.md`,
 `V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md`).
 
-### 7.5 Extension of prohibited claim language (§12.3 inheritance)
+### 7.5 Extension of prohibited claim language (`V8_HISTORICAL_RESEARCH_DESIGN.md` §12.3 inheritance)
 
 In addition to every phrase `V8_HISTORICAL_RESEARCH_DESIGN.md` §12.3
 already prohibits (inherited unchanged, §2), V8B additionally prohibits:
@@ -754,6 +758,153 @@ None of these characterizations is available under this design regardless
 of what the calibration phase produces, because none of them is knowable
 without inspecting forbidden material (§6).
 
+### 7.6 `POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE` — production policy freeze
+
+§7.4 established that Q2/`F1_C1` is the adopted numeric outcome. This
+subsection freezes what that outcome means for **production acquisition**
+code, as a distinct V8B policy identity — not a silent renumbering of
+`POLICY_G_PRIME_V1`, and not an implicit assumption left for
+implementation time to fill in.
+
+```text
+policy_name=POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE
+study=V8B_HISTORICAL_RESEARCH
+inherits_semantics_from=V8_HISTORICAL_RESEARCH_DESIGN.md §17 (POLICY_G_PRIME_V1_UNIFORM_RETURNED_ROW_QUALITY_GATE), except the two calibrated numeric thresholds below
+```
+
+**Frozen numeric thresholds (source: §7.4, `V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md`, candidate `F1_C1`):**
+
+```text
+invalid_fraction_threshold=1/252
+invalid_fraction_exact_comparison="invalid_returned_row_count * 252 <= total_returned_row_count"
+floating_point_threshold_decision=PROHIBITED
+max_consecutive_invalid_returned_rows=1
+```
+
+The exact-integer comparison form mirrors the same style already used, and
+already independently reviewed, in `src/v8_historical_acquisition.py`'s
+`_malformed_ohlcv_check_window()` for V8's own 1% gate (`invalid_count *
+100 <= total`), generalized to the calibrated `1/252` rational without
+introducing any float rounding. `max_consecutive_invalid_returned_rows=1`
+means a run of 2 or more consecutive invalid returned rows BLOCKs (i.e.
+`run > 1` triggers the consecutive gate), the same `run > threshold`
+semantics already implemented for V8's `max_consecutive=5` case.
+
+**Returned-row denominator semantics (unchanged from V8 §17 clause 1):**
+
+```text
+only_yahoo_returned_timestamped_observations_count=true
+expected_missing_calendar_dates_treated_as_malformed=false
+pre_listing_absence_treated_as_malformed=false
+```
+
+**Window semantics for PRODUCTION acquisition (unchanged from V8 §17 clauses 7-8):**
+
+```text
+full_p_hist_check_required=true
+per_test_year_checks_required=true
+production_test_years=2018,2019,2020,2021,2022,2023,2024,2025
+zero_returned_observations_over_full_applicable_series=BLOCK
+zero_returned_observations_in_an_individual_year=NOT_APPLICABLE
+```
+
+**IMPORTANT — calibration windows are not production windows.** The V8B
+data-quality calibration's own observed-window span was `2019-01-01`
+through `2025-12-31`, evaluated per calendar year 2019-2025
+(`V8B_DATA_QUALITY_CALIBRATION_PREREGISTRATION_DRAFT.md` §3) — that span
+is **calibration-evidence material only**, used to derive `M_fraction` and
+`M_consecutive` and thereby to select the `1/252`/`1` thresholds above. It
+is a distinct concept from, and **must not silently replace**, V8 §17's
+own production acquisition yearly checks, which remain `2018..2025` (eight
+years, including `2018`, which is outside the calibration's evidence
+window) exactly as frozen in V8 §17 clause 7 and unchanged by §2's
+inheritance table. A future implementation that evaluates production
+`T1B`/`T2` acquisition only over `2019..2025` (omitting `2018`) would be
+silently narrowing an inherited V8 invariant and is explicitly prohibited
+by this section.
+
+**Row handling (unchanged from V8 §17 clauses 2-4, 9-10):**
+
+```text
+row_classifier=src/v7_yahoo_collector.py canonical classification semantics (unchanged, read-only reuse)
+invalid_returned_rows_may_be_excluded=true
+fill_allowed=false
+forward_fill_allowed=false
+back_fill_allowed=false
+interpolation_allowed=false
+imputation_allowed=false
+alternate_source_substitution_allowed=false
+ticker_removal_allowed=false
+ticker_replacement_allowed=false
+t_spare_replacement_allowed=false
+repartition_allowed=false
+membership_change_conditional_on_quality_allowed=false
+partial_fewer_than_300_publication_allowed=false
+threshold_exceedance_action=BLOCK_WHOLE_ACQUISITION
+retry_count=0
+```
+
+**Scope of application:**
+
+```text
+applies_to=[T1B raw acquisition, reused T2 raw acquisition]
+applies_retroactively_to_old_V8_T1=false
+```
+
+This V8B policy governs `T1B` and `T2` acquisition under `V8B_HISTORICAL_
+RESEARCH` only. It does not, and cannot, retroactively apply to old V8
+`T1`'s two already-concluded attempts (§0.1, §0.2) — those remain governed
+by whatever policy was actually in force when each ran (the older
+any-invalid-row rule for attempt #1; `POLICY_G_PRIME_V1` for attempt #2),
+exactly as already recorded. This section does not modify
+`V8_HISTORICAL_RESEARCH_DESIGN.md` or `POLICY_G_PRIME_V1` in any way; both
+remain frozen, immutable V8 provenance.
+
+**Current production code is V8-only / Q1-only and is not sufficient
+as-is.** `src/v8_historical_acquisition.py` hardcodes
+`MALFORMED_OHLCV_INVALID_FRACTION_THRESHOLD = 0.01` and
+`MALFORMED_OHLCV_MAX_CONSECUTIVE_INVALID_RETURNED_ROWS = 5` (V8's Q1
+`POLICY_G_PRIME_V1` values, verified by direct reading of that file) and
+restricts `ALLOWED_ACQUISITION_BLOCKS` to exactly `("T1", "T2")` — it has
+no notion of `T1B`, no `1/252` threshold, and no V8B successor-authority
+binding (§11). This design draft record states explicitly:
+
+```text
+src_v8_historical_acquisition_py_current_state=V8_ONLY_Q1_ONLY_IMPLEMENTATION
+reusable_as_is_for_v8b_acquisition=false
+requires_new_or_adapted_v8b_specific_implementation=true
+```
+
+A future V8B production acquisition implementation must apply
+`POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE` (this section),
+not `POLICY_G_PRIME_V1`, and must gate on the new V8B successor authority
+chain (§11) for `T1B`, and on the `OPTION_2` bridge (§11.3.E) for `T2` —
+see §12's `V8B_ALLOCATION_AUTHORITY_AND_ACQUISITION_IMPLEMENTATION` gate.
+
+### 7.7 Fail-before-network runtime prerequisite (technical hardening, not methodology)
+
+The already-recorded `V8B_CALIBRATION_REAL_ATTEMPT_1` environment failure
+(`V8B_DATA_QUALITY_CALIBRATION_ADJUDICATION.md`: `run_invalid_reason=
+CALIBRATION_CLASSIFIER_VERSION_MISMATCH`, actual cause `Windows Python
+ZoneInfo installation lacked Asia/Tokyo timezone data`) is calibration-side
+evidence of a real runtime-environment failure mode that also threatens
+production acquisition, since the same pinned parser/runtime
+(`src/v7_yahoo_collector.py`) depends on `Asia/Tokyo` `ZoneInfo` semantics
+for correct trading-date classification.
+
+```text
+requirement=fail_closed_before_first_yahoo_request_if_asia_tokyo_zoneinfo_unavailable
+applies_to=[T1B raw acquisition, T2 raw acquisition]
+check_must_occur_before=[first Yahoo request, consumption of the one-shot acquisition attempt / human-gate authorization]
+this_is_runtime_hardening_not_methodology=true
+modifies_src_v7_yahoo_collector_py=false (this document does not modify that file; a future implementation adds an environment-prerequisite check ahead of it, not inside it)
+```
+
+This is recorded here as a required technical implementation prerequisite
+for the future `V8B_ALLOCATION_AUTHORITY_AND_ACQUISITION_IMPLEMENTATION`
+gate (§12) to satisfy — it does not itself change any classification
+semantics, threshold, or window rule.
+
 ---
 
 ## 8. Preferred methodological shape (summary)
@@ -764,7 +915,7 @@ unchanged_from_V8=[P_hist, T0_development_role, walk_forward_scheme,
   deterministic_partition_ordering, existing_untouched_T2, existing_untouched_T3]
 changed_from_V8=[study_identity, old_T1_status(retired),
   one_fresh_validation_block(T1B, one_shot_draw),
-  acquisition_quality_policy(calibrated_or_retained_per_section_7, never_reused_verbatim_without_the_section_6_wall),
+  acquisition_quality_policy(POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE, frozen per §7.6, calibrated per the section 6 wall),
   acquisition_and_research_opening_security_boundary(hardened_per_section_10)]
 ```
 
@@ -843,8 +994,45 @@ acquired.
 **If any one of all seven conditions in §3.3 stops holding** (e.g., `T2`
 somehow gets acquired or opened before V8B's design freezes, or the
 universe/partition algorithm changes), this recommendation is withdrawn
-automatically and a new sealed block must be sourced from `T_spare`
-instead, following the same one-shot rule as §4–§5.
+automatically. The result is:
+
+```text
+V8B_T2_PRESERVATION_RECHECK_BLOCKED
+```
+
+**This is fail-closed, not implementation-time discretion.** An earlier
+revision of this section stated that "a new sealed block must be sourced
+from `T_spare` instead, following the same one-shot rule as §4–§5." That
+sentence is withdrawn as insufficiently preregistered: no sealed-holdout
+`T_spare` offset, allocation rule, or authority path for a *second*
+`T_spare`-drawn block is frozen anywhere in this document (§4's frozen
+zero-offset slice rule and §11's authority chain are specified for `T1B`
+only, not for a hypothetical `T2` replacement), and inventing one at
+implementation time — after observing that `T2` specifically failed
+preservation — would be exactly the outcome-conditioned, unregistered
+block-selection discretion §5's one-shot rule exists to foreclose, one
+layer up.
+
+On `V8B_T2_PRESERVATION_RECHECK_BLOCKED`:
+
+```text
+automatic_alternate_sealed_holdout_allocation=PROHIBITED
+implementation_time_t_spare_offset_choice=PROHIBITED
+automatic_t3_reuse_as_replacement=PROHIBITED
+holdout_redesign_inside_this_task=PROHIBITED
+```
+
+The required result is:
+
+```text
+CHATGPT_DECISION_REQUIRED
+```
+
+A new explicit design for whatever replaces `T2` as V8B's sealed holdout,
+and a new separate human gate approving it, are required before
+`V8B_DESIGN_FINALIZED` may proceed. This draft does not resolve that
+methodology question and does not authorize any execution agent to
+resolve it either.
 
 ---
 
@@ -882,10 +1070,11 @@ implementation_performed_by_this_draft=false
 Neither requirement is implemented, designed in code form, or scheduled
 against a commit in this document. Both remain **design requirements**
 that block the two specific gates named above (§12:
-`SEPARATE RESEARCH-OPENING GATE` and `T2 SEALED HOLDOUT GATE`), and do
-not block `T1B` partition allocation or `T1B` raw acquisition themselves,
-consistent with the prior review's finding that neither issue is
-reachable from the raw-acquisition path.
+`SEPARATE RESEARCH-OPENING GATE` and
+`T2_RESEARCH_OPENING_HUMAN_GATE`/`T2_SEALED_HOLDOUT_GATE`), and do not
+block `T1B` partition allocation, `T1B` raw acquisition, or `T2` raw
+acquisition themselves, consistent with the prior review's finding that
+neither issue is reachable from the raw-acquisition path.
 
 ---
 
@@ -1125,7 +1314,7 @@ zero-discretion rule §4 already freezes.
 ```text
 V8B_DESIGN_DRAFT                                   <- this document, initial draft
   ↓
-DATA_QUALITY_CALIBRATION_PLAN_APPROVED             [COMPLETE] (human gate; §6 plan, no run yet; V8B_DATA_QUALITY_CALIBRATION_PLAN_APPROVAL.json)
+DATA_QUALITY_CALIBRATION_PLAN_APPROVED             [COMPLETE] (human gate approving the §6 plan itself, before any run; V8B_DATA_QUALITY_CALIBRATION_PLAN_APPROVAL.json; the plan's subsequent implementation, real-attempt execution, and result review are separately tracked in the next two gates below, both also COMPLETE)
   ↓
 CALIBRATION_IMPLEMENTED_ON_ALLOWED_DATA_ONLY        [COMPLETE] (T0 / synthetic / provider-doc / independent data only; §6; V8B_DATA_QUALITY_CALIBRATION_ADJUDICATION.md)
   ↓
@@ -1137,13 +1326,15 @@ V8B_FINAL_DESIGN_DRAFT_READY_FOR_INDEPENDENT_REVIEW [CURRENT POSITION] (this doc
   ↓
 INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT        (independent review of this updated draft as a whole; not yet performed)
   ↓
-V8B_DESIGN_FINALIZED                                (Q2 with the specific reviewed number F1_C1 adopted; never Q3 by default per §7; includes the now-resolved successor trust/authority model)
+READ_ONLY_T2_T3_PRESERVATION_RECHECK                (repository-safe recheck of §3.3/§3.4 conditions, bound to the exact candidate freeze HEAD -- see §12.2; not yet performed; must PASS before V8B_DESIGN_FINALIZED, and must be repeated at the actual freeze candidate HEAD, not satisfied merely because an earlier HEAD looked fine)
+  ↓
+V8B_DESIGN_FINALIZED                                (Q2 with the specific reviewed number F1_C1 adopted; never Q3 by default per §7; includes the now-resolved successor trust/authority model and a PASSing §12.2 preservation recheck)
   ↓
 HUMAN_DESIGN_FREEZE                                 (separate human gate, not yet reached; freezes V8B exactly as V8_HISTORICAL_RESEARCH_DESIGN.md §1 froze V8)
   ↓
-T1B_ALLOCATION_IMPLEMENTATION                       (code implementing §4's frozen zero-discretion slice rule and §11.3.B's private allocation artifact schema; fake-only tests)
+V8B_ALLOCATION_AUTHORITY_AND_ACQUISITION_IMPLEMENTATION (implements the whole V8B production boundary: T1B deterministic allocation, T1B successor authority chain, T1B raw acquisition under POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE (§7.6), T2 raw acquisition under the same policy, the OPTION_2 T2 bridge, exact block/role/study/design-commit/content bindings, privacy-safe failure behavior, one-shot human-gate consumption behavior, and the §7.7 fail-before-network runtime prerequisite; fake-only tests; no real Yahoo/JPX access)
   ↓
-INDEPENDENT_IMPLEMENTATION_REVIEW                   (of the T1B allocation implementation and of §11's new authority-chain implementation code, including §10's two security requirements if they are implemented at this stage)
+INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW    (independent review of that concrete implementation -- see §12.3 for the required explicit checklist; §10's two research-opening security requirements may remain separate later implementation work if not done in this phase, but must be complete before either T1B or T2 RESEARCH opening)
   ↓
 ONE_TIME_HUMAN_AUTHORIZATION_TO_ALLOCATE_T1B        (separate one-time authorization; consumed on use, per V8's established pattern; authorizes running the reviewed allocation implementation, not yet trusting its output)
   ↓
@@ -1157,9 +1348,9 @@ CREATE_V8B_TRUSTED_ALLOCATION_PIN                   (publishes the public §11.3
   ↓
 INDEPENDENT_TRUST_PIN_REVIEW                        (independent review of the published pin artifact and its binding to production code, mirroring V8_TRUSTED_PARTITION.json's own review precedent)
   ↓
-T1B_RAW_ACQUISITION_HUMAN_GATE                      (separate one-time authorization; consumed on first Yahoo request regardless of outcome, per V8's established pattern; authorizes acquisition under the now-pinned V8B authority chain, not under V8_TRUSTED_PARTITION.json alone)
+T1B_RAW_ACQUISITION_HUMAN_GATE                      (separate one-time authorization; consumed on first Yahoo request regardless of outcome, per V8's established pattern; authorizes acquisition under the now-pinned V8B authority chain, not under V8_TRUSTED_PARTITION.json alone; T1B authorization never authorizes T2)
   ↓
-T1B_RAW_ACQUISITION                                 (real network; exactly one attempt per §5's one-shot rule — a BLOCK here ends V8B, does not trigger a redraw)
+T1B_RAW_ACQUISITION                                 (real network; exactly one attempt per §5's one-shot rule, under POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE §7.6 -- a BLOCK here ends V8B, does not trigger a redraw)
   ↓
 SEPARATE RESEARCH-OPENING GATE                      (requires §10's two security requirements resolved first)
   ↓
@@ -1167,14 +1358,166 @@ Layer B                                             (V8_HISTORICAL_RESEARCH_DESI
   ↓
 FROZEN FINAL CANDIDATE                               (§10 (V8) rules, unchanged)
   ↓
-T2 SEALED HOLDOUT GATE                              (requires: §9's T2-reuse conditions still holding, §10's security requirements resolved, and §11.3.E's T2 authority-integration choice resolved)
+READ_ONLY_T2_REUSE_CONDITIONS_RECHECK               (repository-safe recheck of §3.3/§9's T2 preservation conditions at this point in time -- see §12.4; safe metadata only, no T2 identities exposed; any condition failing => V8B_T2_PRESERVATION_RECHECK_BLOCKED per §9, not a silent T_spare substitution)
+  ↓
+T2_RAW_ACQUISITION_HUMAN_GATE                       (separate, explicit, one-time human authorization -- see §12.4; T1B authorization never authorizes T2; pre-network technical failure does not consume it; consumed once the first Yahoo request is made)
+  ↓
+T2_RAW_ACQUISITION                                  (real network; original immutable V8 T2 membership/provenance, explicit OPTION_2 bridge (§11.3.E), POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE §7.6; remains sealed; no feature/outcome/research access; failure => V8B_T2_RAW_ACQUISITION_FAIL per §12.4, not a strategy/model/profitability/Layer-C conclusion)
+  ↓
+READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION      (independent, read-only check that the concrete artifact binds to V8B study identity, the frozen V8B design commit, the original immutable V8 T2 authority, the OPTION_2 bridge, correct T2 ticker-list hash/provenance, F1_C1 policy metadata, sealed/raw state, and zero research/open counters -- see §12.4; failure = BLOCK)
+  ↓
+T2_RESEARCH_OPENING_HUMAN_GATE / T2_SEALED_HOLDOUT_GATE (separate human gate; only reachable after READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION PASSes; requires §9's T2-reuse conditions still holding, §10's security requirements resolved, and §11.3.E's OPTION_2 bridge verified)
+  ↓
+Layer C one-shot evaluation                         (V8_HISTORICAL_RESEARCH_DESIGN.md sealed-holdout rules, unchanged, applied to T2 as V8B's sealed holdout)
 ```
 
 ```text
 no_real_network_before_the_gates_marked_above=true
-each_arrow_is_a_separate_human_or_independent_review_gate=true
-no_gate_may_be_skipped=true (V8_HISTORICAL_RESEARCH_DESIGN.md §10.3: skipping_a_stage=false, inherited)
+each_named_human_gate_is_separate=true
+each_named_independent_review_gate_is_separate=true
+authorization_for_one_gate_never_authorizes_a_later_gate=true
+no_gate_or_required_stage_may_be_skipped=true (V8_HISTORICAL_RESEARCH_DESIGN.md §10.3: skipping_a_stage=false, inherited)
 ```
+
+### 12.1 `V8B_ALLOCATION_AUTHORITY_AND_ACQUISITION_IMPLEMENTATION` — required coverage
+
+Before any real `T1B` allocation/acquisition authorization, this future
+implementation phase must cover at least:
+
+```text
+A. T1B deterministic allocation (§4's frozen zero-offset slice rule, §11.3.B's private allocation artifact schema)
+B. T1B successor authority chain (§11.3.A-D)
+C. T1B raw acquisition under POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE (§7.6)
+D. T2 raw acquisition under the same V8B F1_C1 quality policy (§7.6)
+E. the OPTION_2 T2 bridge to the original immutable V8 T2 authority (§11.3.E)
+F. exact block/role/study/design-commit/content bindings (mirroring the existing V8 acquisition manifest invariants, extended for T1B and the OPTION_2 bridge)
+G. privacy-safe failure behavior (no ticker identity, date, or raw payload content in any error/log/exit path -- mirroring the existing generic, ticker-free MALFORMED_OHLCV_QUALITY_GATE reason strings)
+H. one-shot human-gate consumption behavior (each authorization named in §12's diagram is consumed on its own first real action, never reused for a later gate)
+I. the §7.7 fail-before-network runtime prerequisite (Asia/Tokyo ZoneInfo availability check before any Yahoo request)
+```
+
+This is a single implementation phase covering the whole production
+boundary (both `T1B` and `T2` acquisition code paths); it does not itself
+consume any of the separate one-time human authorizations named later in
+§12's diagram, and it performs no real Yahoo/JPX access.
+
+### 12.2 `READ_ONLY_T2_T3_PRESERVATION_RECHECK` — required verification
+
+On the exact candidate design HEAD being considered for freeze, using
+safe committed state/trust metadata only (no private ticker identities):
+
+```text
+T2: acquired=false, opened=false, no_research_feature_outcome_exposure=true, universe_definition_unchanged=true, partition_algorithm_unchanged=true, v8b_quality_policy_already_fixed=true (§7.6)
+T3: acquired=false, opened=false, remains_SEALED_RESERVE=true, no_research_feature_outcome_exposure=true
+```
+
+If this check cannot PASS, the design must **not** be finalized or
+frozen. This gate is not satisfied by a prior favorable read at an
+earlier HEAD; it must be repeated, bound to the exact HEAD actually
+proposed for `V8B_DESIGN_FINALIZED`/`HUMAN_DESIGN_FREEZE`. This document
+does **not** mark this gate complete -- it only specifies what a future,
+freeze-time recheck must verify. If it fails, §9's
+`V8B_T2_PRESERVATION_RECHECK_BLOCKED` / `CHATGPT_DECISION_REQUIRED`
+outcome governs, not a silent substitution.
+
+### 12.3 `INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW` — required explicit verification
+
+```text
+1/252_implemented_by_exact_integer_rational_comparison=REQUIRED (invalid_returned_row_count * 252 <= total_returned_row_count; no floating-point threshold decision)
+max_consecutive_equals_1=REQUIRED
+production_years_are_2018_through_2025_plus_full_p_hist=REQUIRED (not the calibration-evidence 2019-2025 span -- §7.6)
+no_threshold_grid_window_caller_override_exists=REQUIRED
+t1b_cannot_fall_back_to_old_t1_semantics=REQUIRED
+t2_cannot_bypass_option_2_bridge=REQUIRED
+no_v8_trust_anchor_mutated_or_repinned=REQUIRED
+no_ticker_identity_leaks_via_public_errors_or_logs=REQUIRED
+retry_count_equals_0=REQUIRED
+tests_are_fake_synthetic_only=REQUIRED
+no_real_yahoo_or_jpx_access_during_implementation_or_review=REQUIRED
+```
+
+Failure of any item above blocks this gate; the implementation must be
+remediated and independently re-reviewed before any real allocation or
+network authorization may proceed.
+
+### 12.4 `T2` raw acquisition sequence — detailed rules
+
+`T2` under V8B is **not yet acquired**. The following rules bind the
+`READ_ONLY_T2_REUSE_CONDITIONS_RECHECK` → `T2_RAW_ACQUISITION_HUMAN_GATE`
+→ `T2_RAW_ACQUISITION` → `READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION`
+→ `T2_RESEARCH_OPENING_HUMAN_GATE`/`T2_SEALED_HOLDOUT_GATE` → Layer C
+sequence in §12's diagram, positioned after `Layer B` and
+`FROZEN FINAL CANDIDATE`.
+
+**`READ_ONLY_T2_REUSE_CONDITIONS_RECHECK`:**
+
+```text
+recheck_scope=all §3.3 / §9 preservation conditions
+data_used=safe repository/trust metadata only
+t2_identities_exposed=false
+on_any_condition_failing=BLOCK (V8B_T2_PRESERVATION_RECHECK_BLOCKED, §9)
+silent_t2_replacement=PROHIBITED
+```
+
+**`T2_RAW_ACQUISITION_HUMAN_GATE`:**
+
+```text
+authorization=separate, explicit, human
+t1b_authorization_authorizes_t2=false
+authorization_shape=one-shot
+pre_network_technical_failure_counts_as_yahoo_attempt=false
+authorization_consumed_at=first Yahoo request
+```
+
+**`T2_RAW_ACQUISITION`:**
+
+```text
+membership_provenance=original immutable V8 T2 membership/provenance
+authority_bridge=explicit OPTION_2 bridge (§11.3.E)
+quality_policy=POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE (§7.6)
+post_acquisition_state=remains sealed
+feature_outcome_research_access=none
+```
+
+**On failure after network has begun:**
+
+```text
+V8B_T2_RAW_ACQUISITION_FAIL
+```
+
+```text
+automatic_retry=PROHIBITED
+manual_retry_inside_v8b=PROHIBITED
+redraw=PROHIBITED
+t_spare_replacement=PROHIBITED
+threshold_change=PROHIBITED
+alternate_source=PROHIBITED
+layer_c_strategy_conclusion_claimed=PROHIBITED
+v8b_confirmatory_path=CLOSES_AT_ACQUISITION_FAILURE
+```
+
+`V8B_T2_RAW_ACQUISITION_FAIL` must **not** be reinterpreted as a strategy
+failure, model failure, profitability evidence, or a Layer C result --
+the same non-reinterpretation discipline `V8_STATE.json`'s
+`t1_raw_acquisition_attempt_history[].prohibited_reinterpretations`
+already applies to V8's own acquisition-quality BLOCKs.
+
+**`READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION`** must verify the
+concrete artifact is bound to:
+
+```text
+v8b_study_identity=REQUIRED
+frozen_v8b_design_commit=REQUIRED
+original_immutable_v8_t2_authority=REQUIRED
+option_2_bridge=REQUIRED
+correct_t2_ticker_list_hash_provenance=REQUIRED
+f1_c1_policy_metadata=REQUIRED (§7.6)
+sealed_raw_state=REQUIRED
+zero_research_open_counters=REQUIRED
+```
+
+Only after this verification PASSes may the separate
+`T2_RESEARCH_OPENING_HUMAN_GATE`/`T2_SEALED_HOLDOUT_GATE` occur.
 
 ---
 
@@ -1231,17 +1574,29 @@ what remains open is:
 
 - Whether `T2`/`T3` preservation (§3.3/§3.4) still holds at the moment
   design actually freezes — this draft only confirms it holds as of the
-  reviewed HEAD.
+  reviewed HEAD. §12.2's `READ_ONLY_T2_T3_PRESERVATION_RECHECK` gate
+  fixes what a future, freeze-time recheck must verify, bound to the
+  exact freeze-candidate HEAD; it has not been performed yet and is not
+  satisfied by this document's own as-of-reviewed-HEAD confirmation.
+- If that recheck instead fails, resolving what replaces `T2` as V8B's
+  sealed holdout — §9's `V8B_T2_PRESERVATION_RECHECK_BLOCKED` outcome
+  requires a new explicit design and a new human gate
+  (`CHATGPT_DECISION_REQUIRED`); this draft does not resolve that
+  hypothetical case and is not authorized to.
 - The concrete code changes implementing §10's two security requirements.
-- **The concrete implementation of the successor trust/authority model for
-  `T1B` (§11.3.A–D, and the now-approved §11.3.E `OPTION_2` bridge)** —
-  the design decision is resolved and human-approved, but no production
-  code implementing (A)–(E) exists yet; implementation and its own
-  independent review remain future work, required before `ONE_TIME_HUMAN_
-  AUTHORIZATION_TO_ALLOCATE_T1B` (§12).
+- **The concrete implementation of the whole V8B production boundary**
+  (§12.1's `V8B_ALLOCATION_AUTHORITY_AND_ACQUISITION_IMPLEMENTATION`:
+  `T1B` allocation, `T1B`'s successor authority chain (§11.3.A–D, and the
+  now-approved §11.3.E `OPTION_2` bridge), and both `T1B`/`T2` raw
+  acquisition under `POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_
+  GATE`, §7.6) — the design decisions are resolved and, where required,
+  human-approved, but no production code implementing any of this exists
+  yet; implementation and the separate `INDEPENDENT_V8B_PRODUCTION_
+  IMPLEMENTATION_REVIEW` (§12.3) remain future work, required before
+  `ONE_TIME_HUMAN_AUTHORIZATION_TO_ALLOCATE_T1B` (§12).
 - Independent review of this updated final design draft itself
   (`INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT`, §12), and the separate
   `V8B_DESIGN_FINALIZED` / `HUMAN_DESIGN_FREEZE` human gates that follow it
   — none of which this draft performs or grants.
-- Any and all real network authorization, `T1B` allocation, or
+- Any and all real network authorization, `T1B`/`T2` allocation, or
   acquisition — none is granted by this document.
