@@ -23,11 +23,16 @@ sequence in §12. `DATA_QUALITY_CALIBRATION_PLAN_APPROVED`,
 and `SUCCESSOR_TRUST_AUTHORITY_MODEL_RESOLVED` have all now passed (§6, §7.4,
 §11, and the standalone `V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md` /
 `V8B_T2_AUTHORITY_INTEGRATION_APPROVAL.json` audit records). The
-**immediate next gate** is independent review of this final design draft
-itself, ahead of `V8B_DESIGN_FINALIZED` and the separate, still-unreached
-`HUMAN_DESIGN_FREEZE` gate. Nothing in this document marks the design
-frozen, authorizes `T1B` allocation, or performs any acquisition — those
-remain gated exactly as §12 already sequences them.
+**immediate next gate** is `FINAL_INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_
+DRAFT` — the same gate earlier audit records
+(`V8B_DATA_QUALITY_CALIBRATION_RESULT_REVIEW.md`,
+`V8B_T2_AUTHORITY_INTEGRATION_APPROVAL.json`) refer to by its earlier,
+shorter name `INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT`, now bound to
+§12.5's exact-SHA freeze protocol — ahead of `V8B_DESIGN_FINALIZED` and
+the separate, still-unreached `HUMAN_DESIGN_FREEZE` gate. Nothing in this
+document marks the design frozen, authorizes `T1B` allocation, or performs
+any acquisition — those remain gated exactly as §12 already sequences
+them.
 
 This document does not edit, reinterpret, delete, or supersede
 `V8_HISTORICAL_RESEARCH_DESIGN.md`. That document remains the frozen,
@@ -790,6 +795,43 @@ means a run of 2 or more consecutive invalid returned rows BLOCKs (i.e.
 `run > 1` triggers the consecutive gate), the same `run > threshold`
 semantics already implemented for V8's `max_consecutive=5` case.
 
+**Classifier binding (production must use exactly the calibration
+classifier).** `F1_C1` was calibrated against one exact, pinned
+parser/classifier Git blob
+(`V8B_DATA_QUALITY_CALIBRATION_PREREGISTRATION_DRAFT.md` §4). Production
+acquisition must bind to that identical blob, not merely to a
+"semantically similar" successor:
+
+```text
+canonical_parser_classifier_file=src/v7_yahoo_collector.py
+canonical_parser_classifier_git_commit=28e281c3ee30d6b4c2f981c5da3ddc983c09724d
+canonical_parser_classifier_blob_sha=76b57b077f3214e666ff9dc06d9c224afc16df9f
+classifier_version_binding=EXACT_GIT_BLOB
+```
+
+**Production meaning:**
+
+```text
+policy_valid_only_with_exact_classifier_blob=true
+semantically_similar_different_blob_silently_accepted=PROHIBITED
+classifier_change=METHODOLOGICAL_CHANGE (requires CHATGPT_DECISION_REQUIRED before any production use)
+```
+
+**Production blocker:**
+
+```text
+V8B_PRODUCTION_CLASSIFIER_VERSION_MISMATCH
+```
+
+The future V8B production implementation must verify
+`canonical_parser_classifier_blob_sha` before any Yahoo request. This
+check must occur before acquisition-gate consumption (i.e. before the
+`T1B_RAW_ACQUISITION_HUMAN_GATE` / `T2_RAW_ACQUISITION_HUMAN_GATE`
+authorization is treated as consumed), exactly like the §7.7 fail-before-
+network ZoneInfo check. This document does not modify
+`src/v7_yahoo_collector.py`; it only pins which existing blob production
+must verify itself against.
+
 **Returned-row denominator semantics (unchanged from V8 §17 clause 1):**
 
 ```text
@@ -992,30 +1034,38 @@ acquisition outcome, provided (per §6) it was not revised in response to
 acquired.
 
 **If any one of all seven conditions in §3.3 stops holding** (e.g., `T2`
-somehow gets acquired or opened before V8B's design freezes, or the
-universe/partition algorithm changes), this recommendation is withdrawn
-automatically. The result is:
+somehow gets acquired or opened, or the universe/partition algorithm
+changes), this recommendation is withdrawn automatically. The result,
+common to both the pre-freeze recheck (§12.2) and the post-freeze recheck
+after `Layer B` (§12.4), is:
 
 ```text
 V8B_T2_PRESERVATION_RECHECK_BLOCKED
 ```
 
-**This is fail-closed, not implementation-time discretion.** An earlier
-revision of this section stated that "a new sealed block must be sourced
-from `T_spare` instead, following the same one-shot rule as §4–§5." That
-sentence is withdrawn as insufficiently preregistered: no sealed-holdout
-`T_spare` offset, allocation rule, or authority path for a *second*
-`T_spare`-drawn block is frozen anywhere in this document (§4's frozen
-zero-offset slice rule and §11's authority chain are specified for `T1B`
-only, not for a hypothetical `T2` replacement), and inventing one at
-implementation time — after observing that `T2` specifically failed
-preservation — would be exactly the outcome-conditioned, unregistered
-block-selection discretion §5's one-shot rule exists to foreclose, one
-layer up.
+**This is fail-closed, not implementation-time discretion, at either
+stage.** An earlier revision of this section stated that "a new sealed
+block must be sourced from `T_spare` instead, following the same one-shot
+rule as §4–§5." That sentence is withdrawn as insufficiently
+preregistered: no sealed-holdout `T_spare` offset, allocation rule, or
+authority path for a *second* `T_spare`-drawn block is frozen anywhere in
+this document (§4's frozen zero-offset slice rule and §11's authority
+chain are specified for `T1B` only, not for a hypothetical `T2`
+replacement), and inventing one at implementation time — after observing
+that `T2` specifically failed preservation — would be exactly the
+outcome-conditioned, unregistered block-selection discretion §5's
+one-shot rule exists to foreclose, one layer up.
 
-On `V8B_T2_PRESERVATION_RECHECK_BLOCKED`:
+**Stage-dependent action.** The reason string is shared, but what happens
+next depends on whether `V8B_DESIGN_FINALIZED`/`HUMAN_DESIGN_FREEZE`
+(§12.5) has already occurred for this design.
+
+**PRE-FREEZE** (detected by §12.2's recheck, before
+`V8B_DESIGN_FINALIZED`/`HUMAN_DESIGN_FREEZE`):
 
 ```text
+v8b_design_finalized=PROHIBITED
+human_design_freeze=PROHIBITED
 automatic_alternate_sealed_holdout_allocation=PROHIBITED
 implementation_time_t_spare_offset_choice=PROHIBITED
 automatic_t3_reuse_as_replacement=PROHIBITED
@@ -1033,6 +1083,30 @@ and a new separate human gate approving it, are required before
 `V8B_DESIGN_FINALIZED` may proceed. This draft does not resolve that
 methodology question and does not authorize any execution agent to
 resolve it either.
+
+**POST-FREEZE** (detected by §12.4's recheck, after `Layer B`, i.e. after
+`HUMAN_DESIGN_FREEZE` has already occurred for this exact design SHA):
+
+```text
+frozen_v8b_design_amended_to_substitute_another_holdout=PROHIBITED
+t_spare_replacement=PROHIBITED
+t3_automatic_replacement=PROHIBITED
+t2_membership_reassignment=PROHIBITED
+v8b_confirmatory_path=CLOSES_WITHOUT_A_LAYER_C_RESULT
+replacement_holdout_requires=NEW_SUCCESSOR_STUDY_IDENTITY (V8C or equivalent, with its own preregistration/design and human gate)
+post_freeze_chatgpt_decision_modifies_frozen_v8b_under_same_study_identity=PROHIBITED
+```
+
+Unlike the pre-freeze case, a post-freeze `CHATGPT_DECISION_REQUIRED`
+does **not** authorize amending or continuing the already-frozen `V8B`
+design under the same study identity — that would be exactly the
+post-outcome, after-Layer-C-adjacent-access parameter change §5.4/§0.1
+already treat as new-study-triggering, applied at the holdout-failure
+layer instead of the acquisition-quality-policy layer. `V8B_HISTORICAL_
+RESEARCH`'s own confirmatory (Layer C) path simply closes without a
+result; any successor study that wants a different sealed holdout is a
+new study, exactly like `V8C` was already contemplated as `V8B`'s own
+successor on `V8B_VALIDATION_ACQUISITION_FAIL` (§5).
 
 ---
 
@@ -1065,7 +1139,17 @@ implementation_performed_by_this_draft=false
    block being read — not merely that the manifest's own
    identity/label fields (`block`/`role`/`status`/`sealed`) are internally
    self-consistent, which is the current state of the art after V8's
-   security remediation.
+   security remediation. **Extended by this draft:** the official
+   research-opening path must reverify, at point of use, **both** (a) the
+   acquisition manifest's trusted block/authority binding described
+   above, **and** (b) the raw payload bytes' `byte_count`/`SHA-256`
+   binding against that same manifest (§12.6's checklist) — a fresh
+   re-check performed at the moment of opening, not merely trust in
+   `READ_ONLY_T1B_ACQUISITION_ARTIFACT_VERIFICATION`'s or `READ_ONLY_T2_
+   ACQUISITION_ARTIFACT_VERIFICATION`'s earlier, point-in-time PASS. This
+   prevents a successful post-acquisition verification from becoming
+   stale if raw payload files are altered between that verification and
+   the later research-opening attempt.
 
 Neither requirement is implemented, designed in code form, or scheduled
 against a commit in this document. Both remain **design requirements**
@@ -1324,13 +1408,13 @@ SUCCESSOR_TRUST_AUTHORITY_MODEL_RESOLVED            [COMPLETE] (§11 A-E decided
   ↓
 V8B_FINAL_DESIGN_DRAFT_READY_FOR_INDEPENDENT_REVIEW [CURRENT POSITION] (this document, as updated; calibration result and successor authority model both incorporated; not yet V8B_DESIGN_FINALIZED)
   ↓
-INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT        (independent review of this updated draft as a whole; not yet performed)
+FINAL_INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT  (independent review of this updated draft as a whole, reviewing one exact design commit SHA per §12.5; not yet performed; earlier audit records refer to this gate by its shorter name INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT)
   ↓
-READ_ONLY_T2_T3_PRESERVATION_RECHECK                (repository-safe recheck of §3.3/§3.4 conditions, bound to the exact candidate freeze HEAD -- see §12.2; not yet performed; must PASS before V8B_DESIGN_FINALIZED, and must be repeated at the actual freeze candidate HEAD, not satisfied merely because an earlier HEAD looked fine)
+READ_ONLY_TSPARE_T2_T3_PRESERVATION_RECHECK         (repository-safe recheck of §3.3/§3.4/§3.5 conditions, reviewing the SAME exact design commit SHA as the gate above per §12.5 -- see §12.2; not yet performed; must PASS before V8B_DESIGN_FINALIZED, and must be repeated at the actual freeze candidate HEAD, not satisfied merely because an earlier HEAD looked fine)
   ↓
-V8B_DESIGN_FINALIZED                                (Q2 with the specific reviewed number F1_C1 adopted; never Q3 by default per §7; includes the now-resolved successor trust/authority model and a PASSing §12.2 preservation recheck)
+V8B_DESIGN_FINALIZED                                (Q2 with the specific reviewed number F1_C1 adopted; never Q3 by default per §7; includes the now-resolved successor trust/authority model and a PASSing §12.2 preservation recheck; proceeds only if both gates above PASSed for the same exact SHA, per §12.5; does not silently rewrite the design body)
   ↓
-HUMAN_DESIGN_FREEZE                                 (separate human gate, not yet reached; freezes V8B exactly as V8_HISTORICAL_RESEARCH_DESIGN.md §1 froze V8)
+HUMAN_DESIGN_FREEZE                                 (separate human gate, not yet reached; must explicitly name the exact 40-hex frozen design commit SHA per §12.5 -- approval of "the current branch"/"latest HEAD" is insufficient; freezes V8B exactly as V8_HISTORICAL_RESEARCH_DESIGN.md §1 froze V8)
   ↓
 V8B_ALLOCATION_AUTHORITY_AND_ACQUISITION_IMPLEMENTATION (implements the whole V8B production boundary: T1B deterministic allocation, T1B successor authority chain, T1B raw acquisition under POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE (§7.6), T2 raw acquisition under the same policy, the OPTION_2 T2 bridge, exact block/role/study/design-commit/content bindings, privacy-safe failure behavior, one-shot human-gate consumption behavior, and the §7.7 fail-before-network runtime prerequisite; fake-only tests; no real Yahoo/JPX access)
   ↓
@@ -1352,7 +1436,9 @@ T1B_RAW_ACQUISITION_HUMAN_GATE                      (separate one-time authoriza
   ↓
 T1B_RAW_ACQUISITION                                 (real network; exactly one attempt per §5's one-shot rule, under POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE §7.6 -- a BLOCK here ends V8B, does not trigger a redraw)
   ↓
-SEPARATE RESEARCH-OPENING GATE                      (requires §10's two security requirements resolved first)
+READ_ONLY_T1B_ACQUISITION_ARTIFACT_VERIFICATION     (independent, read-only data-integrity check of the concrete successful T1B raw acquisition bundle -- see §12.6 for the full checklist shared with T2; failure = BLOCK, no research opening)
+  ↓
+SEPARATE RESEARCH-OPENING GATE                      (requires §10's two security requirements resolved first, including §10's raw-byte rebinding at point of use)
   ↓
 Layer B                                             (V8_HISTORICAL_RESEARCH_DESIGN.md §5.3 rules, unchanged, applied to T1B)
   ↓
@@ -1364,7 +1450,7 @@ T2_RAW_ACQUISITION_HUMAN_GATE                       (separate, explicit, one-tim
   ↓
 T2_RAW_ACQUISITION                                  (real network; original immutable V8 T2 membership/provenance, explicit OPTION_2 bridge (§11.3.E), POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE §7.6; remains sealed; no feature/outcome/research access; failure => V8B_T2_RAW_ACQUISITION_FAIL per §12.4, not a strategy/model/profitability/Layer-C conclusion)
   ↓
-READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION      (independent, read-only check that the concrete artifact binds to V8B study identity, the frozen V8B design commit, the original immutable V8 T2 authority, the OPTION_2 bridge, correct T2 ticker-list hash/provenance, F1_C1 policy metadata, sealed/raw state, and zero research/open counters -- see §12.4; failure = BLOCK)
+READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION      (independent, read-only check that the concrete artifact binds to V8B study identity, the frozen V8B design commit, the original immutable V8 T2 authority, the OPTION_2 bridge, correct T2 ticker-list hash/provenance, F1_C1 policy metadata, sealed/raw state, and zero research/open counters -- data-integrity checklist shared with T1B at §12.6; see also §12.4; failure = BLOCK)
   ↓
 T2_RESEARCH_OPENING_HUMAN_GATE / T2_SEALED_HOLDOUT_GATE (separate human gate; only reachable after READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION PASSes; requires §9's T2-reuse conditions still holding, §10's security requirements resolved, and §11.3.E's OPTION_2 bridge verified)
   ↓
@@ -1394,6 +1480,7 @@ F. exact block/role/study/design-commit/content bindings (mirroring the existing
 G. privacy-safe failure behavior (no ticker identity, date, or raw payload content in any error/log/exit path -- mirroring the existing generic, ticker-free MALFORMED_OHLCV_QUALITY_GATE reason strings)
 H. one-shot human-gate consumption behavior (each authorization named in §12's diagram is consumed on its own first real action, never reused for a later gate)
 I. the §7.7 fail-before-network runtime prerequisite (Asia/Tokyo ZoneInfo availability check before any Yahoo request)
+J. the §7.6 classifier-binding check (canonical_parser_classifier_blob_sha=76b57b077f3214e666ff9dc06d9c224afc16df9f verified before any Yahoo request; mismatch => V8B_PRODUCTION_CLASSIFIER_VERSION_MISMATCH)
 ```
 
 This is a single implementation phase covering the whole production
@@ -1401,30 +1488,66 @@ boundary (both `T1B` and `T2` acquisition code paths); it does not itself
 consume any of the separate one-time human authorizations named later in
 §12's diagram, and it performs no real Yahoo/JPX access.
 
-### 12.2 `READ_ONLY_T2_T3_PRESERVATION_RECHECK` — required verification
+### 12.2 `READ_ONLY_TSPARE_T2_T3_PRESERVATION_RECHECK` — required verification
 
-On the exact candidate design HEAD being considered for freeze, using
-safe committed state/trust metadata only (no private ticker identities):
+Renamed and extended from the prior `READ_ONLY_T2_T3_PRESERVATION_
+RECHECK` to make explicit that `T_spare` freshness -- not only `T2`/`T3`
+preservation -- must be rechecked before freeze. Every cross-reference to
+the old name in this document has been updated; the gate's substance
+(repository-safe, no ticker identities, BLOCK on failure) is unchanged.
+
+On the exact candidate design SHA being considered for freeze, using safe
+committed state/trust metadata only (no private ticker identities;
+identity-exposure checks below mean checking safe audit/state
+flags/provenance fields, **never** printing or reading the actual
+ticker assignments):
 
 ```text
-T2: acquired=false, opened=false, no_research_feature_outcome_exposure=true, universe_definition_unchanged=true, partition_algorithm_unchanged=true, v8b_quality_policy_already_fixed=true (§7.6)
-T3: acquired=false, opened=false, remains_SEALED_RESERVE=true, no_research_feature_outcome_exposure=true
+T_spare: parent_t_spare_ticker_count=1904
+T_spare: parent_t_spare_ticker_list_sha256=360d5c874e6c08471f118af8ac450dadb38ca138fecd1ecdb834cc08156a9e70
+T_spare: ticker_identities_exposed_to_human_public_research_loop=false
+T_spare: ohlcv_acquisition_occurred=false
+T_spare: feature_outcome_research_use_occurred=false
+T_spare: t1b_allocation_occurred=false
+T_spare: original_parent_membership_provenance_unchanged=true
+
+T2: acquired=false
+T2: opened=false
+T2: ticker_identities_exposed_to_human_public_research_loop=false
+T2: market_data_raw_ohlcv_feature_outcome_research_exposure=false
+T2: universe_definition_unchanged=true
+T2: partition_algorithm_unchanged=true
+T2: v8b_f1_c1_policy_fixed=true (§7.6)
+
+T3: acquired=false
+T3: opened=false
+T3: remains_SEALED_RESERVE=true
+T3: ticker_identities_exposed_to_human_public_research_loop=false
+T3: market_data_raw_ohlcv_feature_outcome_research_exposure=false
 ```
+
+**Absence of evidence is not evidence of PASS.** If any required fact
+above cannot be established from permitted safe metadata (audit/state
+flags, committed hashes/counts, trust-anchor provenance), the result is
+`BLOCK` -- a missing or unreadable safe-metadata field is never treated
+as an implicit PASS.
 
 If this check cannot PASS, the design must **not** be finalized or
 frozen. This gate is not satisfied by a prior favorable read at an
-earlier HEAD; it must be repeated, bound to the exact HEAD actually
-proposed for `V8B_DESIGN_FINALIZED`/`HUMAN_DESIGN_FREEZE`. This document
-does **not** mark this gate complete -- it only specifies what a future,
-freeze-time recheck must verify. If it fails, §9's
-`V8B_T2_PRESERVATION_RECHECK_BLOCKED` / `CHATGPT_DECISION_REQUIRED`
-outcome governs, not a silent substitution.
+earlier HEAD; it must be repeated, bound to the exact SHA actually
+proposed for `V8B_DESIGN_FINALIZED`/`HUMAN_DESIGN_FREEZE` (§12.5). This
+document does **not** mark this gate complete -- it only specifies what a
+future, freeze-time recheck must verify. If the `T2`/`T3` portion fails,
+§9's pre-freeze `V8B_T2_PRESERVATION_RECHECK_BLOCKED` /
+`CHATGPT_DECISION_REQUIRED` outcome governs, not a silent substitution.
+This task does not perform this recheck.
 
 ### 12.3 `INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW` — required explicit verification
 
 ```text
 1/252_implemented_by_exact_integer_rational_comparison=REQUIRED (invalid_returned_row_count * 252 <= total_returned_row_count; no floating-point threshold decision)
 max_consecutive_equals_1=REQUIRED
+production_classifier_exact_blob_match=REQUIRED (canonical_parser_classifier_blob_sha=76b57b077f3214e666ff9dc06d9c224afc16df9f, verified before any Yahoo request; mismatch => V8B_PRODUCTION_CLASSIFIER_VERSION_MISMATCH, §7.6)
 production_years_are_2018_through_2025_plus_full_p_hist=REQUIRED (not the calibration-evidence 2019-2025 span -- §7.6)
 no_threshold_grid_window_caller_override_exists=REQUIRED
 t1b_cannot_fall_back_to_old_t1_semantics=REQUIRED
@@ -1452,10 +1575,11 @@ sequence in §12's diagram, positioned after `Layer B` and
 **`READ_ONLY_T2_REUSE_CONDITIONS_RECHECK`:**
 
 ```text
+recheck_stage=POST-FREEZE (occurs after Layer B / HUMAN_DESIGN_FREEZE, per §9's stage-dependent action)
 recheck_scope=all §3.3 / §9 preservation conditions
 data_used=safe repository/trust metadata only
 t2_identities_exposed=false
-on_any_condition_failing=BLOCK (V8B_T2_PRESERVATION_RECHECK_BLOCKED, §9)
+on_any_condition_failing=BLOCK (V8B_T2_PRESERVATION_RECHECK_BLOCKED, §9 POST-FREEZE action -- confirmatory path closes, no holdout substitution under this study identity)
 silent_t2_replacement=PROHIBITED
 ```
 
@@ -1503,7 +1627,9 @@ the same non-reinterpretation discipline `V8_STATE.json`'s
 already applies to V8's own acquisition-quality BLOCKs.
 
 **`READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION`** must verify the
-concrete artifact is bound to:
+concrete artifact is bound to, in addition to §12.6's full data-integrity
+checklist (shared verbatim with `READ_ONLY_T1B_ACQUISITION_ARTIFACT_
+VERIFICATION`):
 
 ```text
 v8b_study_identity=REQUIRED
@@ -1516,8 +1642,143 @@ sealed_raw_state=REQUIRED
 zero_research_open_counters=REQUIRED
 ```
 
+These items are `T2`-authority-specific (verifying the `OPTION_2` bridge
+and original immutable V8 authority rather than the new `T1B` allocation
+authority chain); §12.6 supplies the block-agnostic data-integrity checks
+common to both blocks.
+
 Only after this verification PASSes may the separate
 `T2_RESEARCH_OPENING_HUMAN_GATE`/`T2_SEALED_HOLDOUT_GATE` occur.
+
+### 12.5 Design-freeze Git binding protocol (exact-SHA binding)
+
+The design freeze must authorize exactly one 40-hex Git commit SHA, never
+a moving branch reference. This subsection freezes the binding protocol
+now; it does not perform any step of it.
+
+```text
+A. FINAL_INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT reviews one exact design commit SHA.
+B. READ_ONLY_TSPARE_T2_T3_PRESERVATION_RECHECK (§12.2) reviews the SAME exact design commit SHA.
+C. V8B_DESIGN_FINALIZED may proceed only if both A and B PASS for that same SHA. It does not silently rewrite the design body.
+D. HUMAN_DESIGN_FREEZE must explicitly name that exact 40-hex design commit SHA. Approval of "the current branch" / "latest HEAD" is insufficient.
+E. After explicit human approval, a separate repository audit artifact is created -- conceptually V8B_DESIGN_FREEZE_APPROVAL.json.
+```
+
+**(E) is specified now, not created now.** Its future minimum fields:
+
+```text
+schema_version=V8B_DESIGN_FREEZE_APPROVAL_V1
+study=V8B_HISTORICAL_RESEARCH
+frozen_design_git_commit=<exact approved 40-hex SHA>
+design_document=V8B_HISTORICAL_RESEARCH_DESIGN_DRAFT.md
+final_independent_review_result=PASS
+final_independent_review_design_commit=<same SHA>
+preservation_recheck_result=PASS
+preservation_recheck_design_commit=<same SHA>
+approval_status=APPROVED
+human_gate=<exact human approval string naming the same SHA>
+```
+
+**The freeze-approval commit is not the frozen design commit.** The
+commit that later adds `V8B_DESIGN_FREEZE_APPROVAL.json` to the
+repository is **not** itself the frozen design commit — the frozen design
+commit is the exact, earlier design SHA the human actually approved,
+which necessarily predates the artifact commit that records the
+approval. This task does not create that artifact and does not perform
+`HUMAN_DESIGN_FREEZE`.
+
+**Any semantic change to the design document after (A) or (B):**
+
+```text
+invalidates_the_prior_review_or_recheck=true
+requires_a_new_candidate_sha=true
+requires_repeat_final_independent_review=true
+requires_repeat_preservation_recheck=true
+requires_a_new_exact_human_freeze_approval=true
+```
+
+**Any semantic design change after `HUMAN_DESIGN_FREEZE`:**
+
+```text
+NEW_STUDY_REQUIRED
+```
+
+unless the frozen design itself explicitly defines a permitted
+append-only, non-methodological clarification path (mirroring
+`V8_HISTORICAL_RESEARCH_DESIGN.md` §17's own append-only-erratum
+precedent, §0.1).
+
+**Future V8B production authority must bind to the exact
+`frozen_design_git_commit` recorded in the (E) approval artifact** —
+mirroring how `V8_TRUSTED_PARTITION.json` already binds production
+acquisition to one exact, pinned partition-build commit rather than to a
+branch.
+
+### 12.6 Raw acquisition artifact verification — required integrity checks (`T1B` and `T2`)
+
+`READ_ONLY_T1B_ACQUISITION_ARTIFACT_VERIFICATION` and `READ_ONLY_T2_
+ACQUISITION_ARTIFACT_VERIFICATION` (§12's diagram) share this checklist.
+Both are **data-integrity checks only**.
+
+```text
+calculates_features=PROHIBITED
+calculates_strategy_results=PROHIBITED
+calculates_profit_or_trades=PROHIBITED
+calculates_any_other_research_outcome=PROHIBITED
+```
+
+For each successful `T1B`/`T2` acquisition artifact, independently verify:
+
+```text
+v8b_study_identity=REQUIRED
+logical_block_and_role=REQUIRED (correct)
+frozen_v8b_design_commit=REQUIRED (exact)
+reviewed_production_implementation_commit=REQUIRED (exact)
+authority_chain=REQUIRED (T1B: V8B successor allocation authority, §11; T2: original immutable V8 authority + OPTION_2 bridge, §11.3.E)
+ticker_count=300
+request_start=2016-04-01
+request_end_exclusive=2026-01-01
+yahoo_source_host_schema=REQUIRED (matches frozen design)
+retry_count=0
+request_count=300 (on a successful complete acquisition)
+success_transport_count=300
+f1_c1_policy_metadata=REQUIRED (exact -- §7.6)
+production_years=2018,2019,2020,2021,2022,2023,2024,2025 plus full P_hist (§7.6; not the calibration-evidence 2019-2025 span)
+sealed_raw_access_counter_invariants=REQUIRED (appropriate to the block: T1B raw-acquired-not-opened; T2 raw-acquired-sealed)
+payload_manifest_record_count=300 (exactly)
+stored_payload_manifest_hash=REQUIRED (validates)
+raw_payload_files_present=REQUIRED (exactly the 300 manifest-designated files exist)
+unexpected_extra_raw_payload_in_block_raw_directory=PROHIBITED
+per_payload_byte_count_matches_manifest=REQUIRED (every file)
+per_payload_sha256_matches_manifest=REQUIRED (every file)
+missing_or_unreadable_payload=BLOCK
+ticker_identity_path_raw_payload_ohlcv_value_emitted_publicly=PROHIBITED
+```
+
+**Read scope.** Verification may internally read the private raw bytes
+solely to compute byte counts/SHA-256; it must not parse those bytes into
+OHLCV for research. The public verification result contains aggregate
+status/counts/hashes only.
+
+**Any mismatch on any item above:**
+
+```text
+BLOCK
+no_research_opening=true
+```
+
+This gate exists precisely so that a successful acquisition (data
+transported without a `MALFORMED_OHLCV_QUALITY_GATE`/classifier/policy
+BLOCK) cannot be assumed intact by the time research opening is
+attempted — see §10's extended read-time content-binding requirement,
+which additionally re-verifies raw-byte binding at the point research
+opening is actually used, so this verification's result cannot go stale
+if files are altered afterward.
+
+Neither gate is implemented by this document; both remain design
+requirements for the future `V8B_ALLOCATION_AUTHORITY_AND_ACQUISITION_
+IMPLEMENTATION` phase (§12.1) and `INDEPENDENT_V8B_PRODUCTION_
+IMPLEMENTATION_REVIEW` (§12.3).
 
 ---
 
@@ -1572,17 +1833,26 @@ the calibrated numeric threshold and the `T2`-integration authority
 choice — are now resolved (§7.4, §11.3.E) and are removed from this list;
 what remains open is:
 
-- Whether `T2`/`T3` preservation (§3.3/§3.4) still holds at the moment
-  design actually freezes — this draft only confirms it holds as of the
-  reviewed HEAD. §12.2's `READ_ONLY_T2_T3_PRESERVATION_RECHECK` gate
-  fixes what a future, freeze-time recheck must verify, bound to the
-  exact freeze-candidate HEAD; it has not been performed yet and is not
-  satisfied by this document's own as-of-reviewed-HEAD confirmation.
-- If that recheck instead fails, resolving what replaces `T2` as V8B's
-  sealed holdout — §9's `V8B_T2_PRESERVATION_RECHECK_BLOCKED` outcome
-  requires a new explicit design and a new human gate
-  (`CHATGPT_DECISION_REQUIRED`); this draft does not resolve that
-  hypothetical case and is not authorized to.
+- Whether `T_spare` freshness and `T2`/`T3` preservation (§3.3/§3.4/§3.5)
+  still hold at the moment design actually freezes — this draft only
+  confirms they hold as of the reviewed HEAD. §12.2's `READ_ONLY_TSPARE_
+  T2_T3_PRESERVATION_RECHECK` gate fixes what a future, freeze-time
+  recheck must verify, bound to the exact freeze-candidate SHA; it has
+  not been performed yet and is not satisfied by this document's own
+  as-of-reviewed-HEAD confirmation.
+- If that recheck's `T2` portion instead fails **before** freeze,
+  resolving what replaces `T2` as V8B's sealed holdout — §9's pre-freeze
+  `V8B_T2_PRESERVATION_RECHECK_BLOCKED` outcome requires a new explicit
+  design and a new human gate (`CHATGPT_DECISION_REQUIRED`); this draft
+  does not resolve that hypothetical case and is not authorized to. If
+  the equivalent §12.4 recheck instead fails **after** freeze (post
+  `HUMAN_DESIGN_FREEZE`, including after `Layer B`), §9's post-freeze
+  rule governs instead: the frozen design is not amended, no holdout is
+  substituted under the same study identity, and `V8B_HISTORICAL_
+  RESEARCH`'s confirmatory path closes without a Layer C result — any
+  replacement holdout requires a genuinely new successor study identity
+  (`V8C` or equivalent), with its own preregistration/design and human
+  gate.
 - The concrete code changes implementing §10's two security requirements.
 - **The concrete implementation of the whole V8B production boundary**
   (§12.1's `V8B_ALLOCATION_AUTHORITY_AND_ACQUISITION_IMPLEMENTATION`:
@@ -1595,8 +1865,10 @@ what remains open is:
   IMPLEMENTATION_REVIEW` (§12.3) remain future work, required before
   `ONE_TIME_HUMAN_AUTHORIZATION_TO_ALLOCATE_T1B` (§12).
 - Independent review of this updated final design draft itself
-  (`INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT`, §12), and the separate
-  `V8B_DESIGN_FINALIZED` / `HUMAN_DESIGN_FREEZE` human gates that follow it
-  — none of which this draft performs or grants.
+  (`FINAL_INDEPENDENT_REVIEW_OF_V8B_FINAL_DESIGN_DRAFT`, §12/§12.5), and
+  the separate `V8B_DESIGN_FINALIZED` / `HUMAN_DESIGN_FREEZE` human gates
+  that follow it — none of which this draft performs or grants. Nor does
+  it perform the future `V8B_DESIGN_FREEZE_APPROVAL.json` artifact §12.5
+  specifies; that artifact's minimum schema is frozen here, not created.
 - Any and all real network authorization, `T1B`/`T2` allocation, or
   acquisition — none is granted by this document.
