@@ -370,6 +370,7 @@ def test_step3_missing_implementation_review_blocks_before_network(tmp_path):
     assert excinfo.value.reason in {
         "PRODUCTION_GIT_WORKTREE_DIRTY",
         "PRODUCTION_GIT_HEAD_NOT_ORIGIN",
+        "PRODUCTION_GIT_ORIGIN_REF_UNAVAILABLE",
         "V8B_DESIGN_FREEZE_APPROVAL_READ_FAILED",
         "V8B_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING",
     }
