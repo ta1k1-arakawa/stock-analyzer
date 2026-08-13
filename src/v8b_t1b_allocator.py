@@ -105,10 +105,15 @@ def _write_allocation_artifact_once(destination: Path, artifact_bytes: bytes) ->
         raise V8BT1BAllocatorBlocked("OUTPUT_PATH_PARENT_INVALID")
     staging = destination.parent / (destination.name + ".staging-" + os.urandom(8).hex())
     try:
-        with open(staging, "wb") as stream:
-            stream.write(artifact_bytes)
-            stream.flush()
-            os.fsync(stream.fileno())
+        try:
+            with open(staging, "wb") as stream:
+                stream.write(artifact_bytes)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as error:
+            # Round-3 repeat finding HIGH-3: never let a raw OSError
+            # (which could carry the private staging/output path) escape.
+            raise V8BT1BAllocatorBlocked("V8B_ALLOCATION_ARTIFACT_STAGING_WRITE_FAILED") from error
         try:
             os.link(str(staging), str(destination))
         except FileExistsError as error:

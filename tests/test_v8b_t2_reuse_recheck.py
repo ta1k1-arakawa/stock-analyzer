@@ -52,25 +52,25 @@ def _pass_metadata(**overrides) -> dict:
 
 
 def test_pure_evaluator_pass():
-    result = recheck.recheck_t2_reuse_conditions(_pass_metadata())
+    result = recheck._recheck_t2_reuse_conditions(_pass_metadata())
     assert result == {"result": "PASS", "block": "T2"}
 
 
 def test_pure_evaluator_blocks_on_missing_field():
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck.recheck_t2_reuse_conditions({"t2_acquired": False})
+        recheck._recheck_t2_reuse_conditions({"t2_acquired": False})
     assert excinfo.value.reason == "V8B_T2_PRESERVATION_RECHECK_BLOCKED:MISSING_SAFE_METADATA"
 
 
 def test_pure_evaluator_blocks_on_already_acquired():
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck.recheck_t2_reuse_conditions(_pass_metadata(t2_acquired=True))
+        recheck._recheck_t2_reuse_conditions(_pass_metadata(t2_acquired=True))
     assert excinfo.value.reason == "V8B_T2_PRESERVATION_RECHECK_BLOCKED:T2_ACQUIRED"
 
 
 def test_pure_evaluator_blocks_on_universe_definition_changed():
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck.recheck_t2_reuse_conditions(_pass_metadata(t2_universe_definition_unchanged=False))
+        recheck._recheck_t2_reuse_conditions(_pass_metadata(t2_universe_definition_unchanged=False))
     assert excinfo.value.reason == "V8B_T2_PRESERVATION_RECHECK_BLOCKED:T2_UNIVERSE_DEFINITION_UNCHANGED"
 
 
@@ -89,7 +89,19 @@ def test_production_resolver_signature_accepts_no_arbitrary_mapping():
 
     params = set(inspect.signature(recheck.resolve_and_recheck_t2_reuse_conditions).parameters)
     assert "safe_metadata" not in params
-    assert params == {"repository_root", "verified_head"}
+    assert params == {"verified_head"}
+
+
+def test_production_resolver_signature_accepts_no_repository_root_override():
+    """Round-3 repeat finding HIGH-1: neither public resolver accepts a
+    caller-supplied repository_root -- both always resolve trust from
+    CANONICAL_REPOSITORY_ROOT."""
+    import inspect
+
+    assert "repository_root" not in inspect.signature(recheck.resolve_and_recheck_t2_reuse_conditions).parameters
+    assert "repository_root" not in inspect.signature(
+        recheck.resolve_t2_reuse_safe_metadata_from_verified_head
+    ).parameters
 
 
 def test_production_resolver_blocks_on_real_repo_today():
@@ -97,7 +109,7 @@ def test_production_resolver_blocks_on_real_repo_today():
     the real post-Layer-B recheck has not been performed -- so production
     must fail closed today (round-2 finding HIGH-2 correction)."""
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck.resolve_and_recheck_t2_reuse_conditions(ROOT, _real_head())
+        recheck.resolve_and_recheck_t2_reuse_conditions(_real_head())
     assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_MISSING"
 
 
@@ -144,7 +156,7 @@ def test_production_resolver_passes_on_well_formed_synthetic_post_freeze_artifac
     bogus.mkdir()
     raw = _write_json(bogus / recheck.POST_FREEZE_RECHECK_GIT_PATH, _post_freeze_artifact())
     commit = _init_bogus_git_repo(bogus, files={recheck.POST_FREEZE_RECHECK_GIT_PATH: raw})
-    result = recheck.resolve_and_recheck_t2_reuse_conditions(bogus, commit)
+    result = recheck._resolve_and_recheck_t2_reuse_conditions_with_repository_root(bogus, commit)
     assert result == {"result": "PASS", "block": "T2"}
 
 
@@ -153,7 +165,7 @@ def test_resolve_safe_metadata_matches_pure_evaluator_schema(tmp_path):
     bogus.mkdir()
     raw = _write_json(bogus / recheck.POST_FREEZE_RECHECK_GIT_PATH, _post_freeze_artifact())
     commit = _init_bogus_git_repo(bogus, files={recheck.POST_FREEZE_RECHECK_GIT_PATH: raw})
-    safe_metadata = recheck.resolve_t2_reuse_safe_metadata_from_verified_head(bogus, commit)
+    safe_metadata = recheck._resolve_t2_reuse_safe_metadata_from_verified_head_with_repository_root(bogus, commit)
     assert set(safe_metadata) == set(recheck.REQUIRED_SAFE_METADATA_FIELDS)
     for value in safe_metadata.values():
         assert isinstance(value, bool)
@@ -164,7 +176,7 @@ def test_production_resolver_missing_artifact_blocks(tmp_path):
     bogus.mkdir()
     commit = _init_bogus_git_repo(bogus, files={"README.md": b"x"})
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck.resolve_and_recheck_t2_reuse_conditions(bogus, commit)
+        recheck._resolve_and_recheck_t2_reuse_conditions_with_repository_root(bogus, commit)
     assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_MISSING"
 
 
@@ -186,7 +198,7 @@ def test_production_resolver_field_semantics_enforced(tmp_path, field, value, ex
     raw = _write_json(bogus / recheck.POST_FREEZE_RECHECK_GIT_PATH, _post_freeze_artifact(**{field: value}))
     commit = _init_bogus_git_repo(bogus, files={recheck.POST_FREEZE_RECHECK_GIT_PATH: raw})
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck.resolve_and_recheck_t2_reuse_conditions(bogus, commit)
+        recheck._resolve_and_recheck_t2_reuse_conditions_with_repository_root(bogus, commit)
     assert excinfo.value.reason == expected_reason
 
 
@@ -201,7 +213,7 @@ def test_stale_pre_freeze_evidence_cannot_satisfy_the_post_freeze_gate(tmp_path)
     )
     commit = _init_bogus_git_repo(bogus, files={recheck.POST_FREEZE_RECHECK_GIT_PATH: raw})
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck.resolve_and_recheck_t2_reuse_conditions(bogus, commit)
+        recheck._resolve_and_recheck_t2_reuse_conditions_with_repository_root(bogus, commit)
     assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_NOT_POST_FREEZE"
 
 
@@ -211,5 +223,31 @@ def test_duplicate_key_artifact_blocks(tmp_path):
     raw = b'{"schema_version": "a", "schema_version": "b"}'
     commit = _init_bogus_git_repo(bogus, files={recheck.POST_FREEZE_RECHECK_GIT_PATH: raw})
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck.resolve_and_recheck_t2_reuse_conditions(bogus, commit)
+        recheck._resolve_and_recheck_t2_reuse_conditions_with_repository_root(bogus, commit)
     assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_DUPLICATE_KEY"
+
+
+# ---------------------------------------------------------------------------
+# Round-3 repeat MEDIUM-2: pure/private helper is not a public production API
+# ---------------------------------------------------------------------------
+
+
+def test_private_pure_evaluator_is_not_publicly_exported():
+    assert "recheck_t2_reuse_conditions" not in recheck.__all__
+    assert not hasattr(recheck, "recheck_t2_reuse_conditions")
+    assert hasattr(recheck, "_recheck_t2_reuse_conditions")
+
+
+def test_only_the_production_resolvers_and_safe_constants_are_public():
+    assert set(recheck.__all__) == {
+        "CANONICAL_REPOSITORY_ROOT",
+        "POST_FREEZE_RECHECK_FIELDS",
+        "POST_FREEZE_RECHECK_GATE",
+        "POST_FREEZE_RECHECK_GIT_PATH",
+        "POST_FREEZE_RECHECK_SCHEMA_VERSION",
+        "POST_FREEZE_RECHECK_STAGE",
+        "REQUIRED_SAFE_METADATA_FIELDS",
+        "V8BT2PreservationRecheckBlocked",
+        "resolve_and_recheck_t2_reuse_conditions",
+        "resolve_t2_reuse_safe_metadata_from_verified_head",
+    }

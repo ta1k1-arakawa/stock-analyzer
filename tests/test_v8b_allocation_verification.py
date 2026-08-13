@@ -50,7 +50,7 @@ def verify_kwargs(parent, artifact, **overrides):
 def test_pass_returns_safe_aggregate_summary_only():
     parent = _tickers("P", 1904)
     artifact = build_artifact(parent)
-    result = verification.verify_t1b_allocation_artifact(**verify_kwargs(parent, artifact))
+    result = verification._verify_t1b_allocation_artifact(**verify_kwargs(parent, artifact))
     assert result["result"] == "PASS"
     assert result["t1b_ticker_count"] == 300
     assert "t1b_tickers" not in result
@@ -63,7 +63,7 @@ def test_disjoint_from_t0():
     artifact = build_artifact(parent)
     overlapping_t0 = list(parent[:300])
     with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
-        verification.verify_t1b_allocation_artifact(**verify_kwargs(parent, artifact, t0_tickers=overlapping_t0))
+        verification._verify_t1b_allocation_artifact(**verify_kwargs(parent, artifact, t0_tickers=overlapping_t0))
     assert excinfo.value.reason == "T1B_NOT_DISJOINT_FROM_T0"
 
 
@@ -72,7 +72,7 @@ def test_disjoint_from_old_t1():
     artifact = build_artifact(parent)
     overlapping = list(parent[:1])
     with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
-        verification.verify_t1b_allocation_artifact(**verify_kwargs(parent, artifact, old_t1_tickers=overlapping))
+        verification._verify_t1b_allocation_artifact(**verify_kwargs(parent, artifact, old_t1_tickers=overlapping))
     assert excinfo.value.reason == "T1B_NOT_DISJOINT_FROM_OLD_T1"
 
 
@@ -81,7 +81,7 @@ def test_disjoint_from_t2():
     artifact = build_artifact(parent)
     overlapping = list(parent[299:300])
     with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
-        verification.verify_t1b_allocation_artifact(**verify_kwargs(parent, artifact, t2_tickers=overlapping))
+        verification._verify_t1b_allocation_artifact(**verify_kwargs(parent, artifact, t2_tickers=overlapping))
     assert excinfo.value.reason == "T1B_NOT_DISJOINT_FROM_T2"
 
 
@@ -90,7 +90,7 @@ def test_disjoint_from_t3():
     artifact = build_artifact(parent)
     overlapping = list(parent[:1])
     with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
-        verification.verify_t1b_allocation_artifact(**verify_kwargs(parent, artifact, t3_tickers=overlapping))
+        verification._verify_t1b_allocation_artifact(**verify_kwargs(parent, artifact, t3_tickers=overlapping))
     assert excinfo.value.reason == "T1B_NOT_DISJOINT_FROM_T3"
 
 
@@ -98,7 +98,7 @@ def test_parent_hash_mismatch_against_trusted_anchor_blocks():
     parent = _tickers("P", 1904)
     artifact = build_artifact(parent)
     with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
-        verification.verify_t1b_allocation_artifact(
+        verification._verify_t1b_allocation_artifact(
             **verify_kwargs(parent, artifact, expected_parent_t_spare_ticker_list_sha256="f" * 64)
         )
     assert excinfo.value.reason == "PARENT_T_SPARE_HASH_MISMATCH_TRUSTED_ANCHOR"
@@ -108,7 +108,7 @@ def test_design_commit_mismatch_blocks():
     parent = _tickers("P", 1904)
     artifact = build_artifact(parent)
     with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
-        verification.verify_t1b_allocation_artifact(
+        verification._verify_t1b_allocation_artifact(
             **verify_kwargs(parent, artifact, expected_v8b_frozen_design_commit="9" * 40)
         )
     assert excinfo.value.reason == "V8B_FROZEN_DESIGN_COMMIT_MISMATCH"
@@ -123,7 +123,7 @@ def test_selection_rule_text_tamper_blocks():
         {k: v for k, v in tampered.items() if k != "artifact_self_hash"}
     )
     with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
-        verification.verify_t1b_allocation_artifact(**verify_kwargs(parent, tampered))
+        verification._verify_t1b_allocation_artifact(**verify_kwargs(parent, tampered))
     assert excinfo.value.reason == "SELECTION_RULE_TEXT_MISMATCH"
 
 
@@ -146,7 +146,7 @@ def test_non_zero_offset_slice_blocks():
         {k: v for k, v in tampered.items() if k != "artifact_self_hash"}
     )
     with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
-        verification.verify_t1b_allocation_artifact(**verify_kwargs(parent, tampered))
+        verification._verify_t1b_allocation_artifact(**verify_kwargs(parent, tampered))
     assert excinfo.value.reason == "T1B_NOT_EXACT_ZERO_OFFSET_SLICE"
 
 
@@ -156,7 +156,7 @@ def test_corrupted_self_hash_blocks_before_any_other_check():
     tampered = dict(artifact)
     tampered["artifact_self_hash"] = "0" * 64
     with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
-        verification.verify_t1b_allocation_artifact(**verify_kwargs(parent, tampered))
+        verification._verify_t1b_allocation_artifact(**verify_kwargs(parent, tampered))
     assert excinfo.value.reason.startswith("ARTIFACT_SELF_HASH_INVALID:")
 
 
@@ -171,8 +171,9 @@ def test_production_resolver_signature_accepts_no_caller_supplied_expected_value
     import inspect
 
     params = set(inspect.signature(verification.resolve_and_verify_t1b_allocation_artifact).parameters)
-    assert params == {"allocation_artifact_path", "partition_manifest_path", "repository_root"}
+    assert params == {"allocation_artifact_path", "partition_manifest_path"}
     for forbidden in (
+        "repository_root",
         "expected_v8b_frozen_design_commit",
         "expected_parent_t_spare_ticker_list_sha256",
         "t0_tickers",
@@ -204,3 +205,22 @@ def test_production_resolver_never_prints_ticker_or_private_path_on_failure(tmp_
         )
     assert str(private_artifact_path) not in excinfo.value.reason
     assert "private" not in excinfo.value.reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# Round-3 repeat MEDIUM-2: pure/private helper is not a public production API
+# ---------------------------------------------------------------------------
+
+
+def test_private_pure_evaluator_is_not_publicly_exported():
+    assert "verify_t1b_allocation_artifact" not in verification.__all__
+    assert not hasattr(verification, "verify_t1b_allocation_artifact")
+    assert hasattr(verification, "_verify_t1b_allocation_artifact")
+
+
+def test_only_the_production_resolver_and_safe_constants_are_public():
+    assert set(verification.__all__) == {
+        "CANONICAL_REPOSITORY_ROOT",
+        "V8BAllocationVerificationBlocked",
+        "resolve_and_verify_t1b_allocation_artifact",
+    }

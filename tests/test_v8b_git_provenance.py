@@ -11,8 +11,15 @@ from src import v8b_git_provenance as gp
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _init_bogus_git_repo(root: Path, *, files: dict[str, bytes]) -> str:
+CANONICAL_ORIGIN_URL = "https://github.com/ta1k1-arakawa/stock-analyzer.git"
+
+
+def _init_bogus_git_repo(
+    root: Path, *, files: dict[str, bytes], origin_url: str | None = CANONICAL_ORIGIN_URL
+) -> str:
     subprocess.run(["git", "init", "-q", str(root)], check=True)
+    if origin_url is not None:
+        subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin_url], check=True)
     for relative_path, content in files.items():
         path = root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,6 +236,175 @@ def test_read_git_object_bytes_missing_path_blocks():
     with pytest.raises(gp.V8BGitProvenanceBlocked) as excinfo:
         gp.read_git_object_bytes(ROOT, _real_head(), "NO_SUCH_FILE_EXISTS.json")
     assert excinfo.value.reason == "GIT_OBJECT_READ_FAILED"
+
+
+# ---------------------------------------------------------------------------
+# Round-3 HIGH-1: intended GitHub repository identity, not merely a
+# same-named branch in an arbitrary repository.
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_intended_origin_passes_identity_check():
+    assert gp._canonical_github_owner_repo("https://github.com/ta1k1-arakawa/stock-analyzer.git") == gp.EXPECTED_GITHUB_OWNER_REPO
+    assert gp._canonical_github_owner_repo("https://github.com/ta1k1-arakawa/stock-analyzer") == gp.EXPECTED_GITHUB_OWNER_REPO
+    assert gp._canonical_github_owner_repo("git@github.com:ta1k1-arakawa/stock-analyzer.git") == gp.EXPECTED_GITHUB_OWNER_REPO
+    assert gp._canonical_github_owner_repo("ssh://git@github.com/ta1k1-arakawa/stock-analyzer.git") == gp.EXPECTED_GITHUB_OWNER_REPO
+    # GitHub repository identity is case-insensitive.
+    assert gp._canonical_github_owner_repo("https://github.com/TA1K1-Arakawa/Stock-Analyzer.git") == gp.EXPECTED_GITHUB_OWNER_REPO
+
+
+@pytest.mark.parametrize(
+    "malicious_url",
+    (
+        "https://github.com.evil.example/ta1k1-arakawa/stock-analyzer.git",
+        "https://evilgithub.com/ta1k1-arakawa/stock-analyzer.git",
+        "https://github.com:8443/ta1k1-arakawa/stock-analyzer.git",
+        "https://attacker@github.com/ta1k1-arakawa/stock-analyzer.git",
+        "https://github.com/ta1k1-arakawa/stock-analyzer.git#@evil.example",
+        "git@evil.example:ta1k1-arakawa/stock-analyzer.git",
+        "evil@github.com:ta1k1-arakawa/stock-analyzer.git",
+        "ssh://attacker@github.com/ta1k1-arakawa/stock-analyzer.git",
+        "/local/bogus/path/ta1k1-arakawa/stock-analyzer",
+        "file:///local/bogus/path",
+        "not a url at all",
+        "",
+        None,
+        123,
+    ),
+)
+def test_malicious_or_unparseable_origin_is_never_canonicalized(malicious_url):
+    assert gp._canonical_github_owner_repo(malicious_url) is None
+
+
+@pytest.mark.parametrize(
+    "wrong_owner_repo_url,expected",
+    (
+        ("https://github.com/someone-else/stock-analyzer.git", "someone-else/stock-analyzer"),
+        ("https://github.com/ta1k1-arakawa/different-repo.git", "ta1k1-arakawa/different-repo"),
+    ),
+)
+def test_valid_but_different_github_repo_parses_but_does_not_match_expected(wrong_owner_repo_url, expected):
+    """A well-formed github.com URL for a DIFFERENT repository parses
+    successfully (the parser's only job is normalization) but must never
+    equal ``EXPECTED_GITHUB_OWNER_REPO`` -- the identity comparison, not
+    the parser, is what rejects it."""
+    parsed = gp._canonical_github_owner_repo(wrong_owner_repo_url)
+    assert parsed == expected
+    assert parsed != gp.EXPECTED_GITHUB_OWNER_REPO
+
+
+@pytest.mark.parametrize(
+    "malformed_path_url",
+    (
+        "https://github.com/ta1k1-arakawa/stock-analyzer/extra-path-segment.git",
+        "https://github.com/ta1k1-arakawa",
+        "https://github.com/",
+        "https://github.com",
+    ),
+)
+def test_malformed_path_segment_count_is_never_canonicalized(malformed_path_url):
+    assert gp._canonical_github_owner_repo(malformed_path_url) is None
+
+
+def test_wrong_repository_origin_blocks(tmp_path):
+    """A clean checkout whose origin is a different, unrelated GitHub
+    repository must BLOCK, even with the exact right branch name and ref."""
+    bogus = tmp_path / "wrong_repo"
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(
+        bogus, files={"README.md": b"hello"}, origin_url="https://github.com/someone-else/unrelated-repo.git"
+    )
+    subprocess.run(
+        ["git", "-C", str(bogus), "update-ref", "refs/remotes/origin/" + gp.PRODUCTION_BRANCH, commit],
+        check=True,
+    )
+    with pytest.raises(gp.V8BGitProvenanceBlocked) as excinfo:
+        gp.resolve_verified_v8b_production_git_commit(bogus)
+    assert excinfo.value.reason == "PRODUCTION_GIT_ORIGIN_IDENTITY_MISMATCH"
+
+
+def test_right_branch_name_in_wrong_repository_blocks(tmp_path):
+    """The exact right branch ref name, exact HEAD match, clean worktree --
+    everything except the repository identity itself -- must still BLOCK."""
+    bogus = tmp_path / "right_branch_wrong_repo"
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(
+        bogus, files={"README.md": b"hello"}, origin_url="git@github.com:someone-else/stock-analyzer.git"
+    )
+    subprocess.run(
+        ["git", "-C", str(bogus), "update-ref", "refs/remotes/origin/" + gp.PRODUCTION_BRANCH, commit],
+        check=True,
+    )
+    with pytest.raises(gp.V8BGitProvenanceBlocked) as excinfo:
+        gp.resolve_verified_v8b_production_git_commit(bogus)
+    assert excinfo.value.reason == "PRODUCTION_GIT_ORIGIN_IDENTITY_MISMATCH"
+
+
+def test_malicious_local_origin_blocks(tmp_path):
+    """A bare local filesystem path (or any non-github.com origin) as
+    ``origin`` must BLOCK -- a local mirror/clone is never sufficient."""
+    bogus = tmp_path / "local_origin"
+    bogus.mkdir()
+    local_remote = tmp_path / "local_remote.git"
+    commit = _init_bogus_git_repo(bogus, files={"README.md": b"hello"}, origin_url=str(local_remote))
+    subprocess.run(
+        ["git", "-C", str(bogus), "update-ref", "refs/remotes/origin/" + gp.PRODUCTION_BRANCH, commit],
+        check=True,
+    )
+    with pytest.raises(gp.V8BGitProvenanceBlocked) as excinfo:
+        gp.resolve_verified_v8b_production_git_commit(bogus)
+    assert excinfo.value.reason == "PRODUCTION_GIT_ORIGIN_IDENTITY_MISMATCH"
+
+
+def test_missing_origin_remote_blocks(tmp_path):
+    bogus = tmp_path / "no_origin"
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(bogus, files={"README.md": b"hello"}, origin_url=None)
+    subprocess.run(
+        ["git", "-C", str(bogus), "update-ref", "refs/remotes/origin/" + gp.PRODUCTION_BRANCH, commit],
+        check=True,
+    )
+    with pytest.raises(gp.V8BGitProvenanceBlocked) as excinfo:
+        gp.resolve_verified_v8b_production_git_commit(bogus)
+    assert excinfo.value.reason == "PRODUCTION_GIT_ORIGIN_URL_UNAVAILABLE"
+
+
+def test_canonical_intended_origin_reaches_and_passes_full_resolution(tmp_path):
+    """The exact canonical origin identity, exact right branch ref, clean
+    worktree, HEAD-equals-origin -- everything correct -- must PASS."""
+    bogus = tmp_path / "canonical_pass"
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(bogus, files={"README.md": b"hello"}, origin_url=CANONICAL_ORIGIN_URL)
+    subprocess.run(
+        ["git", "-C", str(bogus), "update-ref", "refs/remotes/origin/" + gp.PRODUCTION_BRANCH, commit],
+        check=True,
+    )
+    assert gp.resolve_verified_v8b_production_git_commit(bogus) == commit
+
+
+def test_identity_check_runs_before_origin_ref_lookup(tmp_path):
+    """The identity check must fail closed even when the V8B origin ref
+    doesn't exist at all -- proving identity is checked strictly before
+    the branch-ref lookup, not merely as an afterthought once a ref is
+    already found."""
+    bogus = tmp_path / "identity_before_ref"
+    bogus.mkdir()
+    _init_bogus_git_repo(bogus, files={"README.md": b"hello"}, origin_url="https://github.com/wrong/repo.git")
+    with pytest.raises(gp.V8BGitProvenanceBlocked) as excinfo:
+        gp.resolve_verified_v8b_production_git_commit(bogus)
+    assert excinfo.value.reason == "PRODUCTION_GIT_ORIGIN_IDENTITY_MISMATCH"
+
+
+def test_real_repository_origin_is_the_canonical_identity():
+    """The real repository this session is running in must itself resolve
+    to the canonical intended identity (sanity check that the constant
+    matches this actual production repository)."""
+    result = subprocess.run(
+        ["git", "-C", str(ROOT), "config", "--get", "remote.origin.url"], capture_output=True, check=False, text=True
+    )
+    if result.returncode != 0:
+        pytest.skip("no origin remote configured in this checkout")
+    assert gp._canonical_github_owner_repo(result.stdout.strip()) == gp.EXPECTED_GITHUB_OWNER_REPO
 
 
 def test_module_never_invokes_git_fetch(monkeypatch):

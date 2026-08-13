@@ -87,7 +87,7 @@ def build_and_run_t1b(tmp_path: Path) -> tuple[dict, Path]:
         v8b_allocation_implementation_commit=SYNTHETIC_REVIEWED_COMMIT,
         clock=clock_stub,
     )
-    result = verification.verify_t1b_allocation_artifact(
+    result = verification._verify_t1b_allocation_artifact(
         artifact=artifact,
         parent_t_spare_tickers=parent,
         t0_tickers=_tickers("T0", 300),
@@ -150,7 +150,7 @@ def expected_kwargs_for(artifact: dict, pin: dict) -> dict:
 
 def test_pass_on_honest_bundle(tmp_path):
     artifact, output_root, pin = build_and_run_t1b(tmp_path)
-    result = artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    result = artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert result["result"] == "PASS"
     assert result["payload_manifest_record_count"] == 300
     assert result["ticker_count"] == 300
@@ -161,7 +161,7 @@ def test_detects_missing_payload_file(tmp_path):
     raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
     next(raw_dir.iterdir()).unlink()
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "RAW_PAYLOAD_MISSING"
 
 
@@ -170,7 +170,7 @@ def test_detects_extra_payload_file(tmp_path):
     raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
     (raw_dir / "EXTRA9999.json").write_bytes(b"{}")
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "RAW_PAYLOAD_UNEXPECTED_EXTRA"
 
 
@@ -180,7 +180,7 @@ def test_detects_modified_payload_bytes(tmp_path):
     victim = next(raw_dir.iterdir())
     victim.write_bytes(victim.read_bytes() + b"tampered")
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "RAW_PAYLOAD_BYTE_COUNT_MISMATCH"
 
 
@@ -208,7 +208,7 @@ def test_payload_manifest_hash_tampering_blocks(tmp_path):
     manifest["payload_manifest_sha256"] = "0" * 64
     _rewrite_manifest(output_root, "T1B", manifest)
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     # read_acquisition_manifest itself doesn't check payload_manifest_sha256
     # consistency, so this reaches the artifact verifier's own recompute check.
     assert excinfo.value.reason == "PAYLOAD_MANIFEST_SHA_MISMATCH"
@@ -220,7 +220,7 @@ def test_classifier_blob_tampering_blocks(tmp_path):
     manifest["canonical_parser_classifier_blob_sha"] = "0" * 40
     _rewrite_manifest(output_root, "T1B", manifest)
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "CLASSIFIER_BLOB_MISMATCH"
 
 
@@ -230,7 +230,7 @@ def test_data_source_tampering_blocks(tmp_path):
     manifest["data_source_schema"] = "some other schema"
     _rewrite_manifest(output_root, "T1B", manifest)
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "DATA_SOURCE_SCHEMA_MISMATCH"
 
 
@@ -239,7 +239,7 @@ def test_authority_binding_schema_mismatch_blocks(tmp_path):
     kwargs = expected_kwargs_for(artifact, pin)
     kwargs["expected_authority_chain"] = "ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY_OPTION_2_BRIDGE"  # wrong chain for T1B
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **kwargs)
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **kwargs)
     assert excinfo.value.reason == "AUTHORITY_CHAIN_MISMATCH"
 
 
@@ -249,7 +249,7 @@ def test_authority_binding_field_set_must_match_block(tmp_path):
     manifest["authority_binding"]["extra_unexpected_field"] = "value"
     _rewrite_manifest(output_root, "T1B", manifest)
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "AUTHORITY_BINDING_SCHEMA_INVALID"
 
 
@@ -266,7 +266,7 @@ def test_ticker_list_sha_mismatch_blocks(tmp_path):
     kwargs = expected_kwargs_for(artifact, pin)
     kwargs["expected_ticker_list_sha256"] = "0" * 64
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **kwargs)
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **kwargs)
     assert excinfo.value.reason == "TICKER_LIST_SHA_MISMATCH"
 
 
@@ -280,7 +280,7 @@ def test_authority_binding_matching_keys_but_wrong_values_blocks(tmp_path):
     manifest["authority_binding"]["trust_pin_human_gate"] = "FORGED_BUT_SAME_KEY_SET"
     _rewrite_manifest(output_root, "T1B", manifest)
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "AUTHORITY_BINDING_VALUE_MISMATCH"
 
 
@@ -289,7 +289,7 @@ def test_expected_authority_binding_wrong_schema_blocks(tmp_path):
     kwargs = expected_kwargs_for(artifact, pin)
     kwargs["expected_authority_binding"] = {"unexpected_field": "value"}
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **kwargs)
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **kwargs)
     assert excinfo.value.reason == "EXPECTED_AUTHORITY_BINDING_SCHEMA_INVALID"
 
 
@@ -302,8 +302,9 @@ def test_production_resolver_signature_accepts_no_caller_supplied_expected_value
     import inspect
 
     params = set(inspect.signature(artifact_verification.resolve_and_verify_acquisition_artifact).parameters)
-    assert params == {"output_root", "block", "repository_root"}
+    assert params == {"output_root", "block"}
     for forbidden in (
+        "repository_root",
         "expected_v8b_frozen_design_commit",
         "expected_reviewed_production_implementation_commit",
         "expected_authority_chain",
@@ -326,3 +327,168 @@ def test_production_resolver_rejects_invalid_block():
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
         artifact_verification.resolve_and_verify_acquisition_artifact("/nonexistent", "T3")
     assert excinfo.value.reason == "BLOCK_INVALID"
+
+
+# ---------------------------------------------------------------------------
+# Round-3 repeat HIGH-2: block membership is bound to the concrete payload,
+# not merely the manifest's own claimed ticker_list_sha256.
+# ---------------------------------------------------------------------------
+
+
+def test_forged_payload_with_correct_trusted_hash_but_different_ticker_set_blocks(tmp_path):
+    """The exact scenario HIGH-2 describes: manifest.ticker_list_sha256
+    keeps the correct trusted value, but payload_manifest/raw files are
+    swapped to name a completely different 300-ticker set (with
+    payload_manifest_sha256 recomputed to match the forged list, so that
+    check alone cannot catch it). Only recomputing the membership hash
+    from the concrete payload tickers catches this."""
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    manifest = _load_manifest(output_root, "T1B")
+    original_ticker_list_sha256 = manifest["ticker_list_sha256"]
+
+    forged_tickers = _tickers("TS", 1904)[300:600]  # a disjoint, equally well-formed 300-ticker set
+    forged_payload_manifest = [
+        {**entry, "ticker": forged_ticker}
+        for entry, forged_ticker in zip(manifest["payload_manifest"], forged_tickers)
+    ]
+    manifest["payload_manifest"] = forged_payload_manifest
+    manifest["payload_manifest_sha256"] = acquisition.sha256_bytes(
+        acquisition.canonical_json_bytes(forged_payload_manifest)
+    )
+    # ticker_list_sha256 is deliberately left unchanged -- still the
+    # correct, trusted value -- to prove that field alone is insufficient.
+    assert manifest["ticker_list_sha256"] == original_ticker_list_sha256
+    _rewrite_manifest(output_root, "T1B", manifest)
+
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "PAYLOAD_TICKER_MEMBERSHIP_HASH_MISMATCH"
+
+
+def test_payload_manifest_record_with_extra_field_blocks(tmp_path):
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    manifest = _load_manifest(output_root, "T1B")
+    manifest["payload_manifest"][0]["extra_unexpected_field"] = "value"
+    _rewrite_manifest(output_root, "T1B", manifest)
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "PAYLOAD_MANIFEST_RECORD_SCHEMA_INVALID"
+
+
+def test_payload_manifest_record_missing_field_blocks(tmp_path):
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    manifest = _load_manifest(output_root, "T1B")
+    del manifest["payload_manifest"][0]["byte_count"]
+    _rewrite_manifest(output_root, "T1B", manifest)
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "PAYLOAD_MANIFEST_RECORD_SCHEMA_INVALID"
+
+
+def test_non_canonical_ticker_spelling_blocks(tmp_path):
+    """A ticker spelled in a non-canonical form (e.g. lowercase) must BLOCK
+    even if every hash/count otherwise lines up -- membership is bound to
+    canonical ticker identity."""
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    manifest = _load_manifest(output_root, "T1B")
+    original_ticker = manifest["payload_manifest"][0]["ticker"]
+    manifest["payload_manifest"][0]["ticker"] = original_ticker.lower()
+    manifest["payload_manifest_sha256"] = acquisition.sha256_bytes(
+        acquisition.canonical_json_bytes(manifest["payload_manifest"])
+    )
+    _rewrite_manifest(output_root, "T1B", manifest)
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason in {"PAYLOAD_MANIFEST_TICKER_NOT_CANONICAL", "PAYLOAD_TICKER_MEMBERSHIP_HASH_MISMATCH"}
+
+
+def test_duplicate_ticker_in_payload_manifest_blocks(tmp_path):
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    manifest = _load_manifest(output_root, "T1B")
+    manifest["payload_manifest"][1]["ticker"] = manifest["payload_manifest"][0]["ticker"]
+    manifest["payload_manifest_sha256"] = acquisition.sha256_bytes(
+        acquisition.canonical_json_bytes(manifest["payload_manifest"])
+    )
+    _rewrite_manifest(output_root, "T1B", manifest)
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "PAYLOAD_MANIFEST_DUPLICATE_TICKER"
+
+
+def test_membership_hash_recomputed_from_payload_order_not_resorted(tmp_path):
+    """Recomputation must preserve payload_manifest's own order (the hash
+    rule is order-sensitive) -- a bundle that is honest except for a
+    reordering of payload_manifest entries must BLOCK, proving the check
+    doesn't silently re-sort before hashing."""
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    manifest = _load_manifest(output_root, "T1B")
+    reordered = list(reversed(manifest["payload_manifest"]))
+    manifest["payload_manifest"] = reordered
+    manifest["payload_manifest_sha256"] = acquisition.sha256_bytes(acquisition.canonical_json_bytes(reordered))
+    _rewrite_manifest(output_root, "T1B", manifest)
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "PAYLOAD_TICKER_MEMBERSHIP_HASH_MISMATCH"
+
+
+# ---------------------------------------------------------------------------
+# Round-3 repeat MEDIUM-2: pure/private helper is not a public production API
+# ---------------------------------------------------------------------------
+
+
+def test_private_pure_checker_is_not_publicly_exported():
+    assert "verify_acquisition_artifact" not in artifact_verification.__all__
+    assert not hasattr(artifact_verification, "verify_acquisition_artifact")
+    assert hasattr(artifact_verification, "_verify_acquisition_artifact")
+
+
+def test_only_the_production_resolver_and_safe_constants_are_public():
+    assert set(artifact_verification.__all__) == {
+        "CANONICAL_REPOSITORY_ROOT",
+        "EXPECTED_AUTHORITY_CHAIN_BY_BLOCK",
+        "V8BAcquisitionArtifactVerificationBlocked",
+        "resolve_and_verify_acquisition_artifact",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Round-3 repeat HIGH-3: filesystem error privacy boundary
+# ---------------------------------------------------------------------------
+
+SECRET_PRIVATE_PATH_FRAGMENT = "/very/secret/private/acquisition/output"
+
+
+def test_raw_payload_directory_unreadable_never_leaks_path(tmp_path, monkeypatch):
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+
+    real_iterdir = Path.iterdir
+
+    def poisoned_iterdir(self):
+        if self.name == acquisition.RAW_DIRNAME:
+            raise OSError(f"permission denied listing {SECRET_PRIVATE_PATH_FRAGMENT}/raw")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", poisoned_iterdir)
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "RAW_PAYLOAD_DIRECTORY_UNREADABLE"
+    assert SECRET_PRIVATE_PATH_FRAGMENT not in excinfo.value.reason
+
+
+def test_raw_payload_read_failure_never_leaks_path_or_ticker(tmp_path, monkeypatch):
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    secret_ticker = artifact["t1b_tickers"][0]
+
+    real_read_bytes = Path.read_bytes
+
+    def poisoned_read_bytes(self):
+        if self.suffix == ".json" and self.parent.name == acquisition.RAW_DIRNAME:
+            raise OSError(f"permission denied reading {secret_ticker} at {SECRET_PRIVATE_PATH_FRAGMENT}")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", poisoned_read_bytes)
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "RAW_PAYLOAD_MISSING"
+    assert SECRET_PRIVATE_PATH_FRAGMENT not in excinfo.value.reason
+    assert secret_ticker not in excinfo.value.reason

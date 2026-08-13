@@ -8,24 +8,37 @@ it reads them solely to recompute `byte_count`/SHA-256 and compare against
 the acquisition manifest's own `payload_manifest`. Any mismatch is
 `BLOCK`, with no research opening. Performs no network access.
 
-Two, and only two, ways to call this module (round-3 finding HIGH-4):
+Two, and only two, ways to call this module (round-3 finding HIGH-4,
+corrected further in round 3's repeat review):
 
-- `verify_acquisition_artifact` -- a **private/pure integrity checker**.
-  It compares the published manifest's own fields against caller-supplied
-  ``expected_*`` values and performs no Git access of its own. It exists
-  so fake/synthetic tests can exercise every mismatch branch directly; it
-  is not, by itself, a safe *production* trust root, because nothing stops
-  a caller from fabricating favorable ``expected_*`` values (this was
-  exactly the round-3 gap: the previous production call site supplied
-  those values itself instead of deriving them from Git).
-- `resolve_and_verify_acquisition_artifact` -- the **production
-  resolver**. It derives every ``expected_*`` value -- including the
-  block's `ticker_list_sha256` and the *exact values* (not merely the key
-  set) of `authority_binding` -- from **verified Git objects**: the
-  frozen design/freeze-approval/reviewed-implementation chain, the exact
-  immutable V8 anchor + `OPTION_2` bridge (`T2`), or the Git-sourced
-  `V8B_TRUSTED_ALLOCATION.json` trust pin (`T1B`). It never accepts a
-  caller-supplied expected hash or authority string as the trust root.
+- `_verify_acquisition_artifact` -- a **private/pure integrity checker**
+  (round-3 repeat finding MEDIUM-2: not part of the production public
+  surface -- fake/synthetic tests import and call it directly as an
+  internal helper). It compares the published manifest's own fields
+  against caller-supplied ``expected_*`` values and performs no Git access
+  of its own. It exists so fake/synthetic tests can exercise every
+  mismatch branch directly; it is not, by itself, a safe *production*
+  trust root, because nothing stops a caller from fabricating favorable
+  ``expected_*`` values.
+- `resolve_and_verify_acquisition_artifact` -- the sole **public
+  production resolver**. It derives every ``expected_*`` value -- the
+  reviewed implementation commit, the block's exact expected
+  ``ticker_list_sha256``, and the *exact values* (not merely the key set)
+  of `authority_binding` -- from **verified Git objects** read from the
+  one fixed, non-overridable production repository root (round-3 repeat
+  finding HIGH-1: no ``repository_root`` parameter exists on this public
+  function; a private DI-testable variant carries that parameter for
+  fake/synthetic tests only). It never accepts a caller-supplied expected
+  hash or authority string as the trust root.
+
+Round-3 repeat finding HIGH-2: block membership is bound to the *concrete*
+payload -- every `payload_manifest` record's schema and ticker canonical
+form are validated, exactly 300 unique tickers are required, and
+`ticker_list_sha256` is **recomputed** from those 300 concrete ticker
+values (preserving `payload_manifest`'s own order) rather than merely
+compared against the manifest's self-reported field. A forged bundle whose
+manifest carries the correct trusted hash while its `payload_manifest`/raw
+files actually name a different 300-ticker set BLOCKs.
 """
 
 from __future__ import annotations
@@ -34,6 +47,8 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+from src.v7_yahoo_collector import V7YahooCollectorBlocked, canonical_ticker
+from src.v8_partition import ticker_list_sha256 as v8_ticker_list_sha256
 from src.v8b_git_provenance import V8BGitProvenanceBlocked, resolve_verified_v8b_production_git_commit
 from src.v8b_historical_acquisition import (
     ACQUISITIONS_DIRNAME,
@@ -44,6 +59,7 @@ from src.v8b_historical_acquisition import (
     DATA_SOURCE,
     DATA_SOURCE_HOST,
     DATA_SOURCE_SCHEMA,
+    PAYLOAD_RECORD_FIELDS,
     RAW_DIRNAME,
     RETRY_COUNT,
     V8BHistoricalAcquisitionBlocked,
@@ -64,6 +80,9 @@ from src.v8b_production_provenance import (
 )
 from src.v8b_trust_pin import V8BTrustPinBlocked, validate_trust_pin
 
+# The one fixed, non-overridable production repository root -- round-3
+# repeat finding HIGH-1: no public function in this module accepts a
+# caller-supplied repository_root as its trust root.
 CANONICAL_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 EXPECTED_AUTHORITY_CHAIN_BY_BLOCK = {
@@ -116,7 +135,7 @@ class V8BAcquisitionArtifactVerificationBlocked(RuntimeError):
         self.reason = reason
 
 
-def verify_acquisition_artifact(
+def _verify_acquisition_artifact(
     output_root,
     block: str,
     *,
@@ -222,10 +241,47 @@ def verify_acquisition_artifact(
     if not isinstance(payload_manifest, list) or len(payload_manifest) != 300:
         raise V8BAcquisitionArtifactVerificationBlocked("PAYLOAD_MANIFEST_RECORD_COUNT_INVALID")
 
+    # HIGH-2 (round-3 repeat finding): every payload_manifest record must
+    # have exactly the expected schema and a canonical ticker identifier --
+    # a forged record with extra/missing fields, or a non-canonical ticker
+    # spelling, must BLOCK before its ticker is ever trusted as part of the
+    # membership set. Order is preserved exactly as payload_manifest states
+    # it (never re-sorted) -- ticker_list_sha256 is order-sensitive.
+    payload_tickers: list[str] = []
+    for entry in payload_manifest:
+        if not isinstance(entry, dict) or set(entry) != set(PAYLOAD_RECORD_FIELDS):
+            raise V8BAcquisitionArtifactVerificationBlocked("PAYLOAD_MANIFEST_RECORD_SCHEMA_INVALID")
+        ticker = entry["ticker"]
+        if not isinstance(ticker, str):
+            raise V8BAcquisitionArtifactVerificationBlocked("PAYLOAD_MANIFEST_TICKER_INVALID")
+        try:
+            canonical = canonical_ticker(ticker)
+        except V7YahooCollectorBlocked as error:
+            raise V8BAcquisitionArtifactVerificationBlocked("PAYLOAD_MANIFEST_TICKER_NOT_CANONICAL") from error
+        if canonical != ticker:
+            raise V8BAcquisitionArtifactVerificationBlocked("PAYLOAD_MANIFEST_TICKER_NOT_CANONICAL")
+        payload_tickers.append(ticker)
+
+    if len(payload_tickers) != 300 or len(set(payload_tickers)) != 300:
+        raise V8BAcquisitionArtifactVerificationBlocked("PAYLOAD_MANIFEST_DUPLICATE_TICKER")
+
     # Recompute payload_manifest_sha256 from the actual payload_manifest
     # list -- never merely trust the manifest's own stated hash field.
     if sha256_bytes(canonical_json_bytes(payload_manifest)) != manifest["payload_manifest_sha256"]:
         raise V8BAcquisitionArtifactVerificationBlocked("PAYLOAD_MANIFEST_SHA_MISMATCH")
+
+    # HIGH-2: block membership authority is bound to the CONCRETE payload,
+    # not merely the manifest's own claimed ticker_list_sha256 field --
+    # recompute the membership hash from the actual 300 payload_manifest
+    # ticker values using the exact production ticker-list hashing rule
+    # (`src.v8_partition.ticker_list_sha256`, the same rule the manifest's
+    # own field was originally computed with) and require it to equal the
+    # manifest's claimed hash, which is itself already pinned above to the
+    # Git-derived expected hash. A forged bundle whose manifest carries the
+    # correct trusted ticker_list_sha256 while its payload_manifest/raw
+    # files actually name a different 300-ticker set BLOCKs here.
+    if v8_ticker_list_sha256(payload_tickers) != manifest["ticker_list_sha256"]:
+        raise V8BAcquisitionArtifactVerificationBlocked("PAYLOAD_TICKER_MEMBERSHIP_HASH_MISMATCH")
 
     raw_dir = Path(output_root) / ACQUISITIONS_DIRNAME / block / RAW_DIRNAME
     try:
@@ -234,8 +290,6 @@ def verify_acquisition_artifact(
         raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_DIRECTORY_UNREADABLE") from error
 
     expected_files = {entry["ticker"] + ".json" for entry in payload_manifest}
-    if len(expected_files) != len(payload_manifest):
-        raise V8BAcquisitionArtifactVerificationBlocked("PAYLOAD_MANIFEST_DUPLICATE_TICKER")
     if expected_files - actual_files:
         raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_MISSING")
     if actual_files - expected_files:
@@ -279,13 +333,19 @@ def _wrap(error: BaseException, missing_reason: str | None = None) -> V8BAcquisi
     return V8BAcquisitionArtifactVerificationBlocked("PROVENANCE_CHECK_FAILED")
 
 
-def resolve_and_verify_acquisition_artifact(
+def _resolve_and_verify_acquisition_artifact_with_repository_root(
     output_root,
     block: str,
     *,
-    repository_root: str | None = None,
+    repository_root,
 ) -> dict[str, Any]:
-    """Production §12.6 boundary (round-3 finding HIGH-4).
+    """Private DI-testable implementation -- fake/synthetic tests only, not
+    a production API (round-3 repeat finding HIGH-1). ``repository_root``
+    is caller-injectable here so fake tests can exercise this ordering
+    against a bogus/synthetic repository; the public
+    ``resolve_and_verify_acquisition_artifact`` below is the only
+    production entrypoint, and it always passes
+    ``CANONICAL_REPOSITORY_ROOT`` -- never a caller-suppliable value.
 
     Derives every trust value -- the reviewed implementation commit, the
     block's exact expected ``ticker_list_sha256``, and the exact
@@ -293,13 +353,13 @@ def resolve_and_verify_acquisition_artifact(
     bridge; `T1B`: the Git-sourced `V8B_TRUSTED_ALLOCATION.json` trust pin)
     -- from **verified Git objects**, never from a caller-supplied expected
     hash or authority string. Delegates the actual integrity checklist to
-    ``verify_acquisition_artifact``, the same pure checker fake/synthetic
+    ``_verify_acquisition_artifact``, the same pure checker fake/synthetic
     tests use directly with their own synthetic ``expected_*`` values.
     Performs no network access and parses no OHLCV.
     """
     if block not in EXPECTED_AUTHORITY_CHAIN_BY_BLOCK:
         raise V8BAcquisitionArtifactVerificationBlocked("BLOCK_INVALID")
-    root = repository_root if repository_root is not None else CANONICAL_REPOSITORY_ROOT
+    root = repository_root
 
     try:
         verified_head = resolve_verified_v8b_production_git_commit(root)
@@ -350,7 +410,7 @@ def resolve_and_verify_acquisition_artifact(
             "trust_pin_human_gate": pin["human_gate"],
         }
 
-    return verify_acquisition_artifact(
+    return _verify_acquisition_artifact(
         output_root,
         block,
         expected_v8b_frozen_design_commit=EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
@@ -361,10 +421,21 @@ def resolve_and_verify_acquisition_artifact(
     )
 
 
+def resolve_and_verify_acquisition_artifact(output_root, block: str) -> dict[str, Any]:
+    """The sole public production §12.6 boundary (round-3 repeat finding
+    HIGH-1). Always resolves trust from ``CANONICAL_REPOSITORY_ROOT`` --
+    this signature deliberately exposes no ``repository_root`` (or any
+    other trust-root) override. See module docstring for the full
+    ordering.
+    """
+    return _resolve_and_verify_acquisition_artifact_with_repository_root(
+        output_root, block, repository_root=CANONICAL_REPOSITORY_ROOT
+    )
+
+
 __all__ = [
     "CANONICAL_REPOSITORY_ROOT",
     "EXPECTED_AUTHORITY_CHAIN_BY_BLOCK",
     "V8BAcquisitionArtifactVerificationBlocked",
     "resolve_and_verify_acquisition_artifact",
-    "verify_acquisition_artifact",
 ]

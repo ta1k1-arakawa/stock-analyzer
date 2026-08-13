@@ -7,33 +7,39 @@ code that produced it. Any single invariant failing is `BLOCK`: no trust
 pin may be created and no acquisition may proceed (§11.4, §12's
 `READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION` gate).
 
-Two, and only two, ways to call this module (round-3 finding MEDIUM-2, this
-implementation phase):
+Two, and only two, ways to call this module (round-3 finding MEDIUM-2,
+tightened further in round 3's repeat review):
 
-- ``verify_t1b_allocation_artifact`` -- the **private/pure invariant
-  evaluator**. It performs no I/O and no network access, and accepts
+- ``_verify_t1b_allocation_artifact`` -- the **private/pure invariant
+  evaluator** (round-3 repeat finding MEDIUM-2: not part of the production
+  public surface -- fake/synthetic tests import and call it directly as an
+  internal helper). It performs no I/O and no network access, and accepts
   every trusted comparison input (the parent `T_spare`/`T0`/old-`T1`/`T2`/
   `T3` ticker lists, the expected parent hash, the expected frozen design
   commit) directly from the caller -- exactly the seam fake/synthetic
   tests need. It is not, by itself, a safe *production* trust root: a
   caller could supply a favorable but wrong mapping.
-- ``resolve_and_verify_t1b_allocation_artifact`` -- the **production
-  boundary**. It resolves verified V8B Git HEAD; verifies the frozen
-  design object, freeze approval, and reviewed-implementation binding;
-  verifies the exact immutable V8 anchor; reads the private V8 partition
-  manifest and the private `T1B` allocation artifact from caller-supplied
-  paths (private data, so a path parameter remains appropriate, exactly
-  like `src/v8b_t1b_allocator.py` and the `T1B` branch of
+- ``resolve_and_verify_t1b_allocation_artifact`` -- the sole **public
+  production boundary**. It resolves verified V8B Git HEAD from the one
+  fixed, non-overridable production repository root (round-3 repeat
+  finding HIGH-1: no ``repository_root`` parameter exists on this public
+  function; a private DI-testable variant carries that parameter for
+  fake/synthetic tests only); verifies the frozen design object, freeze
+  approval, and reviewed-implementation binding; verifies the exact
+  immutable V8 anchor; reads the private V8 partition manifest and the
+  private `T1B` allocation artifact from caller-supplied paths (private
+  data, so a path parameter remains appropriate, exactly like
+  `src/v8b_t1b_allocator.py` and the `T1B` branch of
   `src/v8b_historical_acquisition.py`); derives every block's ticker
   assignment internally from that one verified manifest; checks the
   artifact's parent manifest SHA/implementation-commit and the exact
   frozen parent `T_spare` count/hash; checks the artifact's
   ``v8b_allocation_implementation_commit`` equals the reviewed
   implementation commit; and only then invokes the pure evaluator above.
-  It never accepts a caller-supplied expected hash/commit as the trust
-  root, performs no network access, and its return value is the pure
-  evaluator's own safe aggregate result -- hashes/counts/status only,
-  never a ticker identity or private path.
+  It never accepts a caller-supplied expected hash/commit/repository-root
+  as the trust root, performs no network access, and its return value is
+  the pure evaluator's own safe aggregate result -- hashes/counts/status
+  only, never a ticker identity or private path.
 """
 
 from __future__ import annotations
@@ -82,7 +88,7 @@ class V8BAllocationVerificationBlocked(RuntimeError):
         self.reason = reason
 
 
-def verify_t1b_allocation_artifact(
+def _verify_t1b_allocation_artifact(
     artifact: Mapping[str, Any],
     *,
     parent_t_spare_tickers: Sequence[str],
@@ -223,14 +229,20 @@ def _strict_json_object(raw: bytes, *, invalid_reason: str, duplicate_reason: st
     return parsed
 
 
-def resolve_and_verify_t1b_allocation_artifact(
+def _resolve_and_verify_t1b_allocation_artifact_with_repository_root(
     allocation_artifact_path: str | os.PathLike[str],
     partition_manifest_path: str | os.PathLike[str],
     *,
-    repository_root: str | None = None,
+    repository_root,
 ) -> dict[str, Any]:
-    """Production `READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION` boundary
-    (round-3 finding MEDIUM-2). See module docstring for the full ordering.
+    """Private DI-testable implementation -- fake/synthetic tests only, not
+    a production API (round-3 repeat finding HIGH-1). ``repository_root``
+    is caller-injectable here so fake tests can exercise this ordering
+    against a bogus/synthetic repository; the public
+    ``resolve_and_verify_t1b_allocation_artifact`` below is the only
+    production entrypoint, and it always passes
+    ``CANONICAL_REPOSITORY_ROOT`` -- never a caller-suppliable value. See
+    module docstring for the full ordering.
 
     ``allocation_artifact_path``/``partition_manifest_path`` are private
     data, so caller-supplied paths remain appropriate here -- exactly the
@@ -242,7 +254,7 @@ def resolve_and_verify_t1b_allocation_artifact(
     or manifest's own self-reported fields. No network access; never
     prints a ticker identity or a private path.
     """
-    root = repository_root if repository_root is not None else CANONICAL_REPOSITORY_ROOT
+    root = repository_root
 
     try:
         verified_head = resolve_verified_v8b_production_git_commit(root)
@@ -326,7 +338,7 @@ def resolve_and_verify_t1b_allocation_artifact(
     if artifact.get("v8b_allocation_implementation_commit") != reviewed_commit:
         raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_IMPLEMENTATION_COMMIT_NOT_REVIEWED")
 
-    return verify_t1b_allocation_artifact(
+    return _verify_t1b_allocation_artifact(
         artifact,
         parent_t_spare_tickers=parent_tickers,
         t0_tickers=blocks["T0"],
@@ -338,9 +350,23 @@ def resolve_and_verify_t1b_allocation_artifact(
     )
 
 
+def resolve_and_verify_t1b_allocation_artifact(
+    allocation_artifact_path: str | os.PathLike[str],
+    partition_manifest_path: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """The sole public production `READ_ONLY_T1B_ALLOCATION_ARTIFACT_
+    VERIFICATION` boundary (round-3 repeat finding HIGH-1). Always
+    resolves trust from ``CANONICAL_REPOSITORY_ROOT`` -- this signature
+    deliberately exposes no ``repository_root`` (or any other trust-root)
+    override.
+    """
+    return _resolve_and_verify_t1b_allocation_artifact_with_repository_root(
+        allocation_artifact_path, partition_manifest_path, repository_root=CANONICAL_REPOSITORY_ROOT
+    )
+
+
 __all__ = [
     "CANONICAL_REPOSITORY_ROOT",
     "V8BAllocationVerificationBlocked",
     "resolve_and_verify_t1b_allocation_artifact",
-    "verify_t1b_allocation_artifact",
 ]

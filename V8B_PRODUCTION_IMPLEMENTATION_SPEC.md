@@ -224,3 +224,33 @@ yahoo_jpx_requests=0
 | MEDIUM-1: no production wrapper existed for `READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION` | New `resolve_and_verify_t1b_allocation_artifact` in `src/v8b_allocation_verification.py`: resolves verified Git HEAD, verifies the frozen design/freeze-approval/reviewed-implementation chain and the exact immutable V8 anchor, reads the private V8 partition manifest and `T1B` allocation artifact from caller-supplied paths, derives every block's ticker assignment internally, checks the artifact's parent-manifest SHA/implementation-commit and the exact frozen parent `T_spare` count/hash, checks `v8b_allocation_implementation_commit` equals the reviewed commit, and only then invokes the pure §11.4 evaluator. Returns only the pure evaluator's safe hash/count summary. |
 
 `NEXT ACTION = REPEAT_INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW` (§12.3).
+
+---
+
+## 9. Remediation round 4 (FULL-BOUNDARY repeat `INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW`: CRITICAL=0, HIGH=3, MEDIUM=2)
+
+```text
+high_findings_fixed=3
+medium_findings_fixed=2
+intended_repository_identity_enforced=true (ta1k1-arakawa/stock-analyzer, github.com only)
+production_repository_root_override_possible=false
+payload_membership_hash_recomputed_from_concrete_records=true
+filesystem_errors_privacy_redacted=true
+authorization_consumed_exactly_at_first_opener_invocation=true
+unsafe_pure_helpers_removed_from_production_public_surface=true
+real_allocation_performed=false
+private_real_data_accessed=false
+yahoo_jpx_requests=0
+```
+
+| Finding | Fix |
+|---|---|
+| HIGH-1: `resolve_verified_v8b_production_git_commit` proved `HEAD == origin/<branch>` but never that `origin` was `ta1k1-arakawa/stock-analyzer`; several production resolvers also accepted a caller-selectable `repository_root`. | `src/v8b_git_provenance.py` now also requires `origin` to resolve to one of the ordinary HTTPS/SSH forms of exactly `ta1k1-arakawa/stock-analyzer` on `github.com` (`_canonical_github_owner_repo`), checked before the origin-ref/HEAD comparison -- a same-named branch in any other repository, a look-alike host, or a bare local path all BLOCK. `resolve_and_verify_acquisition_artifact`, `resolve_and_verify_t1b_allocation_artifact`, `resolve_and_recheck_t2_reuse_conditions`, and `resolve_t2_reuse_safe_metadata_from_verified_head` no longer accept a `repository_root` parameter -- each is now a public wrapper (always `CANONICAL_REPOSITORY_ROOT`) around a private, DI-testable implementation used only by fake/synthetic tests. |
+| HIGH-2: §12.6 verification compared the manifest's claimed `ticker_list_sha256` to the trusted hash but never recomputed it from the concrete `payload_manifest` records. | `src/v8b_acquisition_artifact_verification.py` now validates every `payload_manifest` record's exact schema and canonical-ticker form, requires exactly 300 unique tickers (preserving `payload_manifest`'s own order), and recomputes `ticker_list_sha256` from those concrete values via `src.v8_partition.ticker_list_sha256` -- a forged bundle whose manifest carries the correct trusted hash while its `payload_manifest`/raw files actually name a different 300-ticker set now BLOCKs (`PAYLOAD_TICKER_MEMBERSHIP_HASH_MISMATCH`). |
+| HIGH-3: several filesystem operations in the acquisition/allocation path could let a raw `OSError` (potentially carrying a private path or ticker-derived filename) escape uncaught. | Every filesystem call in the production write/read path -- `_write_bytes` (raw payload/manifest/seal writes), the private `T1B` allocation-artifact read, staging-directory creation (`tempfile.mkdtemp`/`mkdir`), the output-directory `mkdir`/`iterdir`, and the atomic `os.replace` publish in `src/v8b_historical_acquisition.py`, plus the staging write in `src/v8b_t1b_allocator.py`'s `_write_allocation_artifact_once` -- is now wrapped and mapped to a fixed, generic reason; none ever forward `str(error)`, `.args`, or a path. |
+| MEDIUM-1: `authorization_consumed` was set to `True` before the local pacing/wait call, not at the actual opener/network boundary. | The transition now happens inside `recording_opener`, immediately before the real, underlying `opener(request_obj)` call -- strictly after the local URL-origin check succeeds. A pacing failure (now itself wrapped as `REQUEST_PACING_FAILED`) or a local request-preparation failure leaves `authorization_consumed=False` with zero opener calls for that ticker; once the opener is actually invoked, it is `True` regardless of outcome and is never reset. |
+| MEDIUM-2: `verify_acquisition_artifact`, `verify_t1b_allocation_artifact`, and `recheck_t2_reuse_conditions` were caller-controlled pure evaluators exported as part of the production public surface. | All three are now private (`_verify_acquisition_artifact`, `_verify_t1b_allocation_artifact`, `_recheck_t2_reuse_conditions`), removed from their modules' `__all__`; fake/synthetic tests import and call them directly as internal helpers. Each module's public surface now exposes only its Git-/authority-grounded resolver plus safe constants. |
+
+Full-boundary self-review (implementation review → T1B allocation → allocation verification → future trust pin → T1B acquisition → T1B artifact verification → post-freeze T2 reuse check → T2 acquisition → T2 artifact verification) found no further trust-root injection, stale-time evidence, un-recomputed claimed hash, caller-controlled authority value, filesystem/exception privacy leak, caller override of a frozen rule, cross-block token reuse, research-opening path, retry/fallback/substitution, or non-blob-bound reviewed dependency. No methodological ambiguity was found requiring `CHATGPT_DECISION_REQUIRED`.
+
+`NEXT ACTION = FINAL_REPEAT_INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW` (§12.3).

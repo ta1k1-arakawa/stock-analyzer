@@ -11,23 +11,31 @@ own gate diagram positions **after** `Layer B` / `FROZEN FINAL CANDIDATE`
 (§12's diagram; §12.4's rules), using **fresh, post-freeze** evidence. This
 module no longer reads that §12.2 document for any production purpose.
 
-Two distinct roles (first-round finding MEDIUM-2, preserved here):
+Two distinct roles (first-round finding MEDIUM-2, tightened further in
+round 3's repeat review):
 
-- `recheck_t2_reuse_conditions` -- a **private pure evaluator**. It checks
-  §3.3/§9's preservation conditions against a plain ``safe_metadata``
-  mapping and performs no I/O of its own. It exists so fake/synthetic
-  tests can exercise the pass/BLOCK logic directly without needing a real
-  Git checkout -- it is not, by itself, a safe *production* trust root,
-  because nothing stops a caller from fabricating a favorable mapping.
+- `_recheck_t2_reuse_conditions` -- a **private pure evaluator** (round-3
+  repeat finding MEDIUM-2: not part of the production public surface --
+  fake/synthetic tests import and call it directly as an internal
+  helper). It checks §3.3/§9's preservation conditions against a plain
+  ``safe_metadata`` mapping and performs no I/O of its own. It exists so
+  fake/synthetic tests can exercise the pass/BLOCK logic directly without
+  needing a real Git checkout -- it is not, by itself, a safe *production*
+  trust root, because nothing stops a caller from fabricating a favorable
+  mapping.
 - `resolve_t2_reuse_safe_metadata_from_verified_head` /
-  `resolve_and_recheck_t2_reuse_conditions` -- the **production
-  resolver**. It derives the same safe-metadata fields by reading the
-  future `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact from a
-  **verified Git object** (never a caller-supplied path or mapping).
-  That artifact does not exist in this repository yet -- the real
-  post-Layer-B recheck has not been performed -- so this resolver, and
-  therefore `T2` production acquisition, fails closed today by
-  construction. This implementation does not create that artifact.
+  `resolve_and_recheck_t2_reuse_conditions` -- the sole **public
+  production resolvers**. They derive the same safe-metadata fields by
+  reading the future `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact from
+  a **verified Git object**, read from the one fixed, non-overridable
+  production repository root (round-3 repeat finding HIGH-1: neither
+  public function accepts a ``repository_root`` parameter; private
+  DI-testable variants carry that parameter for fake/synthetic tests
+  only) -- never a caller-supplied path or mapping. That artifact does
+  not exist in this repository yet -- the real post-Layer-B recheck has
+  not been performed -- so these resolvers, and therefore `T2` production
+  acquisition, fail closed today by construction. This implementation
+  does not create that artifact.
 
 Neither path reads, accepts, or exposes a `T2` ticker identity, and
 neither offers a `T_spare`/`T3` fallback -- this module defines no
@@ -38,6 +46,7 @@ alternate block-selection function of any kind. Any condition failing is
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Mapping
 
 from src.v8b_git_provenance import (
@@ -46,6 +55,11 @@ from src.v8b_git_provenance import (
     require_git_commit,
 )
 from src.v8b_production_provenance import EXPECTED_V8B_FROZEN_DESIGN_COMMIT
+
+# The one fixed, non-overridable production repository root -- round-3
+# repeat finding HIGH-1: no public function in this module accepts a
+# caller-supplied repository_root as its trust root.
+CANONICAL_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 # The future §12.4 POST_FREEZE evidence artifact. Does not exist in this
 # repository -- CREATE_V8B_TRUSTED_ALLOCATION_PIN-style future work, not
@@ -93,7 +107,7 @@ REQUIRED_SAFE_METADATA_FIELDS = (
 )
 
 
-def recheck_t2_reuse_conditions(safe_metadata: Mapping[str, Any]) -> dict[str, Any]:
+def _recheck_t2_reuse_conditions(safe_metadata: Mapping[str, Any]) -> dict[str, Any]:
     """Private pure evaluator -- fake/synthetic tests only, not a production
     trust root (see module docstring). Verify §3.3/§9's T2 preservation
     conditions from a plain ``safe_metadata`` mapping the caller already
@@ -164,12 +178,16 @@ def _strict_json_object(raw: bytes) -> dict[str, Any]:
     return parsed
 
 
-def resolve_t2_reuse_safe_metadata_from_verified_head(repository_root, verified_head: str) -> dict[str, Any]:
-    """Production resolver: derive ``safe_metadata`` from the future,
-    fresh **POST_FREEZE** `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact
-    (§12.4), read from a **verified Git object** -- never a caller-supplied
-    mapping or path, and never the §12.2 pre-freeze document. This artifact
-    does not exist in this repository yet, so this fails closed today.
+def _resolve_t2_reuse_safe_metadata_from_verified_head_with_repository_root(
+    repository_root, verified_head: str
+) -> dict[str, Any]:
+    """Private DI-testable implementation -- fake/synthetic tests only, not
+    a production API (round-3 repeat finding HIGH-1). Derives
+    ``safe_metadata`` from the future, fresh **POST_FREEZE**
+    `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact (§12.4), read from a
+    **verified Git object** -- never a caller-supplied mapping or path, and
+    never the §12.2 pre-freeze document. This artifact does not exist in
+    this repository yet, so this fails closed today.
     """
     commit = require_git_commit(verified_head, "POST_FREEZE_RECHECK_HEAD_INVALID")
     try:
@@ -200,16 +218,42 @@ def resolve_t2_reuse_safe_metadata_from_verified_head(repository_root, verified_
     return {field: artifact[field] for field in REQUIRED_SAFE_METADATA_FIELDS}
 
 
-def resolve_and_recheck_t2_reuse_conditions(repository_root, verified_head: str) -> dict[str, Any]:
-    """The production entrypoint: resolve safe metadata from a verified Git
-    object, then apply the same pure evaluator fake tests use. Production
-    code must call this, never construct or accept a ``safe_metadata``
-    mapping directly."""
-    safe_metadata = resolve_t2_reuse_safe_metadata_from_verified_head(repository_root, verified_head)
-    return recheck_t2_reuse_conditions(safe_metadata)
+def _resolve_and_recheck_t2_reuse_conditions_with_repository_root(
+    repository_root, verified_head: str
+) -> dict[str, Any]:
+    """Private DI-testable implementation -- fake/synthetic tests only, not
+    a production API (round-3 repeat finding HIGH-1). Resolve safe
+    metadata from a verified Git object, then apply the same pure
+    evaluator fake tests use directly."""
+    safe_metadata = _resolve_t2_reuse_safe_metadata_from_verified_head_with_repository_root(
+        repository_root, verified_head
+    )
+    return _recheck_t2_reuse_conditions(safe_metadata)
+
+
+def resolve_t2_reuse_safe_metadata_from_verified_head(verified_head: str) -> dict[str, Any]:
+    """The public production resolver (round-3 repeat finding HIGH-1: no
+    ``repository_root`` parameter -- always resolves from
+    ``CANONICAL_REPOSITORY_ROOT``)."""
+    return _resolve_t2_reuse_safe_metadata_from_verified_head_with_repository_root(
+        CANONICAL_REPOSITORY_ROOT, verified_head
+    )
+
+
+def resolve_and_recheck_t2_reuse_conditions(verified_head: str) -> dict[str, Any]:
+    """The public production entrypoint (round-3 repeat finding HIGH-1: no
+    ``repository_root`` parameter -- always resolves from
+    ``CANONICAL_REPOSITORY_ROOT``): resolve safe metadata from a verified
+    Git object, then apply the same pure evaluator fake tests use.
+    Production code must call this, never construct or accept a
+    ``safe_metadata`` mapping directly."""
+    return _resolve_and_recheck_t2_reuse_conditions_with_repository_root(
+        CANONICAL_REPOSITORY_ROOT, verified_head
+    )
 
 
 __all__ = [
+    "CANONICAL_REPOSITORY_ROOT",
     "POST_FREEZE_RECHECK_FIELDS",
     "POST_FREEZE_RECHECK_GATE",
     "POST_FREEZE_RECHECK_GIT_PATH",
@@ -217,7 +261,6 @@ __all__ = [
     "POST_FREEZE_RECHECK_STAGE",
     "REQUIRED_SAFE_METADATA_FIELDS",
     "V8BT2PreservationRecheckBlocked",
-    "recheck_t2_reuse_conditions",
     "resolve_and_recheck_t2_reuse_conditions",
     "resolve_t2_reuse_safe_metadata_from_verified_head",
 ]

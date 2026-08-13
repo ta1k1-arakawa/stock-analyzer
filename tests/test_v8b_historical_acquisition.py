@@ -137,7 +137,7 @@ def build_t1b_fixture(tmp_path: Path, *, parent_count: int = 1904, tamper_pin: d
         v8b_allocation_implementation_commit=SYNTHETIC_REVIEWED_COMMIT,
         clock=clock_stub,
     )
-    result = verification.verify_t1b_allocation_artifact(
+    result = verification._verify_t1b_allocation_artifact(
         artifact=artifact,
         parent_t_spare_tickers=parent,
         t0_tickers=_tickers("T0", 300),
@@ -866,6 +866,87 @@ def test_no_automatic_or_manual_retry_after_authorization_consumed(tmp_path):
     assert calls == [artifact["t1b_tickers"][0], artifact["t1b_tickers"][0]]
 
 
+# ---------------------------------------------------------------------------
+# Round-3 repeat MEDIUM-1: consumption happens at the exact opener/network
+# boundary, strictly after local pacing/request-preparation, never before.
+# ---------------------------------------------------------------------------
+
+
+def test_pacing_failure_on_first_ticker_leaves_opener_uncalled_and_not_consumed(tmp_path):
+    """If local pacing/request preparation (the monotonic clock call) fails
+    before the very first ticker's opener would ever be invoked, the
+    opener must never be called and authorization_consumed must stay
+    False -- MEDIUM-1's exact 'opener calls = 0, authorization_consumed =
+    false' requirement for a pre-opener failure."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+
+    def failing_monotonic_clock():
+        raise RuntimeError("simulated clock failure before any opener call")
+
+    deps = default_deps(
+        block="T1B",
+        opener=forbidden_opener,
+        artifact_path=artifact_path,
+        pin=pin,
+        monotonic_clock=failing_monotonic_clock,
+    )
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "REQUEST_PACING_FAILED"
+    assert excinfo.value.authorization_consumed is False
+
+
+def test_pacing_failure_on_later_ticker_still_reports_consumed_true(tmp_path):
+    """Once the first ticker's opener has already been invoked (consuming
+    authorization), a LATER ticker's pacing failure must still report
+    authorization_consumed=True -- the flag never resets, even though this
+    particular failure is itself a pre-opener pacing failure for that
+    ticker."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    call_count = 0
+
+    def flaky_monotonic_clock():
+        nonlocal call_count
+        call_count += 1
+        # First ticker's pacing call (index 0) succeeds; the second
+        # ticker's pacing call (index 1) fails.
+        if call_count > 1:
+            raise RuntimeError("simulated clock failure on a later ticker")
+        return 0.0
+
+    opener = default_opener()
+    deps = default_deps(
+        block="T1B",
+        opener=opener,
+        artifact_path=artifact_path,
+        pin=pin,
+        monotonic_clock=flaky_monotonic_clock,
+        sleep_fn=lambda _s: None,
+    )
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "REQUEST_PACING_FAILED"
+    assert excinfo.value.authorization_consumed is True
+    assert len(opener.calls) == 1
+
+
+def test_url_origin_validation_failure_never_flips_consumed_before_real_opener(tmp_path):
+    """A failure in the local URL-origin validation (request preparation,
+    not network I/O) must never itself set authorization_consumed -- only
+    the line that follows it, immediately before the real opener call,
+    does that. This is exercised indirectly: a poisoned opener that is
+    never reached because fetch_chart_once's own request construction
+    already guarantees a same-origin URL, so this test instead proves the
+    ordering via the module's source itself."""
+    import inspect
+
+    source = inspect.getsource(acquisition._acquire_v8b_block_bundle_with_validated_inputs)
+    origin_check_index = source.index("_require_trusted_yahoo_url(getattr(request_obj")
+    consumed_true_index = source.index("consumed = True")
+    opener_call_index = source.index("response = opener(request_obj)")
+    assert origin_check_index < consumed_true_index < opener_call_index
+
+
 def test_successful_manifest_does_not_expose_authorization_consumed_field():
     """The manifest schema itself carries no authorization_consumed field
     -- that attribute is exposed only on the safe failure status
@@ -1097,6 +1178,121 @@ def test_ticker_fetch_secret_bearing_generic_exception_redacted_end_to_end(tmp_p
     assert secret_ticker not in excinfo.value.reason
     assert "/private/output/root/path" not in excinfo.value.reason
     assert excinfo.value.reason == "TICKER_FETCH_BLOCKED:TRANSPORT_OS_ERROR"
+
+
+# ---------------------------------------------------------------------------
+# Round-3 repeat HIGH-3: filesystem error privacy boundary -- no raw
+# OSError (with a private path or ticker embedded) may ever escape.
+# ---------------------------------------------------------------------------
+
+SECRET_PRIVATE_PATH_FRAGMENT = "/very/secret/private/output/root"
+
+
+def _assert_no_leak(excinfo, *, secret_ticker: str | None = None):
+    reason = excinfo.value.reason
+    assert SECRET_PRIVATE_PATH_FRAGMENT not in reason
+    if secret_ticker is not None:
+        assert secret_ticker not in reason
+    # A finite, fixed, generic reason -- never str(error) passed through.
+    assert reason.isupper() or ":" in reason
+
+
+def test_raw_payload_write_failure_never_leaks_path_or_ticker(tmp_path, monkeypatch):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    secret_ticker = artifact["t1b_tickers"][0]
+
+    def poisoned_fsync(fd):
+        raise OSError(f"disk full while writing {secret_ticker} at {SECRET_PRIVATE_PATH_FRAGMENT}/raw/{secret_ticker}.json")
+
+    monkeypatch.setattr(acquisition.os, "fsync", poisoned_fsync)
+    opener = default_opener()
+    deps = default_deps(block="T1B", opener=opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    _assert_no_leak(excinfo, secret_ticker=secret_ticker)
+    assert excinfo.value.reason == "RAW_PAYLOAD_WRITE_FAILED"
+    assert excinfo.value.authorization_consumed is True
+
+
+def test_manifest_write_failure_never_leaks_path(tmp_path, monkeypatch):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    call_count = 0
+
+    def poisoned_fsync(fd):
+        nonlocal call_count
+        call_count += 1
+        # Let every raw-payload fsync (one per ticker, 300 total) succeed;
+        # fail only the final manifest-write fsync.
+        if call_count > 300:
+            raise OSError(f"permission denied at {SECRET_PRIVATE_PATH_FRAGMENT}/acquisition_manifest.json")
+
+    monkeypatch.setattr(acquisition.os, "fsync", poisoned_fsync)
+    opener = default_opener()
+    deps = default_deps(block="T1B", opener=opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    _assert_no_leak(excinfo)
+    assert excinfo.value.reason == "MANIFEST_WRITE_FAILED"
+    assert excinfo.value.authorization_consumed is True
+
+
+def test_atomic_publish_failure_never_leaks_path(tmp_path, monkeypatch):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+
+    def poisoned_replace(src, dst):
+        raise OSError(f"cross-device link from {SECRET_PRIVATE_PATH_FRAGMENT}/staging to {SECRET_PRIVATE_PATH_FRAGMENT}/T1B")
+
+    monkeypatch.setattr(acquisition.os, "replace", poisoned_replace)
+    opener = default_opener()
+    deps = default_deps(block="T1B", opener=opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    _assert_no_leak(excinfo)
+    assert excinfo.value.reason == "ATOMIC_PUBLISH_FAILED"
+    assert excinfo.value.authorization_consumed is True
+
+
+def test_t1b_allocation_artifact_read_failure_never_leaks_path(tmp_path):
+    missing_path = tmp_path / SECRET_PRIVATE_PATH_FRAGMENT.strip("/") / "t1b_allocation_artifact.json"
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=missing_path, pin={})
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    _assert_no_leak(excinfo)
+    assert excinfo.value.reason == "V8B_ALLOCATION_ARTIFACT_READ_FAILED"
+    assert excinfo.value.authorization_consumed is False
+
+
+def test_staging_directory_create_failure_never_leaks_path(tmp_path, monkeypatch):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+
+    def poisoned_mkdtemp(*args, **kwargs):
+        raise OSError(f"permission denied creating staging dir under {SECRET_PRIVATE_PATH_FRAGMENT}")
+
+    monkeypatch.setattr(acquisition.tempfile, "mkdtemp", poisoned_mkdtemp)
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    _assert_no_leak(excinfo)
+    assert excinfo.value.reason == "STAGING_DIRECTORY_CREATE_FAILED"
+    assert excinfo.value.authorization_consumed is False
+
+
+def test_output_directory_unavailable_never_leaks_path(tmp_path, monkeypatch):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    real_mkdir = Path.mkdir
+
+    def poisoned_mkdir(self, *args, **kwargs):
+        if self.name == acquisition.ACQUISITIONS_DIRNAME:
+            raise OSError(f"permission denied at {SECRET_PRIVATE_PATH_FRAGMENT}/{acquisition.ACQUISITIONS_DIRNAME}")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", poisoned_mkdir)
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    _assert_no_leak(excinfo)
+    assert excinfo.value.reason == "OUTPUT_DIRECTORY_UNAVAILABLE"
+    assert excinfo.value.authorization_consumed is False
 
 
 # ---------------------------------------------------------------------------

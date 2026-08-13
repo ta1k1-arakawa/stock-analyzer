@@ -22,15 +22,38 @@ could be silently redirected to an attacker-controlled repository,
 defeating every provenance check at once. Importing this module performs
 no I/O; it performs no `git fetch` (operators fetch separately, exactly as
 `src/v8_partition.py`'s equivalent already documents).
+
+**Round-3 finding HIGH-1 correction.** A clean worktree at
+``HEAD == origin/<PRODUCTION_BRANCH>`` alone never proved *which*
+repository ``origin`` actually points to -- any local git checkout with a
+same-named branch, anywhere, would satisfy that check regardless of its
+``remote.origin.url``. `resolve_verified_v8b_production_git_commit` now
+also requires ``origin`` to resolve to one of the ordinary HTTPS/SSH forms
+of exactly ``ta1k1-arakawa/stock-analyzer`` on ``github.com`` --
+never a look-alike host (``github.com.evil.example``,
+``evilgithub.com``), a URL carrying unexpected userinfo/port, or any
+non-``github.com`` remote -- before HEAD/origin-ref equality is even
+checked.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
+import urllib.parse
 from pathlib import Path
 
 PRODUCTION_BRANCH = "v8b-allocation-authority-acquisition-implementation"
+
+# The single intended GitHub repository identity for V8B production. Never
+# derived from the environment, an argument, or the working tree itself --
+# always this fixed literal.
+EXPECTED_GITHUB_OWNER = "ta1k1-arakawa"
+EXPECTED_GITHUB_REPO = "stock-analyzer"
+EXPECTED_GITHUB_OWNER_REPO = EXPECTED_GITHUB_OWNER + "/" + EXPECTED_GITHUB_REPO
+
+_SCP_LIKE_SSH_ORIGIN_RE = re.compile(r"^([^@\s]+)@([^:/\s]+):(.+)$")
 
 _ISOLATED_GIT_ENV_BLOCKLIST = (
     "GIT_DIR",
@@ -80,6 +103,75 @@ def _run_git(args: list[str], *, repository_root: str | os.PathLike[str]) -> sub
         raise V8BGitProvenanceBlocked("GIT_PROVENANCE_SUBPROCESS_FAILED") from error
 
 
+def _normalized_owner_repo_from_path(path: str) -> str | None:
+    """``<owner>/<repo>`` (lowercased) from a URL/scp path component, or
+    ``None`` if it does not unambiguously name exactly one repository."""
+    trimmed = path.strip("/")
+    if trimmed.endswith(".git"):
+        trimmed = trimmed[: -len(".git")]
+    parts = [part for part in trimmed.split("/") if part != ""]
+    if len(parts) != 2:
+        return None
+    owner, repo = parts
+    if any(part in ("..", ".") for part in parts):
+        return None
+    return (owner + "/" + repo).lower()
+
+
+def _canonical_github_owner_repo(url: object) -> str | None:
+    """Parse a Git ``remote.origin.url`` value and return its lowercased
+    ``owner/repo`` iff it unambiguously names a repository on
+    ``github.com`` via one of the ordinary HTTPS/SSH forms -- else
+    ``None``. Never partially trusts a look-alike host
+    (``github.com.evil.example``, ``evilgithub.com``, a userinfo/port
+    trick, or a bare local path)."""
+    if not isinstance(url, str):
+        return None
+    value = url.strip()
+    if not value:
+        return None
+
+    scp_match = _SCP_LIKE_SSH_ORIGIN_RE.match(value)
+    if scp_match:
+        user, host, path = scp_match.group(1), scp_match.group(2), scp_match.group(3)
+        if user != "git" or host.lower() != "github.com":
+            return None
+        return _normalized_owner_repo_from_path(path)
+
+    try:
+        parsed = urllib.parse.urlparse(value)
+    except ValueError:
+        return None
+
+    if parsed.scheme not in ("https", "ssh"):
+        return None
+    if parsed.hostname is None or parsed.hostname.lower() != "github.com":
+        return None
+    default_port = 443 if parsed.scheme == "https" else 22
+    if parsed.port not in (None, default_port):
+        return None
+    if parsed.scheme == "https" and (parsed.username is not None or parsed.password is not None):
+        return None
+    if parsed.scheme == "ssh" and parsed.username not in (None, "git"):
+        return None
+    if parsed.query or parsed.fragment:
+        return None
+    return _normalized_owner_repo_from_path(parsed.path)
+
+
+def _require_intended_github_repository_identity(repository_root: str | os.PathLike[str]) -> None:
+    """Fail closed unless ``origin`` resolves to exactly
+    ``EXPECTED_GITHUB_OWNER_REPO`` on ``github.com`` -- round-3 finding
+    HIGH-1. A same-named branch existing in an unrelated, unaffiliated, or
+    malicious local checkout must never satisfy V8B production
+    provenance."""
+    result = _run_git(["config", "--get", "remote.origin.url"], repository_root=repository_root)
+    if result.returncode != 0:
+        raise V8BGitProvenanceBlocked("PRODUCTION_GIT_ORIGIN_URL_UNAVAILABLE")
+    if _canonical_github_owner_repo(result.stdout.strip()) != EXPECTED_GITHUB_OWNER_REPO:
+        raise V8BGitProvenanceBlocked("PRODUCTION_GIT_ORIGIN_IDENTITY_MISMATCH")
+
+
 def resolve_verified_v8b_production_git_commit(repository_root: str | os.PathLike[str]) -> str:
     """Resolve a clean checkout exactly matching V8B's own production branch ref.
 
@@ -87,7 +179,10 @@ def resolve_verified_v8b_production_git_commit(repository_root: str | os.PathLik
     separately, exactly as `src/v8_partition.py`'s equivalent already
     documents. This guard only proves the local checkout is exactly the
     already-fetched ``origin/v8b-allocation-authority-acquisition-
-    implementation`` state before any production network I/O or private
+    implementation`` state, on a clean worktree, with ``origin`` verified
+    to be the intended ``ta1k1-arakawa/stock-analyzer`` GitHub repository
+    identity (not merely a same-named branch in an arbitrary repository,
+    round-3 finding HIGH-1), before any production network I/O or private
     data access -- V8's own production branch ref
     (``origin/v8-partition-acquisition``) is never consulted and cannot
     satisfy this check.
@@ -98,6 +193,8 @@ def resolve_verified_v8b_production_git_commit(repository_root: str | os.PathLik
         raise V8BGitProvenanceBlocked("PRODUCTION_GIT_PROVENANCE_UNAVAILABLE")
     if status.stdout.strip():
         raise V8BGitProvenanceBlocked("PRODUCTION_GIT_WORKTREE_DIRTY")
+
+    _require_intended_github_repository_identity(root)
 
     head = _run_git(["rev-parse", "HEAD"], repository_root=root)
     if head.returncode != 0:
@@ -158,6 +255,9 @@ def read_git_object_bytes(
 
 
 __all__ = [
+    "EXPECTED_GITHUB_OWNER",
+    "EXPECTED_GITHUB_OWNER_REPO",
+    "EXPECTED_GITHUB_REPO",
     "PRODUCTION_BRANCH",
     "V8BGitProvenanceBlocked",
     "isolated_git_subprocess_env",

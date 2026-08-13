@@ -439,6 +439,74 @@ def test_no_automatic_or_manual_retry_after_authorization_consumed(tmp_path):
     assert not (tmp_path / "out.json").exists()
 
 
+# ---------------------------------------------------------------------------
+# Round-3 repeat HIGH-3: filesystem error privacy boundary
+# ---------------------------------------------------------------------------
+
+SECRET_PRIVATE_PATH_FRAGMENT = "/very/secret/private/allocation/output"
+
+
+def test_staging_write_failure_never_leaks_private_path(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "partition.json"
+    t_spare = _tickers("TS", 1904)
+    manifest = write_partition_manifest(manifest_path, t_spare=t_spare)
+    monkeypatch.setattr(allocator, "EXPECTED_PARENT_T_SPARE_TICKER_COUNT", 1904)
+    monkeypatch.setattr(allocator, "EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256", partition.ticker_list_sha256(t_spare))
+
+    def poisoned_fsync(fd):
+        raise OSError(f"disk full while writing staging file at {SECRET_PRIVATE_PATH_FRAGMENT}")
+
+    monkeypatch.setattr(allocator.os, "fsync", poisoned_fsync)
+    output_path = tmp_path / "private" / "t1b_allocation_artifact.json"
+
+    with pytest.raises(allocator.V8BT1BAllocatorBlocked) as excinfo:
+        run(
+            confirmation=allocator.ALLOCATION_CONFIRMATION,
+            partition_manifest_path=manifest_path,
+            output_path=output_path,
+            git_commit_resolver=lambda: SYNTHETIC_COMMIT,
+            design_freeze_approval_reader=lambda head: {"ok": True},
+            frozen_design_object_verifier=lambda: None,
+            reviewed_implementation_binder=lambda head: {"reviewed_implementation_git_commit": SYNTHETIC_REVIEWED_COMMIT},
+            anchor_reader=lambda head: _valid_anchor_for(manifest),
+            clock=clock_stub,
+        )
+    assert excinfo.value.reason == "V8B_ALLOCATION_ARTIFACT_STAGING_WRITE_FAILED"
+    assert SECRET_PRIVATE_PATH_FRAGMENT not in excinfo.value.reason
+    assert excinfo.value.authorization_consumed is True
+
+
+def test_link_publish_failure_never_leaks_private_path(tmp_path, monkeypatch):
+    manifest_path = tmp_path / "partition.json"
+    t_spare = _tickers("TS", 1904)
+    manifest = write_partition_manifest(manifest_path, t_spare=t_spare)
+    monkeypatch.setattr(allocator, "EXPECTED_PARENT_T_SPARE_TICKER_COUNT", 1904)
+    monkeypatch.setattr(allocator, "EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256", partition.ticker_list_sha256(t_spare))
+
+    def poisoned_link(src, dst):
+        raise OSError(f"cross-device link from {src} to {SECRET_PRIVATE_PATH_FRAGMENT}")
+
+    monkeypatch.setattr(allocator.os, "link", poisoned_link)
+    output_path = tmp_path / "private" / "t1b_allocation_artifact.json"
+
+    with pytest.raises(allocator.V8BT1BAllocatorBlocked) as excinfo:
+        run(
+            confirmation=allocator.ALLOCATION_CONFIRMATION,
+            partition_manifest_path=manifest_path,
+            output_path=output_path,
+            git_commit_resolver=lambda: SYNTHETIC_COMMIT,
+            design_freeze_approval_reader=lambda head: {"ok": True},
+            frozen_design_object_verifier=lambda: None,
+            reviewed_implementation_binder=lambda head: {"reviewed_implementation_git_commit": SYNTHETIC_REVIEWED_COMMIT},
+            anchor_reader=lambda head: _valid_anchor_for(manifest),
+            clock=clock_stub,
+        )
+    assert excinfo.value.reason == "V8B_ALLOCATION_ARTIFACT_ATOMIC_PUBLISH_FAILED"
+    assert SECRET_PRIVATE_PATH_FRAGMENT not in excinfo.value.reason
+    assert str(output_path) not in excinfo.value.reason
+    assert excinfo.value.authorization_consumed is True
+
+
 def test_no_retry_parameter_exists():
     import inspect
 

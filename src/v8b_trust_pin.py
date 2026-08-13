@@ -77,7 +77,7 @@ TRUST_PIN_FIELDS = (
 )
 
 # The exact fields a §11.4-PASS verification summary
-# (``src.v8b_allocation_verification.verify_t1b_allocation_artifact``'s
+# (``src.v8b_allocation_verification.resolve_and_verify_t1b_allocation_artifact``'s
 # return value) must supply for a pin to be built from it.
 _REQUIRED_VERIFICATION_SUMMARY_FIELDS = (
     "parent_v8_partition_manifest_sha256",
@@ -122,7 +122,7 @@ def build_trust_pin(
     """Build (never writes) an ``AUTHORIZED`` trust-pin from a PASS verification summary.
 
     ``verification_result_summary`` must be exactly the safe public dict
-    ``src.v8b_allocation_verification.verify_t1b_allocation_artifact``
+    ``src.v8b_allocation_verification.resolve_and_verify_t1b_allocation_artifact``
     returns on a ``result == "PASS"`` outcome -- this function refuses any
     mapping that also carries a ticker-identity field, so a caller cannot
     accidentally launder raw ticker lists into a "public" pin.

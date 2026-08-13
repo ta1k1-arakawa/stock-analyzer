@@ -674,12 +674,22 @@ def _wait_for_next_request_start(
     return monotonic_clock()
 
 
-def _write_bytes(path: Path, value: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as stream:
-        stream.write(value)
-        stream.flush()
-        os.fsync(stream.fileno())
+def _write_bytes(path: Path, value: bytes, *, reason: str = "STAGING_WRITE_FAILED") -> None:
+    """Write ``value`` to ``path``, fsync'd.
+
+    Round-3 repeat finding HIGH-3: every filesystem exception here is
+    mapped to a fixed, generic reason -- never ``str(error)``, ``.args``,
+    or the path itself, any of which could otherwise carry a private
+    staging path or a ticker-derived filename into a public reason.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError as error:
+        raise V8BHistoricalAcquisitionBlocked(reason) from error
 
 
 # ---------------------------------------------------------------------------
@@ -843,9 +853,7 @@ def acquire_v8b_historical_block_bundle(
         zoneinfo_loader=_default_zoneinfo_loader,
         anchor_reader=lambda head: read_and_verify_v8_trusted_partition_anchor(CANONICAL_REPOSITORY_ROOT, head),
         bridge_reader=lambda head: read_and_verify_t2_authority_bridge(CANONICAL_REPOSITORY_ROOT, head),
-        t2_reuse_recheck_resolver=lambda head: resolve_and_recheck_t2_reuse_conditions(
-            CANONICAL_REPOSITORY_ROOT, head
-        ),
+        t2_reuse_recheck_resolver=resolve_and_recheck_t2_reuse_conditions,
         t1b_trust_pin_reader=lambda head: read_t1b_trust_pin_from_verified_head(
             CANONICAL_REPOSITORY_ROOT, head, read_git_object_bytes
         ),
@@ -934,8 +942,12 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
     if block == "T1B":
         if t1b_allocation_artifact_path is None:
             raise V8BHistoricalAcquisitionBlocked("V8B_T1B_INPUTS_MISSING")
+        try:
+            allocation_artifact_raw = Path(t1b_allocation_artifact_path).read_bytes()
+        except OSError as error:
+            raise V8BHistoricalAcquisitionBlocked("V8B_ALLOCATION_ARTIFACT_READ_FAILED") from error
         allocation_artifact = _strict_json_object(
-            Path(t1b_allocation_artifact_path).read_bytes(),
+            allocation_artifact_raw,
             invalid_reason="V8B_ALLOCATION_ARTIFACT_INVALID_JSON",
             duplicate_reason="V8B_ALLOCATION_ARTIFACT_DUPLICATE_KEY",
         )
@@ -1031,23 +1043,38 @@ def _acquire_v8b_block_bundle_with_validated_inputs(
     final_dir = acquisitions_root / block
     if final_dir.exists():
         raise V8BHistoricalAcquisitionBlocked("V8B_ACQUISITION_ALREADY_EXISTS:" + block)
-    acquisitions_root.mkdir(parents=True, exist_ok=True)
-    if any(entry.name.startswith(block + ".staging-") for entry in acquisitions_root.iterdir()):
+    try:
+        acquisitions_root.mkdir(parents=True, exist_ok=True)
+        has_partial_staging = any(
+            entry.name.startswith(block + ".staging-") for entry in acquisitions_root.iterdir()
+        )
+    except OSError as error:
+        raise V8BHistoricalAcquisitionBlocked("OUTPUT_DIRECTORY_UNAVAILABLE") from error
+    if has_partial_staging:
         raise V8BHistoricalAcquisitionBlocked("V8B_PARTIAL_ACQUISITION_COMMIT:" + block)
 
     started_dt = _utc_timestamp(clock(), "acquisition_started_utc")
 
-    # One-shot human-gate consumption (round-2 finding HIGH-1): the
+    # One-shot human-gate consumption (round-2 finding HIGH-1; exact
+    # transition point corrected by round-3 repeat finding MEDIUM-1): the
     # acquisition-gate confirmation is consumed exactly when the first
-    # Yahoo request begins, regardless of that request's outcome -- not
-    # before, and never reset for a later ticker. Everything above this
-    # point (steps 0-8) is pre-network and always leaves this False.
+    # trusted Yahoo opener invocation is actually about to occur --
+    # strictly *after* local pacing/request-preparation (monotonic clock
+    # wait, URL-origin validation) has already succeeded, and strictly
+    # *before* that opener call is made, regardless of the call's outcome.
+    # If pacing or request preparation fails first, the opener is never
+    # invoked (opener calls = 0) and this stays False. Never reset once
+    # True, for this or any later ticker. Everything above this point
+    # (steps 0-8) is pre-network and always leaves this False.
     consumed = False
 
     staging: Path | None = None
     try:
-        staging = Path(tempfile.mkdtemp(prefix=f"{block}.staging-", dir=str(acquisitions_root)))
-        (staging / RAW_DIRNAME).mkdir()
+        try:
+            staging = Path(tempfile.mkdtemp(prefix=f"{block}.staging-", dir=str(acquisitions_root)))
+            (staging / RAW_DIRNAME).mkdir()
+        except OSError as error:
+            raise V8BHistoricalAcquisitionBlocked("STAGING_DIRECTORY_CREATE_FAILED") from error
 
         payload_manifest: list[dict[str, Any]] = []
         all_price_rows: list[dict[str, Any]] = []
@@ -1059,13 +1086,29 @@ def _acquire_v8b_block_bundle_with_validated_inputs(
         previous_start: float | None = None
 
         for index, ticker in enumerate(tickers_list):
-            if index == 0:
-                consumed = True
-            previous_start = _wait_for_next_request_start(index, previous_start, monotonic_clock, sleep_fn)
+            # MEDIUM-1: pacing/request-preparation happens strictly before
+            # ``consumed`` can ever become True (see ``recording_opener``
+            # below) -- a failure here leaves it at whatever it already
+            # was (False, for a first ticker), never flips it, and the
+            # underlying opener is never reached (opener calls stay 0 for
+            # this ticker).
+            try:
+                previous_start = _wait_for_next_request_start(index, previous_start, monotonic_clock, sleep_fn)
+            except V8BHistoricalAcquisitionBlocked:
+                raise
+            except BaseException as error:
+                raise V8BHistoricalAcquisitionBlocked("REQUEST_PACING_FAILED") from error
             capture = bytearray()
 
             def recording_opener(request_obj: Any, *, _capture: bytearray = capture) -> Any:
+                nonlocal consumed
                 _require_trusted_yahoo_url(getattr(request_obj, "full_url", None))
+                # MEDIUM-1: consumption happens exactly here -- immediately
+                # before the real, underlying opener (the actual network
+                # boundary) is invoked -- never earlier. A failure in the
+                # URL-origin check above is local request preparation, not
+                # network I/O, so it must never flip this to True.
+                consumed = True
                 response = opener(request_obj)
                 try:
                     _require_trusted_yahoo_response_url(response)
@@ -1107,7 +1150,7 @@ def _acquire_v8b_block_bundle_with_validated_inputs(
                 for row in invalid_rows:
                     invalid_reason_counts[str(row["reason"])] += 1
 
-            _write_bytes(staging / RAW_DIRNAME / (ticker + ".json"), payload_bytes)
+            _write_bytes(staging / RAW_DIRNAME / (ticker + ".json"), payload_bytes, reason="RAW_PAYLOAD_WRITE_FAILED")
 
             valid_rows = [dict(row) for row in valid_rows_raw]
             split_rows = [dict(row) for row in parsed["canonical_split_events"]]
@@ -1185,7 +1228,7 @@ def _acquire_v8b_block_bundle_with_validated_inputs(
         if set(manifest) != set(ACQUISITION_MANIFEST_FIELDS):
             raise V8BHistoricalAcquisitionBlocked("MANIFEST_SCHEMA_INVALID")
 
-        _write_bytes(staging / MANIFEST_FILENAME, canonical_json_bytes(manifest))
+        _write_bytes(staging / MANIFEST_FILENAME, canonical_json_bytes(manifest), reason="MANIFEST_WRITE_FAILED")
         if block == "T2":
             sealed_record = {
                 "sealed": True,
@@ -1199,9 +1242,12 @@ def _acquire_v8b_block_bundle_with_validated_inputs(
                     "module yet (§10 remains a later, separately reviewed gate)."
                 ),
             }
-            _write_bytes(staging / SEALED_FILENAME, canonical_json_bytes(sealed_record))
+            _write_bytes(staging / SEALED_FILENAME, canonical_json_bytes(sealed_record), reason="SEALED_WRITE_FAILED")
 
-        os.replace(str(staging), str(final_dir))
+        try:
+            os.replace(str(staging), str(final_dir))
+        except OSError as error:
+            raise V8BHistoricalAcquisitionBlocked("ATOMIC_PUBLISH_FAILED") from error
         staging = None
         return manifest
     except V8BHistoricalAcquisitionBlocked as error:
