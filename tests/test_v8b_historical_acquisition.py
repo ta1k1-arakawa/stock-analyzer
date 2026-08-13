@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -10,13 +9,14 @@ from typing import Any
 import pytest
 
 from src import v8_partition as partition
+from src import v8b_historical_acquisition as acquisition
 from src import v8b_allocation as allocation
 from src import v8b_allocation_verification as verification
-from src import v8b_historical_acquisition as acquisition
 from src import v8b_trust_pin as trust_pin
 
 ROOT = Path(__file__).resolve().parents[1]
 SYNTHETIC_COMMIT = "a" * 40
+SYNTHETIC_REVIEWED_COMMIT = "b" * 40
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +29,7 @@ def no_real_urlopen(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Fake Yahoo transport (mirrors tests/test_v8_historical_acquisition.py)
+# Fake Yahoo transport
 # ---------------------------------------------------------------------------
 
 
@@ -94,6 +94,7 @@ class FakeOpener:
 
 
 DEFAULT_DATES = [(2016, 4, 1), (2016, 4, 4), (2025, 12, 30)]
+PLACEHOLDER_TICKER = "9999"
 
 
 def _date_tuples(start: tuple[int, int, int], count: int) -> list[tuple[int, int, int]]:
@@ -108,70 +109,77 @@ def default_opener() -> FakeOpener:
     return FakeOpener(lambda ticker: synthetic_payload(ticker, DEFAULT_DATES))
 
 
-def clock_stub():
-    return datetime(2026, 8, 12, tzinfo=timezone.utc)
-
-
 def forbidden_opener(*_args, **_kwargs):
     raise AssertionError("Yahoo opener must not run")
 
 
-# ---------------------------------------------------------------------------
-# T1B fixture: private allocation artifact + trust pin
-# ---------------------------------------------------------------------------
+def clock_stub():
+    return datetime(2026, 8, 12, tzinfo=timezone.utc)
 
 
-def _t_spare(prefix: str, count: int) -> list[str]:
+def _tickers(prefix: str, count: int) -> list[str]:
     return [f"{prefix}{i:04d}" for i in range(count)]
 
 
+# ---------------------------------------------------------------------------
+# T1B fixture: private allocation artifact + Git-sourced trust pin
+# ---------------------------------------------------------------------------
+
+
 def build_t1b_fixture(tmp_path: Path, *, parent_count: int = 1904, tamper_pin: dict | None = None):
-    parent = _t_spare("TS", parent_count)
+    parent = _tickers("TS", parent_count)
     artifact = allocation.build_t1b_allocation_artifact(
         parent_t_spare_tickers=parent,
         parent_v8_partition_manifest_sha256="0" * 64,
         parent_v8_partition_implementation_commit=SYNTHETIC_COMMIT,
         parent_t_spare_ticker_list_sha256=allocation.ticker_list_sha256(parent),
         v8b_frozen_design_commit=acquisition.V8B_FROZEN_DESIGN_COMMIT,
-        v8b_allocation_implementation_commit=SYNTHETIC_COMMIT,
+        v8b_allocation_implementation_commit=SYNTHETIC_REVIEWED_COMMIT,
         clock=clock_stub,
     )
     result = verification.verify_t1b_allocation_artifact(
         artifact=artifact,
         parent_t_spare_tickers=parent,
-        t0_tickers=_t_spare("T0", 300),
-        old_t1_tickers=_t_spare("OT1", 300),
-        t2_tickers=_t_spare("T2X", 300),
-        t3_tickers=_t_spare("T3X", 300),
+        t0_tickers=_tickers("T0", 300),
+        old_t1_tickers=_tickers("OT1", 300),
+        t2_tickers=_tickers("T2X", 300),
+        t3_tickers=_tickers("T3X", 300),
         expected_parent_t_spare_ticker_list_sha256=allocation.ticker_list_sha256(parent),
         expected_v8b_frozen_design_commit=acquisition.V8B_FROZEN_DESIGN_COMMIT,
     )
-    pin = trust_pin.build_trust_pin(
-        verification_result_summary=result, human_gate="V8B_HUMAN_AUTHORIZE_T1B_PIN", authorization_note="test"
-    )
+    pin = trust_pin.build_trust_pin(verification_result_summary=result, authorization_note="test")
     if tamper_pin:
         pin = {**pin, **tamper_pin}
     artifact_path = tmp_path / "t1b_allocation_artifact.json"
     artifact_path.write_bytes(allocation.canonical_json_bytes(artifact))
-    pin_path = tmp_path / "t1b_trust_pin.json"
-    pin_path.write_bytes(json.dumps(pin).encode("utf-8"))
-    return artifact, pin, artifact_path, pin_path
+    return artifact, pin, artifact_path
 
 
-def t1b_deps(artifact_path: Path, pin_path: Path, opener, **overrides):
+def not_authorized_pin() -> dict:
+    return {field: None for field in trust_pin.TRUST_PIN_FIELDS} | {
+        "schema_version": trust_pin.SCHEMA_VERSION,
+        "study_name": trust_pin.STUDY_NAME,
+        "artifact_role": trust_pin.ARTIFACT_ROLE,
+        "logical_block": trust_pin.LOGICAL_BLOCK,
+        "authorization_status": "NOT_AUTHORIZED",
+    }
+
+
+def default_deps(*, block, opener, artifact_path=None, pin=None, partition_manifest_path=None, anchor=None, bridge=None, **overrides):
     deps = dict(
-        output_root=None,  # filled by caller
-        block="T1B",
-        partition_manifest_path=None,
+        output_root=None,
+        block=block,
+        partition_manifest_path=partition_manifest_path,
         t1b_allocation_artifact_path=artifact_path,
-        t1b_trust_pin_path=pin_path,
         git_commit_resolver=lambda: SYNTHETIC_COMMIT,
-        design_freeze_approval_reader=lambda commit: {"ok": True},
-        implementation_review_reader=lambda commit, reviewed: {"ok": True},
-        classifier_blob_resolver=lambda commit: acquisition.CANONICAL_PARSER_CLASSIFIER_BLOB_SHA,
+        design_freeze_approval_reader=lambda head: {"ok": True},
+        frozen_design_object_verifier=lambda: None,
+        reviewed_implementation_binder=lambda head: {"reviewed_implementation_git_commit": SYNTHETIC_REVIEWED_COMMIT},
+        classifier_blob_resolver=lambda head: acquisition.CANONICAL_PARSER_CLASSIFIER_BLOB_SHA,
         zoneinfo_loader=lambda: object(),
-        git_anchor_reader=lambda commit: {},
-        git_bridge_reader=lambda commit: {},
+        anchor_reader=lambda head: anchor or {},
+        bridge_reader=lambda head: bridge or {},
+        t1b_trust_pin_reader=lambda head: pin or {},
         opener=opener,
         clock=clock_stub,
         monotonic_clock=lambda: 0.0,
@@ -181,19 +189,24 @@ def t1b_deps(artifact_path: Path, pin_path: Path, opener, **overrides):
     return deps
 
 
-# ---------------------------------------------------------------------------
-# T2 fixture: real V8 partition manifest + trusted anchor + OPTION_2 bridge
-# ---------------------------------------------------------------------------
+def run(deps: dict, output_root: Path):
+    deps = dict(deps)
+    deps["output_root"] = output_root
+    return acquisition._acquire_production_v8b_historical_block_bundle_with_dependencies(**deps)
 
 
-def _tickers(start: int) -> list[str]:
-    return [f"{code:04d}" for code in range(start, start + 300)]
+# ---------------------------------------------------------------------------
+# T2 fixture: synthetic partition manifest + anchor + bridge (self-consistent)
+# ---------------------------------------------------------------------------
 
 
 def write_partition_manifest(path: Path, *, t2=None) -> dict:
+    """A genuine, self-hash-verified V8 partition manifest fixture (must
+    satisfy src.v8_partition.read_partition_manifest's full schema)."""
     blocks = {
-        "T0": _tickers(4000), "T1": _tickers(1000), "T2": list(t2 or _tickers(2000)),
-        "T3": _tickers(3000), "T_spare": _tickers(5000),
+        "T0": _tickers("T0BLK", 300), "T1": _tickers("T1BLK", 300),
+        "T2": list(t2 or _tickers("T2", 300)),
+        "T3": _tickers("T3BLK", 300), "T_spare": _tickers("TSBLK", 300),
     }
     manifest = {
         "schema_version": partition.SCHEMA_VERSION,
@@ -201,7 +214,7 @@ def write_partition_manifest(path: Path, *, t2=None) -> dict:
         "design_commit": partition.DESIGN_COMMIT,
         "source_snapshot_semantics": partition.SOURCE_SNAPSHOT_SEMANTICS,
         "source_snapshot_clarification_commit": partition.SOURCE_SNAPSHOT_CLARIFICATION_COMMIT,
-        "partition_implementation_git_commit": SYNTHETIC_COMMIT,
+        "partition_implementation_git_commit": "6" * 40,
         "created_utc": "2026-08-09T00:00:00Z",
         "source_url": "https://www.jpx.co.jp/synthetic/data_j.xls",
         "source_host": "www.jpx.co.jp",
@@ -238,71 +251,35 @@ def write_partition_manifest(path: Path, *, t2=None) -> dict:
     return manifest
 
 
-def write_trusted_anchor(path: Path, *, manifest: dict) -> dict:
+def build_t2_fixture(t2_tickers: list[str], manifest_path: Path) -> tuple[dict, dict, dict]:
+    """A fully self-consistent T2 fixture -- manifest/anchor/bridge all agree
+    with each other, but NOT with the real frozen HIGH-4 constants unless
+    the caller also monkeypatches those (see ``patch_t2_expected_constants``).
+    """
+    manifest = write_partition_manifest(manifest_path, t2=t2_tickers)
+    t2_hash = partition.ticker_list_sha256(t2_tickers)
     anchor = {
-        "schema_version": acquisition.TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION,
-        "study_name": partition.STUDY_NAME,
-        "design_commit": partition.DESIGN_COMMIT,
         "authorization_status": "AUTHORIZED",
         "authorized_partition_manifest_sha256": manifest["manifest_sha256"],
         "authorized_partition_implementation_git_commit": manifest["partition_implementation_git_commit"],
-        "authorization_note": "test-only anchor",
     }
-    path.write_bytes(partition.canonical_json_bytes(anchor))
-    return anchor
-
-
-def build_bridge(*, manifest: dict, t2_tickers, tamper: dict | None = None) -> dict:
     bridge = {
-        "schema_version": acquisition.T2_AUTHORITY_BRIDGE_SCHEMA_VERSION,
-        "study": acquisition.STUDY_NAME,
-        "role": "SEALED_HOLDOUT",
-        "source_authority": "ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY",
-        "v8_trust_anchor_git_path": "V8_TRUSTED_PARTITION.json",
-        "v8_trust_anchor_git_identity": "f" * 40,
         "authorized_parent_v8_partition_manifest_sha256": manifest["manifest_sha256"],
-        "expected_t2_ticker_list_sha256": partition.ticker_list_sha256(t2_tickers),
-        "t2_acquired_before_authorized_acquisition": False,
-        "t2_research_open_count_before_official_opening": 0,
-        "v8b_frozen_design_commit": acquisition.V8B_FROZEN_DESIGN_COMMIT,
-        "t2_membership_reassignment": "PROHIBITED",
-        "v8_trusted_partition_json_mutated_or_repinned": False,
-        "option": "OPTION_2",
+        "expected_t2_ticker_list_sha256": t2_hash,
         "human_gate": "V8B_T2_AUTHORITY_INTEGRATION_OPTION_2_APPROVED",
-        "authorization_note": "test-only bridge",
+        "v8_trust_anchor_git_identity": "7" * 40,
     }
-    if tamper:
-        bridge.update(tamper)
-    return bridge
+    return manifest, anchor, bridge
 
 
-def t2_deps(partition_manifest_path: Path, anchor: dict, bridge: dict, opener, **overrides):
-    deps = dict(
-        output_root=None,
-        block="T2",
-        partition_manifest_path=partition_manifest_path,
-        t1b_allocation_artifact_path=None,
-        t1b_trust_pin_path=None,
-        git_commit_resolver=lambda: SYNTHETIC_COMMIT,
-        design_freeze_approval_reader=lambda commit: {"ok": True},
-        implementation_review_reader=lambda commit, reviewed: {"ok": True},
-        classifier_blob_resolver=lambda commit: acquisition.CANONICAL_PARSER_CLASSIFIER_BLOB_SHA,
-        zoneinfo_loader=lambda: object(),
-        git_anchor_reader=lambda commit: anchor,
-        git_bridge_reader=lambda commit: bridge,
-        opener=opener,
-        clock=clock_stub,
-        monotonic_clock=lambda: 0.0,
-        sleep_fn=lambda _s: None,
-    )
-    deps.update(overrides)
-    return deps
-
-
-def run(deps: dict, output_root: Path):
-    deps = dict(deps)
-    deps["output_root"] = output_root
-    return acquisition._acquire_production_v8b_historical_block_bundle_with_dependencies(**deps)
+def patch_t2_expected_constants(monkeypatch, t2_tickers: list[str]) -> None:
+    """Redirect the HIGH-4 frozen T2 pin to match a synthetic ticker list,
+    for tests that need to exercise a full successful T2 acquisition
+    without any real private V8 data. Only ever used in synthetic tests;
+    the real production constants (src/v8b_production_provenance.py) are
+    never modified."""
+    monkeypatch.setattr(acquisition, "EXPECTED_T2_TICKER_COUNT", len(t2_tickers))
+    monkeypatch.setattr(acquisition, "EXPECTED_T2_TICKER_LIST_SHA256", partition.ticker_list_sha256(t2_tickers))
 
 
 # ---------------------------------------------------------------------------
@@ -314,13 +291,39 @@ def test_public_production_signature_has_only_required_inputs():
     import inspect
 
     assert tuple(inspect.signature(acquisition.acquire_v8b_historical_block_bundle).parameters) == (
-        "output_root", "block", "partition_manifest_path", "t1b_allocation_artifact_path", "t1b_trust_pin_path",
+        "output_root", "block", "partition_manifest_path", "t1b_allocation_artifact_path",
     )
+
+
+def test_public_boundary_has_no_t1b_trust_pin_path_parameter():
+    """HIGH-3: production must not accept a caller-supplied trust-pin path."""
+    import inspect
+
+    assert "t1b_trust_pin_path" not in inspect.signature(acquisition.acquire_v8b_historical_block_bundle).parameters
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    (
+        "repository_root", "opener", "clock", "monotonic_clock", "sleep_fn",
+        "git_commit_resolver", "classifier_blob_resolver", "zoneinfo_loader",
+        "request_start", "request_end_exclusive", "trusted_partition_path",
+        "t1b_trust_pin_path",
+    ),
+)
+def test_public_boundary_rejects_all_dependency_overrides(tmp_path, forbidden):
+    kwargs = {
+        "output_root": tmp_path / "private",
+        "block": "T1B",
+        forbidden: "override",
+    }
+    with pytest.raises(TypeError):
+        acquisition.acquire_v8b_historical_block_bundle(**kwargs)
 
 
 @pytest.mark.parametrize("block", acquisition.PROHIBITED_ACQUISITION_BLOCKS)
 def test_all_prohibited_blocks_rejected(tmp_path, block):
-    deps = t1b_deps(tmp_path / "a.json", tmp_path / "p.json", forbidden_opener, block=block)
+    deps = default_deps(block=block, opener=forbidden_opener)
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_BLOCK_ACQUISITION_PROHIBITED:" + block
@@ -331,147 +334,256 @@ def test_all_prohibited_blocks_rejected(tmp_path, block):
 # ---------------------------------------------------------------------------
 
 
-def test_step1_dirty_git_provenance_blocks_before_network(tmp_path):
-    artifact_path, pin_path = tmp_path / "a.json", tmp_path / "p.json"
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
+def test_step1_git_provenance_failure_blocks_before_network(tmp_path):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
 
     def dirty_resolver():
-        raise acquisition.V8BHistoricalAcquisitionBlocked("PRODUCTION_GIT_WORKTREE_DIRTY")
+        raise acquisition.V8BGitProvenanceBlocked("PRODUCTION_GIT_WORKTREE_DIRTY")
 
-    deps = t1b_deps(artifact_path, pin_path, forbidden_opener, git_commit_resolver=dirty_resolver)
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin, git_commit_resolver=dirty_resolver)
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "PRODUCTION_GIT_WORKTREE_DIRTY"
 
 
+def test_step2_frozen_design_object_failure_blocks_before_network(tmp_path):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+
+    def failing_verifier():
+        raise acquisition.V8BProductionProvenanceBlocked("V8B_FROZEN_DESIGN_OBJECT_MUTATED")
+
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin, frozen_design_object_verifier=failing_verifier)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "V8B_FROZEN_DESIGN_OBJECT_MUTATED"
+
+
 def test_step2_freeze_approval_failure_blocks_before_network(tmp_path):
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
 
-    def failing_freeze_reader(commit):
-        raise acquisition.V8BHistoricalAcquisitionBlocked("V8B_DESIGN_FREEZE_APPROVAL_NOT_APPROVED")
+    def failing_freeze_reader(head):
+        raise acquisition.V8BProductionProvenanceBlocked("V8B_DESIGN_FREEZE_APPROVAL_NOT_APPROVED")
 
-    deps = t1b_deps(artifact_path, pin_path, forbidden_opener, design_freeze_approval_reader=failing_freeze_reader)
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin, design_freeze_approval_reader=failing_freeze_reader)
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_DESIGN_FREEZE_APPROVAL_NOT_APPROVED"
 
 
-def test_step3_missing_implementation_review_blocks_before_network(tmp_path):
-    """The real V8B_PRODUCTION_IMPLEMENTATION_REVIEW.json does not exist yet
-    in this repository; production must fail closed here today."""
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
+def test_step3_missing_implementation_review_blocks_before_network_on_real_repo(tmp_path):
+    """The real V8B_PRODUCTION_IMPLEMENTATION_REVIEW.json does not exist
+    yet; the real public entrypoint must fail closed today."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         acquisition.acquire_v8b_historical_block_bundle(
-            output_root=tmp_path / "private",
-            block="T1B",
-            t1b_allocation_artifact_path=artifact_path,
-            t1b_trust_pin_path=pin_path,
+            output_root=tmp_path / "private", block="T1B", t1b_allocation_artifact_path=artifact_path,
         )
     assert excinfo.value.reason in {
         "PRODUCTION_GIT_WORKTREE_DIRTY",
         "PRODUCTION_GIT_HEAD_NOT_ORIGIN",
         "PRODUCTION_GIT_ORIGIN_REF_UNAVAILABLE",
-        "V8B_DESIGN_FREEZE_APPROVAL_READ_FAILED",
+        "V8B_DESIGN_FREEZE_APPROVAL_MISSING",
         "V8B_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING",
     }
 
 
+def test_step3_reviewed_implementation_binder_failure_blocks_before_network(tmp_path):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+
+    def failing_binder(head):
+        raise acquisition.V8BProductionProvenanceBlocked("V8B_REVIEWED_IMPLEMENTATION_BLOB_DRIFT:src/v8b_allocation.py")
+
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin, reviewed_implementation_binder=failing_binder)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "V8B_REVIEWED_IMPLEMENTATION_BLOB_DRIFT:src/v8b_allocation.py"
+
+
 def test_step4_classifier_mismatch_blocks_before_network(tmp_path):
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
-    deps = t1b_deps(artifact_path, pin_path, forbidden_opener, classifier_blob_resolver=lambda commit: "0" * 40)
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin, classifier_blob_resolver=lambda head: "0" * 40)
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_PRODUCTION_CLASSIFIER_VERSION_MISMATCH"
 
 
-def test_step4_classifier_match_passes_check():
-    acquisition.verify_classifier_blob(acquisition.CANONICAL_PARSER_CLASSIFIER_BLOB_SHA)
-
-
 def test_step5_zoneinfo_unavailable_blocks_before_network(tmp_path):
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
 
     def failing_zoneinfo():
         raise LookupError("no tzdata")
 
-    deps = t1b_deps(artifact_path, pin_path, forbidden_opener, zoneinfo_loader=failing_zoneinfo)
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin, zoneinfo_loader=failing_zoneinfo)
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_ASIA_TOKYO_ZONEINFO_UNAVAILABLE"
 
 
-def test_step5_zoneinfo_available_passes_check():
-    acquisition.verify_asia_tokyo_zoneinfo_available(lambda: object())
-
-
 def test_step6_t1b_trust_pin_not_authorized_blocks(tmp_path):
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
-    not_authorized_pin = {field: None for field in trust_pin.TRUST_PIN_FIELDS} | {
-        "schema_version": trust_pin.SCHEMA_VERSION,
-        "study_name": trust_pin.STUDY_NAME,
-        "artifact_role": trust_pin.ARTIFACT_ROLE,
-        "logical_block": trust_pin.LOGICAL_BLOCK,
-        "authorization_status": "NOT_AUTHORIZED",
-    }
-    pin_path.write_bytes(json.dumps(not_authorized_pin).encode("utf-8"))
-    deps = t1b_deps(artifact_path, pin_path, forbidden_opener)
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=not_authorized_pin())
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_TRUST_PIN_NOT_AUTHORIZED"
 
 
+def test_step6_t1b_trust_pin_read_from_git_missing_blocks(tmp_path):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+
+    def missing_pin_reader(head):
+        raise acquisition.V8BGitProvenanceBlocked("GIT_OBJECT_READ_FAILED")
+
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin, t1b_trust_pin_reader=missing_pin_reader)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "V8B_TRUSTED_ALLOCATION_MISSING"
+
+
+def test_step6_t1b_allocation_artifact_self_hash_tampered_blocks(tmp_path):
+    """A forged local trust pin file cannot authorize acquisition: even if
+    a caller tampers the private allocation artifact on disk, the artifact
+    self-hash check catches it before the (Git-sourced) pin's own checks."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    tampered = json.loads(artifact_path.read_bytes())
+    tampered["t1b_tickers"][0] = "FORGED"
+    artifact_path.write_bytes(json.dumps(tampered).encode())
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason.startswith("V8B_ALLOCATION_ARTIFACT_INVALID:")
+
+
 def test_step6_t1b_trust_pin_artifact_mismatch_blocks(tmp_path):
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(
-        tmp_path, tamper_pin={"authorized_allocation_artifact_self_hash": "9" * 64}
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    tampered_pin = {**pin, "authorized_allocation_artifact_self_hash": "9" * 64}
+    with pytest.raises(trust_pin.V8BTrustPinBlocked):
+        trust_pin.validate_trust_pin(tampered_pin)  # human_gate no longer matches its own hash
+    # Construct a pin that is internally well-formed (grammar matches its
+    # own claimed hash) but points at a DIFFERENT artifact than the one on
+    # disk -- this must still be rejected by the acquisition-level binding.
+    other_pin = trust_pin.build_trust_pin(
+        verification_result_summary={
+            "result": "PASS",
+            "parent_v8_partition_manifest_sha256": "0" * 64,
+            "parent_v8_partition_implementation_commit": SYNTHETIC_COMMIT,
+            "parent_t_spare_ticker_count": 1904,
+            "parent_t_spare_ticker_list_sha256": "1" * 64,
+            "t1b_ticker_count": 300,
+            "t1b_ticker_list_sha256": "2" * 64,
+            "remaining_t_spare_ticker_count": 1604,
+            "remaining_t_spare_ticker_list_sha256": "3" * 64,
+            "v8b_frozen_design_commit": acquisition.V8B_FROZEN_DESIGN_COMMIT,
+            "v8b_allocation_implementation_commit": SYNTHETIC_REVIEWED_COMMIT,
+            "artifact_self_hash": "9" * 64,
+        },
+        authorization_note="different artifact",
     )
-    deps = t1b_deps(artifact_path, pin_path, forbidden_opener)
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=other_pin)
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_TRUST_PIN_ALLOCATION_ARTIFACT_MISMATCH"
 
 
-def test_step6_t2_bridge_ticker_hash_mismatch_blocks(tmp_path):
+def test_step8_output_path_inside_repository_blocks(tmp_path):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, ROOT / "acquisitions_should_not_be_written_here")
+    assert excinfo.value.reason == "OUTPUT_PATH_INSIDE_SOURCE_REPOSITORY"
+
+
+# ---------------------------------------------------------------------------
+# HIGH-4: exact V8 anchor / T2 hash enforcement -- self-consistent forgery still blocks
+# ---------------------------------------------------------------------------
+
+
+def test_t2_wrong_study_name_on_otherwise_valid_manifest_blocks(tmp_path, monkeypatch):
+    """A manifest that matches the anchor's SHA/commit and the frozen T2
+    ticker hash, but claims a different study_name, must still BLOCK --
+    read_partition_manifest itself does not check study_name, so this
+    module must."""
+    t2_tickers = _tickers("T2", 300)
+    patch_t2_expected_constants(monkeypatch, t2_tickers)
     manifest_path = tmp_path / "partition.json"
-    manifest = write_partition_manifest(manifest_path)
-    anchor = write_trusted_anchor(tmp_path / "anchor.json", manifest=manifest)
-    bridge = build_bridge(manifest=manifest, t2_tickers=_tickers(2000), tamper={"expected_t2_ticker_list_sha256": "f" * 64})
-    deps = t2_deps(manifest_path, anchor, bridge, forbidden_opener)
+    manifest, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
+    tampered = dict(manifest)
+    tampered["study_name"] = "NOT_V8_HISTORICAL_RESEARCH"
+    tampered["manifest_sha256"] = partition.canonical_sha256(
+        {k: v for k, v in tampered.items() if k != "manifest_sha256"}
+    )
+    manifest_path.write_bytes(partition.canonical_json_bytes(tampered))
+    anchor = {**anchor, "authorized_partition_manifest_sha256": tampered["manifest_sha256"]}
+    deps = default_deps(
+        block="T2", opener=forbidden_opener, partition_manifest_path=manifest_path, anchor=anchor, bridge=bridge
+    )
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
-    assert excinfo.value.reason == "V8B_T2_AUTHORITY_BRIDGE_TICKER_LIST_SHA_MISMATCH"
+    assert excinfo.value.reason == "PARTITION_MANIFEST_STUDY_NAME_MISMATCH"
 
 
-def test_step6_t2_bridge_cannot_be_bypassed_wrong_manifest_binding(tmp_path):
+def test_t2_self_consistent_synthetic_manifest_still_blocks_without_frozen_pin(tmp_path):
+    """A T2 manifest/anchor/bridge that are all internally self-consistent
+    with EACH OTHER must still BLOCK, because none of them match the real
+    frozen literal T2 count/hash this module pins to (HIGH-4) -- this is
+    the default behavior of every T2 test in this file that does NOT call
+    patch_t2_expected_constants."""
+    t2_tickers = _tickers("T2", 300)
     manifest_path = tmp_path / "partition.json"
-    manifest = write_partition_manifest(manifest_path)
-    anchor = write_trusted_anchor(tmp_path / "anchor.json", manifest=manifest)
-    bridge = build_bridge(
-        manifest=manifest, t2_tickers=_tickers(2000), tamper={"authorized_parent_v8_partition_manifest_sha256": "e" * 64}
+    manifest, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
+    deps = default_deps(
+        block="T2", opener=forbidden_opener, partition_manifest_path=manifest_path, anchor=anchor, bridge=bridge
     )
-    deps = t2_deps(manifest_path, anchor, bridge, forbidden_opener)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "PARTITION_TICKER_LIST_SHA_MISMATCH:T2"
+
+
+def test_t2_anchor_repin_with_matching_forged_manifest_still_blocks_via_public_path(tmp_path):
+    """Mirrors HIGH-4's anchor-mutation scenario end-to-end: a forged
+    anchor whose stated values match a forged private manifest exactly
+    still cannot authorize T2 acquisition, because the acquisition path's
+    anchor_reader is expected to have already verified the anchor against
+    its exact frozen Git blob -- simulated here by having anchor_reader
+    itself raise, proving the acquisition function depends on that check."""
+    def forged_anchor_reader(head):
+        raise acquisition.V8BProductionProvenanceBlocked("V8_TRUSTED_PARTITION_BLOB_MUTATED")
+
+    manifest_path = tmp_path / "partition.json"
+    manifest_path.write_bytes(json.dumps({"manifest_sha256": "f" * 64}).encode())
+    deps = default_deps(
+        block="T2", opener=forbidden_opener, partition_manifest_path=manifest_path, anchor_reader=forged_anchor_reader
+    )
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "V8_TRUSTED_PARTITION_BLOB_MUTATED"
+
+
+def test_t2_bridge_cannot_be_bypassed_wrong_manifest_binding(tmp_path, monkeypatch):
+    t2_tickers = _tickers("T2", 300)
+    patch_t2_expected_constants(monkeypatch, t2_tickers)
+    manifest_path = tmp_path / "partition.json"
+    manifest, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
+    bridge["authorized_parent_v8_partition_manifest_sha256"] = "e" * 64
+    deps = default_deps(
+        block="T2", opener=forbidden_opener, partition_manifest_path=manifest_path, anchor=anchor, bridge=bridge
+    )
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_T2_AUTHORITY_BRIDGE_MANIFEST_SHA_MISMATCH"
 
 
-def test_step6_t2_anchor_not_authorized_blocks(tmp_path):
+def test_t2_anchor_not_authorized_blocks(tmp_path, monkeypatch):
+    t2_tickers = _tickers("T2", 300)
+    patch_t2_expected_constants(monkeypatch, t2_tickers)
     manifest_path = tmp_path / "partition.json"
-    manifest = write_partition_manifest(manifest_path)
-    anchor = write_trusted_anchor(tmp_path / "anchor.json", manifest=manifest)
-    anchor = {**anchor, "authorization_status": "NOT_AUTHORIZED"}
-    bridge = build_bridge(manifest=manifest, t2_tickers=_tickers(2000))
-    deps = t2_deps(manifest_path, anchor, bridge, forbidden_opener)
+    manifest, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
+    anchor["authorization_status"] = "NOT_AUTHORIZED"
+    deps = default_deps(
+        block="T2", opener=forbidden_opener, partition_manifest_path=manifest_path, anchor=anchor, bridge=bridge
+    )
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "TRUSTED_PARTITION_NOT_AUTHORIZED"
-
-
-def test_step8_output_path_inside_repository_blocks(tmp_path):
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
-    deps = t1b_deps(artifact_path, pin_path, forbidden_opener)
-    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
-        run(deps, ROOT / "acquisitions_should_not_be_written_here")
-    assert excinfo.value.reason == "OUTPUT_PATH_INSIDE_SOURCE_REPOSITORY"
 
 
 # ---------------------------------------------------------------------------
@@ -480,9 +592,9 @@ def test_step8_output_path_inside_repository_blocks(tmp_path):
 
 
 def test_t1b_fake_success_exactly_300_opener_calls(tmp_path):
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
     opener = default_opener()
-    deps = t1b_deps(artifact_path, pin_path, opener)
+    deps = default_deps(block="T1B", opener=opener, artifact_path=artifact_path, pin=pin)
     manifest = run(deps, tmp_path / "private")
     assert len(opener.calls) == 300
     assert manifest["request_count"] == 300
@@ -494,18 +606,24 @@ def test_t1b_fake_success_exactly_300_opener_calls(tmp_path):
     assert manifest["retry_count"] == 0
     assert manifest["authority_chain"] == "V8B_SUCCESSOR_ALLOCATION_AUTHORITY"
     assert manifest["v8b_frozen_design_commit"] == acquisition.V8B_FROZEN_DESIGN_COMMIT
+    # HIGH-2: recorded commit is the *reviewed* implementation commit, not
+    # merely the (possibly later, audit-drifted) resolved HEAD.
+    assert manifest["implementation_git_commit"] == SYNTHETIC_REVIEWED_COMMIT
+    assert manifest["reviewed_production_implementation_commit"] == SYNTHETIC_REVIEWED_COMMIT
     assert manifest["canonical_parser_classifier_blob_sha"] == acquisition.CANONICAL_PARSER_CLASSIFIER_BLOB_SHA
     reread = acquisition.read_acquisition_manifest(tmp_path / "private", "T1B")
     assert reread == manifest
 
 
-def test_t2_fake_success_exactly_300_opener_calls_and_sealed(tmp_path):
+def test_t2_fake_success_exactly_300_opener_calls_and_sealed(tmp_path, monkeypatch):
+    t2_tickers = _tickers("T2", 300)
+    patch_t2_expected_constants(monkeypatch, t2_tickers)
     manifest_path = tmp_path / "partition.json"
-    manifest_fixture = write_partition_manifest(manifest_path)
-    anchor = write_trusted_anchor(tmp_path / "anchor.json", manifest=manifest_fixture)
-    bridge = build_bridge(manifest=manifest_fixture, t2_tickers=manifest_fixture["block_assignments"]["T2"])
+    manifest_fixture, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
     opener = default_opener()
-    deps = t2_deps(manifest_path, anchor, bridge, opener)
+    deps = default_deps(
+        block="T2", opener=opener, partition_manifest_path=manifest_path, anchor=anchor, bridge=bridge
+    )
     manifest = run(deps, tmp_path / "private")
     assert len(opener.calls) == 300
     assert manifest["block"] == "T2"
@@ -517,7 +635,7 @@ def test_t2_fake_success_exactly_300_opener_calls_and_sealed(tmp_path):
 
 
 def test_t1b_atomic_no_partial_publication_on_mid_loop_block(tmp_path):
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
 
     def failing_payload(ticker: str) -> bytes:
         if ticker == artifact["t1b_tickers"][5]:
@@ -525,7 +643,7 @@ def test_t1b_atomic_no_partial_publication_on_mid_loop_block(tmp_path):
         return synthetic_payload(ticker, DEFAULT_DATES)
 
     opener = FakeOpener(failing_payload)
-    deps = t1b_deps(artifact_path, pin_path, opener)
+    deps = default_deps(block="T1B", opener=opener, artifact_path=artifact_path, pin=pin)
     output_root = tmp_path / "private"
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked):
         run(deps, output_root)
@@ -538,9 +656,6 @@ def test_t1b_atomic_no_partial_publication_on_mid_loop_block(tmp_path):
 # ---------------------------------------------------------------------------
 # F1_C1 malformed-OHLCV thresholds: exact 1/252 and consecutive=1
 # ---------------------------------------------------------------------------
-
-
-PLACEHOLDER_TICKER = "9999"
 
 
 def _observations(count_total: int, invalid_indices: list[int]) -> tuple[list[dict], list[dict]]:
@@ -556,13 +671,11 @@ def _observations(count_total: int, invalid_indices: list[int]) -> tuple[list[di
 
 
 def test_fraction_exactly_at_threshold_passes():
-    # 252 observations, 1 invalid: 1*252 <= 252 -> PASS
     valid, invalid = _observations(252, [0])
     acquisition._require_malformed_ohlcv_quality_gate(valid, invalid)
 
 
 def test_fraction_one_beyond_threshold_blocks():
-    # 251 observations, 1 invalid: 1*252 > 251 -> BLOCK
     valid, invalid = _observations(251, [0])
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         acquisition._require_malformed_ohlcv_quality_gate(valid, invalid)
@@ -575,8 +688,6 @@ def test_consecutive_run_of_1_passes():
 
 
 def test_consecutive_run_of_2_blocks():
-    # 600 observations keeps the fraction gate satisfied (2*252 <= 600) so
-    # this isolates the consecutive-run gate specifically.
     valid, invalid = _observations(600, [10, 11])
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         acquisition._require_malformed_ohlcv_quality_gate(valid, invalid)
@@ -584,20 +695,12 @@ def test_consecutive_run_of_2_blocks():
 
 
 def test_mandatory_2018_test_year_checked_even_though_outside_calibration_window():
-    """§7.6: production years are 2018-2025 (full P_hist), not the
-    calibration-evidence 2019-2025 span. 2018 has only 10 returned
-    observations with 2 non-consecutive invalid rows -- a fraction breach
-    confined entirely to that one year's small window -- while every other
-    year (and the full series) stays comfortably within tolerance. This
-    must still BLOCK on the 2018-specific per-year check."""
     other_years_valid = [
         {"ticker": "9999", "trading_date": f"{year}-{offset // 28 + 1:02d}-{offset % 28 + 1:02d}"}
         for year in range(2016, 2026) if year != 2018
         for offset in range(60)
     ]
-    year_2018 = [
-        {"ticker": "9999", "trading_date": f"2018-01-{day:02d}"} for day in range(1, 11)
-    ]
+    year_2018 = [{"ticker": "9999", "trading_date": f"2018-01-{day:02d}"} for day in range(1, 11)]
     invalid_2018 = [dict(year_2018[0], reason="NONFINITE_CLOSE"), dict(year_2018[5], reason="NONFINITE_CLOSE")]
     valid_2018 = [row for index, row in enumerate(year_2018) if index not in (0, 5)]
 
@@ -608,17 +711,11 @@ def test_mandatory_2018_test_year_checked_even_though_outside_calibration_window
 
 
 def test_full_p_hist_check_is_independent_of_per_year_checks():
-    """A full-series fraction breach must BLOCK even when every individual
-    test year individually stays within tolerance (small per-year windows
-    can mask an aggregate breach if only checked per-year)."""
-    # 8 years * 30 observations = 240 total observations, all valid except one.
     valid = []
     for year in acquisition.MALFORMED_OHLCV_TEST_YEARS:
         for day in range(1, 31):
-            valid.append({"ticker": "X", "trading_date": f"{year}-01-{day:02d}"})
-    invalid = [{"ticker": "X", "trading_date": "2018-02-01", "reason": "NONFINITE_CLOSE"}]
-    # 240 total, 1 invalid: 1*252 > 240 -> BLOCK on full series even though
-    # this single invalid row is a tiny fraction of any one test year.
+            valid.append({"ticker": "9999", "trading_date": f"{year}-01-{day:02d}"})
+    invalid = [{"ticker": "9999", "trading_date": "2018-02-01", "reason": "NONFINITE_CLOSE"}]
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         acquisition._require_malformed_ohlcv_quality_gate(valid, invalid)
     assert excinfo.value.reason == "MALFORMED_OHLCV_QUALITY_GATE:FRACTION_EXCEEDED"
@@ -648,7 +745,7 @@ def test_retry_count_is_repository_fixed_zero_not_caller_overridable():
 
 
 def test_single_ticker_failure_aborts_whole_acquisition_no_second_attempt(tmp_path):
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
     calls: list[str] = []
 
     def failing_payload(ticker: str) -> bytes:
@@ -658,16 +755,14 @@ def test_single_ticker_failure_aborts_whole_acquisition_no_second_attempt(tmp_pa
         return synthetic_payload(ticker, DEFAULT_DATES)
 
     opener = FakeOpener(failing_payload)
-    deps = t1b_deps(artifact_path, pin_path, opener)
+    deps = default_deps(block="T1B", opener=opener, artifact_path=artifact_path, pin=pin)
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked):
         run(deps, tmp_path / "private")
-    # Only the first ticker was ever requested -- no automatic retry, and
-    # the loop stops immediately rather than continuing past the BLOCK.
     assert calls == [artifact["t1b_tickers"][0]]
 
 
 # ---------------------------------------------------------------------------
-# No ticker/date/path leakage
+# HIGH-6: no lower-layer error string leakage
 # ---------------------------------------------------------------------------
 
 
@@ -676,272 +771,126 @@ def test_malformed_reason_strings_never_contain_a_ticker():
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         acquisition._require_malformed_ohlcv_quality_gate(valid, invalid)
     assert PLACEHOLDER_TICKER not in excinfo.value.reason
-    assert excinfo.value.reason == "MALFORMED_OHLCV_QUALITY_GATE:FRACTION_EXCEEDED"
 
 
 def test_prohibited_block_reason_never_leaks_a_file_path(tmp_path):
-    deps = t1b_deps(tmp_path / "a.json", tmp_path / "p.json", forbidden_opener, block="T3")
+    deps = default_deps(block="T3", opener=forbidden_opener)
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert str(tmp_path) not in excinfo.value.reason
 
 
-# ---------------------------------------------------------------------------
-# Malicious GIT_* environment isolation
-# ---------------------------------------------------------------------------
+class _SecretBearingV7Error(Exception):
+    """Simulates a hypothetical future V7YahooCollectorBlocked whose
+    ``.reason`` accidentally carries a secret -- proves the whitelist
+    catches what it doesn't recognise, not just what it does."""
 
-
-def _init_bogus_git_repo(root: Path, *, classifier_content: bytes) -> None:
-    import subprocess
-
-    subprocess.run(["git", "init", "-q", str(root)], check=True)
-    (root / "src").mkdir()
-    (root / "src" / "v7_yahoo_collector.py").write_bytes(classifier_content)
-    (root / acquisition.DESIGN_FREEZE_APPROVAL_GIT_PATH).write_text(
-        json.dumps({"approval_status": "APPROVED", "forged": True})
-    )
-    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
-    subprocess.run(
-        ["git", "-C", str(root), "-c", "user.email=a@b.c", "-c", "user.name=x", "commit", "-q", "-m", "bogus"],
-        check=True,
-    )
-
-
-def test_malicious_git_dir_env_cannot_redirect_classifier_blob_resolution(monkeypatch, tmp_path):
-    """A malicious GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE must not be able to
-    redirect this module's git-based reads to an attacker-controlled
-    repository. Empirically, plain `git -C <real_root> ...` alone does NOT
-    protect against this (GIT_DIR overrides -C's directory discovery) --
-    this test proves the module's explicit env sanitization does. The
-    forged repo's classifier blob is deliberately DIFFERENT bogus content
-    (never the real pinned bytes), so if isolation ever regresses, this
-    test fails loudly with a wrong-but-resolved hash rather than silently
-    passing via a coincidental BLOCK."""
-    bogus = tmp_path / "not_a_repo"
-    bogus.mkdir()
-    _init_bogus_git_repo(bogus, classifier_content=b"FORGED CLASSIFIER CONTENT")
-    monkeypatch.setenv("GIT_DIR", str(bogus / ".git"))
-    monkeypatch.setenv("GIT_WORK_TREE", str(bogus))
-    monkeypatch.setenv("GIT_INDEX_FILE", str(bogus / ".git" / "index"))
-
-    real_commit = "28e281c3ee30d6b4c2f981c5da3ddc983c09724d"
-    blob_sha = acquisition._resolve_classifier_blob_sha_from_verified_head(real_commit)
-    assert blob_sha == acquisition.CANONICAL_PARSER_CLASSIFIER_BLOB_SHA
-
-
-def test_malicious_git_dir_env_cannot_redirect_design_freeze_approval_read(monkeypatch, tmp_path):
-    import subprocess
-
-    real_head = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, check=True, text=True
-    ).stdout.strip()
-
-    bogus = tmp_path / "not_a_repo2"
-    bogus.mkdir()
-    _init_bogus_git_repo(bogus, classifier_content=b"irrelevant")
-    monkeypatch.setenv("GIT_DIR", str(bogus / ".git"))
-    monkeypatch.setenv("GIT_WORK_TREE", str(bogus))
-
-    raw = acquisition._git_show_bytes(
-        real_head, acquisition.DESIGN_FREEZE_APPROVAL_GIT_PATH, read_failed_reason="READ_FAILED"
-    )
-    parsed = json.loads(raw)
-    assert parsed.get("forged") is not True
-    assert parsed.get("frozen_design_git_commit") == acquisition.V8B_FROZEN_DESIGN_COMMIT
-
-
-def test_isolated_git_subprocess_env_strips_all_blocklisted_variables(monkeypatch):
-    for key in acquisition._ISOLATED_GIT_ENV_BLOCKLIST:
-        monkeypatch.setenv(key, "malicious-value")
-    env = acquisition._isolated_git_subprocess_env()
-    assert not (set(env) & set(acquisition._ISOLATED_GIT_ENV_BLOCKLIST))
-
-
-def test_ambient_git_environment_context_manager_restores_prior_values(monkeypatch):
-    monkeypatch.setenv("GIT_DIR", "original-value")
-    with acquisition._isolated_ambient_git_environment():
-        assert "GIT_DIR" not in os.environ
-    assert os.environ["GIT_DIR"] == "original-value"
-
-
-# ---------------------------------------------------------------------------
-# Public production APIs expose no unsafe injection parameters
-# ---------------------------------------------------------------------------
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 @pytest.mark.parametrize(
-    "forbidden",
+    "secret_reason",
     (
-        "repository_root", "opener", "clock", "monotonic_clock", "sleep_fn",
-        "git_commit_resolver", "classifier_blob_resolver", "zoneinfo_loader",
-        "request_start", "request_end_exclusive", "trusted_partition_path",
+        "TICKER_7203_INVALID",
+        "https://query1.finance.yahoo.com/v8/finance/chart/7203.T?period1=123",
+        "2026-08-12",
+        "/home/user/private/t1b_allocation_artifact.json",
+        "INVALID_DATE:" + "x" * 200,  # oversized suffix on an otherwise-safe prefix
     ),
 )
-def test_public_boundary_rejects_all_dependency_overrides(tmp_path, forbidden):
-    kwargs = {
-        "output_root": tmp_path / "private",
-        "block": "T1B",
-        forbidden: "override",
-    }
-    with pytest.raises(TypeError):
-        acquisition.acquire_v8b_historical_block_bundle(**kwargs)
+def test_unrecognised_v7_collector_reason_is_redacted(secret_reason):
+    safe = acquisition._safe_transport_reason(secret_reason)
+    assert safe == "UNCLASSIFIED_PARSER_ERROR"
+    for secret_fragment in ("7203", "yahoo.com", "2026-08-12", "private", "t1b_allocation_artifact"):
+        assert secret_fragment not in safe
 
 
-def test_sealed_holdout_guard_denies_before_authorization(tmp_path):
-    manifest_path = tmp_path / "partition.json"
-    manifest_fixture = write_partition_manifest(manifest_path)
-    anchor = write_trusted_anchor(tmp_path / "anchor.json", manifest=manifest_fixture)
-    bridge = build_bridge(manifest=manifest_fixture, t2_tickers=manifest_fixture["block_assignments"]["T2"])
-    opener = default_opener()
-    deps = t2_deps(manifest_path, anchor, bridge, opener)
-    manifest = run(deps, tmp_path / "private")
-    with pytest.raises(acquisition.V8BSealedHoldoutBlocked) as excinfo:
-        acquisition.open_for_feature_generation(manifest)
-    assert excinfo.value.reason == "SEALED_HOLDOUT_ACCESS_DENIED:feature_generation"
+def test_known_safe_v7_collector_reasons_pass_through_unchanged():
+    for reason in ("EMPTY_TICKER", "RESPONSE_HOST_MISMATCH", "HTTP_STATUS_404", "INDICATOR_SECTION_INVALID:quote"):
+        assert acquisition._safe_transport_reason(reason) == reason
 
 
-def test_t1b_guard_denies_before_authorization(tmp_path):
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
-    opener = default_opener()
-    deps = t1b_deps(artifact_path, pin_path, opener)
-    manifest = run(deps, tmp_path / "private")
-    with pytest.raises(acquisition.V8BSealedHoldoutBlocked) as excinfo:
-        acquisition.open_for_validation(manifest)
-    assert excinfo.value.reason == "RESEARCH_ACCESS_NOT_AUTHORIZED:validation"
+@pytest.mark.parametrize(
+    "secret_error",
+    (
+        OSError("Connection refused to query1.finance.yahoo.com:443 for ticker 7203 at /private/path"),
+        ConnectionError("secret ticker 7203 date 2026-08-12 leaked in message"),
+        TimeoutError("timed out fetching https://query1.finance.yahoo.com/... ticker=7203"),
+        RuntimeError("totally unexpected error mentioning ticker 7203 and /etc/passwd"),
+    ),
+)
+def test_unclassified_exception_never_leaks_str_error_or_args(secret_error):
+    reason, is_429 = acquisition._classify_transport_exception(secret_error)
+    assert "7203" not in reason
+    assert "yahoo.com" not in reason
+    assert "2026-08-12" not in reason
+    assert "/private/path" not in reason
+    assert "/etc/passwd" not in reason
+    assert reason in {"TRANSPORT_OS_ERROR", "TRANSPORT_CONNECTION_ERROR", "TRANSPORT_TIMEOUT", "UNCLASSIFIED_TRANSPORT_ERROR"}
 
 
-# ---------------------------------------------------------------------------
-# §12.6 raw acquisition artifact verification
-# ---------------------------------------------------------------------------
+def test_http_429_still_detected_without_leaking_other_text():
+    class FakeHTTPError(Exception):
+        def __init__(self):
+            super().__init__("too many requests for ticker 7203")
+            self.code = 429
+
+    reason, is_429 = acquisition._classify_transport_exception(FakeHTTPError())
+    assert reason == "HTTP_STATUS_429"
+    assert is_429 is True
+    assert "7203" not in reason
 
 
-def test_artifact_verification_pass_on_honest_t1b_bundle(tmp_path):
-    from src import v8b_acquisition_artifact_verification as artifact_verification
+def test_ticker_fetch_secret_bearing_v7_error_redacted_end_to_end(tmp_path):
+    """Full per-ticker-loop integration: a V7YahooCollectorBlocked whose
+    .reason contains a synthetic secret must never appear in the raised
+    BLOCK reason."""
+    from src.v7_yahoo_collector import V7YahooCollectorBlocked
 
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
-    opener = default_opener()
-    deps = t1b_deps(artifact_path, pin_path, opener)
-    output_root = tmp_path / "private"
-    run(deps, output_root)
-    result = artifact_verification.verify_acquisition_artifact(
-        output_root, "T1B",
-        expected_v8b_frozen_design_commit=acquisition.V8B_FROZEN_DESIGN_COMMIT,
-        expected_reviewed_production_implementation_commit=SYNTHETIC_COMMIT,
-        expected_authority_chain="V8B_SUCCESSOR_ALLOCATION_AUTHORITY",
-    )
-    assert result["result"] == "PASS"
-    assert result["payload_manifest_record_count"] == 300
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    secret_ticker = artifact["t1b_tickers"][0]
 
+    def poisoned_opener(request_obj):
+        raise V7YahooCollectorBlocked("SECRET_TICKER_" + secret_ticker + "_DATE_2026-08-12_LEAKED")
 
-def test_artifact_verification_detects_missing_payload_file(tmp_path):
-    from src import v8b_acquisition_artifact_verification as artifact_verification
-
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
-    opener = default_opener()
-    deps = t1b_deps(artifact_path, pin_path, opener)
-    output_root = tmp_path / "private"
-    run(deps, output_root)
-    raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
-    victim = next(raw_dir.iterdir())
-    victim.unlink()
-    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(
-            output_root, "T1B",
-            expected_v8b_frozen_design_commit=acquisition.V8B_FROZEN_DESIGN_COMMIT,
-            expected_reviewed_production_implementation_commit=SYNTHETIC_COMMIT,
-            expected_authority_chain="V8B_SUCCESSOR_ALLOCATION_AUTHORITY",
-        )
-    assert excinfo.value.reason == "RAW_PAYLOAD_MISSING"
+    deps = default_deps(block="T1B", opener=poisoned_opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert secret_ticker not in excinfo.value.reason
+    assert "2026-08-12" not in excinfo.value.reason
+    assert excinfo.value.reason == "TICKER_FETCH_BLOCKED:UNCLASSIFIED_PARSER_ERROR"
 
 
-def test_artifact_verification_detects_extra_payload_file(tmp_path):
-    from src import v8b_acquisition_artifact_verification as artifact_verification
+def test_ticker_fetch_secret_bearing_generic_exception_redacted_end_to_end(tmp_path):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    secret_ticker = artifact["t1b_tickers"][0]
 
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
-    opener = default_opener()
-    deps = t1b_deps(artifact_path, pin_path, opener)
-    output_root = tmp_path / "private"
-    run(deps, output_root)
-    raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
-    (raw_dir / "EXTRA9999.json").write_bytes(b"{}")
-    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(
-            output_root, "T1B",
-            expected_v8b_frozen_design_commit=acquisition.V8B_FROZEN_DESIGN_COMMIT,
-            expected_reviewed_production_implementation_commit=SYNTHETIC_COMMIT,
-            expected_authority_chain="V8B_SUCCESSOR_ALLOCATION_AUTHORITY",
-        )
-    assert excinfo.value.reason == "RAW_PAYLOAD_UNEXPECTED_EXTRA"
+    def poisoned_opener(request_obj):
+        raise OSError(f"connection reset while fetching {secret_ticker} at /private/output/root/path")
 
-
-def test_artifact_verification_detects_modified_payload_bytes(tmp_path):
-    from src import v8b_acquisition_artifact_verification as artifact_verification
-
-    artifact, pin, artifact_path, pin_path = build_t1b_fixture(tmp_path)
-    opener = default_opener()
-    deps = t1b_deps(artifact_path, pin_path, opener)
-    output_root = tmp_path / "private"
-    run(deps, output_root)
-    raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
-    victim = next(raw_dir.iterdir())
-    original = victim.read_bytes()
-    victim.write_bytes(original + b"tampered")
-    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(
-            output_root, "T1B",
-            expected_v8b_frozen_design_commit=acquisition.V8B_FROZEN_DESIGN_COMMIT,
-            expected_reviewed_production_implementation_commit=SYNTHETIC_COMMIT,
-            expected_authority_chain="V8B_SUCCESSOR_ALLOCATION_AUTHORITY",
-        )
-    assert excinfo.value.reason == "RAW_PAYLOAD_BYTE_COUNT_MISMATCH"
+    deps = default_deps(block="T1B", opener=poisoned_opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert secret_ticker not in excinfo.value.reason
+    assert "/private/output/root/path" not in excinfo.value.reason
+    assert excinfo.value.reason == "TICKER_FETCH_BLOCKED:TRANSPORT_OS_ERROR"
 
 
 # ---------------------------------------------------------------------------
-# §12.4 T2 reuse-conditions recheck
+# MEDIUM-3: no public research-opening bypass exists
 # ---------------------------------------------------------------------------
 
 
-def test_t2_reuse_recheck_pass():
-    from src import v8b_t2_reuse_recheck as recheck
-
-    result = recheck.recheck_t2_reuse_conditions({
-        "t2_acquired": False,
-        "t2_opened": False,
-        "t2_ticker_identities_exposed_to_human_public_research_loop": False,
-        "t2_market_data_raw_ohlcv_feature_outcome_research_exposure": False,
-        "t2_universe_definition_unchanged": True,
-        "t2_partition_algorithm_unchanged": True,
-        "t2_v8b_f1_c1_policy_fixed": True,
-    })
-    assert result == {"result": "PASS", "block": "T2"}
+def test_no_open_for_functions_are_exported():
+    exported_open_for = [name for name in acquisition.__all__ if name.startswith("open_for")]
+    assert exported_open_for == []
 
 
-def test_t2_reuse_recheck_blocks_on_missing_field():
-    from src import v8b_t2_reuse_recheck as recheck
-
-    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck.recheck_t2_reuse_conditions({"t2_acquired": False})
-    assert excinfo.value.reason == "V8B_T2_PRESERVATION_RECHECK_BLOCKED:MISSING_SAFE_METADATA"
+def test_no_open_for_functions_defined_at_all():
+    assert not any(name.startswith("open_for") for name in dir(acquisition))
 
 
-def test_t2_reuse_recheck_blocks_on_already_acquired():
-    from src import v8b_t2_reuse_recheck as recheck
-
-    metadata = {
-        "t2_acquired": True,
-        "t2_opened": False,
-        "t2_ticker_identities_exposed_to_human_public_research_loop": False,
-        "t2_market_data_raw_ohlcv_feature_outcome_research_exposure": False,
-        "t2_universe_definition_unchanged": True,
-        "t2_partition_algorithm_unchanged": True,
-        "t2_v8b_f1_c1_policy_fixed": True,
-    }
-    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck.recheck_t2_reuse_conditions(metadata)
-    assert excinfo.value.reason == "V8B_T2_PRESERVATION_RECHECK_BLOCKED:T2_ACQUIRED"
-
-
-def test_t2_reuse_recheck_module_defines_no_fallback_substitution():
-    from src import v8b_t2_reuse_recheck as recheck
-
-    assert not any("spare" in name.lower() or "t3" in name.lower() for name in recheck.__all__)
+def test_no_sealed_holdout_guard_class_defined():
+    assert not hasattr(acquisition, "V8BSealedHoldoutBlocked")

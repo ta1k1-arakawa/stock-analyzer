@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from src import v8b_trust_pin as trust_pin
@@ -45,7 +47,6 @@ def not_authorized_pin() -> dict:
 def test_build_trust_pin_from_pass_summary():
     pin = trust_pin.build_trust_pin(
         verification_result_summary=_pass_summary(),
-        human_gate="V8B_HUMAN_AUTHORIZE_T1B_ALLOCATION_PIN",
         authorization_note="test-only pin",
     )
     assert pin["authorization_status"] == "AUTHORIZED"
@@ -53,11 +54,24 @@ def test_build_trust_pin_from_pass_summary():
     assert set(pin) == set(trust_pin.TRUST_PIN_FIELDS)
 
 
+def test_build_trust_pin_has_no_human_gate_parameter():
+    """HIGH-3: the builder must not accept caller-supplied human_gate text."""
+    import inspect
+
+    assert "human_gate" not in inspect.signature(trust_pin.build_trust_pin).parameters
+
+
+def test_build_trust_pin_derives_human_gate_from_frozen_grammar():
+    pin = trust_pin.build_trust_pin(verification_result_summary=_pass_summary(), authorization_note="note")
+    expected = trust_pin.HUMAN_GATE_PREFIX + pin["authorized_allocation_artifact_self_hash"]
+    assert pin["human_gate"] == expected
+    assert pin["human_gate"] == trust_pin.expected_human_gate(pin["authorized_allocation_artifact_self_hash"])
+
+
 def test_build_trust_pin_rejects_non_pass_result():
     with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
         trust_pin.build_trust_pin(
             verification_result_summary=_pass_summary(result="BLOCK"),
-            human_gate="gate",
             authorization_note="note",
         )
     assert excinfo.value.reason == "VERIFICATION_RESULT_NOT_PASS"
@@ -68,9 +82,7 @@ def test_build_trust_pin_rejects_summary_with_ticker_identities(forbidden):
     summary = _pass_summary()
     summary[forbidden] = ["0001", "0002"]
     with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
-        trust_pin.build_trust_pin(
-            verification_result_summary=summary, human_gate="gate", authorization_note="note"
-        )
+        trust_pin.build_trust_pin(verification_result_summary=summary, authorization_note="note")
     assert excinfo.value.reason == "VERIFICATION_SUMMARY_CONTAINS_TICKER_IDENTITIES"
 
 
@@ -78,18 +90,8 @@ def test_build_trust_pin_rejects_incomplete_summary():
     summary = _pass_summary()
     del summary["artifact_self_hash"]
     with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
-        trust_pin.build_trust_pin(
-            verification_result_summary=summary, human_gate="gate", authorization_note="note"
-        )
+        trust_pin.build_trust_pin(verification_result_summary=summary, authorization_note="note")
     assert excinfo.value.reason == "VERIFICATION_SUMMARY_SCHEMA_INVALID"
-
-
-def test_build_trust_pin_rejects_empty_human_gate():
-    with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
-        trust_pin.build_trust_pin(
-            verification_result_summary=_pass_summary(), human_gate="   ", authorization_note="note"
-        )
-    assert excinfo.value.reason == "HUMAN_GATE_INVALID"
 
 
 # ---------------------------------------------------------------------------
@@ -98,9 +100,7 @@ def test_build_trust_pin_rejects_empty_human_gate():
 
 
 def test_validate_authorized_pin_round_trips():
-    pin = trust_pin.build_trust_pin(
-        verification_result_summary=_pass_summary(), human_gate="gate", authorization_note="note"
-    )
+    pin = trust_pin.build_trust_pin(verification_result_summary=_pass_summary(), authorization_note="note")
     validated = trust_pin.validate_trust_pin(pin)
     assert validated == pin
 
@@ -119,9 +119,7 @@ def test_not_authorized_pin_with_populated_field_blocks():
 
 
 def test_authorized_pin_with_wrong_t1b_count_blocks():
-    pin = trust_pin.build_trust_pin(
-        verification_result_summary=_pass_summary(), human_gate="gate", authorization_note="note"
-    )
+    pin = trust_pin.build_trust_pin(verification_result_summary=_pass_summary(), authorization_note="note")
     tampered = dict(pin)
     tampered["t1b_ticker_count"] = 301
     with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
@@ -130,9 +128,7 @@ def test_authorized_pin_with_wrong_t1b_count_blocks():
 
 
 def test_authorized_pin_with_inconsistent_remaining_count_blocks():
-    pin = trust_pin.build_trust_pin(
-        verification_result_summary=_pass_summary(), human_gate="gate", authorization_note="note"
-    )
+    pin = trust_pin.build_trust_pin(verification_result_summary=_pass_summary(), authorization_note="note")
     tampered = dict(pin)
     tampered["remaining_t_spare_ticker_count"] = 999999
     with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
@@ -141,9 +137,7 @@ def test_authorized_pin_with_inconsistent_remaining_count_blocks():
 
 
 def test_validate_rejects_unknown_authorization_status():
-    pin = trust_pin.build_trust_pin(
-        verification_result_summary=_pass_summary(), human_gate="gate", authorization_note="note"
-    )
+    pin = trust_pin.build_trust_pin(verification_result_summary=_pass_summary(), authorization_note="note")
     tampered = dict(pin)
     tampered["authorization_status"] = "MAYBE"
     with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
@@ -152,9 +146,7 @@ def test_validate_rejects_unknown_authorization_status():
 
 
 def test_validate_rejects_wrong_schema_version():
-    pin = trust_pin.build_trust_pin(
-        verification_result_summary=_pass_summary(), human_gate="gate", authorization_note="note"
-    )
+    pin = trust_pin.build_trust_pin(verification_result_summary=_pass_summary(), authorization_note="note")
     tampered = dict(pin)
     tampered["schema_version"] = "V0"
     with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
@@ -163,9 +155,7 @@ def test_validate_rejects_wrong_schema_version():
 
 
 def test_validate_rejects_missing_field():
-    pin = trust_pin.build_trust_pin(
-        verification_result_summary=_pass_summary(), human_gate="gate", authorization_note="note"
-    )
+    pin = trust_pin.build_trust_pin(verification_result_summary=_pass_summary(), authorization_note="note")
     incomplete = dict(pin)
     del incomplete["authorization_note"]
     with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
@@ -175,14 +165,49 @@ def test_validate_rejects_missing_field():
 
 @pytest.mark.parametrize("forbidden", ("t1b_tickers", "remaining_t_spare_tickers", "parent_t_spare_tickers"))
 def test_validate_rejects_pin_with_ticker_identity_field(forbidden):
-    pin = trust_pin.build_trust_pin(
-        verification_result_summary=_pass_summary(), human_gate="gate", authorization_note="note"
-    )
+    pin = trust_pin.build_trust_pin(verification_result_summary=_pass_summary(), authorization_note="note")
     tampered = dict(pin)
     tampered[forbidden] = ["0001"]
     with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
         trust_pin.validate_trust_pin(tampered)
     assert excinfo.value.reason == "TRUST_PIN_SCHEMA_INVALID"
+
+
+# ---------------------------------------------------------------------------
+# HIGH-3: human_gate grammar enforcement -- not any arbitrary nonempty string
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "forged_human_gate",
+    (
+        "",
+        "   ",
+        "APPROVED",
+        "V8B_HUMAN_AUTHORIZE_T1B_ALLOCATION_PIN_AT_" + "0" * 64,  # wrong hash
+        "V8B_HUMAN_AUTHORIZE_T1B_ALLOCATION_PIN_AT_",  # missing hash
+        "totally plausible-sounding human sign-off",
+    ),
+)
+def test_forged_or_arbitrary_human_gate_rejected(forged_human_gate):
+    pin = trust_pin.build_trust_pin(verification_result_summary=_pass_summary(), authorization_note="note")
+    tampered = dict(pin)
+    tampered["human_gate"] = forged_human_gate
+    with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
+        trust_pin.validate_trust_pin(tampered)
+    assert excinfo.value.reason == "TRUST_PIN_HUMAN_GATE_INVALID"
+
+
+def test_human_gate_grammar_is_bound_to_this_pins_own_artifact_hash():
+    """A human_gate that is a well-formed grammar string for a *different*
+    artifact hash must not validate this pin."""
+    pin = trust_pin.build_trust_pin(verification_result_summary=_pass_summary(), authorization_note="note")
+    other_hash = "9" * 64
+    tampered = dict(pin)
+    tampered["human_gate"] = trust_pin.expected_human_gate(other_hash)
+    with pytest.raises(trust_pin.V8BTrustPinBlocked) as excinfo:
+        trust_pin.validate_trust_pin(tampered)
+    assert excinfo.value.reason == "TRUST_PIN_HUMAN_GATE_INVALID"
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +223,7 @@ def test_read_trust_pin_bytes_rejects_duplicate_key():
 
 
 def test_read_trust_pin_bytes_round_trips():
-    pin = trust_pin.build_trust_pin(
-        verification_result_summary=_pass_summary(), human_gate="gate", authorization_note="note"
-    )
-    import json
-
+    pin = trust_pin.build_trust_pin(verification_result_summary=_pass_summary(), authorization_note="note")
     raw = json.dumps(pin).encode("utf-8")
     reloaded = trust_pin.read_trust_pin_bytes(raw)
     assert reloaded == pin

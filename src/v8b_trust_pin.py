@@ -31,6 +31,27 @@ SCHEMA_VERSION = "V8B_TRUSTED_ALLOCATION_V1"
 ARTIFACT_ROLE = "T1B_ALLOCATION_TRUST_PIN"
 LOGICAL_BLOCK = "T1B"
 
+# Frozen human-gate grammar for HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_
+# ALLOCATION (§12), mirroring the exact-embedding pattern this repository
+# already established for one-time pin authorizations --
+# V8_STATE.json's V8 trust-anchor pin used
+# "V8_HUMAN_AUTHORIZE_ONE_TRUST_ANCHOR_PIN_AT_<head>_FOR_MANIFEST_<hash>_
+# IMPL_<commit>", and V8B_DESIGN_FREEZE_APPROVAL.json's human_gate is
+# "V8B_HUMAN_DESIGN_FREEZE_APPROVED_FOR_COMMIT_<commit>". Both are a fixed
+# prefix followed by the exact value the approval binds to, never freeform
+# text. This grammar is a naming/audit-trail convention, not a
+# methodology decision: no threshold, partition, or selection-rule
+# content is embedded, only which exact artifact a future human approves.
+# No real approval is asserted or invented here -- this only fixes what a
+# well-formed future approval string must look like.
+HUMAN_GATE_PREFIX = "V8B_HUMAN_AUTHORIZE_T1B_ALLOCATION_PIN_AT_"
+
+
+def expected_human_gate(authorized_allocation_artifact_self_hash: str) -> str:
+    """The single well-formed human_gate string for a pin authorizing the
+    allocation artifact with this exact ``artifact_self_hash``."""
+    return HUMAN_GATE_PREFIX + authorized_allocation_artifact_self_hash
+
 AUTHORIZATION_STATUSES = ("NOT_AUTHORIZED", "AUTHORIZED")
 
 TRUST_PIN_FIELDS = (
@@ -96,7 +117,6 @@ def _require_sha256_hex(value: object, reason: str) -> str:
 def build_trust_pin(
     *,
     verification_result_summary: Mapping[str, Any],
-    human_gate: str,
     authorization_note: str,
 ) -> dict[str, Any]:
     """Build (never writes) an ``AUTHORIZED`` trust-pin from a PASS verification summary.
@@ -106,6 +126,11 @@ def build_trust_pin(
     returns on a ``result == "PASS"`` outcome -- this function refuses any
     mapping that also carries a ticker-identity field, so a caller cannot
     accidentally launder raw ticker lists into a "public" pin.
+
+    There is deliberately no ``human_gate`` parameter: the frozen grammar
+    (``HUMAN_GATE_PREFIX`` + the exact artifact hash being authorized)
+    leaves no freedom for a caller to supply arbitrary text, so the value
+    is always derived here, never accepted as input.
     """
     if verification_result_summary.get("result") != "PASS":
         raise V8BTrustPinBlocked("VERIFICATION_RESULT_NOT_PASS")
@@ -115,10 +140,13 @@ def build_trust_pin(
     missing = set(_REQUIRED_VERIFICATION_SUMMARY_FIELDS) - set(verification_result_summary)
     if missing:
         raise V8BTrustPinBlocked("VERIFICATION_SUMMARY_SCHEMA_INVALID")
-    if not isinstance(human_gate, str) or not human_gate.strip():
-        raise V8BTrustPinBlocked("HUMAN_GATE_INVALID")
     if not isinstance(authorization_note, str):
         raise V8BTrustPinBlocked("AUTHORIZATION_NOTE_INVALID")
+
+    artifact_self_hash = _require_sha256_hex(
+        verification_result_summary["artifact_self_hash"], "ARTIFACT_SELF_HASH_INVALID"
+    )
+    human_gate = expected_human_gate(artifact_self_hash)
 
     pin: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -237,7 +265,10 @@ def validate_trust_pin(pin: Mapping[str, Any]) -> dict[str, Any]:
     )
     if pin["verification_result"] != "PASS":
         raise V8BTrustPinBlocked("TRUST_PIN_VERIFICATION_RESULT_NOT_PASS")
-    if not isinstance(pin["human_gate"], str) or not pin["human_gate"].strip():
+    # The human_gate must be exactly the frozen grammar bound to this
+    # pin's own authorized artifact hash -- no arbitrary nonempty string,
+    # however plausible-sounding, is accepted (HIGH-3 remediation).
+    if pin["human_gate"] != expected_human_gate(pin["authorized_allocation_artifact_self_hash"]):
         raise V8BTrustPinBlocked("TRUST_PIN_HUMAN_GATE_INVALID")
     if not isinstance(pin["authorization_note"], str):
         raise V8BTrustPinBlocked("TRUST_PIN_AUTHORIZATION_NOTE_INVALID")
@@ -276,12 +307,14 @@ def read_trust_pin_bytes(raw: bytes) -> dict[str, Any]:
 __all__ = [
     "ARTIFACT_ROLE",
     "AUTHORIZATION_STATUSES",
+    "HUMAN_GATE_PREFIX",
     "LOGICAL_BLOCK",
     "SCHEMA_VERSION",
     "STUDY_NAME",
     "TRUST_PIN_FIELDS",
     "V8BTrustPinBlocked",
     "build_trust_pin",
+    "expected_human_gate",
     "read_trust_pin_bytes",
     "validate_trust_pin",
 ]
