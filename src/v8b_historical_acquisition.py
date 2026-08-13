@@ -882,8 +882,11 @@ def acquire_v8b_historical_block_bundle(
         t1b_trust_pin_reader=lambda head: read_t1b_trust_pin_from_verified_head(
             CANONICAL_REPOSITORY_ROOT, head, read_git_object_bytes
         ),
-        trust_pin_review_reader=lambda head, artifact_hash: read_and_verify_trust_pin_independent_review(
-            CANONICAL_REPOSITORY_ROOT, head, expected_allocation_artifact_self_hash=artifact_hash
+        trust_pin_review_reader=lambda head, artifact_hash, human_gate: read_and_verify_trust_pin_independent_review(
+            CANONICAL_REPOSITORY_ROOT,
+            head,
+            expected_allocation_artifact_self_hash=artifact_hash,
+            expected_trust_pin_human_gate=human_gate,
         ),
         opener=_default_trusted_yahoo_opener,
         clock=lambda: datetime.now(timezone.utc),
@@ -911,7 +914,7 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
     bridge_reader: Callable[[str], Mapping[str, Any]],
     t2_reuse_recheck_resolver: Callable[[], Mapping[str, Any]],
     t1b_trust_pin_reader: Callable[[str], Mapping[str, Any]],
-    trust_pin_review_reader: Callable[[str, str], Mapping[str, Any]],
+    trust_pin_review_reader: Callable[[str, str, str], Mapping[str, Any]],
     opener: Callable[[Any], Any],
     clock: Callable[[], datetime],
     consumption_state_root: str | os.PathLike[str],
@@ -938,7 +941,7 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
     durably consumes the gate immediately before its first Yahoo request.
     """
     if block not in ALLOWED_ACQUISITION_BLOCKS:
-        raise V8BHistoricalAcquisitionBlocked("V8B_BLOCK_ACQUISITION_PROHIBITED:" + str(block))
+        raise V8BHistoricalAcquisitionBlocked("V8B_BLOCK_ACQUISITION_PROHIBITED")
 
     # (0) explicit, exact, block-specific acquisition-gate confirmation
     # token -- a T1B token can never authorize T2 acquisition or vice versa.
@@ -1013,7 +1016,9 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
         # occurred. Fails closed today -- the real artifact does not exist.
         try:
             trust_pin_review_reader(
-                verified_head, authority_binding["authorized_allocation_artifact_self_hash"]
+                verified_head,
+                authority_binding["authorized_allocation_artifact_self_hash"],
+                authority_binding["trust_pin_human_gate"],
             )
         except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
             raise _wrap(error, "V8B_TRUST_PIN_INDEPENDENT_REVIEW_MISSING") from error
@@ -1086,7 +1091,7 @@ def _acquire_v8b_block_bundle_with_validated_inputs(
     filled, interpolated, imputed, or repaired.
     """
     if block not in ALLOWED_ACQUISITION_BLOCKS:
-        raise V8BHistoricalAcquisitionBlocked("V8B_BLOCK_ACQUISITION_PROHIBITED:" + str(block))
+        raise V8BHistoricalAcquisitionBlocked("V8B_BLOCK_ACQUISITION_PROHIBITED")
 
     start = _parse_date(request_start, "request_start")
     end = _parse_date(request_end_exclusive, "request_end_exclusive")
@@ -1347,7 +1352,7 @@ def read_acquisition_manifest(output_root: str | os.PathLike[str], block: str) -
     acquisition-time invariant against this module's own constants.
     """
     if block not in ALLOWED_ACQUISITION_BLOCKS:
-        raise V8BHistoricalAcquisitionBlocked("V8B_BLOCK_ACQUISITION_PROHIBITED:" + str(block))
+        raise V8BHistoricalAcquisitionBlocked("V8B_BLOCK_ACQUISITION_PROHIBITED")
     manifest_path = Path(output_root) / ACQUISITIONS_DIRNAME / block / MANIFEST_FILENAME
     try:
         raw = manifest_path.read_bytes()
@@ -1385,6 +1390,40 @@ def read_acquisition_manifest(output_root: str | os.PathLike[str], block: str) -
     if manifest.get("retry_count") != RETRY_COUNT:
         raise V8BHistoricalAcquisitionBlocked("ACQUISITION_MANIFEST_RETRY_COUNT_MISMATCH")
     return dict(manifest)
+
+
+# The exact `T2`-only `SEALED.json` schema (repeat-round finding MEDIUM-3).
+SEALED_RECORD_FIELDS = ("sealed", "research_access_authorized", "note")
+
+
+def read_sealed_record(output_root: str | os.PathLike[str], block: str) -> dict[str, Any]:
+    """Read-only, duplicate-key-safe load of a previously published `T2`
+    `SEALED.json` record (repeat-round finding MEDIUM-3: this file was
+    previously never independently re-read/verified -- only the
+    acquisition manifest's own ``sealed``/``research_access_authorized``
+    fields were checked). Only `T2` ever publishes this file -- `T1B`'s
+    bundle must never carry it; callers verifying `T1B` must confirm its
+    absence themselves rather than calling this function for `T1B`.
+    """
+    if block not in ALLOWED_ACQUISITION_BLOCKS:
+        raise V8BHistoricalAcquisitionBlocked("V8B_BLOCK_ACQUISITION_PROHIBITED")
+    sealed_path = Path(output_root) / ACQUISITIONS_DIRNAME / block / SEALED_FILENAME
+    try:
+        raw = sealed_path.read_bytes()
+    except OSError as error:
+        raise V8BHistoricalAcquisitionBlocked("SEALED_RECORD_READ_FAILED") from error
+    record = _strict_json_object(
+        raw, invalid_reason="SEALED_RECORD_INVALID_JSON", duplicate_reason="SEALED_RECORD_DUPLICATE_KEY"
+    )
+    if set(record) != set(SEALED_RECORD_FIELDS):
+        raise V8BHistoricalAcquisitionBlocked("SEALED_RECORD_SCHEMA_INVALID")
+    if record["sealed"] is not True:
+        raise V8BHistoricalAcquisitionBlocked("SEALED_RECORD_SEALED_INVARIANT_VIOLATED")
+    if record["research_access_authorized"] is not False:
+        raise V8BHistoricalAcquisitionBlocked("SEALED_RECORD_RESEARCH_ACCESS_INVARIANT_VIOLATED")
+    if not isinstance(record["note"], str) or not record["note"]:
+        raise V8BHistoricalAcquisitionBlocked("SEALED_RECORD_NOTE_INVALID")
+    return dict(record)
 
 
 PUBLIC_ACQUISITION_SUMMARY_FIELDS = tuple(
@@ -1443,6 +1482,7 @@ __all__ = [
     "RETRY_COUNT",
     "SCHEMA_VERSION",
     "SEALED_FILENAME",
+    "SEALED_RECORD_FIELDS",
     "STUDY_NAME",
     "T1B_ACQUISITION_CONFIRMATION",
     "T1B_TRUST_PIN_GIT_PATH",
@@ -1454,6 +1494,7 @@ __all__ = [
     "canonical_sha256",
     "public_acquisition_summary",
     "read_acquisition_manifest",
+    "read_sealed_record",
     "read_t1b_trust_pin_from_verified_head",
     "sha256_bytes",
     "verify_asia_tokyo_zoneinfo_available",

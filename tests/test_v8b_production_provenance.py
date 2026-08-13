@@ -33,6 +33,24 @@ def _init_bogus_git_repo(root: Path, *, files: dict[str, bytes]) -> str:
     ).stdout.strip()
 
 
+def _git_blob_sha(repo_root: Path, ref: str, path: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", ref + ":" + path],
+        capture_output=True, check=True, text=True,
+    ).stdout.strip()
+
+
+def _commit_all(repo_root: Path, message: str) -> str:
+    subprocess.run(["git", "-C", str(repo_root), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo_root), "-c", "user.email=a@b.c", "-c", "user.name=x", "commit", "-q", "-m", message],
+        check=True,
+    )
+    return subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"], capture_output=True, check=True, text=True
+    ).stdout.strip()
+
+
 # ---------------------------------------------------------------------------
 # Frozen design object -- exact blob at the frozen commit itself
 # ---------------------------------------------------------------------------
@@ -348,10 +366,14 @@ def test_t2_authority_bridge_exact_field_enforcement(tmp_path, field, value, exp
 
 
 # ---------------------------------------------------------------------------
-# FINAL_REPEAT finding HIGH-2: INDEPENDENT_TRUST_PIN_REVIEW
+# FINAL_REPEAT finding HIGH-2 (original round), strengthened by repeat-round
+# finding HIGH-1: INDEPENDENT_TRUST_PIN_REVIEW must bind to the actual
+# published trust-pin Git blob/commit, not merely to the allocation-
+# artifact hash and a human-gate string.
 # ---------------------------------------------------------------------------
 
 SYNTHETIC_ARTIFACT_HASH = "9" * 64
+SYNTHETIC_TRUST_PIN_HUMAN_GATE = "V8B_HUMAN_AUTHORIZE_T1B_ALLOCATION_PIN_AT_" + SYNTHETIC_ARTIFACT_HASH
 
 
 def _trust_pin_review_artifact(**overrides) -> dict:
@@ -360,7 +382,9 @@ def _trust_pin_review_artifact(**overrides) -> dict:
         "study": pp.STUDY_NAME,
         "artifact_role": pp.TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE,
         "reviewed_allocation_artifact_self_hash": SYNTHETIC_ARTIFACT_HASH,
-        "reviewed_trust_pin_human_gate": "V8B_HUMAN_AUTHORIZE_T1B_ALLOCATION_PIN_AT_" + SYNTHETIC_ARTIFACT_HASH,
+        "reviewed_trust_pin_human_gate": SYNTHETIC_TRUST_PIN_HUMAN_GATE,
+        "reviewed_trust_pin_git_blob_sha": "0" * 40,
+        "reviewed_trust_pin_git_commit": "0" * 40,
         "review_result": "PASS",
         "approval_status": "APPROVED",
     }
@@ -368,43 +392,125 @@ def _trust_pin_review_artifact(**overrides) -> dict:
     return review
 
 
+def _build_trust_pin_review_repo(
+    tmp_path: Path,
+    name: str,
+    *,
+    review_overrides: dict | None = None,
+    pin_bytes: bytes = b'{"synthetic":"pin"}',
+) -> tuple[Path, str, str, str]:
+    """Build a bogus repo with a real, committed `V8B_TRUSTED_ALLOCATION.json`
+    trust pin, then a self-consistent review artifact bound to that pin's
+    exact blob sha and commit, committed in a LATER commit (so HEAD !=
+    reviewed_commit -- exercising the "current HEAD" re-resolution path
+    too). Returns ``(repo_root, head_commit, pin_commit, pin_blob_sha)``.
+    """
+    bogus = tmp_path / name
+    bogus.mkdir()
+    pin_commit = _init_bogus_git_repo(bogus, files={pp.TRUST_PIN_GIT_PATH: pin_bytes})
+    pin_blob_sha = _git_blob_sha(bogus, pin_commit, pp.TRUST_PIN_GIT_PATH)
+
+    base_overrides = {
+        "reviewed_trust_pin_git_commit": pin_commit,
+        "reviewed_trust_pin_git_blob_sha": pin_blob_sha,
+    }
+    merged_overrides = {**base_overrides, **(review_overrides or {})}
+    review = _trust_pin_review_artifact(**merged_overrides)
+    (bogus / pp.TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH).write_bytes(json.dumps(review).encode())
+    head_commit = _commit_all(bogus, "add review")
+    return bogus, head_commit, pin_commit, pin_blob_sha
+
+
+def _read_review(bogus: Path, head: str, **overrides):
+    kwargs = dict(
+        expected_allocation_artifact_self_hash=SYNTHETIC_ARTIFACT_HASH,
+        expected_trust_pin_human_gate=SYNTHETIC_TRUST_PIN_HUMAN_GATE,
+    )
+    kwargs.update(overrides)
+    return pp.read_and_verify_trust_pin_independent_review(bogus, head, **kwargs)
+
+
 def test_trust_pin_review_missing_blocks_on_real_repo():
     """The real V8B_TRUST_PIN_INDEPENDENT_REVIEW.json does not exist yet --
     production must fail closed today."""
     with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
         pp.read_and_verify_trust_pin_independent_review(
-            ROOT, _real_head(), expected_allocation_artifact_self_hash=SYNTHETIC_ARTIFACT_HASH
+            ROOT,
+            _real_head(),
+            expected_allocation_artifact_self_hash=SYNTHETIC_ARTIFACT_HASH,
+            expected_trust_pin_human_gate=SYNTHETIC_TRUST_PIN_HUMAN_GATE,
         )
     assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_MISSING"
 
 
 def test_trust_pin_review_passes_on_well_formed_synthetic_artifact(tmp_path):
-    bogus = tmp_path / "trust_pin_review_pass"
-    bogus.mkdir()
-    commit = _init_bogus_git_repo(
-        bogus,
-        files={"V8B_TRUST_PIN_INDEPENDENT_REVIEW.json": json.dumps(_trust_pin_review_artifact()).encode()},
-    )
-    result = pp.read_and_verify_trust_pin_independent_review(
-        bogus, commit, expected_allocation_artifact_self_hash=SYNTHETIC_ARTIFACT_HASH
-    )
+    bogus, head, _pin_commit, _pin_blob = _build_trust_pin_review_repo(tmp_path, "trust_pin_review_pass")
+    result = _read_review(bogus, head)
     assert result["review_result"] == "PASS"
 
 
 def test_trust_pin_review_bound_to_a_different_hash_is_rejected(tmp_path):
     """A well-formed, PASS/APPROVED review for a DIFFERENT allocation
     artifact hash must never authorize this one."""
-    bogus = tmp_path / "trust_pin_review_wrong_hash"
-    bogus.mkdir()
-    commit = _init_bogus_git_repo(
-        bogus,
-        files={"V8B_TRUST_PIN_INDEPENDENT_REVIEW.json": json.dumps(_trust_pin_review_artifact()).encode()},
+    bogus, head, _pin_commit, _pin_blob = _build_trust_pin_review_repo(tmp_path, "trust_pin_review_wrong_hash")
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        _read_review(bogus, head, expected_allocation_artifact_self_hash="8" * 64)
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_HASH_MISMATCH"
+
+
+def test_trust_pin_review_bound_to_a_different_human_gate_is_rejected(tmp_path):
+    """A well-formed, PASS/APPROVED review whose reviewed_trust_pin_human_gate
+    does not exact-match the expected value must never authorize this pin
+    (repeat-round finding HIGH-1: exact-value validated, not merely
+    present)."""
+    bogus, head, _pin_commit, _pin_blob = _build_trust_pin_review_repo(tmp_path, "trust_pin_review_wrong_gate")
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        _read_review(bogus, head, expected_trust_pin_human_gate="V8B_HUMAN_AUTHORIZE_T1B_ALLOCATION_PIN_AT_" + "7" * 64)
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_HUMAN_GATE_MISMATCH"
+
+
+def test_trust_pin_review_self_inconsistent_claimed_blob_rejected(tmp_path):
+    """A review that claims a blob sha which does NOT actually match the
+    trust pin at its own claimed reviewed_trust_pin_git_commit must BLOCK
+    -- proves the review cannot merely quote plausible-looking hex."""
+    bogus, head, _pin_commit, _pin_blob = _build_trust_pin_review_repo(
+        tmp_path, "trust_pin_review_self_inconsistent", review_overrides={"reviewed_trust_pin_git_blob_sha": "f" * 40}
     )
     with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
-        pp.read_and_verify_trust_pin_independent_review(
-            bogus, commit, expected_allocation_artifact_self_hash="8" * 64
-        )
-    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_HASH_MISMATCH"
+        _read_review(bogus, head)
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_BLOB_SELF_INCONSISTENT"
+
+
+def test_trust_pin_review_drift_after_pin_changed_since_review_rejected(tmp_path):
+    """If the trust pin at the CURRENT verified HEAD no longer matches the
+    blob the review actually reviewed (the pin was swapped/mutated after
+    the review was written), it must BLOCK."""
+    bogus, _review_head, pin_commit, pin_blob = _build_trust_pin_review_repo(
+        tmp_path, "trust_pin_review_drift", pin_bytes=b'{"synthetic":"pin-v1"}'
+    )
+    # A further commit re-publishes a DIFFERENT trust pin at the same path.
+    (bogus / pp.TRUST_PIN_GIT_PATH).write_bytes(b'{"synthetic":"pin-v2-different"}')
+    new_head = _commit_all(bogus, "swap trust pin after review")
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        _read_review(bogus, new_head)
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_TRUST_PIN_BLOB_DRIFT"
+
+
+def test_trust_pin_review_reviewed_commit_missing_trust_pin_rejected(tmp_path):
+    """A review claiming a reviewed_trust_pin_git_commit that never actually
+    contained the trust pin at all must BLOCK."""
+    bogus = tmp_path / "trust_pin_review_reviewed_commit_missing"
+    bogus.mkdir()
+    empty_commit = _init_bogus_git_repo(bogus, files={"README.md": b"no pin here"})
+    review = _trust_pin_review_artifact(
+        reviewed_trust_pin_git_commit=empty_commit,
+        reviewed_trust_pin_git_blob_sha="1" * 40,
+    )
+    (bogus / pp.TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH).write_bytes(json.dumps(review).encode())
+    head = _commit_all(bogus, "add review pointing at commit without a pin")
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        _read_review(bogus, head)
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_TRUST_PIN_MISSING"
 
 
 @pytest.mark.parametrize(
@@ -418,20 +524,11 @@ def test_trust_pin_review_bound_to_a_different_hash_is_rejected(tmp_path):
     ],
 )
 def test_trust_pin_review_field_semantics_enforced(tmp_path, field, value, expected_reason):
-    bogus = tmp_path / ("trust_pin_review_field_" + field)
-    bogus.mkdir()
-    commit = _init_bogus_git_repo(
-        bogus,
-        files={
-            "V8B_TRUST_PIN_INDEPENDENT_REVIEW.json": json.dumps(
-                _trust_pin_review_artifact(**{field: value})
-            ).encode()
-        },
+    bogus, head, _pin_commit, _pin_blob = _build_trust_pin_review_repo(
+        tmp_path, "trust_pin_review_field_" + field, review_overrides={field: value}
     )
     with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
-        pp.read_and_verify_trust_pin_independent_review(
-            bogus, commit, expected_allocation_artifact_self_hash=SYNTHETIC_ARTIFACT_HASH
-        )
+        _read_review(bogus, head)
     assert excinfo.value.reason == expected_reason
 
 
@@ -441,13 +538,19 @@ def test_trust_pin_review_schema_missing_field_blocks(tmp_path):
     incomplete = _trust_pin_review_artifact()
     del incomplete["reviewed_trust_pin_human_gate"]
     commit = _init_bogus_git_repo(
-        bogus, files={"V8B_TRUST_PIN_INDEPENDENT_REVIEW.json": json.dumps(incomplete).encode()}
+        bogus, files={pp.TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH: json.dumps(incomplete).encode()}
     )
     with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
-        pp.read_and_verify_trust_pin_independent_review(
-            bogus, commit, expected_allocation_artifact_self_hash=SYNTHETIC_ARTIFACT_HASH
-        )
+        _read_review(bogus, commit)
     assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_SCHEMA_INVALID"
+
+
+def test_trust_pin_git_path_matches_the_other_two_modules_own_literals():
+    from src import v8b_historical_acquisition as acquisition
+    from src import v8b_trust_pin_creation as creation
+
+    assert pp.TRUST_PIN_GIT_PATH == acquisition.T1B_TRUST_PIN_GIT_PATH
+    assert pp.TRUST_PIN_GIT_PATH == creation.PIN_ARTIFACT_FILENAME
 
 
 # ---------------------------------------------------------------------------
@@ -459,3 +562,152 @@ def test_trust_pin_review_schema_missing_field_blocks(tmp_path):
 def test_trust_pin_creation_and_gate_consumption_modules_are_bound_to_the_review():
     assert "src/v8b_trust_pin_creation.py" in pp.BOUND_PRODUCTION_FILES
     assert "src/v8b_human_gate_consumption.py" in pp.BOUND_PRODUCTION_FILES
+
+
+# ---------------------------------------------------------------------------
+# Repeat-round finding HIGH-2: LAYER_B / FROZEN_FINAL_CANDIDATE dedicated
+# stage-completion approval artifacts.
+# ---------------------------------------------------------------------------
+
+
+def _stage_completion_approval(*, gate: str, human_gate_prefix: str, **overrides) -> dict:
+    approval = {
+        "schema_version": None,
+        "study": pp.STUDY_NAME,
+        "gate": gate,
+        "v8b_frozen_design_commit": pp.EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+        "result": "PASS",
+        "approval_status": "APPROVED",
+        "human_gate": human_gate_prefix + pp.EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+    }
+    approval.update(overrides)
+    return approval
+
+
+@pytest.mark.parametrize(
+    "reader,git_path,gate,human_gate_prefix,schema_version,missing_reason",
+    [
+        (
+            "read_and_verify_layer_b_completion",
+            "LAYER_B_COMPLETION_GIT_PATH",
+            "LAYER_B_COMPLETION_GATE",
+            "LAYER_B_COMPLETION_HUMAN_GATE_PREFIX",
+            "LAYER_B_COMPLETION_SCHEMA_VERSION",
+            "V8B_LAYER_B_COMPLETION_APPROVAL_MISSING",
+        ),
+        (
+            "read_and_verify_frozen_final_candidate",
+            "FROZEN_FINAL_CANDIDATE_GIT_PATH",
+            "FROZEN_FINAL_CANDIDATE_GATE",
+            "FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX",
+            "FROZEN_FINAL_CANDIDATE_SCHEMA_VERSION",
+            "V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_MISSING",
+        ),
+    ],
+)
+def test_stage_completion_approval_missing_blocks_on_real_repo(
+    reader, git_path, gate, human_gate_prefix, schema_version, missing_reason
+):
+    """Neither future artifact exists in this repository yet -- production
+    must fail closed today (no real Layer B run or frozen-final-candidate
+    selection has occurred)."""
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        getattr(pp, reader)(ROOT, _real_head())
+    assert excinfo.value.reason == missing_reason
+
+
+@pytest.mark.parametrize(
+    "reader,git_path_attr,gate_attr,human_gate_prefix_attr,schema_version_attr",
+    [
+        (
+            "read_and_verify_layer_b_completion",
+            "LAYER_B_COMPLETION_GIT_PATH",
+            "LAYER_B_COMPLETION_GATE",
+            "LAYER_B_COMPLETION_HUMAN_GATE_PREFIX",
+            "LAYER_B_COMPLETION_SCHEMA_VERSION",
+        ),
+        (
+            "read_and_verify_frozen_final_candidate",
+            "FROZEN_FINAL_CANDIDATE_GIT_PATH",
+            "FROZEN_FINAL_CANDIDATE_GATE",
+            "FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX",
+            "FROZEN_FINAL_CANDIDATE_SCHEMA_VERSION",
+        ),
+    ],
+)
+def test_stage_completion_approval_passes_on_well_formed_synthetic_artifact(
+    tmp_path, reader, git_path_attr, gate_attr, human_gate_prefix_attr, schema_version_attr
+):
+    git_path = getattr(pp, git_path_attr)
+    gate = getattr(pp, gate_attr)
+    human_gate_prefix = getattr(pp, human_gate_prefix_attr)
+    schema_version = getattr(pp, schema_version_attr)
+    approval = _stage_completion_approval(gate=gate, human_gate_prefix=human_gate_prefix, schema_version=schema_version)
+    bogus = tmp_path / ("stage_completion_pass_" + reader)
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(bogus, files={git_path: json.dumps(approval).encode()})
+    result = getattr(pp, reader)(bogus, commit)
+    assert result["result"] == "PASS"
+    assert result["approval_status"] == "APPROVED"
+
+
+@pytest.mark.parametrize(
+    "reader,git_path_attr,gate_attr,human_gate_prefix_attr,schema_version_attr",
+    [
+        (
+            "read_and_verify_layer_b_completion",
+            "LAYER_B_COMPLETION_GIT_PATH",
+            "LAYER_B_COMPLETION_GATE",
+            "LAYER_B_COMPLETION_HUMAN_GATE_PREFIX",
+            "LAYER_B_COMPLETION_SCHEMA_VERSION",
+        ),
+        (
+            "read_and_verify_frozen_final_candidate",
+            "FROZEN_FINAL_CANDIDATE_GIT_PATH",
+            "FROZEN_FINAL_CANDIDATE_GATE",
+            "FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX",
+            "FROZEN_FINAL_CANDIDATE_SCHEMA_VERSION",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "field,value,expected_reason_suffix",
+    [
+        ("result", "FAIL", "NOT_PASS"),
+        ("approval_status", "PENDING", "NOT_APPROVED"),
+        ("v8b_frozen_design_commit", "0" * 40, "DESIGN_COMMIT_MISMATCH"),
+        ("human_gate", "V8B_HUMAN_CONFIRM_SOMETHING_ELSE_FOR_DESIGN_" + "0" * 40, "HUMAN_GATE_MISMATCH"),
+        ("gate", "SOME_OTHER_GATE", "GATE_MISMATCH"),
+        ("study", "V8_HISTORICAL_RESEARCH", "STUDY_MISMATCH"),
+    ],
+)
+def test_stage_completion_approval_field_semantics_enforced(
+    tmp_path,
+    reader,
+    git_path_attr,
+    gate_attr,
+    human_gate_prefix_attr,
+    schema_version_attr,
+    field,
+    value,
+    expected_reason_suffix,
+):
+    git_path = getattr(pp, git_path_attr)
+    gate = getattr(pp, gate_attr)
+    human_gate_prefix = getattr(pp, human_gate_prefix_attr)
+    schema_version = getattr(pp, schema_version_attr)
+    base = _stage_completion_approval(gate=gate, human_gate_prefix=human_gate_prefix, schema_version=schema_version)
+    base[field] = value
+    approval = base
+    bogus = tmp_path / ("stage_completion_field_" + reader + "_" + field)
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(bogus, files={git_path: json.dumps(approval).encode()})
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        getattr(pp, reader)(bogus, commit)
+    assert excinfo.value.reason.endswith(expected_reason_suffix)
+
+
+def test_layer_b_and_frozen_final_candidate_artifacts_are_distinct_git_paths():
+    assert pp.LAYER_B_COMPLETION_GIT_PATH != pp.FROZEN_FINAL_CANDIDATE_GIT_PATH
+    assert pp.LAYER_B_COMPLETION_GATE != pp.FROZEN_FINAL_CANDIDATE_GATE
+    assert pp.LAYER_B_COMPLETION_HUMAN_GATE_PREFIX != pp.FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX

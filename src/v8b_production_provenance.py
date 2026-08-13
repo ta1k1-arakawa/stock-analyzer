@@ -98,7 +98,8 @@ IMPLEMENTATION_REVIEW_FIELDS = (
     "approval_status",
 )
 
-# --- INDEPENDENT_TRUST_PIN_REVIEW (FINAL_REPEAT finding HIGH-2) ------------
+# --- INDEPENDENT_TRUST_PIN_REVIEW (FINAL_REPEAT finding HIGH-2, then
+# repeat-round finding HIGH-1) ------------------------------------------
 #
 # §12's gate sequence requires INDEPENDENT_TRUST_PIN_REVIEW -- an
 # independent review of the published §11.3.C trust-pin artifact, bound to
@@ -108,9 +109,22 @@ IMPLEMENTATION_REVIEW_FIELDS = (
 # it fails closed today by construction, exactly like
 # `V8B_PRODUCTION_IMPLEMENTATION_REVIEW.json` and
 # `V8B_TRUSTED_ALLOCATION.json`.
+#
+# Repeat-round finding HIGH-1: binding to only the *allocation artifact*
+# self-hash is not enough -- a review must bind to the actual *published
+# trust pin itself*, mechanically, so a review cannot be satisfied by any
+# trust pin that merely happens to pin the same allocation artifact. Two
+# new required fields close this: ``reviewed_trust_pin_git_blob_sha`` (the
+# exact Git blob the review claims to have reviewed) and
+# ``reviewed_trust_pin_git_commit`` (the exact commit that blob was read
+# at). The verifier below independently re-resolves the trust-pin blob at
+# both the reviewed commit and at the current verified HEAD and requires
+# all three (review's claim, reviewed-commit blob, current-HEAD blob) to
+# agree -- so neither a fabricated review nor a trust pin swapped/mutated
+# after review can pass.
 
 TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH = "V8B_TRUST_PIN_INDEPENDENT_REVIEW.json"
-TRUST_PIN_INDEPENDENT_REVIEW_SCHEMA_VERSION = "V8B_TRUST_PIN_INDEPENDENT_REVIEW_V1"
+TRUST_PIN_INDEPENDENT_REVIEW_SCHEMA_VERSION = "V8B_TRUST_PIN_INDEPENDENT_REVIEW_V2"
 TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE = "TRUST_PIN_INDEPENDENT_REVIEW"
 TRUST_PIN_INDEPENDENT_REVIEW_FIELDS = (
     "schema_version",
@@ -118,9 +132,17 @@ TRUST_PIN_INDEPENDENT_REVIEW_FIELDS = (
     "artifact_role",
     "reviewed_allocation_artifact_self_hash",
     "reviewed_trust_pin_human_gate",
+    "reviewed_trust_pin_git_blob_sha",
+    "reviewed_trust_pin_git_commit",
     "review_result",
     "approval_status",
 )
+
+# The exact Git path of the published trust pin (§11.3.C). Must match
+# `src.v8b_trust_pin_creation.PIN_ARTIFACT_FILENAME` and
+# `src.v8b_historical_acquisition.T1B_TRUST_PIN_GIT_PATH` exactly -- cross-
+# checked by a dedicated test.
+TRUST_PIN_GIT_PATH = "V8B_TRUSTED_ALLOCATION.json"
 
 # Every production-relevant fixed source/artifact file that must be
 # byte-for-byte identical between current verified HEAD and the exact
@@ -417,19 +439,39 @@ def read_and_verify_t2_authority_bridge(repository_root, verified_head: str) -> 
 
 
 def read_and_verify_trust_pin_independent_review(
-    repository_root, verified_head: str, *, expected_allocation_artifact_self_hash: str
+    repository_root,
+    verified_head: str,
+    *,
+    expected_allocation_artifact_self_hash: str,
+    expected_trust_pin_human_gate: str,
 ) -> dict[str, Any]:
     """Read and verify the future `V8B_TRUST_PIN_INDEPENDENT_REVIEW.json`
     artifact from a **verified Git object** -- never a caller-supplied path
     or mapping. Bound to ``expected_allocation_artifact_self_hash`` so a
     review of a *different* allocation artifact can never authorize this
-    one (HIGH-2: "independent trust-pin review for that exact artifact").
+    one, and to ``expected_trust_pin_human_gate`` (exact-value, not merely
+    present) so a review of a different pin-authorization event can never
+    authorize this one either.
+
+    Repeat-round finding HIGH-1: this alone is still not a review of the
+    *actual published trust pin* -- an allocation artifact hash and a gate
+    string can be quoted into a review without the reviewer ever having
+    looked at the real pin. So this also independently re-resolves the
+    trust-pin Git blob at the review's own claimed
+    ``reviewed_trust_pin_git_commit`` and requires it to equal the review's
+    claimed ``reviewed_trust_pin_git_blob_sha`` (review self-consistency),
+    and separately re-resolves the trust-pin blob at the current verified
+    HEAD and requires it to still equal that same blob (no drift/swap of
+    the trust pin since the review was written).
+
     Does not exist in this repository yet, so this fails closed today.
     """
     commit = require_git_commit(verified_head, "TRUST_PIN_INDEPENDENT_REVIEW_HEAD_INVALID")
     hash_value = _require_sha256_hex(
         expected_allocation_artifact_self_hash, "TRUST_PIN_INDEPENDENT_REVIEW_EXPECTED_HASH_INVALID"
     )
+    if not isinstance(expected_trust_pin_human_gate, str) or not expected_trust_pin_human_gate:
+        raise V8BProductionProvenanceBlocked("TRUST_PIN_INDEPENDENT_REVIEW_EXPECTED_HUMAN_GATE_INVALID")
     try:
         raw = read_git_object_bytes(repository_root, commit, TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH)
     except V8BGitProvenanceBlocked as error:
@@ -449,11 +491,168 @@ def read_and_verify_trust_pin_independent_review(
         raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE_MISMATCH")
     if review["reviewed_allocation_artifact_self_hash"] != hash_value:
         raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_HASH_MISMATCH")
+    if review["reviewed_trust_pin_human_gate"] != expected_trust_pin_human_gate:
+        raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_HUMAN_GATE_MISMATCH")
+    reviewed_commit = require_git_commit(
+        review["reviewed_trust_pin_git_commit"], "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_INVALID"
+    )
+    reviewed_blob_sha = require_git_commit(
+        review["reviewed_trust_pin_git_blob_sha"], "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_BLOB_SHA_INVALID"
+    )
+    try:
+        blob_at_reviewed_commit = resolve_git_blob(repository_root, reviewed_commit, TRUST_PIN_GIT_PATH)
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap_git_provenance_error(
+            error, "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_TRUST_PIN_MISSING"
+        ) from error
+    if blob_at_reviewed_commit != reviewed_blob_sha:
+        raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_BLOB_SELF_INCONSISTENT")
+    try:
+        blob_at_current_head = resolve_git_blob(repository_root, commit, TRUST_PIN_GIT_PATH)
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap_git_provenance_error(error, "V8B_TRUST_PIN_INDEPENDENT_REVIEW_CURRENT_TRUST_PIN_MISSING") from error
+    if blob_at_current_head != reviewed_blob_sha:
+        raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_TRUST_PIN_BLOB_DRIFT")
     if review["review_result"] != "PASS":
         raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_NOT_PASS")
     if review["approval_status"] != "APPROVED":
         raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_NOT_APPROVED")
     return dict(review)
+
+
+# ---------------------------------------------------------------------------
+# LAYER_B / FROZEN_FINAL_CANDIDATE stage-completion approvals
+# (repeat-round finding HIGH-2)
+# ---------------------------------------------------------------------------
+#
+# The post-freeze T2 reuse recheck (`src/v8b_t2_reuse_recheck.py`) must not
+# accept a future recheck artifact's own self-declared
+# ``layer_b_completed``/``frozen_final_candidate_established`` booleans as
+# sufficient by themselves -- a self-declaration proves nothing about
+# whether Layer B validation or FROZEN_FINAL_CANDIDATE selection actually
+# happened. These two dedicated, Git-tracked, exact-schema approval
+# artifacts are the authoritative evidence: each stage's completion must be
+# recorded in its own artifact, bound to the frozen V8B design commit and
+# to a fixed human-gate string, exactly like every other §12 gate in this
+# module. Neither artifact exists in this repository yet, so reading either
+# fails closed today by construction -- no real Layer B run or
+# frozen-final-candidate selection has occurred.
+
+LAYER_B_COMPLETION_GIT_PATH = "V8B_LAYER_B_COMPLETION_APPROVAL.json"
+LAYER_B_COMPLETION_SCHEMA_VERSION = "V8B_LAYER_B_COMPLETION_APPROVAL_V1"
+LAYER_B_COMPLETION_GATE = "LAYER_B_VALIDATION_COMPLETE"
+LAYER_B_COMPLETION_HUMAN_GATE_PREFIX = "V8B_HUMAN_CONFIRM_LAYER_B_VALIDATION_COMPLETE_FOR_DESIGN_"
+
+FROZEN_FINAL_CANDIDATE_GIT_PATH = "V8B_FROZEN_FINAL_CANDIDATE_APPROVAL.json"
+FROZEN_FINAL_CANDIDATE_SCHEMA_VERSION = "V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_V1"
+FROZEN_FINAL_CANDIDATE_GATE = "FROZEN_FINAL_CANDIDATE_ESTABLISHED"
+FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX = "V8B_HUMAN_CONFIRM_FROZEN_FINAL_CANDIDATE_ESTABLISHED_FOR_DESIGN_"
+
+STAGE_COMPLETION_APPROVAL_FIELDS = (
+    "schema_version",
+    "study",
+    "gate",
+    "v8b_frozen_design_commit",
+    "result",
+    "approval_status",
+    "human_gate",
+)
+
+
+def _read_and_verify_stage_completion_approval(
+    repository_root,
+    verified_head: str,
+    *,
+    git_path: str,
+    schema_version: str,
+    gate: str,
+    human_gate_prefix: str,
+    missing_reason: str,
+    invalid_json_reason: str,
+    duplicate_key_reason: str,
+    schema_invalid_reason: str,
+    schema_version_mismatch_reason: str,
+    study_mismatch_reason: str,
+    gate_mismatch_reason: str,
+    design_commit_mismatch_reason: str,
+    not_pass_reason: str,
+    not_approved_reason: str,
+    human_gate_mismatch_reason: str,
+) -> dict[str, Any]:
+    commit = require_git_commit(verified_head, "STAGE_COMPLETION_APPROVAL_HEAD_INVALID")
+    try:
+        raw = read_git_object_bytes(repository_root, commit, git_path)
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap_git_provenance_error(error, missing_reason) from error
+    approval = _strict_json_object(raw, invalid_reason=invalid_json_reason, duplicate_reason=duplicate_key_reason)
+    if set(approval) != set(STAGE_COMPLETION_APPROVAL_FIELDS):
+        raise V8BProductionProvenanceBlocked(schema_invalid_reason)
+    if approval["schema_version"] != schema_version:
+        raise V8BProductionProvenanceBlocked(schema_version_mismatch_reason)
+    if approval["study"] != STUDY_NAME:
+        raise V8BProductionProvenanceBlocked(study_mismatch_reason)
+    if approval["gate"] != gate:
+        raise V8BProductionProvenanceBlocked(gate_mismatch_reason)
+    if approval["v8b_frozen_design_commit"] != EXPECTED_V8B_FROZEN_DESIGN_COMMIT:
+        raise V8BProductionProvenanceBlocked(design_commit_mismatch_reason)
+    if approval["result"] != "PASS":
+        raise V8BProductionProvenanceBlocked(not_pass_reason)
+    if approval["approval_status"] != "APPROVED":
+        raise V8BProductionProvenanceBlocked(not_approved_reason)
+    if approval["human_gate"] != human_gate_prefix + EXPECTED_V8B_FROZEN_DESIGN_COMMIT:
+        raise V8BProductionProvenanceBlocked(human_gate_mismatch_reason)
+    return dict(approval)
+
+
+def read_and_verify_layer_b_completion(repository_root, verified_head: str) -> dict[str, Any]:
+    """Read and verify the future `V8B_LAYER_B_COMPLETION_APPROVAL.json`
+    artifact from a verified Git object. Does not exist yet, so this fails
+    closed today by construction -- no real Layer B run has occurred."""
+    return _read_and_verify_stage_completion_approval(
+        repository_root,
+        verified_head,
+        git_path=LAYER_B_COMPLETION_GIT_PATH,
+        schema_version=LAYER_B_COMPLETION_SCHEMA_VERSION,
+        gate=LAYER_B_COMPLETION_GATE,
+        human_gate_prefix=LAYER_B_COMPLETION_HUMAN_GATE_PREFIX,
+        missing_reason="V8B_LAYER_B_COMPLETION_APPROVAL_MISSING",
+        invalid_json_reason="V8B_LAYER_B_COMPLETION_APPROVAL_INVALID_JSON",
+        duplicate_key_reason="V8B_LAYER_B_COMPLETION_APPROVAL_DUPLICATE_KEY",
+        schema_invalid_reason="V8B_LAYER_B_COMPLETION_APPROVAL_SCHEMA_INVALID",
+        schema_version_mismatch_reason="V8B_LAYER_B_COMPLETION_APPROVAL_SCHEMA_VERSION_MISMATCH",
+        study_mismatch_reason="V8B_LAYER_B_COMPLETION_APPROVAL_STUDY_MISMATCH",
+        gate_mismatch_reason="V8B_LAYER_B_COMPLETION_APPROVAL_GATE_MISMATCH",
+        design_commit_mismatch_reason="V8B_LAYER_B_COMPLETION_APPROVAL_DESIGN_COMMIT_MISMATCH",
+        not_pass_reason="V8B_LAYER_B_COMPLETION_APPROVAL_NOT_PASS",
+        not_approved_reason="V8B_LAYER_B_COMPLETION_APPROVAL_NOT_APPROVED",
+        human_gate_mismatch_reason="V8B_LAYER_B_COMPLETION_APPROVAL_HUMAN_GATE_MISMATCH",
+    )
+
+
+def read_and_verify_frozen_final_candidate(repository_root, verified_head: str) -> dict[str, Any]:
+    """Read and verify the future `V8B_FROZEN_FINAL_CANDIDATE_APPROVAL.json`
+    artifact from a verified Git object. Does not exist yet, so this fails
+    closed today by construction -- no frozen-final-candidate selection has
+    occurred."""
+    return _read_and_verify_stage_completion_approval(
+        repository_root,
+        verified_head,
+        git_path=FROZEN_FINAL_CANDIDATE_GIT_PATH,
+        schema_version=FROZEN_FINAL_CANDIDATE_SCHEMA_VERSION,
+        gate=FROZEN_FINAL_CANDIDATE_GATE,
+        human_gate_prefix=FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX,
+        missing_reason="V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_MISSING",
+        invalid_json_reason="V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_INVALID_JSON",
+        duplicate_key_reason="V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_DUPLICATE_KEY",
+        schema_invalid_reason="V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_SCHEMA_INVALID",
+        schema_version_mismatch_reason="V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_SCHEMA_VERSION_MISMATCH",
+        study_mismatch_reason="V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_STUDY_MISMATCH",
+        gate_mismatch_reason="V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_GATE_MISMATCH",
+        design_commit_mismatch_reason="V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_DESIGN_COMMIT_MISMATCH",
+        not_pass_reason="V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_NOT_PASS",
+        not_approved_reason="V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_NOT_APPROVED",
+        human_gate_mismatch_reason="V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_HUMAN_GATE_MISMATCH",
+    )
 
 
 __all__ = [
@@ -472,9 +671,18 @@ __all__ = [
     "EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT",
     "EXPECTED_V8_PARTITION_MANIFEST_SHA256",
     "EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA",
+    "FROZEN_FINAL_CANDIDATE_GATE",
+    "FROZEN_FINAL_CANDIDATE_GIT_PATH",
+    "FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX",
+    "FROZEN_FINAL_CANDIDATE_SCHEMA_VERSION",
     "IMPLEMENTATION_REVIEW_FIELDS",
     "IMPLEMENTATION_REVIEW_GIT_PATH",
     "IMPLEMENTATION_REVIEW_SCHEMA_VERSION",
+    "LAYER_B_COMPLETION_GATE",
+    "LAYER_B_COMPLETION_GIT_PATH",
+    "LAYER_B_COMPLETION_HUMAN_GATE_PREFIX",
+    "LAYER_B_COMPLETION_SCHEMA_VERSION",
+    "STAGE_COMPLETION_APPROVAL_FIELDS",
     "STUDY_NAME",
     "T2_AUTHORITY_BRIDGE_FIELDS",
     "T2_AUTHORITY_BRIDGE_GIT_PATH",
@@ -482,6 +690,7 @@ __all__ = [
     "TRUSTED_PARTITION_ANCHOR_FIELDS",
     "TRUSTED_PARTITION_ANCHOR_GIT_PATH",
     "TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION",
+    "TRUST_PIN_GIT_PATH",
     "TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE",
     "TRUST_PIN_INDEPENDENT_REVIEW_FIELDS",
     "TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH",
@@ -489,6 +698,8 @@ __all__ = [
     "V8BProductionProvenanceBlocked",
     "V8_DESIGN_COMMIT",
     "read_and_verify_design_freeze_approval",
+    "read_and_verify_frozen_final_candidate",
+    "read_and_verify_layer_b_completion",
     "read_and_verify_t2_authority_bridge",
     "read_and_verify_trust_pin_independent_review",
     "read_and_verify_v8_trusted_partition_anchor",

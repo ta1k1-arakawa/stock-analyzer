@@ -201,7 +201,7 @@ def default_deps(
         bridge_reader=lambda head: bridge or {},
         t2_reuse_recheck_resolver=t2_reuse_recheck_resolver or (lambda: {"result": "PASS", "block": "T2"}),
         t1b_trust_pin_reader=lambda head: pin or {},
-        trust_pin_review_reader=lambda head, artifact_hash: {"ok": True},
+        trust_pin_review_reader=lambda head, artifact_hash, human_gate: {"ok": True},
         opener=opener,
         clock=clock_stub,
         monotonic_clock=lambda: 0.0,
@@ -358,8 +358,33 @@ def test_all_prohibited_blocks_rejected(tmp_path, block):
     deps = default_deps(block=block, opener=forbidden_opener)
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
-    assert excinfo.value.reason == "V8B_BLOCK_ACQUISITION_PROHIBITED:" + block
+    assert excinfo.value.reason == "V8B_BLOCK_ACQUISITION_PROHIBITED"
     assert excinfo.value.authorization_consumed is False
+
+
+# ---------------------------------------------------------------------------
+# Repeat-round finding MEDIUM-2: the public reason for an invalid ``block``
+# must be a fixed literal with no caller-controlled suffix -- a malicious-
+# looking block value must never appear anywhere in the public reason.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "malicious_block",
+    [
+        "AAPL",
+        "/private/secret/path/V8B_TRUSTED_ALLOCATION.json",
+        "https://attacker.example.com/exfil?x=1",
+        "2024-01-01",
+        "T1B\nSECRET_TICKER_LEAKED",
+    ],
+)
+def test_malicious_block_value_never_appears_in_public_reason(tmp_path, malicious_block):
+    deps = default_deps(block=malicious_block, opener=forbidden_opener)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "V8B_BLOCK_ACQUISITION_PROHIBITED"
+    assert malicious_block not in excinfo.value.reason
 
 
 # ---------------------------------------------------------------------------
@@ -685,6 +710,69 @@ def test_t2_fake_success_exactly_300_opener_calls_and_sealed(tmp_path, monkeypat
     assert manifest["authority_chain"] == "ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY_OPTION_2_BRIDGE"
     sealed_path = tmp_path / "private" / acquisition.ACQUISITIONS_DIRNAME / "T2" / acquisition.SEALED_FILENAME
     assert sealed_path.exists()
+
+    # Repeat-round finding MEDIUM-3: read_sealed_record independently
+    # re-parses and re-validates the real published SEALED.json.
+    record = acquisition.read_sealed_record(tmp_path / "private", "T2")
+    assert record == {"sealed": True, "research_access_authorized": False, "note": record["note"]}
+    assert record["note"]
+
+
+# ---------------------------------------------------------------------------
+# Repeat-round finding MEDIUM-3: read_sealed_record's own schema/invariant
+# enforcement, independent of the acquisition manifest.
+# ---------------------------------------------------------------------------
+
+
+def test_read_sealed_record_rejects_unknown_block(tmp_path):
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        acquisition.read_sealed_record(tmp_path, "T3")
+    assert excinfo.value.reason == "V8B_BLOCK_ACQUISITION_PROHIBITED"
+
+
+def test_read_sealed_record_missing_file_blocks(tmp_path):
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        acquisition.read_sealed_record(tmp_path, "T2")
+    assert excinfo.value.reason == "SEALED_RECORD_READ_FAILED"
+
+
+def test_read_sealed_record_duplicate_key_blocks(tmp_path):
+    sealed_path = tmp_path / acquisition.ACQUISITIONS_DIRNAME / "T2" / acquisition.SEALED_FILENAME
+    sealed_path.parent.mkdir(parents=True)
+    sealed_path.write_bytes(b'{"sealed": true, "sealed": true, "research_access_authorized": false, "note": "x"}')
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        acquisition.read_sealed_record(tmp_path, "T2")
+    assert excinfo.value.reason == "SEALED_RECORD_DUPLICATE_KEY"
+
+
+def test_read_sealed_record_malformed_json_blocks(tmp_path):
+    sealed_path = tmp_path / acquisition.ACQUISITIONS_DIRNAME / "T2" / acquisition.SEALED_FILENAME
+    sealed_path.parent.mkdir(parents=True)
+    sealed_path.write_bytes(b"{not valid")
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        acquisition.read_sealed_record(tmp_path, "T2")
+    assert excinfo.value.reason == "SEALED_RECORD_INVALID_JSON"
+
+
+@pytest.mark.parametrize(
+    "overrides,expected_reason",
+    [
+        ({"extra": "value"}, "SEALED_RECORD_SCHEMA_INVALID"),
+        ({"sealed": False}, "SEALED_RECORD_SEALED_INVARIANT_VIOLATED"),
+        ({"research_access_authorized": True}, "SEALED_RECORD_RESEARCH_ACCESS_INVARIANT_VIOLATED"),
+        ({"note": ""}, "SEALED_RECORD_NOTE_INVALID"),
+        ({"note": 123}, "SEALED_RECORD_NOTE_INVALID"),
+    ],
+)
+def test_read_sealed_record_field_semantics_enforced(tmp_path, overrides, expected_reason):
+    record = {"sealed": True, "research_access_authorized": False, "note": "x"}
+    record.update(overrides)
+    sealed_path = tmp_path / acquisition.ACQUISITIONS_DIRNAME / "T2" / acquisition.SEALED_FILENAME
+    sealed_path.parent.mkdir(parents=True)
+    sealed_path.write_bytes(acquisition.canonical_json_bytes(record))
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        acquisition.read_sealed_record(tmp_path, "T2")
+    assert excinfo.value.reason == expected_reason
 
 
 def test_t1b_atomic_no_partial_publication_on_mid_loop_block(tmp_path):
@@ -1090,7 +1178,7 @@ def test_public_entrypoint_offers_no_consumption_state_root_override():
 def test_t1b_acquisition_blocks_when_trust_pin_review_missing(tmp_path):
     artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
 
-    def missing_review(head, artifact_hash):
+    def missing_review(head, artifact_hash, human_gate):
         raise acquisition.V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_MISSING")
 
     deps = default_deps(
@@ -1108,9 +1196,11 @@ def test_t1b_acquisition_blocks_when_trust_pin_review_bound_to_wrong_hash(tmp_pa
     acquisition is about to trust, not merely "some review exists"."""
     artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
     seen_hashes: list[str] = []
+    seen_human_gates: list[str] = []
 
-    def recording_review(head, artifact_hash):
+    def recording_review(head, artifact_hash, human_gate):
         seen_hashes.append(artifact_hash)
+        seen_human_gates.append(human_gate)
         if artifact_hash != pin["authorized_allocation_artifact_self_hash"]:
             raise acquisition.V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_HASH_MISMATCH")
 
@@ -1121,6 +1211,7 @@ def test_t1b_acquisition_blocks_when_trust_pin_review_bound_to_wrong_hash(tmp_pa
     manifest = run(deps, tmp_path / "private")
     assert manifest["block"] == "T1B"
     assert seen_hashes == [pin["authorized_allocation_artifact_self_hash"]]
+    assert seen_human_gates == [pin["human_gate"]]
 
 
 def test_t2_acquisition_never_calls_trust_pin_review_reader(tmp_path, monkeypatch):
@@ -1131,7 +1222,7 @@ def test_t2_acquisition_never_calls_trust_pin_review_reader(tmp_path, monkeypatc
     manifest_path = tmp_path / "partition.json"
     manifest, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
 
-    def unreachable_review(head, artifact_hash):
+    def unreachable_review(head, artifact_hash, human_gate):
         raise AssertionError("trust_pin_review_reader must not run for T2")
 
     deps = default_deps(

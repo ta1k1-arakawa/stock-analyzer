@@ -527,7 +527,15 @@ def test_consumption_receipt_is_a_durable_file_readable_by_a_fresh_module_state(
     assert receipt["gate"] == gate_consumption.GATE_ALLOCATE_T1B
     assert receipt["v8b_frozen_design_commit"] == allocator.EXPECTED_V8B_FROZEN_DESIGN_COMMIT
     # No ticker identity, path, or raw data of any kind in the receipt.
-    assert set(receipt) == {"schema_version", "study_name", "gate", "v8b_frozen_design_commit", "consumed_at_utc"}
+    assert set(receipt) == {
+        "schema_version",
+        "study_name",
+        "repository",
+        "gate",
+        "v8b_frozen_design_commit",
+        "consumed_at_utc",
+    }
+    assert receipt["repository"] == gate_consumption.REPOSITORY_IDENTITY
 
     # A brand-new call -- standing in for a new process/restart -- reusing
     # only the durable state root (no Python object shared with the call

@@ -127,15 +127,29 @@ def _post_freeze_artifact(**overrides) -> dict:
     return artifact
 
 
+def _safe_v8_state_evidence(**overrides) -> dict:
+    evidence = {
+        "t2_raw_data_acquired": False,
+        "t2_opened_for_research": False,
+        "t2_sealed_holdout_access_count": None,
+        "block_assignments_exposed": False,
+    }
+    evidence.update(overrides)
+    return evidence
+
+
 def _default_dependencies(**overrides) -> dict:
     deps = dict(
         git_commit_resolver=lambda: SYNTHETIC_COMMIT,
         anchor_reader=lambda head: {"authorization_status": "AUTHORIZED"},
         reviewed_implementation_binder=lambda head: {"reviewed_implementation_git_commit": "b" * 40},
         consumption_state_root="/nonexistent/never-created",
+        layer_b_completion_reader=lambda head: {"ok": True},
+        frozen_final_candidate_reader=lambda head: {"ok": True},
         no_research_opening_api_exists=lambda: True,
         git_object_reader=lambda root, commit, path: json.dumps(_post_freeze_artifact()).encode("utf-8"),
         gate_consumption_checker=lambda state_root, gate, design_commit: False,
+        v8_state_evidence_reader=lambda root, commit, git_object_reader: _safe_v8_state_evidence(),
     )
     deps.update(overrides)
     return deps
@@ -333,6 +347,194 @@ def test_default_no_research_opening_api_exists_reflects_real_repository_state()
     src.v8b_historical_acquisition module: no open_for_*/research-opening
     API exists today."""
     assert recheck._default_no_research_opening_api_exists() is True
+
+
+# ---------------------------------------------------------------------------
+# Repeat-round finding HIGH-2: V8_STATE.json evidence + dedicated
+# LAYER_B/FROZEN_FINAL_CANDIDATE stage-completion approval artifacts.
+# ---------------------------------------------------------------------------
+
+
+def test_layer_b_completion_reader_failure_blocks():
+    def failing_reader(head):
+        raise recheck.V8BProductionProvenanceBlocked("V8B_LAYER_B_COMPLETION_APPROVAL_MISSING")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run_full(layer_b_completion_reader=failing_reader)
+    assert excinfo.value.reason == "V8B_LAYER_B_COMPLETION_APPROVAL_MISSING"
+
+
+def test_frozen_final_candidate_reader_failure_blocks():
+    def failing_reader(head):
+        raise recheck.V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_MISSING")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run_full(frozen_final_candidate_reader=failing_reader)
+    assert excinfo.value.reason == "V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_MISSING"
+
+
+def test_layer_b_completion_checked_before_reading_recheck_artifact():
+    def unreachable_reader(root, commit, path):
+        raise AssertionError("recheck artifact must not be read if LAYER_B completion already failed")
+
+    def failing_layer_b(head):
+        raise recheck.V8BProductionProvenanceBlocked("V8B_LAYER_B_COMPLETION_APPROVAL_MISSING")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked):
+        run(layer_b_completion_reader=failing_layer_b, git_object_reader=unreachable_reader)
+
+
+def test_frozen_final_candidate_checked_before_reading_recheck_artifact():
+    def unreachable_reader(root, commit, path):
+        raise AssertionError("recheck artifact must not be read if FROZEN_FINAL_CANDIDATE already failed")
+
+    def failing_candidate(head):
+        raise recheck.V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_MISSING")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked):
+        run(frozen_final_candidate_reader=failing_candidate, git_object_reader=unreachable_reader)
+
+
+def test_self_declared_layer_b_and_frozen_final_candidate_still_checked_in_addition():
+    """Repeat-round HIGH-2: the two dedicated stage-completion artifacts are
+    required IN ADDITION TO, never instead of, the existing self-declared
+    fields on the recheck artifact itself -- a well-formed recheck artifact
+    honestly declaring layer_b_completed=False must still BLOCK even when
+    both dedicated stage-completion readers report PASS."""
+    def reader(root, commit, path):
+        return json.dumps(_post_freeze_artifact(layer_b_completed=False)).encode("utf-8")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run_full(git_object_reader=reader)
+    assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_LAYER_B_NOT_COMPLETE"
+
+
+def test_v8_state_evidence_reader_receives_repository_root_commit_and_git_object_reader():
+    seen: list[tuple] = []
+
+    def recording_reader(root, commit, git_object_reader):
+        seen.append((root, commit, git_object_reader))
+        return _safe_v8_state_evidence()
+
+    run(v8_state_evidence_reader=recording_reader)
+    assert len(seen) == 1
+    root, commit, git_object_reader = seen[0]
+    assert root == ROOT
+    assert commit == SYNTHETIC_COMMIT
+
+
+def test_v8_state_raw_data_acquired_true_ors_into_t2_acquired_derivation():
+    """Even though the durable gate receipt says t2_acquired=False,
+    V8_STATE.json's own T2.raw_data_acquired=True is independent
+    authoritative evidence that acquisition happened -- the derived value
+    must flip to True and BLOCK the artifact's honest "False" claim as a
+    mismatch, never silently trust either single source alone."""
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run_full(v8_state_evidence_reader=lambda root, commit, r: _safe_v8_state_evidence(t2_raw_data_acquired=True))
+    assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_SELF_DECLARED_MISMATCH:t2_acquired"
+
+
+@pytest.mark.parametrize(
+    "evidence_overrides",
+    [
+        {"t2_opened_for_research": True},
+        {"t2_sealed_holdout_access_count": 1},
+        {"block_assignments_exposed": True},
+    ],
+)
+def test_v8_state_evidence_alone_flips_exposure_fields_even_when_api_absence_says_safe(evidence_overrides):
+    """HIGH-2's core fix: "no open_for_* API exists" alone is not sufficient
+    -- even with no_research_opening_api_exists()=True (API absent), any
+    single V8_STATE.json signal of exposure must still flip the derived
+    exposure fields to True (AND-for-safety across independent sources)."""
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run_full(
+            no_research_opening_api_exists=lambda: True,
+            v8_state_evidence_reader=lambda root, commit, r: _safe_v8_state_evidence(**evidence_overrides),
+        )
+    assert excinfo.value.reason.startswith("V8B_T2_REUSE_CONDITIONS_RECHECK_SELF_DECLARED_MISMATCH:t2_")
+
+
+def test_v8_state_evidence_missing_blocks():
+    def missing_v8_state(root, commit, git_object_reader):
+        raise recheck.V8BGitProvenanceBlocked("GIT_OBJECT_READ_FAILED")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run(v8_state_evidence_reader=missing_v8_state)
+    assert excinfo.value.reason == "V8_STATE_MISSING"
+
+
+def test_default_v8_state_evidence_reader_parses_duplicate_key_safe():
+    def dup_key_object_reader(root, commit, path):
+        return b'{"T2": {}, "T2": {}}'
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        recheck._default_read_v8_state_t2_evidence(ROOT, SYNTHETIC_COMMIT, dup_key_object_reader)
+    assert excinfo.value.reason == "V8_STATE_DUPLICATE_KEY"
+
+
+def test_default_v8_state_evidence_reader_rejects_missing_t2_section():
+    def object_reader(root, commit, path):
+        return b'{"trust_anchor_pinning": {"block_assignments_exposed": false}}'
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        recheck._default_read_v8_state_t2_evidence(ROOT, SYNTHETIC_COMMIT, object_reader)
+    assert excinfo.value.reason == "V8_STATE_T2_SECTION_INVALID"
+
+
+def test_default_v8_state_evidence_reader_rejects_wrong_typed_field():
+    def object_reader(root, commit, path):
+        return json.dumps({
+            "T2": {"raw_data_acquired": "false", "opened_for_research": False, "sealed_holdout_access_count": None},
+            "trust_anchor_pinning": {"block_assignments_exposed": False},
+        }).encode()
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        recheck._default_read_v8_state_t2_evidence(ROOT, SYNTHETIC_COMMIT, object_reader)
+    assert excinfo.value.reason == "V8_STATE_T2_RAW_DATA_ACQUIRED_INVALID"
+
+
+def test_default_v8_state_evidence_reader_rejects_boolean_access_count():
+    """`sealed_holdout_access_count` must be an int or None -- a bool would
+    silently pass a naive ``isinstance(x, int)`` check (bool subclasses
+    int), so this must be explicitly rejected."""
+    def object_reader(root, commit, path):
+        return json.dumps({
+            "T2": {"raw_data_acquired": False, "opened_for_research": False, "sealed_holdout_access_count": True},
+            "trust_anchor_pinning": {"block_assignments_exposed": False},
+        }).encode()
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        recheck._default_read_v8_state_t2_evidence(ROOT, SYNTHETIC_COMMIT, object_reader)
+    assert excinfo.value.reason == "V8_STATE_T2_SEALED_HOLDOUT_ACCESS_COUNT_INVALID"
+
+
+def test_default_v8_state_evidence_reader_against_real_v8_state_json():
+    """The real, non-injected default reader against this repository's
+    actual current V8_STATE.json at the real HEAD -- proves the production
+    default parses the real file's schema successfully."""
+    from src.v8b_git_provenance import read_git_object_bytes
+
+    evidence = recheck._default_read_v8_state_t2_evidence(ROOT, _real_head(), read_git_object_bytes)
+    assert evidence == {
+        "t2_raw_data_acquired": False,
+        "t2_opened_for_research": False,
+        "t2_sealed_holdout_access_count": None,
+        "block_assignments_exposed": False,
+    }
+
+
+def test_public_resolver_wires_real_layer_b_and_frozen_final_candidate_readers():
+    """The public zero-arg entrypoint must fail closed on the real repo
+    specifically because the two new dedicated stage-completion artifacts
+    do not exist yet, once earlier provenance steps are satisfied -- proven
+    indirectly: the real production functions are reachable (imported, not
+    stubbed) from the public resolver."""
+    import inspect
+
+    source = inspect.getsource(recheck.resolve_and_recheck_t2_reuse_conditions)
+    assert "read_and_verify_layer_b_completion" in source
+    assert "read_and_verify_frozen_final_candidate" in source
 
 
 # ---------------------------------------------------------------------------

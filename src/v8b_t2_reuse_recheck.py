@@ -43,12 +43,42 @@ are now closed:
    each of these fields is still required to *agree* with the derived
    value (a disagreement BLOCKs, `..._SELF_DECLARED_MISMATCH`), but the
    value actually used for the pass/BLOCK decision is always the derived
-   one, never the artifact's bare claim. `layer_b_completed` and
-   `frozen_final_candidate_established` remain read from the artifact --
-   whether Layer B validation and the `FROZEN_FINAL_CANDIDATE` gate have
-   actually occurred is a study-progress fact with no independently
-   git-derivable proxy in this repository, so these two fields still
-   require the future artifact's authored evidence.
+   one, never the artifact's bare claim.
+
+**Repeat-round finding HIGH-2.** "No `open_for_*` API exists" alone is not
+sufficient evidence that `T2` was never opened/exposed -- an API's absence
+proves nothing about whether the block was manually or otherwise opened
+outside that API. Two further sources of independent, Git-tracked,
+authoritative evidence now also feed the same derived fields, combined
+with AND-for-safety / OR-for-risk semantics (a field is only treated as
+safe/``False`` if *every* independent source agrees it is safe; any single
+source signalling exposure/acquisition marks the derived value ``True``,
+BLOCKing the corresponding preservation condition):
+
+- `V8_STATE.json`'s own `T2` object and `trust_anchor_pinning` object,
+  read from the same verified Git commit (`T2.raw_data_acquired`,
+  `T2.opened_for_research`, `T2.sealed_holdout_access_count`,
+  `trust_anchor_pinning.block_assignments_exposed`). `T2` is the literal
+  same physical block reused from `V8` into `V8B` via the `OPTION_2`
+  bridge, so `V8_STATE.json`'s own record of it is genuinely authoritative
+  cross-study evidence, not merely `V8`-internal bookkeeping.
+  `V8_STATE.json` is a *living* audit document (unlike the frozen,
+  exact-blob-pinned trust artifacts elsewhere in this module), so its
+  *current* content at the verified head is read and type-validated, never
+  pinned to one historical blob.
+- Two new dedicated, Git-tracked, exact-schema stage-completion approval
+  artifacts (`src.v8b_production_provenance.read_and_verify_layer_b_
+  completion` / `read_and_verify_frozen_final_candidate`) are now
+  independently required to PASS in addition to -- not instead of -- the
+  existing self-declared `layer_b_completed`/`frozen_final_candidate_
+  established` fields on `V8B_T2_REUSE_CONDITIONS_RECHECK.json` itself.
+  A future recheck artifact that merely self-declares these booleans
+  ``True`` is no longer sufficient by itself: each stage's completion must
+  additionally be recorded in its own dedicated artifact, bound to the
+  frozen design commit and a fixed human-gate string. Neither dedicated
+  artifact exists in this repository yet, so `T2` production acquisition
+  continues to fail closed today by construction -- no real Layer B run or
+  frozen-final-candidate selection has occurred.
 
 Two distinct roles (first-round finding MEDIUM-2, tightened further in
 round 3's repeat review):
@@ -103,6 +133,8 @@ from src.v8b_human_gate_consumption import (
 from src.v8b_production_provenance import (
     EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
     V8BProductionProvenanceBlocked,
+    read_and_verify_frozen_final_candidate,
+    read_and_verify_layer_b_completion,
     read_and_verify_v8_trusted_partition_anchor,
     verify_reviewed_implementation_binding,
 )
@@ -220,21 +252,26 @@ def _wrap(error: BaseException, missing_reason: str | None = None) -> V8BT2Prese
     return V8BT2PreservationRecheckBlocked("PRESERVATION_RECHECK_DOC_READ_FAILED")
 
 
-def _strict_json_object(raw: bytes) -> dict[str, Any]:
+def _strict_json_object(
+    raw: bytes,
+    *,
+    invalid_reason: str = "V8B_T2_REUSE_CONDITIONS_RECHECK_INVALID_JSON",
+    duplicate_reason: str = "V8B_T2_REUSE_CONDITIONS_RECHECK_DUPLICATE_KEY",
+) -> dict[str, Any]:
     def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in pairs:
             if key in result:
-                raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_DUPLICATE_KEY")
+                raise V8BT2PreservationRecheckBlocked(duplicate_reason)
             result[key] = value
         return result
 
     try:
         parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_INVALID_JSON") from error
+        raise V8BT2PreservationRecheckBlocked(invalid_reason) from error
     if not isinstance(parsed, dict):
-        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_INVALID_JSON")
+        raise V8BT2PreservationRecheckBlocked(invalid_reason)
     return parsed
 
 
@@ -255,6 +292,67 @@ def _default_no_research_opening_api_exists() -> bool:
     )
 
 
+# The living (non-frozen) V8_STATE.json audit document, read at the current
+# verified head -- repeat-round finding HIGH-2.
+V8_STATE_GIT_PATH = "V8_STATE.json"
+
+
+def _require_bool(value: object, reason: str) -> bool:
+    if not isinstance(value, bool):
+        raise V8BT2PreservationRecheckBlocked(reason)
+    return value
+
+
+def _require_int_or_none(value: object, reason: str) -> int | None:
+    if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+        raise V8BT2PreservationRecheckBlocked(reason)
+    return value
+
+
+def _default_read_v8_state_t2_evidence(
+    repository_root, commit: str, git_object_reader: Callable[[str, str, str], bytes]
+) -> dict[str, Any]:
+    """Independent authoritative evidence source (repeat-round finding
+    HIGH-2): `T2` is the literal same physical block reused from `V8` into
+    `V8B` (the `OPTION_2` bridge), so `V8_STATE.json`'s own `T2` and
+    `trust_anchor_pinning` records are genuinely authoritative cross-study
+    evidence -- not merely a self-declared claim inside the future
+    `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact, and not merely the
+    absence of an `open_for_*` API. `V8_STATE.json` is a living audit
+    document, so its *current* content at the verified head is read --
+    never pinned to one historical blob, unlike this module's other
+    frozen/exact-blob-bound evidence. Fails closed on any missing or
+    wrong-typed field.
+    """
+    try:
+        raw = git_object_reader(repository_root, commit, V8_STATE_GIT_PATH)
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap(error, "V8_STATE_MISSING") from error
+    state = _strict_json_object(raw, invalid_reason="V8_STATE_INVALID_JSON", duplicate_reason="V8_STATE_DUPLICATE_KEY")
+
+    t2 = state.get("T2")
+    if not isinstance(t2, dict):
+        raise V8BT2PreservationRecheckBlocked("V8_STATE_T2_SECTION_INVALID")
+    trust_anchor_pinning = state.get("trust_anchor_pinning")
+    if not isinstance(trust_anchor_pinning, dict):
+        raise V8BT2PreservationRecheckBlocked("V8_STATE_TRUST_ANCHOR_PINNING_SECTION_INVALID")
+
+    return {
+        "t2_raw_data_acquired": _require_bool(
+            t2.get("raw_data_acquired"), "V8_STATE_T2_RAW_DATA_ACQUIRED_INVALID"
+        ),
+        "t2_opened_for_research": _require_bool(
+            t2.get("opened_for_research"), "V8_STATE_T2_OPENED_FOR_RESEARCH_INVALID"
+        ),
+        "t2_sealed_holdout_access_count": _require_int_or_none(
+            t2.get("sealed_holdout_access_count"), "V8_STATE_T2_SEALED_HOLDOUT_ACCESS_COUNT_INVALID"
+        ),
+        "block_assignments_exposed": _require_bool(
+            trust_anchor_pinning.get("block_assignments_exposed"), "V8_STATE_BLOCK_ASSIGNMENTS_EXPOSED_INVALID"
+        ),
+    }
+
+
 def _resolve_t2_reuse_safe_metadata_with_dependencies(
     repository_root,
     *,
@@ -262,18 +360,24 @@ def _resolve_t2_reuse_safe_metadata_with_dependencies(
     anchor_reader: Callable[[str], Mapping[str, Any]],
     reviewed_implementation_binder: Callable[[str], Mapping[str, Any]],
     consumption_state_root,
+    layer_b_completion_reader: Callable[[str], Mapping[str, Any]],
+    frozen_final_candidate_reader: Callable[[str], Mapping[str, Any]],
     no_research_opening_api_exists: Callable[[], bool] = _default_no_research_opening_api_exists,
     git_object_reader: Callable[[str, str, str], bytes] = read_git_object_bytes,
     gate_consumption_checker: Callable[[Any, str, str], bool] = has_gate_been_consumed,
+    v8_state_evidence_reader: Callable[[Any, str, Callable[[str, str, str], bytes]], Mapping[str, Any]] = (
+        _default_read_v8_state_t2_evidence
+    ),
 ) -> dict[str, Any]:
     """Private DI-testable implementation -- fake/synthetic tests only, not
     a production API. Derives ``safe_metadata`` from authoritative
-    repository/trust state (HIGH-3), cross-checked against the future,
-    fresh **POST_FREEZE** `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact
-    (§12.4), read from a **verified Git object** this function resolves
-    itself -- never a caller-supplied head, mapping, or path, and never
-    the §12.2 pre-freeze document. This artifact does not exist in this
-    repository yet, so this fails closed today.
+    repository/trust state (HIGH-3, strengthened by repeat-round HIGH-2),
+    cross-checked against the future, fresh **POST_FREEZE**
+    `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact (§12.4), read from a
+    **verified Git object** this function resolves itself -- never a
+    caller-supplied head, mapping, or path, and never the §12.2 pre-freeze
+    document. This artifact does not exist in this repository yet, so this
+    fails closed today.
     """
     try:
         verified_head = git_commit_resolver()
@@ -302,6 +406,19 @@ def _resolve_t2_reuse_safe_metadata_with_dependencies(
     except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
         raise _wrap(error, "V8B_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING") from error
 
+    # Repeat-round finding HIGH-2: LAYER_B / FROZEN_FINAL_CANDIDATE stage
+    # completion is independently required from dedicated, Git-tracked
+    # approval artifacts -- in addition to, not instead of, the future
+    # recheck artifact's own self-declared fields checked further below.
+    try:
+        layer_b_completion_reader(verified_head)
+    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+        raise _wrap(error, "V8B_LAYER_B_COMPLETION_APPROVAL_MISSING") from error
+    try:
+        frozen_final_candidate_reader(verified_head)
+    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+        raise _wrap(error, "V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_MISSING") from error
+
     # Authoritative derivation: whether T2_RAW_ACQUISITION_HUMAN_GATE has
     # already been durably consumed (src.v8b_human_gate_consumption),
     # never a self-reported "t2_acquired" boolean.
@@ -312,8 +429,27 @@ def _resolve_t2_reuse_safe_metadata_with_dependencies(
     except V8BHumanGateConsumptionBlocked as error:
         raise V8BT2PreservationRecheckBlocked(error.reason) from error
 
+    # Repeat-round finding HIGH-2: "no open_for_* API exists" alone is not
+    # sufficient evidence -- combine it with independent V8_STATE.json
+    # evidence for the same physical T2 block, AND-for-safety /
+    # OR-for-risk: a field is only "safe" (False) if every independent
+    # source agrees; any single source signalling exposure/acquisition
+    # marks it True.
+    try:
+        v8_state_evidence = v8_state_evidence_reader(repository_root, commit, git_object_reader)
+    except (V8BT2PreservationRecheckBlocked, V8BGitProvenanceBlocked) as error:
+        raise _wrap(error, "V8_STATE_MISSING") from error
+
     no_opening_capability = no_research_opening_api_exists()
-    research_exposure_value = not no_opening_capability
+    api_absence_says_no_exposure = no_opening_capability
+    v8_state_says_no_exposure = (
+        v8_state_evidence["t2_opened_for_research"] is False
+        and not v8_state_evidence["t2_sealed_holdout_access_count"]
+        and v8_state_evidence["block_assignments_exposed"] is False
+    )
+    research_exposure_value = not (api_absence_says_no_exposure and v8_state_says_no_exposure)
+
+    t2_acquired_derived = t2_acquired_derived or v8_state_evidence["t2_raw_data_acquired"]
 
     derived: dict[str, Any] = {
         "t2_acquired": t2_acquired_derived,
@@ -389,6 +525,10 @@ def resolve_and_recheck_t2_reuse_conditions() -> dict[str, Any]:
             CANONICAL_REPOSITORY_ROOT, head
         ),
         consumption_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
+        layer_b_completion_reader=lambda head: read_and_verify_layer_b_completion(CANONICAL_REPOSITORY_ROOT, head),
+        frozen_final_candidate_reader=lambda head: read_and_verify_frozen_final_candidate(
+            CANONICAL_REPOSITORY_ROOT, head
+        ),
     )
 
 

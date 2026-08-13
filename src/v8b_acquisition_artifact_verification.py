@@ -59,12 +59,15 @@ from src.v8b_historical_acquisition import (
     DATA_SOURCE,
     DATA_SOURCE_HOST,
     DATA_SOURCE_SCHEMA,
+    MANIFEST_FILENAME,
     PAYLOAD_RECORD_FIELDS,
     RAW_DIRNAME,
     RETRY_COUNT,
+    SEALED_FILENAME,
     V8BHistoricalAcquisitionBlocked,
     canonical_json_bytes,
     read_acquisition_manifest,
+    read_sealed_record,
     read_t1b_trust_pin_from_verified_head,
     sha256_bytes,
 )
@@ -74,6 +77,7 @@ from src.v8b_production_provenance import (
     V8BProductionProvenanceBlocked,
     read_and_verify_design_freeze_approval,
     read_and_verify_t2_authority_bridge,
+    read_and_verify_trust_pin_independent_review,
     read_and_verify_v8_trusted_partition_anchor,
     verify_frozen_design_object,
     verify_reviewed_implementation_binding,
@@ -306,6 +310,33 @@ def _verify_acquisition_artifact(
         if hashlib.sha256(raw).hexdigest() != entry["payload_sha256"]:
             raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_SHA256_MISMATCH")
 
+    # Repeat-round finding MEDIUM-3: independently verify the actual
+    # on-disk bundle shape and, for T2, the actual SEALED.json state --
+    # not merely the acquisition manifest's own self-reported
+    # sealed/research_access_authorized fields (which a forged manifest
+    # could claim honestly while the real SEALED.json is missing,
+    # modified, or absent entirely). Exactly the expected top-level
+    # entries are required -- no unexpected extra files/directories --
+    # and T1B must never carry the T2-only SEALED.json contract.
+    block_dir = Path(output_root) / ACQUISITIONS_DIRNAME / block
+    try:
+        top_level_entries = {entry.name for entry in block_dir.iterdir()}
+    except OSError as error:
+        raise V8BAcquisitionArtifactVerificationBlocked("BLOCK_BUNDLE_DIRECTORY_UNREADABLE") from error
+
+    if block == "T1B" and SEALED_FILENAME in top_level_entries:
+        raise V8BAcquisitionArtifactVerificationBlocked("T1B_BUNDLE_MUST_NOT_CONTAIN_SEALED_RECORD")
+
+    expected_top_level = {MANIFEST_FILENAME, RAW_DIRNAME} | ({SEALED_FILENAME} if block == "T2" else set())
+    if top_level_entries != expected_top_level:
+        raise V8BAcquisitionArtifactVerificationBlocked("BLOCK_BUNDLE_TOP_LEVEL_ENTRIES_INVALID")
+
+    if block == "T2":
+        try:
+            read_sealed_record(output_root, block)
+        except V8BHistoricalAcquisitionBlocked as error:
+            raise V8BAcquisitionArtifactVerificationBlocked("SEALED_RECORD_INVALID:" + error.reason) from error
+
     return {
         "result": "PASS",
         "block": block,
@@ -402,6 +433,20 @@ def _resolve_and_verify_acquisition_artifact_with_repository_root(
             raise V8BAcquisitionArtifactVerificationBlocked("V8B_TRUST_PIN_INVALID:" + error.reason) from error
         if pin["authorization_status"] != "AUTHORIZED":
             raise V8BAcquisitionArtifactVerificationBlocked("V8B_TRUST_PIN_NOT_AUTHORIZED")
+        # HIGH-1 (repeat round): READ_ONLY_T1B_ACQUISITION_ARTIFACT_
+        # VERIFICATION must re-establish the *complete* T1B authority
+        # chain, including INDEPENDENT_TRUST_PIN_REVIEW -- not merely the
+        # trust pin's own authorization_status. Fails closed today (the
+        # real review artifact does not exist).
+        try:
+            read_and_verify_trust_pin_independent_review(
+                root,
+                verified_head,
+                expected_allocation_artifact_self_hash=pin["authorized_allocation_artifact_self_hash"],
+                expected_trust_pin_human_gate=pin["human_gate"],
+            )
+        except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+            raise _wrap(error, "V8B_TRUST_PIN_INDEPENDENT_REVIEW_MISSING") from error
         expected_ticker_list_sha256 = pin["t1b_ticker_list_sha256"]
         expected_authority_binding = {
             "authorized_allocation_artifact_self_hash": pin["authorized_allocation_artifact_self_hash"],

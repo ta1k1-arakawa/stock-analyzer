@@ -1,33 +1,53 @@
-"""Production-gated `CREATE_V8B_TRUSTED_ALLOCATION_PIN` boundary (§11.3.C,
-§12's `HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_ALLOCATION` ->
-`CREATE_V8B_TRUSTED_ALLOCATION_PIN` -> `INDEPENDENT_TRUST_PIN_REVIEW` gate
-sequence).
+"""Production-gated `CREATE_V8B_TRUSTED_ALLOCATION_PIN` boundary (§11.3.C).
+
+Frozen §12 gate sequence: READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION ->
+HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_ALLOCATION ->
+CREATE_V8B_TRUSTED_ALLOCATION_PIN -> INDEPENDENT_TRUST_PIN_REVIEW ->
+T1B_RAW_ACQUISITION_HUMAN_GATE.
 
 `FINAL_REPEAT_INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW` finding
-HIGH-2: `src/v8b_trust_pin.py::build_trust_pin` accepts any caller-supplied
-mapping shaped like a PASS verification summary -- nothing previously
-required that mapping to have actually come from a real, Git-grounded
-`READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION` call, so an arbitrary
-caller-fabricated ``{"result": "PASS", ...}`` dict was sufficient to build
-an "AUTHORIZED" pin object. This module closes that gap: its sole
-entrypoint, ``create_v8b_trusted_allocation_pin_production``, obtains the
-verification summary **only** by calling the real production resolver
-(`src.v8b_allocation_verification.resolve_and_verify_t1b_allocation_
-artifact`), requires an exact human-authorization token matching the
-frozen `HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_ALLOCATION` grammar bound
-to that exact verified artifact's ``artifact_self_hash``
-(`src.v8b_trust_pin.expected_human_gate`), and requires a fresh
-`INDEPENDENT_TRUST_PIN_REVIEW` artifact -- read from a verified Git
-object, never a caller-supplied path or mapping -- bound to that same
-exact hash, before it will build and write an ``AUTHORIZED`` pin.
+HIGH-2 (original round): `src/v8b_trust_pin.py::build_trust_pin` accepts
+any caller-supplied mapping shaped like a PASS verification summary --
+nothing previously required that mapping to have actually come from a
+real, Git-grounded `READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION` call,
+so an arbitrary caller-fabricated ``{"result": "PASS", ...}`` dict was
+sufficient to build an "AUTHORIZED" pin object. This module closes that
+gap: its sole entrypoint, ``create_v8b_trusted_allocation_pin_production``,
+obtains the verification summary **only** by calling the real production
+resolver (`src.v8b_allocation_verification.resolve_and_verify_t1b_
+allocation_artifact`), and requires an exact human-authorization token
+matching the frozen `HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_ALLOCATION`
+grammar bound to that exact verified artifact's ``artifact_self_hash``
+(`src.v8b_trust_pin.expected_human_gate`).
+
+Repeat-round finding HIGH-1: the implementation previously required a
+fresh `INDEPENDENT_TRUST_PIN_REVIEW` artifact **before** this module would
+write the pin -- backwards from the frozen sequence above, which places
+INDEPENDENT_TRUST_PIN_REVIEW strictly *after* CREATE_V8B_TRUSTED_
+ALLOCATION_PIN (a review of the pin cannot possibly precede the pin's own
+existence). This module now depends on `INDEPENDENT_TRUST_PIN_REVIEW`
+**not at all**: pin creation happens strictly between the
+HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_ALLOCATION human gate and the
+(now-later) INDEPENDENT_TRUST_PIN_REVIEW gate, which is instead verified
+downstream, at T1B acquisition time
+(`src/v8b_historical_acquisition.py`, `src/v8b_acquisition_artifact_
+verification.py`) -- the earliest point at which the *published* pin
+(this module's own write) actually exists to be reviewed.
+
+In its place, this module durably, fail-closed, one-shot-consumes the new
+`HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_ALLOCATION` gate
+(`src.v8b_human_gate_consumption`) strictly after allocation verification
+and human-authorization-token validation, and strictly before writing the
+pin -- so a second call using the same authorization can never write a
+second pin, and a rejected/failed call (wrong confirmation, wrong human
+authorization, failed allocation verification) never consumes the gate.
 
 This module is **not executed** by this implementation phase -- no real
-`T1B` allocation, allocation verification, human pin authorization, or
-independent trust-pin review has occurred, so every real invocation of
+`T1B` allocation, allocation verification, or human pin authorization has
+occurred, so every real invocation of
 ``create_v8b_trusted_allocation_pin_production`` fails closed today by
-construction: its prerequisite Git-tracked artifacts
-(`V8B_PRODUCTION_IMPLEMENTATION_REVIEW.json`,
-`V8B_TRUST_PIN_INDEPENDENT_REVIEW.json`) do not exist, and its
+construction: its prerequisite Git-tracked artifact
+(`V8B_PRODUCTION_IMPLEMENTATION_REVIEW.json`) does not exist, and its
 prerequisite private `T1B` allocation artifact does not exist either.
 Every test exercising this module is fake/synthetic-only. Importing this
 module performs no I/O and no network access; it never imports
@@ -37,6 +57,7 @@ module performs no I/O and no network access; it never imports
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -49,10 +70,17 @@ from src.v8b_git_provenance import (
     V8BGitProvenanceBlocked,
     resolve_verified_v8b_production_git_commit,
 )
+from src.v8b_human_gate_consumption import (
+    CANONICAL_CONSUMPTION_STATE_ROOT,
+    GATE_PIN_VERIFIED_T1B_ALLOCATION,
+    V8BHumanGateConsumptionBlocked,
+    consume_gate_once,
+    require_gate_not_yet_consumed,
+)
 from src.v8b_production_provenance import (
+    EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
     V8BProductionProvenanceBlocked,
     read_and_verify_design_freeze_approval,
-    read_and_verify_trust_pin_independent_review,
     verify_frozen_design_object,
     verify_reviewed_implementation_binding,
 )
@@ -163,9 +191,8 @@ def create_v8b_trusted_allocation_pin_production(
         allocation_verification_resolver=lambda: resolve_and_verify_t1b_allocation_artifact(
             allocation_artifact_path, partition_manifest_path
         ),
-        trust_pin_review_reader=lambda head, artifact_hash: read_and_verify_trust_pin_independent_review(
-            CANONICAL_REPOSITORY_ROOT, head, expected_allocation_artifact_self_hash=artifact_hash
-        ),
+        clock=lambda: datetime.now(timezone.utc),
+        consumption_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
     )
 
 
@@ -182,13 +209,28 @@ def _create_v8b_trusted_allocation_pin_production_with_dependencies(
     frozen_design_object_verifier: Callable[[], None],
     reviewed_implementation_binder: Callable[[str], Mapping[str, Any]],
     allocation_verification_resolver: Callable[[], Mapping[str, Any]],
-    trust_pin_review_reader: Callable[[str, str], Mapping[str, Any]],
+    clock: Callable[[], datetime],
+    consumption_state_root: str | os.PathLike[str],
 ) -> dict[str, Any]:
     """Private fake-only seam. No OHLCV, no network, no retry: exactly one
-    deterministic attempt per call -- either it succeeds once or raises."""
+    deterministic attempt per call -- either it succeeds once or raises.
+
+    This function does **not** depend on ``INDEPENDENT_TRUST_PIN_REVIEW`` --
+    that gate is strictly downstream of this module's own write (repeat-
+    round finding HIGH-1); see module docstring.
+    """
     # (0) explicit, exact pin-creation confirmation token
     if confirmation != PIN_CREATION_CONFIRMATION:
         raise V8BTrustPinCreationBlocked("V8B_PIN_CREATION_CONFIRMATION_INVALID")
+
+    # (0.5) fail fast, read-only: HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_
+    # ALLOCATION must not already have been durably consumed.
+    try:
+        require_gate_not_yet_consumed(
+            consumption_state_root, GATE_PIN_VERIFIED_T1B_ALLOCATION, EXPECTED_V8B_FROZEN_DESIGN_COMMIT
+        )
+    except V8BHumanGateConsumptionBlocked as error:
+        raise V8BTrustPinCreationBlocked(error.reason) from error
 
     # (1) repo/provenance -- V8B's own branch
     try:
@@ -227,12 +269,17 @@ def _create_v8b_trusted_allocation_pin_production_with_dependencies(
     if human_pin_authorization != expected_human_gate(artifact_self_hash):
         raise V8BTrustPinCreationBlocked("V8B_HUMAN_PIN_AUTHORIZATION_INVALID")
 
-    # (6) INDEPENDENT_TRUST_PIN_REVIEW -- fresh, Git-grounded, bound to this
-    # exact verified artifact hash.
+    # (6) durably, fail-closed, one-shot consume the
+    # HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_ALLOCATION gate -- strictly
+    # after every check above (so a rejected call never consumes it) and
+    # strictly before the pin write below (so a second call with the same
+    # authorization BLOCKs before it could ever produce a second pin).
     try:
-        trust_pin_review_reader(verified_head, artifact_self_hash)
-    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
-        raise _wrap(error, "V8B_TRUST_PIN_INDEPENDENT_REVIEW_MISSING") from error
+        consume_gate_once(
+            consumption_state_root, GATE_PIN_VERIFIED_T1B_ALLOCATION, EXPECTED_V8B_FROZEN_DESIGN_COMMIT, clock=clock
+        )
+    except V8BHumanGateConsumptionBlocked as error:
+        raise V8BTrustPinCreationBlocked(error.reason) from error
 
     # (7) build (never trusts a caller-supplied summary) and write-once
     try:

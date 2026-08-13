@@ -15,13 +15,18 @@ def clock_stub():
     return datetime(2026, 8, 12, tzinfo=timezone.utc)
 
 
-def test_known_gates_are_the_exact_three_named_in_the_finding():
+def test_known_gates_are_the_exact_four_named_gates():
     assert set(gate_consumption.KNOWN_GATES) == {
         "ONE_TIME_HUMAN_AUTHORIZATION_TO_ALLOCATE_T1B",
+        "HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_ALLOCATION",
         "T1B_RAW_ACQUISITION_HUMAN_GATE",
         "T2_RAW_ACQUISITION_HUMAN_GATE",
     }
     assert gate_consumption.GATE_ALLOCATE_T1B == "ONE_TIME_HUMAN_AUTHORIZATION_TO_ALLOCATE_T1B"
+    assert (
+        gate_consumption.GATE_PIN_VERIFIED_T1B_ALLOCATION
+        == "HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_ALLOCATION"
+    )
     assert gate_consumption.GATE_T1B_RAW_ACQUISITION == "T1B_RAW_ACQUISITION_HUMAN_GATE"
     assert gate_consumption.GATE_T2_RAW_ACQUISITION == "T2_RAW_ACQUISITION_HUMAN_GATE"
 
@@ -111,9 +116,17 @@ def test_receipt_is_durable_bytes_on_disk_with_no_ticker_or_path_content(tmp_pat
     receipts = list(Path(state_root).glob("*.json"))
     assert len(receipts) == 1
     receipt = json.loads(receipts[0].read_bytes())
-    assert set(receipt) == {"schema_version", "study_name", "gate", "v8b_frozen_design_commit", "consumed_at_utc"}
+    assert set(receipt) == {
+        "schema_version",
+        "study_name",
+        "repository",
+        "gate",
+        "v8b_frozen_design_commit",
+        "consumed_at_utc",
+    }
     assert receipt["schema_version"] == gate_consumption.SCHEMA_VERSION
     assert receipt["study_name"] == gate_consumption.STUDY_NAME
+    assert receipt["repository"] == gate_consumption.REPOSITORY_IDENTITY
     assert receipt["gate"] == gate_consumption.GATE_ALLOCATE_T1B
     assert receipt["v8b_frozen_design_commit"] == SYNTHETIC_DESIGN_COMMIT
     assert receipt["consumed_at_utc"] == "2026-08-12T00:00:00Z"
@@ -147,6 +160,116 @@ def test_write_failure_never_leaks_private_state_root_path(tmp_path, monkeypatch
 def test_canonical_state_root_is_outside_the_repository():
     assert gate_consumption.CANONICAL_REPOSITORY_ROOT not in gate_consumption.CANONICAL_CONSUMPTION_STATE_ROOT.parents
     assert gate_consumption.CANONICAL_CONSUMPTION_STATE_ROOT != gate_consumption.CANONICAL_REPOSITORY_ROOT
+
+
+# --- MEDIUM-1 (repeat round): canonical ledger identity must not be
+# checkout-path-local ------------------------------------------------------
+
+
+def test_default_state_root_does_not_depend_on_module_file_location():
+    assert gate_consumption.CANONICAL_CONSUMPTION_STATE_ROOT == gate_consumption._default_consumption_state_root()
+    # Re-deriving from scratch (independent of Path(__file__)) yields the
+    # exact same path -- the state root is a pure function of the home
+    # directory + fixed repository identity, never of this module's own
+    # checkout location.
+    assert "stock-analyzer" not in str(gate_consumption.CANONICAL_CONSUMPTION_STATE_ROOT)
+
+
+def test_default_state_root_is_derived_from_home_directory_and_fixed_repository_identity(monkeypatch, tmp_path):
+    fake_home = tmp_path / "fake-home"
+    monkeypatch.setattr(gate_consumption.Path, "home", classmethod(lambda cls: fake_home))
+    root = gate_consumption._default_consumption_state_root()
+    assert root == fake_home / ".v8b_human_gate_state" / gate_consumption._REPOSITORY_IDENTITY_NAMESPACE
+
+
+def test_home_directory_unavailable_falls_back_to_fixed_non_checkout_path(monkeypatch):
+    def raise_runtime_error():
+        raise RuntimeError("no passwd entry")
+
+    monkeypatch.setattr(gate_consumption.Path, "home", staticmethod(raise_runtime_error))
+    root = gate_consumption._default_consumption_state_root()
+    assert root == gate_consumption._FALLBACK_HOME_DIRECTORY / ".v8b_human_gate_state" / gate_consumption._REPOSITORY_IDENTITY_NAMESPACE
+
+
+def _load_module_from_a_different_checkout_path(tmp_path, suffix):
+    """Simulate a second clone/worktree of this repository at an unrelated
+    filesystem path by copying just this module's source there and loading
+    it under a distinct module name via its own file location -- so
+    ``Path(__file__).resolve().parents[1]`` differs between the two loaded
+    instances, exactly like two real independent checkouts would."""
+    import importlib.util
+
+    fake_checkout = tmp_path / ("checkout-" + suffix) / "src"
+    fake_checkout.mkdir(parents=True)
+    source_path = Path(gate_consumption.__file__)
+    destination = fake_checkout / "v8b_human_gate_consumption.py"
+    destination.write_bytes(source_path.read_bytes())
+
+    module_name = "v8b_human_gate_consumption_checkout_" + suffix
+    spec = importlib.util.spec_from_file_location(module_name, destination)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_two_different_checkout_paths_share_the_same_canonical_ledger_and_second_call_blocks(monkeypatch, tmp_path):
+    fake_home = tmp_path / "shared-home"
+    monkeypatch.setattr(gate_consumption.Path, "home", classmethod(lambda cls: fake_home))
+
+    checkout_a = _load_module_from_a_different_checkout_path(tmp_path, "a")
+    checkout_b = _load_module_from_a_different_checkout_path(tmp_path, "b")
+
+    # The two "checkouts" live at completely different filesystem paths...
+    assert checkout_a.CANONICAL_REPOSITORY_ROOT != checkout_b.CANONICAL_REPOSITORY_ROOT
+    # ...but the canonical ledger identity is identical between them.
+    assert checkout_a.CANONICAL_CONSUMPTION_STATE_ROOT == checkout_b.CANONICAL_CONSUMPTION_STATE_ROOT
+
+    checkout_a.consume_gate_once(
+        checkout_a.CANONICAL_CONSUMPTION_STATE_ROOT,
+        checkout_a.GATE_ALLOCATE_T1B,
+        SYNTHETIC_DESIGN_COMMIT,
+        clock=clock_stub,
+    )
+    # A gate consumed via "checkout A" durably blocks the identical gate
+    # read/consumed via a freshly-loaded, independent "checkout B" module
+    # instance -- proving the ledger is not scoped to either checkout path.
+    assert checkout_b.has_gate_been_consumed(
+        checkout_b.CANONICAL_CONSUMPTION_STATE_ROOT, checkout_b.GATE_ALLOCATE_T1B, SYNTHETIC_DESIGN_COMMIT
+    ) is True
+    with pytest.raises(checkout_b.V8BHumanGateConsumptionBlocked) as excinfo:
+        checkout_b.consume_gate_once(
+            checkout_b.CANONICAL_CONSUMPTION_STATE_ROOT,
+            checkout_b.GATE_ALLOCATE_T1B,
+            SYNTHETIC_DESIGN_COMMIT,
+            clock=clock_stub,
+        )
+    assert excinfo.value.reason == "V8B_HUMAN_GATE_ALREADY_CONSUMED:" + checkout_b.GATE_ALLOCATE_T1B
+
+
+def test_receipt_key_is_bound_to_fixed_repository_identity_string(tmp_path):
+    state_root = tmp_path / "state"
+    gate_consumption.consume_gate_once(
+        state_root, gate_consumption.GATE_ALLOCATE_T1B, SYNTHETIC_DESIGN_COMMIT, clock=clock_stub
+    )
+    expected_key = gate_consumption._receipt_key(gate_consumption.GATE_ALLOCATE_T1B, SYNTHETIC_DESIGN_COMMIT)
+    assert (Path(state_root) / (expected_key + ".json")).exists()
+    # The key must actually depend on REPOSITORY_IDENTITY, not merely be
+    # independent of it by coincidence.
+    import hashlib
+
+    other_repo_key = hashlib.sha256(
+        ("some/other-repo|" + gate_consumption.GATE_ALLOCATE_T1B + "|" + SYNTHETIC_DESIGN_COMMIT).encode("utf-8")
+    ).hexdigest()
+    assert other_repo_key != expected_key
+
+
+def test_no_deletion_or_reset_api_exists():
+    assert not hasattr(gate_consumption, "delete_receipt")
+    assert not hasattr(gate_consumption, "reset_gate")
+    assert not hasattr(gate_consumption, "clear_consumption_state")
+    for name in gate_consumption.__all__:
+        assert "delete" not in name.lower()
+        assert "reset" not in name.lower()
 
 
 def test_module_performs_no_io_on_import():
