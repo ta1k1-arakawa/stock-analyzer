@@ -11,6 +11,17 @@ this module uses a synthetic parent `T_spare` fixture and a synthetic
 partition manifest, never the real private V8 partition. Importing this
 module performs no I/O and no network access of any kind; it never
 imports `src/v7_yahoo_collector.py`.
+
+`FINAL_REPEAT_INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW` finding
+HIGH-1: `ONE_TIME_HUMAN_AUTHORIZATION_TO_ALLOCATE_T1B`'s one-shot
+consumption is now durable, not merely an in-memory boolean --
+`src.v8b_human_gate_consumption.consume_gate_once` fsync's a receipt to
+the fixed, non-overridable `CANONICAL_CONSUMPTION_STATE_ROOT` strictly
+before the private partition-manifest read, and every call first checks
+`require_gate_not_yet_consumed` before any provenance step. A second call,
+a new process, or a restart, using the same authorization under the same
+frozen design commit, now BLOCKs before the private read -- it never
+repeats the allocation.
 """
 
 from __future__ import annotations
@@ -47,6 +58,13 @@ from src.v8b_allocation import (
     build_t1b_allocation_artifact,
     canonical_json_bytes,
     public_allocation_summary,
+)
+from src.v8b_human_gate_consumption import (
+    CANONICAL_CONSUMPTION_STATE_ROOT,
+    GATE_ALLOCATE_T1B,
+    V8BHumanGateConsumptionBlocked,
+    consume_gate_once,
+    require_gate_not_yet_consumed,
 )
 
 # Frozen production confirmation literal (§12's ONE_TIME_HUMAN_
@@ -154,6 +172,7 @@ def allocate_t1b_production(
         ),
         anchor_reader=lambda head: read_and_verify_v8_trusted_partition_anchor(CANONICAL_REPOSITORY_ROOT, head),
         clock=lambda: datetime.now(timezone.utc),
+        consumption_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
     )
 
 
@@ -168,12 +187,34 @@ def _allocate_t1b_production_with_dependencies(
     reviewed_implementation_binder: Callable[[str], Mapping[str, Any]],
     anchor_reader: Callable[[str], Mapping[str, Any]],
     clock: Callable[[], datetime],
+    consumption_state_root: str | os.PathLike[str],
 ) -> dict[str, Any]:
     """Private fake-only seam. No OHLCV, no network, no retry: exactly one
-    deterministic attempt per call -- either it succeeds once or raises."""
+    deterministic attempt per call -- either it succeeds once or raises.
+
+    ``consumption_state_root`` is the durable, fsync'd receipt directory
+    ``ONE_TIME_HUMAN_AUTHORIZATION_TO_ALLOCATE_T1B`` is consumed against
+    (HIGH-1 remediation: previously ``authorization_consumed`` was only an
+    in-memory boolean, so nothing prevented a second call, a new process,
+    or a restart from repeating this one-time action). The public
+    ``allocate_t1b_production`` above always passes the fixed, non-
+    overridable ``CANONICAL_CONSUMPTION_STATE_ROOT`` -- this parameter
+    exists so fake/synthetic tests can inject an isolated temporary
+    directory.
+    """
     # (0) explicit, exact allocation-gate confirmation token
     if confirmation != ALLOCATION_CONFIRMATION:
         raise V8BT1BAllocatorBlocked("V8B_ALLOCATION_CONFIRMATION_INVALID")
+
+    # (0.5) durable one-shot gate check -- BLOCK immediately, before any
+    # provenance/private-access step, if ONE_TIME_HUMAN_AUTHORIZATION_TO_
+    # ALLOCATE_T1B has already been durably consumed under this exact
+    # frozen design commit, whether by an earlier call in this process, a
+    # previous process, or a previous restart (HIGH-1).
+    try:
+        require_gate_not_yet_consumed(consumption_state_root, GATE_ALLOCATE_T1B, EXPECTED_V8B_FROZEN_DESIGN_COMMIT)
+    except V8BHumanGateConsumptionBlocked as error:
+        raise V8BT1BAllocatorBlocked(error.reason) from error
 
     # (1) repo/provenance -- V8B's own branch
     try:
@@ -204,11 +245,22 @@ def _allocate_t1b_production_with_dependencies(
         raise V8BT1BAllocatorBlocked("TRUSTED_PARTITION_NOT_AUTHORIZED")
 
     # (5) onward: the first private action (reading the private V8 partition
-    # manifest) is about to begin -- authorization is consumed as of this
-    # exact point, regardless of what happens next. No automatic or manual
-    # retry is authorized by this implementation: this function makes
-    # exactly one attempt per call.
+    # manifest) is about to begin -- authorization is durably, atomically
+    # consumed as of this exact point (HIGH-1: a receipt is fsync'd to
+    # ``consumption_state_root`` strictly before the private read), never
+    # merely recorded in memory, and regardless of what happens next. No
+    # automatic or manual retry is authorized by this implementation: this
+    # function makes exactly one attempt per call.
+    consumed = False
     try:
+        try:
+            consume_gate_once(
+                consumption_state_root, GATE_ALLOCATE_T1B, EXPECTED_V8B_FROZEN_DESIGN_COMMIT, clock=clock
+            )
+        except V8BHumanGateConsumptionBlocked as error:
+            raise V8BT1BAllocatorBlocked(error.reason) from error
+        consumed = True
+
         partition_manifest = read_partition_manifest(partition_manifest_path)
 
         manifest_sha = partition_manifest["manifest_sha256"]
@@ -259,9 +311,9 @@ def _allocate_t1b_production_with_dependencies(
         _write_allocation_artifact_once(destination, canonical_json_bytes(artifact))
         return public_allocation_summary(artifact)
     except V8PartitionBlocked as error:
-        raise V8BT1BAllocatorBlocked(error.reason, authorization_consumed=True) from error
+        raise V8BT1BAllocatorBlocked(error.reason, authorization_consumed=consumed) from error
     except V8BT1BAllocatorBlocked as error:
-        error.authorization_consumed = True
+        error.authorization_consumed = consumed
         raise
 
 

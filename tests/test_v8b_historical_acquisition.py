@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import urllib.request
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ from src import v8_partition as partition
 from src import v8b_historical_acquisition as acquisition
 from src import v8b_allocation as allocation
 from src import v8b_allocation_verification as verification
+from src import v8b_human_gate_consumption as gate_consumption
 from src import v8b_trust_pin as trust_pin
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -196,12 +199,23 @@ def default_deps(
         zoneinfo_loader=lambda: object(),
         anchor_reader=lambda head: anchor or {},
         bridge_reader=lambda head: bridge or {},
-        t2_reuse_recheck_resolver=t2_reuse_recheck_resolver or (lambda head: {"result": "PASS", "block": "T2"}),
+        t2_reuse_recheck_resolver=t2_reuse_recheck_resolver or (lambda: {"result": "PASS", "block": "T2"}),
         t1b_trust_pin_reader=lambda head: pin or {},
+        trust_pin_review_reader=lambda head, artifact_hash: {"ok": True},
         opener=opener,
         clock=clock_stub,
         monotonic_clock=lambda: 0.0,
         sleep_fn=lambda _s: None,
+        # Each call defaults to its own fresh, isolated durable
+        # consumption-state directory (HIGH-1) so existing tests exercising
+        # unrelated failure paths remain independent; tests specifically
+        # exercising durable one-shot consumption pass an explicit, shared
+        # ``consumption_state_root`` across two calls instead. Deliberately
+        # does not call ``tempfile.mkdtemp`` (some tests monkeypatch that
+        # exact function to exercise a staging-directory failure) -- the
+        # directory is created lazily, on first durable write, by
+        # ``consume_gate_once`` itself.
+        consumption_state_root=Path(tempfile.gettempdir()) / ("v8b_gate_state-" + uuid.uuid4().hex),
     )
     deps.update(overrides)
     return deps
@@ -786,7 +800,7 @@ def test_t2_reuse_recheck_blocked_prevents_network(tmp_path, monkeypatch):
     manifest_path = tmp_path / "partition.json"
     manifest, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
 
-    def missing_recheck(head):
+    def missing_recheck():
         raise acquisition.V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_MISSING")
 
     deps = default_deps(
@@ -840,14 +854,36 @@ def test_authorization_consumed_true_on_failure_at_a_later_ticker_too(tmp_path):
     assert len(opener.calls) == 6
 
 
-def test_no_automatic_or_manual_retry_after_authorization_consumed(tmp_path):
-    """Once a V8BHistoricalAcquisitionBlocked is raised mid-loop, calling
-    the same dependency-injected entrypoint again with the SAME deps must
-    not resume or retry the interrupted acquisition -- it re-attempts the
-    full pre-network sequence and the per-ticker loop from ticker 0, and
-    the module offers no state that would let a second call "continue"
-    from where the first one stopped. This proves there is no hidden retry
-    path, not merely that RETRY_COUNT == 0 (already covered elsewhere)."""
+def test_no_hidden_resume_state_across_two_independent_state_roots(tmp_path):
+    """Two calls that do NOT share a durable consumption_state_root (e.g.
+    exercising the underlying loop's own logic in isolation) each restart
+    from ticker 0 -- the module offers no in-process state that would let a
+    second call "continue" from where a first one stopped, independent of
+    the durable one-shot gate (covered separately below)."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    calls: list[str] = []
+
+    def always_failing_payload(ticker: str) -> bytes:
+        calls.append(ticker)
+        return synthetic_payload(ticker, DEFAULT_DATES, bad_row_indices=[0])
+
+    opener = FakeOpener(always_failing_payload)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked):
+        run(default_deps(block="T1B", opener=opener, artifact_path=artifact_path, pin=pin), tmp_path / "private")
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked):
+        run(default_deps(block="T1B", opener=opener, artifact_path=artifact_path, pin=pin), tmp_path / "private2")
+    # Each independent call restarts from ticker 0 (no cross-call resume
+    # state) and stops at the very first ticker both times.
+    assert calls == [artifact["t1b_tickers"][0], artifact["t1b_tickers"][0]]
+
+
+def test_second_call_with_same_consumption_state_root_blocks_before_network(tmp_path):
+    """FINAL_REPEAT finding HIGH-1: a second call sharing the SAME durable
+    consumption_state_root (as a real second invocation, new process, or
+    restart would) must BLOCK before the per-ticker loop ever runs again --
+    it must not repeat the acquisition, even after the first attempt's
+    in-loop failure. This is the corrected behavior of what used to be a
+    purely in-memory, non-durable authorization_consumed flag."""
     artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
     calls: list[str] = []
 
@@ -857,13 +893,19 @@ def test_no_automatic_or_manual_retry_after_authorization_consumed(tmp_path):
 
     opener = FakeOpener(always_failing_payload)
     deps = default_deps(block="T1B", opener=opener, artifact_path=artifact_path, pin=pin)
-    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked):
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as first:
         run(deps, tmp_path / "private")
-    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked):
-        run(deps, tmp_path / "private")
-    # Each independent call restarts from ticker 0 (no cross-call resume
-    # state) and stops at the very first ticker both times.
-    assert calls == [artifact["t1b_tickers"][0], artifact["t1b_tickers"][0]]
+    assert first.value.authorization_consumed is True
+
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as second:
+        run(deps, tmp_path / "private2")
+    assert second.value.reason == (
+        "V8B_HUMAN_GATE_ALREADY_CONSUMED:" + gate_consumption.GATE_T1B_RAW_ACQUISITION
+    )
+    assert second.value.authorization_consumed is False
+    # The opener was never invoked a second time -- the per-ticker loop
+    # never even started.
+    assert calls == [artifact["t1b_tickers"][0]]
 
 
 # ---------------------------------------------------------------------------
@@ -953,6 +995,199 @@ def test_successful_manifest_does_not_expose_authorization_consumed_field():
     (V8BHistoricalAcquisitionBlocked.authorization_consumed), never as
     part of the published, schema-checked manifest."""
     assert "authorization_consumed" not in acquisition.ACQUISITION_MANIFEST_FIELDS
+
+
+# ---------------------------------------------------------------------------
+# FINAL_REPEAT finding HIGH-1: durable, fail-closed, one-shot consumption of
+# T1B_RAW_ACQUISITION_HUMAN_GATE / T2_RAW_ACQUISITION_HUMAN_GATE.
+# ---------------------------------------------------------------------------
+
+
+def test_t2_second_call_with_same_state_root_blocks_before_network(tmp_path, monkeypatch):
+    t2_tickers = _tickers("T2", 300)
+    patch_t2_expected_constants(monkeypatch, t2_tickers)
+    manifest_path = tmp_path / "partition.json"
+    manifest, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
+    opener = default_opener()
+    deps = default_deps(block="T2", opener=opener, partition_manifest_path=manifest_path, anchor=anchor, bridge=bridge)
+
+    first = run(deps, tmp_path / "private")
+    assert first["block"] == "T2"
+    assert len(opener.calls) == 300
+
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private2")
+    assert excinfo.value.reason == (
+        "V8B_HUMAN_GATE_ALREADY_CONSUMED:" + gate_consumption.GATE_T2_RAW_ACQUISITION
+    )
+    assert excinfo.value.authorization_consumed is False
+    # No second round of Yahoo requests was ever attempted.
+    assert len(opener.calls) == 300
+
+
+def test_t1b_gate_consumption_does_not_block_t2_gate_and_vice_versa(tmp_path, monkeypatch):
+    """T1B and T2 are separate one-time authorizations under the same
+    durable consumption_state_root -- consuming one must never consume or
+    block the other."""
+    t1b_artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    t2_tickers = _tickers("T2", 300)
+    patch_t2_expected_constants(monkeypatch, t2_tickers)
+    manifest_path = tmp_path / "partition.json"
+    manifest, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
+    shared_state_root = tmp_path / "gate_state"
+
+    t1b_deps = default_deps(
+        block="T1B", opener=default_opener(), artifact_path=artifact_path, pin=pin,
+        consumption_state_root=shared_state_root,
+    )
+    t1b_result = run(t1b_deps, tmp_path / "private_t1b")
+    assert t1b_result["block"] == "T1B"
+
+    t2_opener = default_opener()
+    t2_deps = default_deps(
+        block="T2", opener=t2_opener, partition_manifest_path=manifest_path, anchor=anchor, bridge=bridge,
+        consumption_state_root=shared_state_root,
+    )
+    t2_result = run(t2_deps, tmp_path / "private_t2")
+    assert t2_result["block"] == "T2"
+    assert len(t2_opener.calls) == 300
+
+
+def test_durable_receipt_readable_fresh_from_disk_no_python_state_shared(tmp_path):
+    """Simulates "a new process, or restart": the receipt is durable,
+    fsync'd bytes on disk, checked fresh from disk -- not from any
+    Python-process-lifetime state."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    shared_state_root = tmp_path / "gate_state"
+    deps = default_deps(
+        block="T1B", opener=default_opener(), artifact_path=artifact_path, pin=pin,
+        consumption_state_root=shared_state_root,
+    )
+    run(deps, tmp_path / "private")
+
+    assert gate_consumption.has_gate_been_consumed(
+        shared_state_root, gate_consumption.GATE_T1B_RAW_ACQUISITION, acquisition.V8B_FROZEN_DESIGN_COMMIT
+    )
+    with pytest.raises(gate_consumption.V8BHumanGateConsumptionBlocked):
+        gate_consumption.require_gate_not_yet_consumed(
+            shared_state_root, gate_consumption.GATE_T1B_RAW_ACQUISITION, acquisition.V8B_FROZEN_DESIGN_COMMIT
+        )
+
+
+def test_public_entrypoint_offers_no_consumption_state_root_override():
+    import inspect
+
+    assert "consumption_state_root" not in inspect.signature(acquisition.acquire_v8b_historical_block_bundle).parameters
+
+
+# ---------------------------------------------------------------------------
+# FINAL_REPEAT finding HIGH-2: T1B acquisition requires a fresh
+# INDEPENDENT_TRUST_PIN_REVIEW bound to the exact authorized allocation
+# artifact hash, in addition to the trust pin's own human_gate grammar.
+# ---------------------------------------------------------------------------
+
+
+def test_t1b_acquisition_blocks_when_trust_pin_review_missing(tmp_path):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+
+    def missing_review(head, artifact_hash):
+        raise acquisition.V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_MISSING")
+
+    deps = default_deps(
+        block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin,
+        trust_pin_review_reader=missing_review,
+    )
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_MISSING"
+    assert excinfo.value.authorization_consumed is False
+
+
+def test_t1b_acquisition_blocks_when_trust_pin_review_bound_to_wrong_hash(tmp_path):
+    """Proves the review is checked against the exact artifact hash this
+    acquisition is about to trust, not merely "some review exists"."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    seen_hashes: list[str] = []
+
+    def recording_review(head, artifact_hash):
+        seen_hashes.append(artifact_hash)
+        if artifact_hash != pin["authorized_allocation_artifact_self_hash"]:
+            raise acquisition.V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_HASH_MISMATCH")
+
+    deps = default_deps(
+        block="T1B", opener=default_opener(), artifact_path=artifact_path, pin=pin,
+        trust_pin_review_reader=recording_review,
+    )
+    manifest = run(deps, tmp_path / "private")
+    assert manifest["block"] == "T1B"
+    assert seen_hashes == [pin["authorized_allocation_artifact_self_hash"]]
+
+
+def test_t2_acquisition_never_calls_trust_pin_review_reader(tmp_path, monkeypatch):
+    """The trust-pin-review requirement is T1B-specific; T2 does not use
+    the T1B successor allocation authority chain at all."""
+    t2_tickers = _tickers("T2", 300)
+    patch_t2_expected_constants(monkeypatch, t2_tickers)
+    manifest_path = tmp_path / "partition.json"
+    manifest, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
+
+    def unreachable_review(head, artifact_hash):
+        raise AssertionError("trust_pin_review_reader must not run for T2")
+
+    deps = default_deps(
+        block="T2", opener=default_opener(), partition_manifest_path=manifest_path, anchor=anchor, bridge=bridge,
+        trust_pin_review_reader=unreachable_review,
+    )
+    result = run(deps, tmp_path / "private")
+    assert result["block"] == "T2"
+
+
+# ---------------------------------------------------------------------------
+# FINAL_REPEAT finding MEDIUM-2: the public production entrypoint returns
+# a privacy-safe aggregate summary only, never the full identity-bearing
+# manifest -- the full manifest is persisted only in the private bundle.
+# ---------------------------------------------------------------------------
+
+
+def test_public_acquisition_summary_strips_payload_manifest():
+    full_manifest = {field: object() for field in acquisition.ACQUISITION_MANIFEST_FIELDS}
+    summary = acquisition.public_acquisition_summary(full_manifest)
+    assert "payload_manifest" not in summary
+    assert set(summary) == set(acquisition.PUBLIC_ACQUISITION_SUMMARY_FIELDS)
+    assert set(summary) | {"payload_manifest"} == set(acquisition.ACQUISITION_MANIFEST_FIELDS)
+    for field in summary:
+        assert summary[field] is full_manifest[field]
+
+
+def test_public_acquisition_summary_rejects_wrong_schema():
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        acquisition.public_acquisition_summary({"not": "a manifest"})
+    assert excinfo.value.reason == "MANIFEST_SCHEMA_INVALID"
+
+
+def test_full_manifest_persisted_privately_but_public_summary_redacted(tmp_path):
+    """End-to-end: the private bundle on disk still has the full
+    ticker-identity-bearing manifest (read via read_acquisition_manifest),
+    but the value the private DI seam returns (standing in for what the
+    real public acquire_v8b_historical_block_bundle would further redact
+    via public_acquisition_summary) still carries payload_manifest -- this
+    proves redaction is a *wrapper* around the full-fidelity private
+    write path, not a change to what gets persisted."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    deps = default_deps(block="T1B", opener=default_opener(), artifact_path=artifact_path, pin=pin)
+    output_root = tmp_path / "private"
+    full_manifest = run(deps, output_root)
+    assert "payload_manifest" in full_manifest
+    assert len(full_manifest["payload_manifest"]) == 300
+
+    reread = acquisition.read_acquisition_manifest(output_root, "T1B")
+    assert "payload_manifest" in reread
+    assert reread["payload_manifest"] == full_manifest["payload_manifest"]
+
+    redacted = acquisition.public_acquisition_summary(full_manifest)
+    assert "payload_manifest" not in redacted
+    for ticker in artifact["t1b_tickers"]:
+        assert ticker not in json.dumps(redacted)
 
 
 # ---------------------------------------------------------------------------
@@ -1201,8 +1436,15 @@ def test_raw_payload_write_failure_never_leaks_path_or_ticker(tmp_path, monkeypa
     artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
     secret_ticker = artifact["t1b_tickers"][0]
 
+    # The durable HIGH-1 gate-consumption receipt fsyncs once, first, at
+    # the first ticker's opener attempt -- that call must succeed; only
+    # the raw-payload fsync that follows it is poisoned.
+    call_count = {"n": 0}
+
     def poisoned_fsync(fd):
-        raise OSError(f"disk full while writing {secret_ticker} at {SECRET_PRIVATE_PATH_FRAGMENT}/raw/{secret_ticker}.json")
+        call_count["n"] += 1
+        if call_count["n"] > 1:
+            raise OSError(f"disk full while writing {secret_ticker} at {SECRET_PRIVATE_PATH_FRAGMENT}/raw/{secret_ticker}.json")
 
     monkeypatch.setattr(acquisition.os, "fsync", poisoned_fsync)
     opener = default_opener()
@@ -1221,9 +1463,10 @@ def test_manifest_write_failure_never_leaks_path(tmp_path, monkeypatch):
     def poisoned_fsync(fd):
         nonlocal call_count
         call_count += 1
-        # Let every raw-payload fsync (one per ticker, 300 total) succeed;
+        # Let the durable HIGH-1 gate-consumption receipt's fsync (1 call)
+        # and every raw-payload fsync (one per ticker, 300 total) succeed;
         # fail only the final manifest-write fsync.
-        if call_count > 300:
+        if call_count > 301:
             raise OSError(f"permission denied at {SECRET_PRIVATE_PATH_FRAGMENT}/acquisition_manifest.json")
 
     monkeypatch.setattr(acquisition.os, "fsync", poisoned_fsync)

@@ -98,6 +98,30 @@ IMPLEMENTATION_REVIEW_FIELDS = (
     "approval_status",
 )
 
+# --- INDEPENDENT_TRUST_PIN_REVIEW (FINAL_REPEAT finding HIGH-2) ------------
+#
+# §12's gate sequence requires INDEPENDENT_TRUST_PIN_REVIEW -- an
+# independent review of the published §11.3.C trust-pin artifact, bound to
+# the exact allocation-artifact self-hash it pins -- between
+# CREATE_V8B_TRUSTED_ALLOCATION_PIN and T1B_RAW_ACQUISITION_HUMAN_GATE.
+# This future artifact does not exist in this repository yet, so reading
+# it fails closed today by construction, exactly like
+# `V8B_PRODUCTION_IMPLEMENTATION_REVIEW.json` and
+# `V8B_TRUSTED_ALLOCATION.json`.
+
+TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH = "V8B_TRUST_PIN_INDEPENDENT_REVIEW.json"
+TRUST_PIN_INDEPENDENT_REVIEW_SCHEMA_VERSION = "V8B_TRUST_PIN_INDEPENDENT_REVIEW_V1"
+TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE = "TRUST_PIN_INDEPENDENT_REVIEW"
+TRUST_PIN_INDEPENDENT_REVIEW_FIELDS = (
+    "schema_version",
+    "study",
+    "artifact_role",
+    "reviewed_allocation_artifact_self_hash",
+    "reviewed_trust_pin_human_gate",
+    "review_result",
+    "approval_status",
+)
+
 # Every production-relevant fixed source/artifact file that must be
 # byte-for-byte identical between current verified HEAD and the exact
 # commit INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW reviewed. A
@@ -113,6 +137,8 @@ BOUND_PRODUCTION_FILES: tuple[str, ...] = (
     "src/v8b_acquisition_artifact_verification.py",
     "src/v8b_t2_reuse_recheck.py",
     "src/v8b_t1b_allocator.py",
+    "src/v8b_trust_pin_creation.py",
+    "src/v8b_human_gate_consumption.py",
     "V8B_T2_AUTHORITY_BRIDGE.json",
     # V8B production executes src/v8_partition.py's read_partition_manifest,
     # require_absolute_output_path_outside_repository, ticker_list_sha256,
@@ -385,6 +411,51 @@ def read_and_verify_t2_authority_bridge(repository_root, verified_head: str) -> 
     return dict(bridge)
 
 
+# ---------------------------------------------------------------------------
+# INDEPENDENT_TRUST_PIN_REVIEW (HIGH-2)
+# ---------------------------------------------------------------------------
+
+
+def read_and_verify_trust_pin_independent_review(
+    repository_root, verified_head: str, *, expected_allocation_artifact_self_hash: str
+) -> dict[str, Any]:
+    """Read and verify the future `V8B_TRUST_PIN_INDEPENDENT_REVIEW.json`
+    artifact from a **verified Git object** -- never a caller-supplied path
+    or mapping. Bound to ``expected_allocation_artifact_self_hash`` so a
+    review of a *different* allocation artifact can never authorize this
+    one (HIGH-2: "independent trust-pin review for that exact artifact").
+    Does not exist in this repository yet, so this fails closed today.
+    """
+    commit = require_git_commit(verified_head, "TRUST_PIN_INDEPENDENT_REVIEW_HEAD_INVALID")
+    hash_value = _require_sha256_hex(
+        expected_allocation_artifact_self_hash, "TRUST_PIN_INDEPENDENT_REVIEW_EXPECTED_HASH_INVALID"
+    )
+    try:
+        raw = read_git_object_bytes(repository_root, commit, TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH)
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap_git_provenance_error(error, "V8B_TRUST_PIN_INDEPENDENT_REVIEW_MISSING") from error
+    review = _strict_json_object(
+        raw,
+        invalid_reason="V8B_TRUST_PIN_INDEPENDENT_REVIEW_INVALID_JSON",
+        duplicate_reason="V8B_TRUST_PIN_INDEPENDENT_REVIEW_DUPLICATE_KEY",
+    )
+    if set(review) != set(TRUST_PIN_INDEPENDENT_REVIEW_FIELDS):
+        raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_SCHEMA_INVALID")
+    if review["schema_version"] != TRUST_PIN_INDEPENDENT_REVIEW_SCHEMA_VERSION:
+        raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_SCHEMA_VERSION_MISMATCH")
+    if review["study"] != STUDY_NAME:
+        raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_STUDY_MISMATCH")
+    if review["artifact_role"] != TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE:
+        raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE_MISMATCH")
+    if review["reviewed_allocation_artifact_self_hash"] != hash_value:
+        raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_HASH_MISMATCH")
+    if review["review_result"] != "PASS":
+        raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_NOT_PASS")
+    if review["approval_status"] != "APPROVED":
+        raise V8BProductionProvenanceBlocked("V8B_TRUST_PIN_INDEPENDENT_REVIEW_NOT_APPROVED")
+    return dict(review)
+
+
 __all__ = [
     "BOUND_PRODUCTION_FILES",
     "DESIGN_DRAFT_GIT_PATH",
@@ -411,10 +482,15 @@ __all__ = [
     "TRUSTED_PARTITION_ANCHOR_FIELDS",
     "TRUSTED_PARTITION_ANCHOR_GIT_PATH",
     "TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION",
+    "TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE",
+    "TRUST_PIN_INDEPENDENT_REVIEW_FIELDS",
+    "TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH",
+    "TRUST_PIN_INDEPENDENT_REVIEW_SCHEMA_VERSION",
     "V8BProductionProvenanceBlocked",
     "V8_DESIGN_COMMIT",
     "read_and_verify_design_freeze_approval",
     "read_and_verify_t2_authority_bridge",
+    "read_and_verify_trust_pin_independent_review",
     "read_and_verify_v8_trusted_partition_anchor",
     "verify_frozen_design_object",
     "verify_reviewed_implementation_binding",

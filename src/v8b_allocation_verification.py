@@ -56,7 +56,16 @@ from src.v8_partition import (
 )
 from src.v8b_allocation import (
     ALLOCATION_ARTIFACT_FIELDS,
+    ARTIFACT_ROLE,
+    LOGICAL_BLOCK,
+    PARENT_STUDY_NAME,
+    SCHEMA_VERSION as ALLOCATION_SCHEMA_VERSION,
+    SELECTION_RULE_ID,
     SELECTION_RULE_TEXT,
+    STUDY_NAME as ALLOCATION_STUDY_NAME,
+    T1B_OFFSET_WITHIN_PARENT_T_SPARE,
+    T1B_SLICE_END_EXCLUSIVE,
+    T1B_SLICE_START_INCLUSIVE,
     T1B_TICKER_COUNT,
     V8BAllocationBlocked,
     ticker_list_sha256,
@@ -113,9 +122,43 @@ def _verify_t1b_allocation_artifact(
     except V8BAllocationBlocked as error:
         raise V8BAllocationVerificationBlocked("ARTIFACT_SELF_HASH_INVALID:" + error.reason) from error
 
+    # MEDIUM-1 (FINAL_REPEAT finding): exact-bind every trust-bearing
+    # allocation-semantics field to its single frozen expected value --
+    # never merely "present and self-hash-consistent". A forged artifact
+    # that recomputes its own ``artifact_self_hash`` to match a wrong
+    # semantic field (e.g. a different ``artifact_role``, a shifted
+    # ``t1b_slice_start_inclusive``, or a substituted ``selection_rule_
+    # id``) still passes ``verify_allocation_artifact_self_hash`` above --
+    # only this exact-value check catches it.
+    if verified["schema_version"] != ALLOCATION_SCHEMA_VERSION:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_SCHEMA_VERSION_MISMATCH")
+    if verified["study_name"] != ALLOCATION_STUDY_NAME:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_STUDY_NAME_MISMATCH")
+    if verified["artifact_role"] != ARTIFACT_ROLE:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_ROLE_MISMATCH")
+    if verified["logical_block"] != LOGICAL_BLOCK:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_LOGICAL_BLOCK_MISMATCH")
+    if verified["parent_study"] != PARENT_STUDY_NAME:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_PARENT_STUDY_MISMATCH")
+    if verified["selection_rule_id"] != SELECTION_RULE_ID:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_SELECTION_RULE_ID_MISMATCH")
+    if verified["t1b_offset_within_parent_t_spare"] != T1B_OFFSET_WITHIN_PARENT_T_SPARE:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_T1B_OFFSET_MISMATCH")
+    if verified["t1b_slice_start_inclusive"] != T1B_SLICE_START_INCLUSIVE:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_T1B_SLICE_START_MISMATCH")
+    if verified["t1b_slice_end_exclusive"] != T1B_SLICE_END_EXCLUSIVE:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_T1B_SLICE_END_MISMATCH")
+
     parent = list(parent_t_spare_tickers)
     if len(set(parent)) != len(parent):
         raise V8BAllocationVerificationBlocked("PARENT_T_SPARE_DUPLICATE_TICKER")
+
+    # MEDIUM-1: the artifact's own claimed parent_t_spare_ticker_count must
+    # exactly equal the caller-supplied (already trust-anchored) parent
+    # T_spare sequence's length -- never merely internally self-consistent
+    # with the artifact's own (possibly forged) ticker lists.
+    if verified["parent_t_spare_ticker_count"] != len(parent):
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_PARENT_T_SPARE_COUNT_MISMATCH")
 
     t1b = verified["t1b_tickers"]
     remaining = verified["remaining_t_spare_tickers"]

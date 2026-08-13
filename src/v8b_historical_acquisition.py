@@ -106,6 +106,7 @@ from src.v8b_production_provenance import (
     V8_DESIGN_COMMIT,
     read_and_verify_design_freeze_approval,
     read_and_verify_t2_authority_bridge,
+    read_and_verify_trust_pin_independent_review,
     read_and_verify_v8_trusted_partition_anchor,
     verify_frozen_design_object,
     verify_reviewed_implementation_binding,
@@ -113,6 +114,14 @@ from src.v8b_production_provenance import (
 from src.v8b_allocation import V8BAllocationBlocked, verify_allocation_artifact_self_hash
 from src.v8b_trust_pin import V8BTrustPinBlocked, validate_trust_pin
 from src.v8b_t2_reuse_recheck import V8BT2PreservationRecheckBlocked, resolve_and_recheck_t2_reuse_conditions
+from src.v8b_human_gate_consumption import (
+    CANONICAL_CONSUMPTION_STATE_ROOT,
+    GATE_T1B_RAW_ACQUISITION,
+    GATE_T2_RAW_ACQUISITION,
+    V8BHumanGateConsumptionBlocked,
+    consume_gate_once,
+    require_gate_not_yet_consumed,
+)
 
 SCHEMA_VERSION = "V8B_HISTORICAL_ACQUISITION_V1"
 STUDY_NAME = PROVENANCE_STUDY_NAME
@@ -269,6 +278,14 @@ T2_ACQUISITION_CONFIRMATION = "V8B_PRODUCTION_ACQUIRE_T2"
 ACQUISITION_CONFIRMATION_BY_BLOCK = {
     "T1B": T1B_ACQUISITION_CONFIRMATION,
     "T2": T2_ACQUISITION_CONFIRMATION,
+}
+
+# The durable one-shot human-gate name (src.v8b_human_gate_consumption)
+# each block's acquisition consumes. T1B and T2 are separate one-time
+# authorizations; consuming one never consumes or affects the other.
+ACQUISITION_GATE_BY_BLOCK = {
+    "T1B": GATE_T1B_RAW_ACQUISITION,
+    "T2": GATE_T2_RAW_ACQUISITION,
 }
 
 
@@ -832,8 +849,16 @@ def acquire_v8b_historical_block_bundle(
     appropriate) -- there is deliberately no ``t1b_trust_pin_path``
     parameter: the public §11.3.C trust pin is read from a verified Git
     object, never a caller-suppliable path (HIGH-3 remediation).
+
+    Returns a privacy-safe aggregate summary only (FINAL_REPEAT finding
+    MEDIUM-2): the full, ticker-identity-bearing manifest is persisted
+    exclusively inside the private acquisition bundle on disk
+    (``output_root``) -- see ``read_acquisition_manifest`` to read it back
+    from there. ``public_acquisition_summary`` strips ``payload_manifest``
+    (the only manifest field carrying per-ticker identities) before this
+    function ever returns.
     """
-    return _acquire_production_v8b_historical_block_bundle_with_dependencies(
+    manifest = _acquire_production_v8b_historical_block_bundle_with_dependencies(
         output_root=output_root,
         block=block,
         confirmation=confirmation,
@@ -857,11 +882,16 @@ def acquire_v8b_historical_block_bundle(
         t1b_trust_pin_reader=lambda head: read_t1b_trust_pin_from_verified_head(
             CANONICAL_REPOSITORY_ROOT, head, read_git_object_bytes
         ),
+        trust_pin_review_reader=lambda head, artifact_hash: read_and_verify_trust_pin_independent_review(
+            CANONICAL_REPOSITORY_ROOT, head, expected_allocation_artifact_self_hash=artifact_hash
+        ),
         opener=_default_trusted_yahoo_opener,
         clock=lambda: datetime.now(timezone.utc),
         monotonic_clock=time.monotonic,
         sleep_fn=time.sleep,
+        consumption_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
     )
+    return public_acquisition_summary(manifest)
 
 
 def _acquire_production_v8b_historical_block_bundle_with_dependencies(
@@ -879,26 +909,33 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
     zoneinfo_loader: Callable[[], Any],
     anchor_reader: Callable[[str], Mapping[str, Any]],
     bridge_reader: Callable[[str], Mapping[str, Any]],
-    t2_reuse_recheck_resolver: Callable[[str], Mapping[str, Any]],
+    t2_reuse_recheck_resolver: Callable[[], Mapping[str, Any]],
     t1b_trust_pin_reader: Callable[[str], Mapping[str, Any]],
+    trust_pin_review_reader: Callable[[str, str], Mapping[str, Any]],
     opener: Callable[[Any], Any],
     clock: Callable[[], datetime],
+    consumption_state_root: str | os.PathLike[str],
     monotonic_clock: Callable[[], float] = time.monotonic,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Private fake-only seam for exercising the full production call ordering.
 
     Runs, strictly in order and strictly before any Yahoo request or the
-    per-ticker acquisition loop: (0) confirmation token, (1) repo/
-    provenance, (2) frozen design object + freeze approval (exact blob),
-    (3) reviewed-implementation binding (exact per-file blob equality),
-    (4) classifier blob, (5) ZoneInfo, (6) authority chain (T1B or T2;
-    T2 additionally requires fresh POST_FREEZE reuse-conditions evidence),
-    (7) block count/hash (folded into (6)'s binding checks), (8)
-    output/staging safety. ``authorization_consumed`` on the resulting
-    manifest -- and on any raised ``V8BHistoricalAcquisitionBlocked`` --
-    is ``False`` for every one of these steps and only becomes ``True``
-    once the per-ticker loop attempts its first Yahoo request.
+    per-ticker acquisition loop: (0) confirmation token, (0.5) durable
+    one-shot gate check (HIGH-1: BLOCK immediately if this exact block's
+    raw-acquisition human gate was already durably consumed under this
+    frozen design commit -- by an earlier call, a new process, or a
+    restart), (1) repo/provenance, (2) frozen design object + freeze
+    approval (exact blob), (3) reviewed-implementation binding (exact
+    per-file blob equality), (4) classifier blob, (5) ZoneInfo, (6)
+    authority chain (T1B, including HIGH-2's INDEPENDENT_TRUST_PIN_REVIEW
+    binding; or T2, which additionally requires fresh POST_FREEZE
+    reuse-conditions evidence), (7) block count/hash (folded into (6)'s
+    binding checks), (8) output/staging safety. ``authorization_consumed``
+    on the resulting manifest -- and on any raised
+    ``V8BHistoricalAcquisitionBlocked`` -- is ``False`` for every one of
+    these steps and only becomes ``True`` once the per-ticker loop
+    durably consumes the gate immediately before its first Yahoo request.
     """
     if block not in ALLOWED_ACQUISITION_BLOCKS:
         raise V8BHistoricalAcquisitionBlocked("V8B_BLOCK_ACQUISITION_PROHIBITED:" + str(block))
@@ -907,6 +944,17 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
     # token -- a T1B token can never authorize T2 acquisition or vice versa.
     if confirmation != ACQUISITION_CONFIRMATION_BY_BLOCK[block]:
         raise V8BHistoricalAcquisitionBlocked("V8B_ACQUISITION_CONFIRMATION_INVALID")
+
+    # (0.5) durable one-shot gate check (HIGH-1) -- BLOCK immediately,
+    # before any provenance/network step, if this exact block's
+    # raw-acquisition human gate has already been durably consumed under
+    # this exact frozen design commit.
+    try:
+        require_gate_not_yet_consumed(
+            consumption_state_root, ACQUISITION_GATE_BY_BLOCK[block], V8B_FROZEN_DESIGN_COMMIT
+        )
+    except V8BHumanGateConsumptionBlocked as error:
+        raise V8BHistoricalAcquisitionBlocked(error.reason) from error
 
     # (1) repo/provenance -- V8B's own branch, never V8's.
     try:
@@ -956,6 +1004,19 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
         except V8BGitProvenanceBlocked as error:
             raise _wrap(error, "V8B_TRUSTED_ALLOCATION_MISSING") from error
         tickers, authority_binding = _validated_t1b_binding(allocation_artifact, trust_pin)
+        # HIGH-2: T1B acquisition cannot proceed unless a fresh
+        # INDEPENDENT_TRUST_PIN_REVIEW, bound to this exact authorized
+        # allocation-artifact self-hash, also exists -- the trust pin's own
+        # human_gate grammar check (above, inside _validated_t1b_binding)
+        # proves HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1B_ALLOCATION alone;
+        # it does not, by itself, prove INDEPENDENT_TRUST_PIN_REVIEW also
+        # occurred. Fails closed today -- the real artifact does not exist.
+        try:
+            trust_pin_review_reader(
+                verified_head, authority_binding["authorized_allocation_artifact_self_hash"]
+            )
+        except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+            raise _wrap(error, "V8B_TRUST_PIN_INDEPENDENT_REVIEW_MISSING") from error
     else:
         if partition_manifest_path is None:
             raise V8BHistoricalAcquisitionBlocked("V8B_T2_INPUTS_MISSING")
@@ -967,8 +1028,12 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
         # READ_ONLY_T2_REUSE_CONDITIONS_RECHECK (§12.4): fresh POST_FREEZE
         # evidence, never the §12.2 pre-freeze document (round-2 finding
         # HIGH-2). Fails closed today -- the real artifact does not exist.
+        # FINAL_REPEAT finding HIGH-3: the resolver takes no caller-
+        # supplied ``verified_head`` -- it resolves the current verified
+        # production HEAD itself, so a caller can never supply a stale or
+        # favorable head here.
         try:
-            t2_reuse_recheck_resolver(verified_head)
+            t2_reuse_recheck_resolver()
         except (V8BT2PreservationRecheckBlocked, V8BGitProvenanceBlocked) as error:
             raise _wrap(error) from error
         tickers, authority_binding = _validated_t2_binding(partition_manifest_path, anchor, bridge)
@@ -980,6 +1045,8 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
         tickers=tickers,
         authority_binding=authority_binding,
         implementation_git_commit=reviewed_implementation_git_commit,
+        consumption_gate=ACQUISITION_GATE_BY_BLOCK[block],
+        consumption_state_root=consumption_state_root,
         classifier_blob_sha=classifier_blob_sha,
         opener=opener,
         clock=clock,
@@ -1001,6 +1068,8 @@ def _acquire_v8b_block_bundle_with_validated_inputs(
     classifier_blob_sha: str,
     opener: Callable[[Any], Any],
     clock: Callable[[], datetime],
+    consumption_gate: str,
+    consumption_state_root: str | os.PathLike[str],
     monotonic_clock: Callable[[], float] = time.monotonic,
     sleep_fn: Callable[[float], None] = time.sleep,
     request_start: str = REQUEST_START,
@@ -1103,12 +1172,25 @@ def _acquire_v8b_block_bundle_with_validated_inputs(
             def recording_opener(request_obj: Any, *, _capture: bytearray = capture) -> Any:
                 nonlocal consumed
                 _require_trusted_yahoo_url(getattr(request_obj, "full_url", None))
-                # MEDIUM-1: consumption happens exactly here -- immediately
-                # before the real, underlying opener (the actual network
-                # boundary) is invoked -- never earlier. A failure in the
+                # MEDIUM-1 / HIGH-1: consumption happens exactly here --
+                # immediately before the real, underlying opener (the
+                # actual network boundary) is invoked -- never earlier, and
+                # durably (not merely in-process): the first ticker's first
+                # opener attempt fsyncs a receipt to ``consumption_state_
+                # root`` before ``opener`` is ever called. A failure in the
                 # URL-origin check above is local request preparation, not
-                # network I/O, so it must never flip this to True.
-                consumed = True
+                # network I/O, so it must never durably consume anything.
+                # A later ticker in the same call skips the durable write
+                # (already consumed in-process by the first ticker) but
+                # this flag is never reset back to False.
+                if not consumed:
+                    try:
+                        consume_gate_once(
+                            consumption_state_root, consumption_gate, V8B_FROZEN_DESIGN_COMMIT, clock=clock
+                        )
+                    except V8BHumanGateConsumptionBlocked as error:
+                        raise V8BHistoricalAcquisitionBlocked(error.reason) from error
+                    consumed = True
                 response = opener(request_obj)
                 try:
                     _require_trusted_yahoo_response_url(response)
@@ -1305,9 +1387,29 @@ def read_acquisition_manifest(output_root: str | os.PathLike[str], block: str) -
     return dict(manifest)
 
 
+PUBLIC_ACQUISITION_SUMMARY_FIELDS = tuple(
+    field for field in ACQUISITION_MANIFEST_FIELDS if field != "payload_manifest"
+)
+
+
+def public_acquisition_summary(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Strip ``payload_manifest`` -- the only acquisition-manifest field
+    that carries per-ticker identities -- from a full manifest. Safe to
+    log, print, or return from the public production boundary (FINAL_
+    REPEAT finding MEDIUM-2): every remaining field is a count, hash,
+    schema/status identifier, or commit ID. Never call ``str()``/
+    ``repr()``/logging on the raw manifest itself -- only on this
+    summary's return value.
+    """
+    if not isinstance(manifest, Mapping) or set(manifest) != set(ACQUISITION_MANIFEST_FIELDS):
+        raise V8BHistoricalAcquisitionBlocked("MANIFEST_SCHEMA_INVALID")
+    return {key: value for key, value in manifest.items() if key != "payload_manifest"}
+
+
 __all__ = [
     "ACQUISITIONS_DIRNAME",
     "ACQUISITION_CONFIRMATION_BY_BLOCK",
+    "ACQUISITION_GATE_BY_BLOCK",
     "ACQUISITION_MANIFEST_FIELDS",
     "ALLOWED_ACQUISITION_BLOCKS",
     "BLOCK_AUTHORITY_CHAIN",
@@ -1334,6 +1436,7 @@ __all__ = [
     "MODE",
     "PAYLOAD_RECORD_FIELDS",
     "PROHIBITED_ACQUISITION_BLOCKS",
+    "PUBLIC_ACQUISITION_SUMMARY_FIELDS",
     "RAW_DIRNAME",
     "REQUEST_END_EXCLUSIVE",
     "REQUEST_START",
@@ -1349,6 +1452,7 @@ __all__ = [
     "acquire_v8b_historical_block_bundle",
     "canonical_json_bytes",
     "canonical_sha256",
+    "public_acquisition_summary",
     "read_acquisition_manifest",
     "read_t1b_trust_pin_from_verified_head",
     "sha256_bytes",

@@ -161,6 +161,62 @@ def test_corrupted_self_hash_blocks_before_any_other_check():
 
 
 # ---------------------------------------------------------------------------
+# FINAL_REPEAT finding MEDIUM-1: exact-bind every trust-bearing allocation
+# semantic field. Every tampered field below is *self-hash-recomputed*
+# (the tamperer also recomputes a matching artifact_self_hash, exactly as
+# an internally-consistent forgery would) -- proving these checks catch
+# what the self-hash check alone cannot.
+# ---------------------------------------------------------------------------
+
+
+def _self_hash_recomputed_tamper(artifact: dict, **field_overrides) -> dict:
+    tampered = dict(artifact)
+    tampered.update(field_overrides)
+    tampered["artifact_self_hash"] = allocation.canonical_sha256(
+        {k: v for k, v in tampered.items() if k != "artifact_self_hash"}
+    )
+    return tampered
+
+
+@pytest.mark.parametrize(
+    "field,bad_value,expected_reason",
+    [
+        ("schema_version", "V8B_T1B_ALLOCATION_V2", "ALLOCATION_ARTIFACT_SCHEMA_VERSION_MISMATCH"),
+        ("study_name", "V8_HISTORICAL_RESEARCH", "ALLOCATION_ARTIFACT_STUDY_NAME_MISMATCH"),
+        ("artifact_role", "SOMETHING_ELSE", "ALLOCATION_ARTIFACT_ROLE_MISMATCH"),
+        ("logical_block", "T1", "ALLOCATION_ARTIFACT_LOGICAL_BLOCK_MISMATCH"),
+        ("parent_study", "V8B_HISTORICAL_RESEARCH", "ALLOCATION_ARTIFACT_PARENT_STUDY_MISMATCH"),
+        ("selection_rule_id", "SOME_OTHER_RULE", "ALLOCATION_ARTIFACT_SELECTION_RULE_ID_MISMATCH"),
+        ("t1b_offset_within_parent_t_spare", 300, "ALLOCATION_ARTIFACT_T1B_OFFSET_MISMATCH"),
+        ("t1b_slice_start_inclusive", 300, "ALLOCATION_ARTIFACT_T1B_SLICE_START_MISMATCH"),
+        ("t1b_slice_end_exclusive", 600, "ALLOCATION_ARTIFACT_T1B_SLICE_END_MISMATCH"),
+        ("parent_t_spare_ticker_count", 1905, "ALLOCATION_ARTIFACT_PARENT_T_SPARE_COUNT_MISMATCH"),
+    ],
+)
+def test_self_hash_recomputed_wrong_semantic_field_blocks(field, bad_value, expected_reason):
+    parent = _tickers("P", 1904)
+    artifact = build_artifact(parent)
+    tampered = _self_hash_recomputed_tamper(artifact, **{field: bad_value})
+    with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
+        verification._verify_t1b_allocation_artifact(**verify_kwargs(parent, tampered))
+    assert excinfo.value.reason == expected_reason
+
+
+def test_self_hash_alone_would_not_have_caught_a_wrong_artifact_role():
+    """Demonstrates the gap MEDIUM-1 closes: the self-hash check by itself
+    (verify_allocation_artifact_self_hash) accepts this tampered artifact,
+    since its hash was correctly recomputed over the tampered fields --
+    only the exact-value semantic checks reject it."""
+    parent = _tickers("P", 1904)
+    artifact = build_artifact(parent)
+    tampered = _self_hash_recomputed_tamper(artifact, artifact_role="FORGED_ROLE")
+    allocation.verify_allocation_artifact_self_hash(tampered)  # self-hash alone: does NOT raise
+    with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
+        verification._verify_t1b_allocation_artifact(**verify_kwargs(parent, tampered))
+    assert excinfo.value.reason == "ALLOCATION_ARTIFACT_ROLE_MISMATCH"
+
+
+# ---------------------------------------------------------------------------
 # Round-3 MEDIUM-2: production READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION
 # boundary -- trust derived from verified Git objects, never from a
 # caller-supplied expected hash/commit.

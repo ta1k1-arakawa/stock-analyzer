@@ -11,6 +11,45 @@ own gate diagram positions **after** `Layer B` / `FROZEN FINAL CANDIDATE`
 (§12's diagram; §12.4's rules), using **fresh, post-freeze** evidence. This
 module no longer reads that §12.2 document for any production purpose.
 
+**`FINAL_REPEAT_INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW` finding
+HIGH-3 correction.** Two further gaps in the production resolvers below
+are now closed:
+
+1. Neither public resolver accepts a caller-supplied ``verified_head``
+   any more. Previously a caller could pass any string, including a stale
+   or favorable head from an earlier check, rather than the currently
+   verified production HEAD -- the resolver now always resolves the
+   current verified production HEAD itself (via
+   `src.v8b_git_provenance.resolve_verified_v8b_production_git_commit`)
+   before deriving or checking anything.
+2. Five of the seven §3.3/§9 conditions -- `t2_universe_definition_
+   unchanged`, `t2_partition_algorithm_unchanged`, `t2_v8b_f1_c1_policy_
+   fixed`, `t2_opened`, and the two research-exposure flags -- are no
+   longer trusted purely because `V8B_T2_REUSE_CONDITIONS_RECHECK.json`
+   *says* they are true. They are instead **derived** from authoritative
+   safe repository/trust state this module can independently verify: the
+   exact-frozen-blob immutable V8 trust anchor
+   (`read_and_verify_v8_trusted_partition_anchor`, which proves the `T2`
+   universe/partition source has not moved), the exact-blob reviewed-
+   implementation binding (`verify_reviewed_implementation_binding`,
+   which proves `src/v8_partition.py` and `src/v8b_historical_
+   acquisition.py` -- where the F1_C1 policy is defined -- are unchanged
+   since review), and a live check that no `open_for_*`/research-opening
+   API exists anywhere in the bound `src.v8b_historical_acquisition`
+   module. `t2_acquired` is derived from whether
+   `T2_RAW_ACQUISITION_HUMAN_GATE`'s durable one-shot consumption receipt
+   (`src.v8b_human_gate_consumption`) already exists -- not from a
+   self-reported boolean. The evidence artifact's own claimed value for
+   each of these fields is still required to *agree* with the derived
+   value (a disagreement BLOCKs, `..._SELF_DECLARED_MISMATCH`), but the
+   value actually used for the pass/BLOCK decision is always the derived
+   one, never the artifact's bare claim. `layer_b_completed` and
+   `frozen_final_candidate_established` remain read from the artifact --
+   whether Layer B validation and the `FROZEN_FINAL_CANDIDATE` gate have
+   actually occurred is a study-progress fact with no independently
+   git-derivable proxy in this repository, so these two fields still
+   require the future artifact's authored evidence.
+
 Two distinct roles (first-round finding MEDIUM-2, tightened further in
 round 3's repeat review):
 
@@ -23,19 +62,20 @@ round 3's repeat review):
   needing a real Git checkout -- it is not, by itself, a safe *production*
   trust root, because nothing stops a caller from fabricating a favorable
   mapping.
-- `resolve_t2_reuse_safe_metadata_from_verified_head` /
-  `resolve_and_recheck_t2_reuse_conditions` -- the sole **public
-  production resolvers**. They derive the same safe-metadata fields by
-  reading the future `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact from
-  a **verified Git object**, read from the one fixed, non-overridable
-  production repository root (round-3 repeat finding HIGH-1: neither
-  public function accepts a ``repository_root`` parameter; private
-  DI-testable variants carry that parameter for fake/synthetic tests
-  only) -- never a caller-supplied path or mapping. That artifact does
-  not exist in this repository yet -- the real post-Layer-B recheck has
-  not been performed -- so these resolvers, and therefore `T2` production
-  acquisition, fail closed today by construction. This implementation
-  does not create that artifact.
+- `resolve_and_recheck_t2_reuse_conditions` -- the sole **public
+  production resolver**. It resolves the current verified production HEAD
+  itself, derives `safe_metadata` from authoritative repository/trust
+  state as described above (cross-checked against the future
+  `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact, read from a **verified
+  Git object**, read from the one fixed, non-overridable production
+  repository root -- round-3 repeat finding HIGH-1: this public function
+  accepts no ``repository_root`` or ``verified_head`` parameter; a private
+  DI-testable variant carries injectable dependencies for fake/synthetic
+  tests only) -- never a caller-supplied path, mapping, or head. That
+  artifact does not exist in this repository yet -- the real post-Layer-B
+  recheck has not been performed -- so this resolver, and therefore `T2`
+  production acquisition, fails closed today by construction. This
+  implementation does not create that artifact.
 
 Neither path reads, accepts, or exposes a `T2` ticker identity, and
 neither offers a `T_spare`/`T3` fallback -- this module defines no
@@ -47,14 +87,25 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from src.v8b_git_provenance import (
     V8BGitProvenanceBlocked,
     read_git_object_bytes,
-    require_git_commit,
+    resolve_verified_v8b_production_git_commit,
 )
-from src.v8b_production_provenance import EXPECTED_V8B_FROZEN_DESIGN_COMMIT
+from src.v8b_human_gate_consumption import (
+    CANONICAL_CONSUMPTION_STATE_ROOT,
+    GATE_T2_RAW_ACQUISITION,
+    V8BHumanGateConsumptionBlocked,
+    has_gate_been_consumed,
+)
+from src.v8b_production_provenance import (
+    EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+    V8BProductionProvenanceBlocked,
+    read_and_verify_v8_trusted_partition_anchor,
+    verify_reviewed_implementation_binding,
+)
 
 # The one fixed, non-overridable production repository root -- round-3
 # repeat finding HIGH-1: no public function in this module accepts a
@@ -104,6 +155,15 @@ REQUIRED_SAFE_METADATA_FIELDS = (
     "t2_universe_definition_unchanged",
     "t2_partition_algorithm_unchanged",
     "t2_v8b_f1_c1_policy_fixed",
+)
+
+# Fields whose derived (authoritative) truth is always False once this
+# point in the function is reached without raising -- i.e. "no research-
+# opening capability exists in the bound production module".
+_RESEARCH_EXPOSURE_FIELDS = (
+    "t2_opened",
+    "t2_ticker_identities_exposed_to_human_public_research_loop",
+    "t2_market_data_raw_ohlcv_feature_outcome_research_exposure",
 )
 
 
@@ -178,20 +238,94 @@ def _strict_json_object(raw: bytes) -> dict[str, Any]:
     return parsed
 
 
-def _resolve_t2_reuse_safe_metadata_from_verified_head_with_repository_root(
-    repository_root, verified_head: str
+def _default_no_research_opening_api_exists() -> bool:
+    """Live evidence, not a self-declared claim: no `open_for_*`/research-
+    opening symbol exists anywhere in the bound `src.v8b_historical_
+    acquisition` production module (mirrors the module's own MEDIUM-3
+    guarantee -- see `test_no_open_for_functions_defined_at_all`).
+    Imported lazily to avoid a module-level import cycle (`src.v8b_
+    historical_acquisition` itself imports this module's public resolver
+    at module scope).
+    """
+    from src import v8b_historical_acquisition as _acquisition_module
+
+    return not any(
+        name.startswith("open_for") or name.startswith("open_t2")
+        for name in dir(_acquisition_module)
+    )
+
+
+def _resolve_t2_reuse_safe_metadata_with_dependencies(
+    repository_root,
+    *,
+    git_commit_resolver: Callable[[], str],
+    anchor_reader: Callable[[str], Mapping[str, Any]],
+    reviewed_implementation_binder: Callable[[str], Mapping[str, Any]],
+    consumption_state_root,
+    no_research_opening_api_exists: Callable[[], bool] = _default_no_research_opening_api_exists,
+    git_object_reader: Callable[[str, str, str], bytes] = read_git_object_bytes,
+    gate_consumption_checker: Callable[[Any, str, str], bool] = has_gate_been_consumed,
 ) -> dict[str, Any]:
     """Private DI-testable implementation -- fake/synthetic tests only, not
-    a production API (round-3 repeat finding HIGH-1). Derives
-    ``safe_metadata`` from the future, fresh **POST_FREEZE**
-    `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact (§12.4), read from a
-    **verified Git object** -- never a caller-supplied mapping or path, and
-    never the §12.2 pre-freeze document. This artifact does not exist in
-    this repository yet, so this fails closed today.
+    a production API. Derives ``safe_metadata`` from authoritative
+    repository/trust state (HIGH-3), cross-checked against the future,
+    fresh **POST_FREEZE** `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact
+    (§12.4), read from a **verified Git object** this function resolves
+    itself -- never a caller-supplied head, mapping, or path, and never
+    the §12.2 pre-freeze document. This artifact does not exist in this
+    repository yet, so this fails closed today.
     """
-    commit = require_git_commit(verified_head, "POST_FREEZE_RECHECK_HEAD_INVALID")
     try:
-        raw = read_git_object_bytes(repository_root, commit, POST_FREEZE_RECHECK_GIT_PATH)
+        verified_head = git_commit_resolver()
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap(error) from error
+    # ``git_commit_resolver``'s production implementation is
+    # `resolve_verified_v8b_production_git_commit`, which already
+    # guarantees a validated 40-hex commit -- mirrors the equivalent
+    # trust boundary in every sibling resolver module.
+    commit = verified_head
+
+    # Authoritative derivation, not a self-declared claim (HIGH-3): the
+    # immutable V8 trust anchor's exact frozen blob proves the T2
+    # universe/parent partition source has not moved.
+    try:
+        anchor_reader(verified_head)
+    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+        raise _wrap(error) from error
+
+    # Authoritative derivation: the exact-blob reviewed-implementation
+    # binding proves src/v8_partition.py (partition algorithm) and
+    # src/v8b_historical_acquisition.py (F1_C1 policy) are unchanged since
+    # INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW.
+    try:
+        reviewed_implementation_binder(verified_head)
+    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+        raise _wrap(error, "V8B_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING") from error
+
+    # Authoritative derivation: whether T2_RAW_ACQUISITION_HUMAN_GATE has
+    # already been durably consumed (src.v8b_human_gate_consumption),
+    # never a self-reported "t2_acquired" boolean.
+    try:
+        t2_acquired_derived = gate_consumption_checker(
+            consumption_state_root, GATE_T2_RAW_ACQUISITION, EXPECTED_V8B_FROZEN_DESIGN_COMMIT
+        )
+    except V8BHumanGateConsumptionBlocked as error:
+        raise V8BT2PreservationRecheckBlocked(error.reason) from error
+
+    no_opening_capability = no_research_opening_api_exists()
+    research_exposure_value = not no_opening_capability
+
+    derived: dict[str, Any] = {
+        "t2_acquired": t2_acquired_derived,
+        "t2_universe_definition_unchanged": True,
+        "t2_partition_algorithm_unchanged": True,
+        "t2_v8b_f1_c1_policy_fixed": True,
+    }
+    for field in _RESEARCH_EXPOSURE_FIELDS:
+        derived[field] = research_exposure_value
+
+    try:
+        raw = git_object_reader(repository_root, commit, POST_FREEZE_RECHECK_GIT_PATH)
     except V8BGitProvenanceBlocked as error:
         raise _wrap(error, "V8B_T2_REUSE_CONDITIONS_RECHECK_MISSING") from error
 
@@ -215,40 +349,46 @@ def _resolve_t2_reuse_safe_metadata_from_verified_head_with_repository_root(
     if artifact["frozen_final_candidate_established"] is not True:
         raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_NO_FROZEN_FINAL_CANDIDATE")
 
-    return {field: artifact[field] for field in REQUIRED_SAFE_METADATA_FIELDS}
+    # HIGH-3: the artifact's own self-declared value for each derivable
+    # field must AGREE with the independently derived value -- a
+    # disagreement BLOCKs rather than silently preferring either source.
+    # The value actually used below is always the derived one, never the
+    # artifact's bare claim.
+    for field in REQUIRED_SAFE_METADATA_FIELDS:
+        if artifact[field] != derived[field]:
+            raise V8BT2PreservationRecheckBlocked(
+                "V8B_T2_REUSE_CONDITIONS_RECHECK_SELF_DECLARED_MISMATCH:" + field
+            )
+
+    return derived
 
 
-def _resolve_and_recheck_t2_reuse_conditions_with_repository_root(
-    repository_root, verified_head: str
-) -> dict[str, Any]:
+def _resolve_and_recheck_t2_reuse_conditions_with_dependencies(repository_root, **dependencies) -> dict[str, Any]:
     """Private DI-testable implementation -- fake/synthetic tests only, not
-    a production API (round-3 repeat finding HIGH-1). Resolve safe
-    metadata from a verified Git object, then apply the same pure
-    evaluator fake tests use directly."""
-    safe_metadata = _resolve_t2_reuse_safe_metadata_from_verified_head_with_repository_root(
-        repository_root, verified_head
-    )
+    a production API. Resolve safe metadata from authoritative repository/
+    trust state, then apply the same pure evaluator fake tests use
+    directly."""
+    safe_metadata = _resolve_t2_reuse_safe_metadata_with_dependencies(repository_root, **dependencies)
     return _recheck_t2_reuse_conditions(safe_metadata)
 
 
-def resolve_t2_reuse_safe_metadata_from_verified_head(verified_head: str) -> dict[str, Any]:
-    """The public production resolver (round-3 repeat finding HIGH-1: no
-    ``repository_root`` parameter -- always resolves from
-    ``CANONICAL_REPOSITORY_ROOT``)."""
-    return _resolve_t2_reuse_safe_metadata_from_verified_head_with_repository_root(
-        CANONICAL_REPOSITORY_ROOT, verified_head
-    )
-
-
-def resolve_and_recheck_t2_reuse_conditions(verified_head: str) -> dict[str, Any]:
-    """The public production entrypoint (round-3 repeat finding HIGH-1: no
-    ``repository_root`` parameter -- always resolves from
-    ``CANONICAL_REPOSITORY_ROOT``): resolve safe metadata from a verified
-    Git object, then apply the same pure evaluator fake tests use.
+def resolve_and_recheck_t2_reuse_conditions() -> dict[str, Any]:
+    """The public production entrypoint (FINAL_REPEAT finding HIGH-3: no
+    ``repository_root`` or ``verified_head`` parameter -- this function
+    always resolves the current verified production HEAD itself from
+    ``CANONICAL_REPOSITORY_ROOT``, so a caller can never supply a stale or
+    favorable head). Derives safe metadata from authoritative repository/
+    trust state, then applies the same pure evaluator fake tests use.
     Production code must call this, never construct or accept a
     ``safe_metadata`` mapping directly."""
-    return _resolve_and_recheck_t2_reuse_conditions_with_repository_root(
-        CANONICAL_REPOSITORY_ROOT, verified_head
+    return _resolve_and_recheck_t2_reuse_conditions_with_dependencies(
+        CANONICAL_REPOSITORY_ROOT,
+        git_commit_resolver=lambda: resolve_verified_v8b_production_git_commit(CANONICAL_REPOSITORY_ROOT),
+        anchor_reader=lambda head: read_and_verify_v8_trusted_partition_anchor(CANONICAL_REPOSITORY_ROOT, head),
+        reviewed_implementation_binder=lambda head: verify_reviewed_implementation_binding(
+            CANONICAL_REPOSITORY_ROOT, head
+        ),
+        consumption_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
     )
 
 
@@ -262,5 +402,4 @@ __all__ = [
     "REQUIRED_SAFE_METADATA_FIELDS",
     "V8BT2PreservationRecheckBlocked",
     "resolve_and_recheck_t2_reuse_conditions",
-    "resolve_t2_reuse_safe_metadata_from_verified_head",
 ]

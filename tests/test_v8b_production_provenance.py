@@ -345,3 +345,117 @@ def test_t2_authority_bridge_exact_field_enforcement(tmp_path, field, value, exp
     with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
         pp.read_and_verify_t2_authority_bridge(bogus, commit)
     assert excinfo.value.reason == expected_reason
+
+
+# ---------------------------------------------------------------------------
+# FINAL_REPEAT finding HIGH-2: INDEPENDENT_TRUST_PIN_REVIEW
+# ---------------------------------------------------------------------------
+
+SYNTHETIC_ARTIFACT_HASH = "9" * 64
+
+
+def _trust_pin_review_artifact(**overrides) -> dict:
+    review = {
+        "schema_version": pp.TRUST_PIN_INDEPENDENT_REVIEW_SCHEMA_VERSION,
+        "study": pp.STUDY_NAME,
+        "artifact_role": pp.TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE,
+        "reviewed_allocation_artifact_self_hash": SYNTHETIC_ARTIFACT_HASH,
+        "reviewed_trust_pin_human_gate": "V8B_HUMAN_AUTHORIZE_T1B_ALLOCATION_PIN_AT_" + SYNTHETIC_ARTIFACT_HASH,
+        "review_result": "PASS",
+        "approval_status": "APPROVED",
+    }
+    review.update(overrides)
+    return review
+
+
+def test_trust_pin_review_missing_blocks_on_real_repo():
+    """The real V8B_TRUST_PIN_INDEPENDENT_REVIEW.json does not exist yet --
+    production must fail closed today."""
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        pp.read_and_verify_trust_pin_independent_review(
+            ROOT, _real_head(), expected_allocation_artifact_self_hash=SYNTHETIC_ARTIFACT_HASH
+        )
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_MISSING"
+
+
+def test_trust_pin_review_passes_on_well_formed_synthetic_artifact(tmp_path):
+    bogus = tmp_path / "trust_pin_review_pass"
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(
+        bogus,
+        files={"V8B_TRUST_PIN_INDEPENDENT_REVIEW.json": json.dumps(_trust_pin_review_artifact()).encode()},
+    )
+    result = pp.read_and_verify_trust_pin_independent_review(
+        bogus, commit, expected_allocation_artifact_self_hash=SYNTHETIC_ARTIFACT_HASH
+    )
+    assert result["review_result"] == "PASS"
+
+
+def test_trust_pin_review_bound_to_a_different_hash_is_rejected(tmp_path):
+    """A well-formed, PASS/APPROVED review for a DIFFERENT allocation
+    artifact hash must never authorize this one."""
+    bogus = tmp_path / "trust_pin_review_wrong_hash"
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(
+        bogus,
+        files={"V8B_TRUST_PIN_INDEPENDENT_REVIEW.json": json.dumps(_trust_pin_review_artifact()).encode()},
+    )
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        pp.read_and_verify_trust_pin_independent_review(
+            bogus, commit, expected_allocation_artifact_self_hash="8" * 64
+        )
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_HASH_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    "field,value,expected_reason",
+    [
+        ("review_result", "BLOCK", "V8B_TRUST_PIN_INDEPENDENT_REVIEW_NOT_PASS"),
+        ("approval_status", "PENDING", "V8B_TRUST_PIN_INDEPENDENT_REVIEW_NOT_APPROVED"),
+        ("study", "V8_HISTORICAL_RESEARCH", "V8B_TRUST_PIN_INDEPENDENT_REVIEW_STUDY_MISMATCH"),
+        ("artifact_role", "SOMETHING_ELSE", "V8B_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE_MISMATCH"),
+        ("schema_version", "V0", "V8B_TRUST_PIN_INDEPENDENT_REVIEW_SCHEMA_VERSION_MISMATCH"),
+    ],
+)
+def test_trust_pin_review_field_semantics_enforced(tmp_path, field, value, expected_reason):
+    bogus = tmp_path / ("trust_pin_review_field_" + field)
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(
+        bogus,
+        files={
+            "V8B_TRUST_PIN_INDEPENDENT_REVIEW.json": json.dumps(
+                _trust_pin_review_artifact(**{field: value})
+            ).encode()
+        },
+    )
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        pp.read_and_verify_trust_pin_independent_review(
+            bogus, commit, expected_allocation_artifact_self_hash=SYNTHETIC_ARTIFACT_HASH
+        )
+    assert excinfo.value.reason == expected_reason
+
+
+def test_trust_pin_review_schema_missing_field_blocks(tmp_path):
+    bogus = tmp_path / "trust_pin_review_schema"
+    bogus.mkdir()
+    incomplete = _trust_pin_review_artifact()
+    del incomplete["reviewed_trust_pin_human_gate"]
+    commit = _init_bogus_git_repo(
+        bogus, files={"V8B_TRUST_PIN_INDEPENDENT_REVIEW.json": json.dumps(incomplete).encode()}
+    )
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        pp.read_and_verify_trust_pin_independent_review(
+            bogus, commit, expected_allocation_artifact_self_hash=SYNTHETIC_ARTIFACT_HASH
+        )
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_SCHEMA_INVALID"
+
+
+# ---------------------------------------------------------------------------
+# FINAL_REPEAT finding HIGH-2: the new trust-pin-creation and human-gate-
+# consumption modules are bound to the reviewed implementation too.
+# ---------------------------------------------------------------------------
+
+
+def test_trust_pin_creation_and_gate_consumption_modules_are_bound_to_the_review():
+    assert "src/v8b_trust_pin_creation.py" in pp.BOUND_PRODUCTION_FILES
+    assert "src/v8b_human_gate_consumption.py" in pp.BOUND_PRODUCTION_FILES

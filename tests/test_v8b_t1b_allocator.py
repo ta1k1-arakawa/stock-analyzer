@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,6 +10,7 @@ import pytest
 
 from src import v8_partition as partition
 from src import v8b_allocation as allocation
+from src import v8b_human_gate_consumption as gate_consumption
 from src import v8b_t1b_allocator as allocator
 
 SYNTHETIC_COMMIT = "a" * 40
@@ -83,6 +86,14 @@ def write_partition_manifest(path: Path, *, t_spare: list[str]) -> dict:
 
 
 def run(**overrides):
+    # Each call defaults to its own fresh, isolated consumption-state
+    # directory so existing tests (which exercise unrelated failure paths)
+    # remain independent of one another; tests specifically exercising
+    # HIGH-1's durable one-shot consumption pass an explicit, shared
+    # ``consumption_state_root`` across two calls instead.
+    overrides.setdefault(
+        "consumption_state_root", Path(tempfile.gettempdir()) / ("v8b_gate_state-" + uuid.uuid4().hex)
+    )
     return allocator._allocate_t1b_production_with_dependencies(**overrides)
 
 
@@ -440,6 +451,133 @@ def test_no_automatic_or_manual_retry_after_authorization_consumed(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# FINAL_REPEAT finding HIGH-1: durable, fail-closed, one-shot consumption of
+# ONE_TIME_HUMAN_AUTHORIZATION_TO_ALLOCATE_T1B -- must survive a second
+# call, a new process, and a restart, not merely an in-memory flag.
+# ---------------------------------------------------------------------------
+
+
+def _successful_kwargs(tmp_path, manifest, output_path, *, consumption_state_root):
+    return dict(
+        confirmation=allocator.ALLOCATION_CONFIRMATION,
+        partition_manifest_path=tmp_path / "partition.json",
+        output_path=output_path,
+        git_commit_resolver=lambda: SYNTHETIC_COMMIT,
+        design_freeze_approval_reader=lambda head: {"ok": True},
+        frozen_design_object_verifier=lambda: None,
+        reviewed_implementation_binder=lambda head: {"reviewed_implementation_git_commit": SYNTHETIC_REVIEWED_COMMIT},
+        anchor_reader=lambda head: _valid_anchor_for(manifest),
+        clock=clock_stub,
+        consumption_state_root=consumption_state_root,
+    )
+
+
+def test_second_call_with_same_state_root_blocks_before_private_read(tmp_path, monkeypatch):
+    """A second call sharing the SAME durable consumption_state_root (as a
+    real second invocation, new process, or restart would) must BLOCK
+    before the private partition-manifest read is ever attempted -- it
+    must not repeat the allocation."""
+    manifest_path = tmp_path / "partition.json"
+    t_spare = _tickers("TS", 1904)
+    manifest = write_partition_manifest(manifest_path, t_spare=t_spare)
+    monkeypatch.setattr(allocator, "EXPECTED_PARENT_T_SPARE_TICKER_COUNT", 1904)
+    monkeypatch.setattr(allocator, "EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256", partition.ticker_list_sha256(t_spare))
+    shared_state_root = tmp_path / "gate_state"
+
+    first_output = tmp_path / "private" / "attempt1.json"
+    result = run(**_successful_kwargs(tmp_path, manifest, first_output, consumption_state_root=shared_state_root))
+    assert result["t1b_ticker_count"] == 300
+
+    read_attempts: list[str] = []
+    real_read = allocator.read_partition_manifest
+
+    def counting_read(*args, **kwargs):
+        read_attempts.append("called")
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(allocator, "read_partition_manifest", counting_read)
+
+    second_output = tmp_path / "private" / "attempt2.json"
+    with pytest.raises(allocator.V8BT1BAllocatorBlocked) as excinfo:
+        run(**_successful_kwargs(tmp_path, manifest, second_output, consumption_state_root=shared_state_root))
+    assert excinfo.value.reason == "V8B_HUMAN_GATE_ALREADY_CONSUMED:" + gate_consumption.GATE_ALLOCATE_T1B
+    assert excinfo.value.authorization_consumed is False
+    assert read_attempts == []  # the private manifest was never read a second time
+    assert not second_output.exists()
+
+
+def test_consumption_receipt_is_a_durable_file_readable_by_a_fresh_module_state(tmp_path, monkeypatch):
+    """Simulates "a new process, or restart": the receipt is plain,
+    durable, fsync'd bytes on disk -- checked fresh from disk each call,
+    never from any Python-process-lifetime state."""
+    manifest_path = tmp_path / "partition.json"
+    t_spare = _tickers("TS", 1904)
+    manifest = write_partition_manifest(manifest_path, t_spare=t_spare)
+    monkeypatch.setattr(allocator, "EXPECTED_PARENT_T_SPARE_TICKER_COUNT", 1904)
+    monkeypatch.setattr(allocator, "EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256", partition.ticker_list_sha256(t_spare))
+    shared_state_root = tmp_path / "gate_state"
+
+    run(**_successful_kwargs(tmp_path, manifest, tmp_path / "private" / "a.json", consumption_state_root=shared_state_root))
+
+    receipts = list(Path(shared_state_root).glob("*.json"))
+    assert len(receipts) == 1
+    import json as _json
+
+    receipt = _json.loads(receipts[0].read_bytes())
+    assert receipt["gate"] == gate_consumption.GATE_ALLOCATE_T1B
+    assert receipt["v8b_frozen_design_commit"] == allocator.EXPECTED_V8B_FROZEN_DESIGN_COMMIT
+    # No ticker identity, path, or raw data of any kind in the receipt.
+    assert set(receipt) == {"schema_version", "study_name", "gate", "v8b_frozen_design_commit", "consumed_at_utc"}
+
+    # A brand-new call -- standing in for a new process/restart -- reusing
+    # only the durable state root (no Python object shared with the call
+    # above) still sees the same consumed state.
+    assert gate_consumption.has_gate_been_consumed(
+        shared_state_root, gate_consumption.GATE_ALLOCATE_T1B, allocator.EXPECTED_V8B_FROZEN_DESIGN_COMMIT
+    )
+    with pytest.raises(gate_consumption.V8BHumanGateConsumptionBlocked):
+        gate_consumption.require_gate_not_yet_consumed(
+            shared_state_root, gate_consumption.GATE_ALLOCATE_T1B, allocator.EXPECTED_V8B_FROZEN_DESIGN_COMMIT
+        )
+
+
+def test_early_gate_check_precedes_git_provenance_resolution(tmp_path):
+    """The durable consumption pre-check must run before git_commit_resolver
+    -- an already-consumed gate blocks even when the git resolver would
+    itself raise, proving the check is not merely folded in later."""
+    shared_state_root = tmp_path / "gate_state"
+    gate_consumption.consume_gate_once(
+        shared_state_root, gate_consumption.GATE_ALLOCATE_T1B, allocator.EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+        clock=clock_stub,
+    )
+
+    def unreachable_resolver():
+        raise AssertionError("git_commit_resolver must not run once already consumed")
+
+    with pytest.raises(allocator.V8BT1BAllocatorBlocked) as excinfo:
+        run(
+            confirmation=allocator.ALLOCATION_CONFIRMATION,
+            partition_manifest_path=tmp_path / "unread.json",
+            output_path=tmp_path / "out.json",
+            git_commit_resolver=unreachable_resolver,
+            design_freeze_approval_reader=lambda head: {"ok": True},
+            frozen_design_object_verifier=lambda: None,
+            reviewed_implementation_binder=lambda head: {"reviewed_implementation_git_commit": SYNTHETIC_REVIEWED_COMMIT},
+            anchor_reader=lambda head: {"authorization_status": "AUTHORIZED"},
+            clock=clock_stub,
+            consumption_state_root=shared_state_root,
+        )
+    assert excinfo.value.reason == "V8B_HUMAN_GATE_ALREADY_CONSUMED:" + gate_consumption.GATE_ALLOCATE_T1B
+    assert excinfo.value.authorization_consumed is False
+
+
+def test_public_entrypoint_uses_fixed_non_overridable_state_root():
+    import inspect
+
+    assert "consumption_state_root" not in inspect.signature(allocator.allocate_t1b_production).parameters
+
+
+# ---------------------------------------------------------------------------
 # Round-3 repeat HIGH-3: filesystem error privacy boundary
 # ---------------------------------------------------------------------------
 
@@ -453,8 +591,15 @@ def test_staging_write_failure_never_leaks_private_path(tmp_path, monkeypatch):
     monkeypatch.setattr(allocator, "EXPECTED_PARENT_T_SPARE_TICKER_COUNT", 1904)
     monkeypatch.setattr(allocator, "EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256", partition.ticker_list_sha256(t_spare))
 
+    # The one-shot gate-consumption receipt (HIGH-1) is fsync'd first and
+    # must succeed; only the allocation-artifact staging fsync (the second
+    # fsync call) is poisoned.
+    call_count = {"n": 0}
+
     def poisoned_fsync(fd):
-        raise OSError(f"disk full while writing staging file at {SECRET_PRIVATE_PATH_FRAGMENT}")
+        call_count["n"] += 1
+        if call_count["n"] > 1:
+            raise OSError(f"disk full while writing staging file at {SECRET_PRIVATE_PATH_FRAGMENT}")
 
     monkeypatch.setattr(allocator.os, "fsync", poisoned_fsync)
     output_path = tmp_path / "private" / "t1b_allocation_artifact.json"
@@ -484,8 +629,15 @@ def test_link_publish_failure_never_leaks_private_path(tmp_path, monkeypatch):
     monkeypatch.setattr(allocator, "EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256", partition.ticker_list_sha256(t_spare))
 
     def poisoned_link(src, dst):
-        raise OSError(f"cross-device link from {src} to {SECRET_PRIVATE_PATH_FRAGMENT}")
+        # Only poison the link publishing the allocation artifact itself --
+        # the one-shot gate-consumption receipt (HIGH-1) publishes via
+        # ``os.link`` too, into a completely different directory, and must
+        # still succeed.
+        if "t1b_allocation_artifact" in str(dst):
+            raise OSError(f"cross-device link from {src} to {SECRET_PRIVATE_PATH_FRAGMENT}")
+        real_link(src, dst)
 
+    real_link = allocator.os.link
     monkeypatch.setattr(allocator.os, "link", poisoned_link)
     output_path = tmp_path / "private" / "t1b_allocation_artifact.json"
 

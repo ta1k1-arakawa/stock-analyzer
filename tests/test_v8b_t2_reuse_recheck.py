@@ -1,34 +1,22 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from src import v8b_human_gate_consumption as gate_consumption
 from src import v8b_t2_reuse_recheck as recheck
 
 ROOT = Path(__file__).resolve().parents[1]
+SYNTHETIC_COMMIT = "a" * 40
+SYNTHETIC_DESIGN_COMMIT = "eedf198b93185b963b825170ed0be97e93f923b7"
 
 
 def _real_head() -> str:
     return subprocess.run(
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, check=True, text=True
-    ).stdout.strip()
-
-
-def _init_bogus_git_repo(root: Path, *, files: dict[str, bytes]) -> str:
-    subprocess.run(["git", "init", "-q", str(root)], check=True)
-    for relative_path, content in files.items():
-        path = root / relative_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
-    subprocess.run(
-        ["git", "-C", str(root), "-c", "user.email=a@b.c", "-c", "user.name=x", "commit", "-q", "-m", "bogus"],
-        check=True,
-    )
-    return subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, check=True, text=True
     ).stdout.strip()
 
 
@@ -79,38 +67,28 @@ def test_pure_evaluator_module_defines_no_fallback_substitution():
 
 
 # ---------------------------------------------------------------------------
-# MEDIUM-2: production resolver -- must derive from a verified Git object,
-# never an arbitrary caller-supplied mapping.
+# FINAL_REPEAT finding HIGH-3: the public production resolver takes no
+# caller-supplied ``verified_head`` (or ``repository_root``) -- it resolves
+# the current verified production HEAD itself.
 # ---------------------------------------------------------------------------
 
 
-def test_production_resolver_signature_accepts_no_arbitrary_mapping():
+def test_public_resolver_accepts_no_arguments_at_all():
     import inspect
 
-    params = set(inspect.signature(recheck.resolve_and_recheck_t2_reuse_conditions).parameters)
-    assert "safe_metadata" not in params
-    assert params == {"verified_head"}
+    assert dict(inspect.signature(recheck.resolve_and_recheck_t2_reuse_conditions).parameters) == {}
 
 
-def test_production_resolver_signature_accepts_no_repository_root_override():
-    """Round-3 repeat finding HIGH-1: neither public resolver accepts a
-    caller-supplied repository_root -- both always resolve trust from
-    CANONICAL_REPOSITORY_ROOT."""
-    import inspect
-
-    assert "repository_root" not in inspect.signature(recheck.resolve_and_recheck_t2_reuse_conditions).parameters
-    assert "repository_root" not in inspect.signature(
-        recheck.resolve_t2_reuse_safe_metadata_from_verified_head
-    ).parameters
-
-
-def test_production_resolver_blocks_on_real_repo_today():
+def test_public_resolver_blocks_on_real_repo_today():
     """The real V8B_T2_REUSE_CONDITIONS_RECHECK.json does not exist yet --
     the real post-Layer-B recheck has not been performed -- so production
-    must fail closed today (round-2 finding HIGH-2 correction)."""
-    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck.resolve_and_recheck_t2_reuse_conditions(_real_head())
-    assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_MISSING"
+    must fail closed today. The real repo's provenance chain may also
+    legitimately block earlier (dirty worktree in this working session,
+    missing freeze approval, etc.) -- any of those is an acceptable
+    fail-closed outcome; what matters is that the call requires zero
+    arguments and never trusts a caller-supplied head."""
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked):
+        recheck.resolve_and_recheck_t2_reuse_conditions()
 
 
 def test_module_no_longer_reads_the_pre_freeze_section_12_2_document():
@@ -121,12 +99,18 @@ def test_module_no_longer_reads_the_pre_freeze_section_12_2_document():
     assert recheck.POST_FREEZE_RECHECK_STAGE == "POST_FREEZE"
 
 
+# ---------------------------------------------------------------------------
+# DI-testable private implementation: fake Git/provenance/consumption
+# dependencies (no real git checkout needed).
+# ---------------------------------------------------------------------------
+
+
 def _post_freeze_artifact(**overrides) -> dict:
     artifact = {
         "schema_version": recheck.POST_FREEZE_RECHECK_SCHEMA_VERSION,
         "study": "V8B_HISTORICAL_RESEARCH",
         "gate": recheck.POST_FREEZE_RECHECK_GATE,
-        "frozen_design_git_commit": "eedf198b93185b963b825170ed0be97e93f923b7",
+        "frozen_design_git_commit": SYNTHETIC_DESIGN_COMMIT,
         "stage": "POST_FREEZE",
         "result": "PASS",
         "layer_b_completed": True,
@@ -143,41 +127,86 @@ def _post_freeze_artifact(**overrides) -> dict:
     return artifact
 
 
-def _write_json(path: Path, value: dict) -> bytes:
-    import json
+def _default_dependencies(**overrides) -> dict:
+    deps = dict(
+        git_commit_resolver=lambda: SYNTHETIC_COMMIT,
+        anchor_reader=lambda head: {"authorization_status": "AUTHORIZED"},
+        reviewed_implementation_binder=lambda head: {"reviewed_implementation_git_commit": "b" * 40},
+        consumption_state_root="/nonexistent/never-created",
+        no_research_opening_api_exists=lambda: True,
+        git_object_reader=lambda root, commit, path: json.dumps(_post_freeze_artifact()).encode("utf-8"),
+        gate_consumption_checker=lambda state_root, gate, design_commit: False,
+    )
+    deps.update(overrides)
+    return deps
 
-    raw = json.dumps(value).encode("utf-8")
-    path.write_bytes(raw)
-    return raw
+
+def run(**overrides):
+    return recheck._resolve_t2_reuse_safe_metadata_with_dependencies(ROOT, **_default_dependencies(**overrides))
 
 
-def test_production_resolver_passes_on_well_formed_synthetic_post_freeze_artifact(tmp_path):
-    bogus = tmp_path / "well_formed"
-    bogus.mkdir()
-    raw = _write_json(bogus / recheck.POST_FREEZE_RECHECK_GIT_PATH, _post_freeze_artifact())
-    commit = _init_bogus_git_repo(bogus, files={recheck.POST_FREEZE_RECHECK_GIT_PATH: raw})
-    result = recheck._resolve_and_recheck_t2_reuse_conditions_with_repository_root(bogus, commit)
+def run_full(**overrides):
+    return recheck._resolve_and_recheck_t2_reuse_conditions_with_dependencies(ROOT, **_default_dependencies(**overrides))
+
+
+def test_di_seam_passes_on_well_formed_synthetic_artifact_and_dependencies():
+    result = run_full()
     assert result == {"result": "PASS", "block": "T2"}
 
 
-def test_resolve_safe_metadata_matches_pure_evaluator_schema(tmp_path):
-    bogus = tmp_path / "schema_check"
-    bogus.mkdir()
-    raw = _write_json(bogus / recheck.POST_FREEZE_RECHECK_GIT_PATH, _post_freeze_artifact())
-    commit = _init_bogus_git_repo(bogus, files={recheck.POST_FREEZE_RECHECK_GIT_PATH: raw})
-    safe_metadata = recheck._resolve_t2_reuse_safe_metadata_from_verified_head_with_repository_root(bogus, commit)
+def test_resolve_safe_metadata_matches_pure_evaluator_schema():
+    safe_metadata = run()
     assert set(safe_metadata) == set(recheck.REQUIRED_SAFE_METADATA_FIELDS)
     for value in safe_metadata.values():
         assert isinstance(value, bool)
 
 
-def test_production_resolver_missing_artifact_blocks(tmp_path):
-    bogus = tmp_path / "no_doc"
-    bogus.mkdir()
-    commit = _init_bogus_git_repo(bogus, files={"README.md": b"x"})
+def test_anchor_reader_failure_blocks_before_reading_recheck_artifact():
+    def unreachable_reader(root, commit, path):
+        raise AssertionError("recheck artifact must not be read if the anchor check already failed")
+
+    def failing_anchor(head):
+        raise recheck.V8BProductionProvenanceBlocked("V8_TRUSTED_PARTITION_BLOB_MUTATED")
+
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck._resolve_and_recheck_t2_reuse_conditions_with_repository_root(bogus, commit)
+        run(anchor_reader=failing_anchor, git_object_reader=unreachable_reader)
+    assert excinfo.value.reason == "V8_TRUSTED_PARTITION_BLOB_MUTATED"
+
+
+def test_reviewed_implementation_binder_failure_blocks():
+    def failing_binder(head):
+        raise recheck.V8BProductionProvenanceBlocked("V8B_REVIEWED_IMPLEMENTATION_BLOB_DRIFT:src/v8_partition.py")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run(reviewed_implementation_binder=failing_binder)
+    assert excinfo.value.reason == "V8B_REVIEWED_IMPLEMENTATION_BLOB_DRIFT:src/v8_partition.py"
+
+
+def test_missing_reviewed_implementation_review_maps_to_fixed_missing_reason():
+    def missing_review(head):
+        raise recheck.V8BGitProvenanceBlocked("GIT_OBJECT_READ_FAILED")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run(reviewed_implementation_binder=missing_review)
+    assert excinfo.value.reason == "V8B_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING"
+
+
+def test_production_resolver_missing_artifact_blocks():
+    def missing_artifact(root, commit, path):
+        raise recheck.V8BGitProvenanceBlocked("GIT_OBJECT_READ_FAILED")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run_full(git_object_reader=missing_artifact)
     assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_MISSING"
+
+
+def test_duplicate_key_artifact_blocks():
+    def dup_key_reader(root, commit, path):
+        return b'{"schema_version": "a", "schema_version": "b"}'
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run_full(git_object_reader=dup_key_reader)
+    assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_DUPLICATE_KEY"
 
 
 @pytest.mark.parametrize(
@@ -192,39 +221,118 @@ def test_production_resolver_missing_artifact_blocks(tmp_path):
         ("study", "V8_HISTORICAL_RESEARCH", "V8B_T2_REUSE_CONDITIONS_RECHECK_STUDY_MISMATCH"),
     ],
 )
-def test_production_resolver_field_semantics_enforced(tmp_path, field, value, expected_reason):
-    bogus = tmp_path / ("field_" + field)
-    bogus.mkdir()
-    raw = _write_json(bogus / recheck.POST_FREEZE_RECHECK_GIT_PATH, _post_freeze_artifact(**{field: value}))
-    commit = _init_bogus_git_repo(bogus, files={recheck.POST_FREEZE_RECHECK_GIT_PATH: raw})
+def test_production_resolver_field_semantics_enforced(field, value, expected_reason):
+    def reader(root, commit, path):
+        return json.dumps(_post_freeze_artifact(**{field: value})).encode("utf-8")
+
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck._resolve_and_recheck_t2_reuse_conditions_with_repository_root(bogus, commit)
+        run_full(git_object_reader=reader)
     assert excinfo.value.reason == expected_reason
 
 
-def test_stale_pre_freeze_evidence_cannot_satisfy_the_post_freeze_gate(tmp_path):
+def test_stale_pre_freeze_evidence_cannot_satisfy_the_post_freeze_gate():
     """A forged artifact that claims the OLD §12.2 pre-freeze evidence is
-    good enough (stage=PRE_FREEZE) must not satisfy the §12.4 gate --
-    this is exactly the bug round 2 found and this test locks the fix in."""
-    bogus = tmp_path / "stale_evidence"
-    bogus.mkdir()
-    raw = _write_json(
-        bogus / recheck.POST_FREEZE_RECHECK_GIT_PATH, _post_freeze_artifact(stage="PRE_FREEZE")
-    )
-    commit = _init_bogus_git_repo(bogus, files={recheck.POST_FREEZE_RECHECK_GIT_PATH: raw})
+    good enough (stage=PRE_FREEZE) must not satisfy the §12.4 gate."""
+    def reader(root, commit, path):
+        return json.dumps(_post_freeze_artifact(stage="PRE_FREEZE")).encode("utf-8")
+
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck._resolve_and_recheck_t2_reuse_conditions_with_repository_root(bogus, commit)
+        run_full(git_object_reader=reader)
     assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_NOT_POST_FREEZE"
 
 
-def test_duplicate_key_artifact_blocks(tmp_path):
-    bogus = tmp_path / "dup_key"
-    bogus.mkdir()
-    raw = b'{"schema_version": "a", "schema_version": "b"}'
-    commit = _init_bogus_git_repo(bogus, files={recheck.POST_FREEZE_RECHECK_GIT_PATH: raw})
+# ---------------------------------------------------------------------------
+# FINAL_REPEAT finding HIGH-3 core behavior: facts are DERIVED from
+# authoritative state, not merely trusted because the artifact claims them.
+# ---------------------------------------------------------------------------
+
+
+def test_artifact_falsely_claiming_universe_unchanged_is_irrelevant_if_anchor_check_itself_fails():
+    """Even an artifact honestly claiming t2_universe_definition_unchanged
+    cannot compensate for the anchor check itself failing -- the anchor
+    check must actually pass for the recheck to proceed at all."""
+    def failing_anchor(head):
+        raise recheck.V8BProductionProvenanceBlocked("V8_TRUSTED_PARTITION_BLOB_MUTATED")
+
     with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
-        recheck._resolve_and_recheck_t2_reuse_conditions_with_repository_root(bogus, commit)
-    assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_DUPLICATE_KEY"
+        run_full(anchor_reader=failing_anchor)
+    assert excinfo.value.reason == "V8_TRUSTED_PARTITION_BLOB_MUTATED"
+
+
+def test_artifact_falsely_claiming_universe_changed_is_rejected_as_self_declared_mismatch():
+    """The inverse: the anchor/binder checks PASS (authoritative truth is
+    "unchanged"), but the artifact dishonestly (or stale-ly) claims
+    t2_universe_definition_unchanged=False -- this must BLOCK as a
+    self-declared mismatch, never silently trust the artifact's claim over
+    the derived truth."""
+    def reader(root, commit, path):
+        return json.dumps(_post_freeze_artifact(t2_universe_definition_unchanged=False)).encode("utf-8")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run_full(git_object_reader=reader)
+    assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_SELF_DECLARED_MISMATCH:t2_universe_definition_unchanged"
+
+
+def test_artifact_falsely_claiming_policy_fixed_is_rejected_as_self_declared_mismatch():
+    def reader(root, commit, path):
+        return json.dumps(_post_freeze_artifact(t2_v8b_f1_c1_policy_fixed=False)).encode("utf-8")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run_full(git_object_reader=reader)
+    assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_SELF_DECLARED_MISMATCH:t2_v8b_f1_c1_policy_fixed"
+
+
+def test_t2_acquired_is_derived_from_durable_gate_receipt_not_artifact_claim():
+    """The artifact claims t2_acquired=False (as an honest artifact would
+    before any real acquisition), but the durable T2_RAW_ACQUISITION_
+    HUMAN_GATE receipt already exists -- proving a real acquisition attempt
+    already happened. The recheck must derive t2_acquired=True from that
+    authoritative state and BLOCK on the mismatch, never trust the stale
+    "False" claim."""
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run_full(gate_consumption_checker=lambda state_root, gate, design_commit: True)
+    assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_SELF_DECLARED_MISMATCH:t2_acquired"
+
+
+def test_t2_acquired_derivation_calls_gate_checker_with_t2_gate_and_frozen_design_commit():
+    seen: list[tuple] = []
+
+    def recording_checker(state_root, gate, design_commit):
+        seen.append((state_root, gate, design_commit))
+        return False
+
+    run(gate_consumption_checker=recording_checker)
+    assert len(seen) == 1
+    state_root, gate, design_commit = seen[0]
+    assert gate == gate_consumption.GATE_T2_RAW_ACQUISITION
+    assert design_commit == recheck.EXPECTED_V8B_FROZEN_DESIGN_COMMIT
+
+
+def test_gate_consumption_checker_error_propagates_as_blocked():
+    def broken_checker(state_root, gate, design_commit):
+        raise gate_consumption.V8BHumanGateConsumptionBlocked("V8B_HUMAN_GATE_STATE_UNAVAILABLE")
+
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run(gate_consumption_checker=broken_checker)
+    assert excinfo.value.reason == "V8B_HUMAN_GATE_STATE_UNAVAILABLE"
+
+
+def test_research_opening_capability_derivation_drives_exposure_fields():
+    """If the live check somehow found a research-opening capability
+    (hypothetical -- none exists in this repository today), the derived
+    exposure fields must flip to True and BLOCK against an honest
+    "no exposure" artifact claim, rather than silently trusting the
+    artifact."""
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked) as excinfo:
+        run_full(no_research_opening_api_exists=lambda: False)
+    assert excinfo.value.reason.startswith("V8B_T2_REUSE_CONDITIONS_RECHECK_SELF_DECLARED_MISMATCH:t2_")
+
+
+def test_default_no_research_opening_api_exists_reflects_real_repository_state():
+    """The real, non-injected default check against the actual bound
+    src.v8b_historical_acquisition module: no open_for_*/research-opening
+    API exists today."""
+    assert recheck._default_no_research_opening_api_exists() is True
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +346,7 @@ def test_private_pure_evaluator_is_not_publicly_exported():
     assert hasattr(recheck, "_recheck_t2_reuse_conditions")
 
 
-def test_only_the_production_resolvers_and_safe_constants_are_public():
+def test_only_the_production_resolver_and_safe_constants_are_public():
     assert set(recheck.__all__) == {
         "CANONICAL_REPOSITORY_ROOT",
         "POST_FREEZE_RECHECK_FIELDS",
@@ -249,5 +357,4 @@ def test_only_the_production_resolvers_and_safe_constants_are_public():
         "REQUIRED_SAFE_METADATA_FIELDS",
         "V8BT2PreservationRecheckBlocked",
         "resolve_and_recheck_t2_reuse_conditions",
-        "resolve_t2_reuse_safe_metadata_from_verified_head",
     }

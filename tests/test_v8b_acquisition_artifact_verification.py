@@ -120,10 +120,12 @@ def build_and_run_t1b(tmp_path: Path) -> tuple[dict, Path]:
         bridge_reader=lambda head: {},
         t2_reuse_recheck_resolver=_unreachable_t2_reuse_recheck_resolver,
         t1b_trust_pin_reader=lambda head: pin,
+        trust_pin_review_reader=lambda head, artifact_hash: {"ok": True},
         opener=FakeOpener(),
         clock=clock_stub,
         monotonic_clock=lambda: 0.0,
         sleep_fn=lambda _s: None,
+        consumption_state_root=tmp_path / "gate_state",
     )
     acquisition._acquire_production_v8b_historical_block_bundle_with_dependencies(**deps)
     return artifact, tmp_path / "private", pin
