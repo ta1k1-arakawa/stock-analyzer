@@ -112,6 +112,7 @@ from src.v8b_production_provenance import (
 )
 from src.v8b_allocation import V8BAllocationBlocked, verify_allocation_artifact_self_hash
 from src.v8b_trust_pin import V8BTrustPinBlocked, validate_trust_pin
+from src.v8b_t2_reuse_recheck import V8BT2PreservationRecheckBlocked, resolve_and_recheck_t2_reuse_conditions
 
 SCHEMA_VERSION = "V8B_HISTORICAL_ACQUISITION_V1"
 STUDY_NAME = PROVENANCE_STUDY_NAME
@@ -242,11 +243,33 @@ ACQUISITION_MANIFEST_ZERO_ACCESS_COUNTER_FIELDS = (
 
 
 class V8BHistoricalAcquisitionBlocked(RuntimeError):
-    """Fail-closed V8B historical acquisition transport, schema, or seal error."""
+    """Fail-closed V8B historical acquisition transport, schema, or seal error.
 
-    def __init__(self, reason: str) -> None:
+    ``authorization_consumed`` is ``False`` for every pre-network failure
+    (confirmation, provenance, freeze, review, classifier, ZoneInfo,
+    authority chain, output/staging safety) and ``True`` for any failure
+    at or after the first Yahoo request begins -- a safe boolean, never a
+    ticker or path (round-2 finding HIGH-1).
+    """
+
+    def __init__(self, reason: str, *, authorization_consumed: bool = False) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.authorization_consumed = authorization_consumed
+
+
+# Frozen production confirmation literals (§12's T1B_RAW_ACQUISITION_HUMAN_
+# GATE / T2_RAW_ACQUISITION_HUMAN_GATE). Upstream-approved as mechanical
+# confirmation syntax only -- these literals do NOT themselves constitute
+# real human authorization; they exist so an operator cannot invoke the
+# wrong block's acquisition by accident, mirroring this repository's
+# existing `--confirmation V8_PRODUCTION_ACQUIRE_T1` convention.
+T1B_ACQUISITION_CONFIRMATION = "V8B_PRODUCTION_ACQUIRE_T1B"
+T2_ACQUISITION_CONFIRMATION = "V8B_PRODUCTION_ACQUIRE_T2"
+ACQUISITION_CONFIRMATION_BY_BLOCK = {
+    "T1B": T1B_ACQUISITION_CONFIRMATION,
+    "T2": T2_ACQUISITION_CONFIRMATION,
+}
 
 
 _GIT_OBJECT_MISSING_REASONS = frozenset({"GIT_OBJECT_READ_FAILED", "GIT_BLOB_RESOLUTION_FAILED"})
@@ -377,13 +400,19 @@ def _validated_t1b_binding(
     return tickers, binding
 
 
-def _read_t1b_trust_pin_from_verified_head(
-    repository_root, verified_head: str, git_object_reader: Callable[[str, str, str], bytes]
+def read_t1b_trust_pin_from_verified_head(
+    repository_root, verified_head: str, git_object_reader: Callable[[str, str, str], bytes] = read_git_object_bytes
 ) -> dict[str, Any]:
     """Read the future public §11.3.C trust pin from a **verified Git
     object** -- never a caller-supplied path (HIGH-3 remediation). The real
     ``V8B_TRUSTED_ALLOCATION.json`` does not exist in this repository yet,
-    so this fails closed with ``V8B_TRUSTED_ALLOCATION_MISSING`` today."""
+    so this fails closed with ``V8B_TRUSTED_ALLOCATION_MISSING`` today.
+
+    Public (not module-private) so other production boundaries -- e.g. the
+    §12.6 acquisition-artifact verifier's production resolver -- read this
+    trust pin through the exact same Git-bound logic, rather than each
+    re-implementing its own copy (round-3 finding HIGH-4).
+    """
     raw = git_object_reader(repository_root, verified_head, T1B_TRUST_PIN_GIT_PATH)
     return _strict_json_object(
         raw,
@@ -776,15 +805,20 @@ def acquire_v8b_historical_block_bundle(
     *,
     output_root: str | os.PathLike[str],
     block: str,
+    confirmation: str,
     partition_manifest_path: str | os.PathLike[str] | None = None,
     t1b_allocation_artifact_path: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """Acquire one verified `T1B`/`T2` block in production.
 
-    ``block == "T2"`` requires ``partition_manifest_path`` (the real,
-    private, already-built V8 partition manifest). ``block == "T1B"``
-    requires ``t1b_allocation_artifact_path`` (the private §11.3.B
-    allocation artifact -- private data, so a caller-supplied path remains
+    ``confirmation`` must exactly equal the block-specific frozen literal
+    (``T1B_ACQUISITION_CONFIRMATION`` / ``T2_ACQUISITION_CONFIRMATION``) --
+    this is mechanical confirmation syntax only, not real human
+    authorization (round-2 finding HIGH-1). ``block == "T2"`` requires
+    ``partition_manifest_path`` (the real, private, already-built V8
+    partition manifest). ``block == "T1B"`` requires
+    ``t1b_allocation_artifact_path`` (the private §11.3.B allocation
+    artifact -- private data, so a caller-supplied path remains
     appropriate) -- there is deliberately no ``t1b_trust_pin_path``
     parameter: the public §11.3.C trust pin is read from a verified Git
     object, never a caller-suppliable path (HIGH-3 remediation).
@@ -792,6 +826,7 @@ def acquire_v8b_historical_block_bundle(
     return _acquire_production_v8b_historical_block_bundle_with_dependencies(
         output_root=output_root,
         block=block,
+        confirmation=confirmation,
         partition_manifest_path=partition_manifest_path,
         t1b_allocation_artifact_path=t1b_allocation_artifact_path,
         git_commit_resolver=lambda: resolve_verified_v8b_production_git_commit(CANONICAL_REPOSITORY_ROOT),
@@ -808,7 +843,10 @@ def acquire_v8b_historical_block_bundle(
         zoneinfo_loader=_default_zoneinfo_loader,
         anchor_reader=lambda head: read_and_verify_v8_trusted_partition_anchor(CANONICAL_REPOSITORY_ROOT, head),
         bridge_reader=lambda head: read_and_verify_t2_authority_bridge(CANONICAL_REPOSITORY_ROOT, head),
-        t1b_trust_pin_reader=lambda head: _read_t1b_trust_pin_from_verified_head(
+        t2_reuse_recheck_resolver=lambda head: resolve_and_recheck_t2_reuse_conditions(
+            CANONICAL_REPOSITORY_ROOT, head
+        ),
+        t1b_trust_pin_reader=lambda head: read_t1b_trust_pin_from_verified_head(
             CANONICAL_REPOSITORY_ROOT, head, read_git_object_bytes
         ),
         opener=_default_trusted_yahoo_opener,
@@ -822,6 +860,7 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
     *,
     output_root: str | os.PathLike[str],
     block: str,
+    confirmation: str,
     partition_manifest_path: str | os.PathLike[str] | None,
     t1b_allocation_artifact_path: str | os.PathLike[str] | None,
     git_commit_resolver: Callable[[], str],
@@ -832,6 +871,7 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
     zoneinfo_loader: Callable[[], Any],
     anchor_reader: Callable[[str], Mapping[str, Any]],
     bridge_reader: Callable[[str], Mapping[str, Any]],
+    t2_reuse_recheck_resolver: Callable[[str], Mapping[str, Any]],
     t1b_trust_pin_reader: Callable[[str], Mapping[str, Any]],
     opener: Callable[[Any], Any],
     clock: Callable[[], datetime],
@@ -841,14 +881,24 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
     """Private fake-only seam for exercising the full production call ordering.
 
     Runs, strictly in order and strictly before any Yahoo request or the
-    per-ticker acquisition loop: (1) repo/provenance, (2) frozen design
-    object + freeze approval (exact blob), (3) reviewed-implementation
-    binding (exact per-file blob equality), (4) classifier blob, (5)
-    ZoneInfo, (6) authority chain (T1B or T2), (7) block count/hash (folded
-    into (6)'s binding checks), (8) output/staging safety.
+    per-ticker acquisition loop: (0) confirmation token, (1) repo/
+    provenance, (2) frozen design object + freeze approval (exact blob),
+    (3) reviewed-implementation binding (exact per-file blob equality),
+    (4) classifier blob, (5) ZoneInfo, (6) authority chain (T1B or T2;
+    T2 additionally requires fresh POST_FREEZE reuse-conditions evidence),
+    (7) block count/hash (folded into (6)'s binding checks), (8)
+    output/staging safety. ``authorization_consumed`` on the resulting
+    manifest -- and on any raised ``V8BHistoricalAcquisitionBlocked`` --
+    is ``False`` for every one of these steps and only becomes ``True``
+    once the per-ticker loop attempts its first Yahoo request.
     """
     if block not in ALLOWED_ACQUISITION_BLOCKS:
         raise V8BHistoricalAcquisitionBlocked("V8B_BLOCK_ACQUISITION_PROHIBITED:" + str(block))
+
+    # (0) explicit, exact, block-specific acquisition-gate confirmation
+    # token -- a T1B token can never authorize T2 acquisition or vice versa.
+    if confirmation != ACQUISITION_CONFIRMATION_BY_BLOCK[block]:
+        raise V8BHistoricalAcquisitionBlocked("V8B_ACQUISITION_CONFIRMATION_INVALID")
 
     # (1) repo/provenance -- V8B's own branch, never V8's.
     try:
@@ -901,6 +951,13 @@ def _acquire_production_v8b_historical_block_bundle_with_dependencies(
             anchor = anchor_reader(verified_head)
             bridge = bridge_reader(verified_head)
         except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+            raise _wrap(error) from error
+        # READ_ONLY_T2_REUSE_CONDITIONS_RECHECK (§12.4): fresh POST_FREEZE
+        # evidence, never the §12.2 pre-freeze document (round-2 finding
+        # HIGH-2). Fails closed today -- the real artifact does not exist.
+        try:
+            t2_reuse_recheck_resolver(verified_head)
+        except (V8BT2PreservationRecheckBlocked, V8BGitProvenanceBlocked) as error:
             raise _wrap(error) from error
         tickers, authority_binding = _validated_t2_binding(partition_manifest_path, anchor, bridge)
 
@@ -980,6 +1037,13 @@ def _acquire_v8b_block_bundle_with_validated_inputs(
 
     started_dt = _utc_timestamp(clock(), "acquisition_started_utc")
 
+    # One-shot human-gate consumption (round-2 finding HIGH-1): the
+    # acquisition-gate confirmation is consumed exactly when the first
+    # Yahoo request begins, regardless of that request's outcome -- not
+    # before, and never reset for a later ticker. Everything above this
+    # point (steps 0-8) is pre-network and always leaves this False.
+    consumed = False
+
     staging: Path | None = None
     try:
         staging = Path(tempfile.mkdtemp(prefix=f"{block}.staging-", dir=str(acquisitions_root)))
@@ -995,6 +1059,8 @@ def _acquire_v8b_block_bundle_with_validated_inputs(
         previous_start: float | None = None
 
         for index, ticker in enumerate(tickers_list):
+            if index == 0:
+                consumed = True
             previous_start = _wait_for_next_request_start(index, previous_start, monotonic_clock, sleep_fn)
             capture = bytearray()
 
@@ -1138,6 +1204,9 @@ def _acquire_v8b_block_bundle_with_validated_inputs(
         os.replace(str(staging), str(final_dir))
         staging = None
         return manifest
+    except V8BHistoricalAcquisitionBlocked as error:
+        error.authorization_consumed = consumed
+        raise
     finally:
         if staging is not None and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
@@ -1192,6 +1261,7 @@ def read_acquisition_manifest(output_root: str | os.PathLike[str], block: str) -
 
 __all__ = [
     "ACQUISITIONS_DIRNAME",
+    "ACQUISITION_CONFIRMATION_BY_BLOCK",
     "ACQUISITION_MANIFEST_FIELDS",
     "ALLOWED_ACQUISITION_BLOCKS",
     "BLOCK_AUTHORITY_CHAIN",
@@ -1225,13 +1295,16 @@ __all__ = [
     "SCHEMA_VERSION",
     "SEALED_FILENAME",
     "STUDY_NAME",
+    "T1B_ACQUISITION_CONFIRMATION",
     "T1B_TRUST_PIN_GIT_PATH",
+    "T2_ACQUISITION_CONFIRMATION",
     "V8BHistoricalAcquisitionBlocked",
     "V8B_FROZEN_DESIGN_COMMIT",
     "acquire_v8b_historical_block_bundle",
     "canonical_json_bytes",
     "canonical_sha256",
     "read_acquisition_manifest",
+    "read_t1b_trust_pin_from_verified_head",
     "sha256_bytes",
     "verify_asia_tokyo_zoneinfo_available",
     "verify_classifier_blob",

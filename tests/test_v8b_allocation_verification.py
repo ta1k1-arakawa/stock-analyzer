@@ -158,3 +158,49 @@ def test_corrupted_self_hash_blocks_before_any_other_check():
     with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
         verification.verify_t1b_allocation_artifact(**verify_kwargs(parent, tampered))
     assert excinfo.value.reason.startswith("ARTIFACT_SELF_HASH_INVALID:")
+
+
+# ---------------------------------------------------------------------------
+# Round-3 MEDIUM-2: production READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION
+# boundary -- trust derived from verified Git objects, never from a
+# caller-supplied expected hash/commit.
+# ---------------------------------------------------------------------------
+
+
+def test_production_resolver_signature_accepts_no_caller_supplied_expected_values():
+    import inspect
+
+    params = set(inspect.signature(verification.resolve_and_verify_t1b_allocation_artifact).parameters)
+    assert params == {"allocation_artifact_path", "partition_manifest_path", "repository_root"}
+    for forbidden in (
+        "expected_v8b_frozen_design_commit",
+        "expected_parent_t_spare_ticker_list_sha256",
+        "t0_tickers",
+        "old_t1_tickers",
+        "t2_tickers",
+        "t3_tickers",
+        "parent_t_spare_tickers",
+    ):
+        assert forbidden not in params
+
+
+def test_production_resolver_fails_closed_on_real_repo_today(tmp_path):
+    """The real repository has no real V8B_PRODUCTION_IMPLEMENTATION_
+    REVIEW.json (and no real private V8 partition manifest or T1B
+    allocation artifact either) -- the real production resolver must fail
+    closed today, proving zero real allocation-verification is required or
+    performed by this phase."""
+    with pytest.raises(verification.V8BAllocationVerificationBlocked):
+        verification.resolve_and_verify_t1b_allocation_artifact(
+            tmp_path / "allocation_artifact.json", tmp_path / "partition_manifest.json"
+        )
+
+
+def test_production_resolver_never_prints_ticker_or_private_path_on_failure(tmp_path):
+    private_artifact_path = tmp_path / "very" / "private" / "t1b_allocation_artifact.json"
+    with pytest.raises(verification.V8BAllocationVerificationBlocked) as excinfo:
+        verification.resolve_and_verify_t1b_allocation_artifact(
+            private_artifact_path, tmp_path / "partition_manifest.json"
+        )
+    assert str(private_artifact_path) not in excinfo.value.reason
+    assert "private" not in excinfo.value.reason.lower()

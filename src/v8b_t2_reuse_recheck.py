@@ -1,6 +1,17 @@
 """`READ_ONLY_T2_REUSE_CONDITIONS_RECHECK` (§12.4, §9, §3.3).
 
-This module separates two distinct roles (first-round finding MEDIUM-2):
+**Round-2 finding HIGH-2 correction.** This module previously (incorrectly)
+derived its production evidence from `V8B_TSPARE_T2_T3_PRESERVATION_
+RECHECK.md`. That document's own header records
+`gate=READ_ONLY_TSPARE_T2_T3_PRESERVATION_RECHECK (...§12.2)` -- it is the
+**pre-freeze** evidence for the *different* §12.2 gate that already ran
+before `V8B_DESIGN_FINALIZED`/`HUMAN_DESIGN_FREEZE`. It cannot stand in for
+§12.4's `READ_ONLY_T2_REUSE_CONDITIONS_RECHECK`, which the design draft's
+own gate diagram positions **after** `Layer B` / `FROZEN FINAL CANDIDATE`
+(§12's diagram; §12.4's rules), using **fresh, post-freeze** evidence. This
+module no longer reads that §12.2 document for any production purpose.
+
+Two distinct roles (first-round finding MEDIUM-2, preserved here):
 
 - `recheck_t2_reuse_conditions` -- a **private pure evaluator**. It checks
   §3.3/§9's preservation conditions against a plain ``safe_metadata``
@@ -10,11 +21,13 @@ This module separates two distinct roles (first-round finding MEDIUM-2):
   because nothing stops a caller from fabricating a favorable mapping.
 - `resolve_t2_reuse_safe_metadata_from_verified_head` /
   `resolve_and_recheck_t2_reuse_conditions` -- the **production
-  resolver**. It derives the same safe-metadata fields by reading
-  `V8B_TSPARE_T2_T3_PRESERVATION_RECHECK.md` from a **verified Git
-  object** (never a caller-supplied path or mapping), pinned to its exact
-  expected blob, and only then calls the pure evaluator. Production code
-  must call the resolver, never construct a `safe_metadata` mapping itself.
+  resolver**. It derives the same safe-metadata fields by reading the
+  future `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact from a
+  **verified Git object** (never a caller-supplied path or mapping).
+  That artifact does not exist in this repository yet -- the real
+  post-Layer-B recheck has not been performed -- so this resolver, and
+  therefore `T2` production acquisition, fails closed today by
+  construction. This implementation does not create that artifact.
 
 Neither path reads, accepts, or exposes a `T2` ticker identity, and
 neither offers a `T_spare`/`T3` fallback -- this module defines no
@@ -24,43 +37,41 @@ alternate block-selection function of any kind. Any condition failing is
 
 from __future__ import annotations
 
-import re
+import json
 from typing import Any, Mapping
 
 from src.v8b_git_provenance import (
     V8BGitProvenanceBlocked,
     read_git_object_bytes,
     require_git_commit,
-    resolve_git_blob,
 )
 from src.v8b_production_provenance import EXPECTED_V8B_FROZEN_DESIGN_COMMIT
 
-PRESERVATION_RECHECK_GIT_PATH = "V8B_TSPARE_T2_T3_PRESERVATION_RECHECK.md"
-EXPECTED_PRESERVATION_RECHECK_BLOB = "f46e9fd295fd2a2843e9e6edd9c833922e5aad44"
+# The future §12.4 POST_FREEZE evidence artifact. Does not exist in this
+# repository -- CREATE_V8B_TRUSTED_ALLOCATION_PIN-style future work, not
+# performed by this implementation phase.
+POST_FREEZE_RECHECK_GIT_PATH = "V8B_T2_REUSE_CONDITIONS_RECHECK.json"
+POST_FREEZE_RECHECK_SCHEMA_VERSION = "V8B_T2_REUSE_CONDITIONS_RECHECK_V1"
+POST_FREEZE_RECHECK_GATE = "READ_ONLY_T2_REUSE_CONDITIONS_RECHECK"
+POST_FREEZE_RECHECK_STAGE = "POST_FREEZE"
 
-# Section B's field names in the committed doc do not all match this
-# module's own safe_metadata schema (e.g. the doc's
-# "v8b_f1_c1_production_policy_already_fixed_at_reviewed_design_sha" versus
-# this schema's "t2_v8b_f1_c1_policy_fixed") -- this mapping is the single
-# place that translation happens.
-_DOC_FIELD_TO_SAFE_METADATA_FIELD = {
-    "t2_acquired": "t2_acquired",
-    "t2_opened": "t2_opened",
-    "t2_ticker_identities_exposed_to_human_public_research_loop": (
-        "t2_ticker_identities_exposed_to_human_public_research_loop"
-    ),
-    "t2_market_data_raw_ohlcv_feature_outcome_research_exposure": (
-        "t2_market_data_raw_ohlcv_feature_outcome_research_exposure"
-    ),
-    "t2_universe_definition_unchanged": "t2_universe_definition_unchanged",
-    "t2_partition_algorithm_unchanged": "t2_partition_algorithm_unchanged",
-    "v8b_f1_c1_production_policy_already_fixed_at_reviewed_design_sha": "t2_v8b_f1_c1_policy_fixed",
-}
-
-_SECTION_B_START = "## B. `T2` recheck"
-_SECTION_B_END = "## C. `T3` recheck"
-_HEADER_LINE_PATTERN = re.compile(r"^(result|reviewed_design_commit)=(\S+)\s*$", re.MULTILINE)
-_FIELD_LINE_PATTERN = re.compile(r"^([a-z0-9_]+)=(true|false)\s*--\s*PASS\s*$", re.MULTILINE)
+POST_FREEZE_RECHECK_FIELDS = (
+    "schema_version",
+    "study",
+    "gate",
+    "frozen_design_git_commit",
+    "stage",
+    "result",
+    "layer_b_completed",
+    "frozen_final_candidate_established",
+    "t2_acquired",
+    "t2_opened",
+    "t2_ticker_identities_exposed_to_human_public_research_loop",
+    "t2_market_data_raw_ohlcv_feature_outcome_research_exposure",
+    "t2_universe_definition_unchanged",
+    "t2_partition_algorithm_unchanged",
+    "t2_v8b_f1_c1_policy_fixed",
+)
 
 
 class V8BT2PreservationRecheckBlocked(RuntimeError):
@@ -135,48 +146,58 @@ def _wrap(error: BaseException, missing_reason: str | None = None) -> V8BT2Prese
     return V8BT2PreservationRecheckBlocked("PRESERVATION_RECHECK_DOC_READ_FAILED")
 
 
+def _strict_json_object(raw: bytes) -> dict[str, Any]:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_DUPLICATE_KEY")
+            result[key] = value
+        return result
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_INVALID_JSON") from error
+    if not isinstance(parsed, dict):
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_INVALID_JSON")
+    return parsed
+
+
 def resolve_t2_reuse_safe_metadata_from_verified_head(repository_root, verified_head: str) -> dict[str, Any]:
-    """Production resolver: derive ``safe_metadata`` from the committed,
-    fixed `V8B_TSPARE_T2_T3_PRESERVATION_RECHECK.md` audit artifact, read
-    from a **verified Git object** and pinned to its exact expected blob --
-    never from a caller-supplied mapping or path.
+    """Production resolver: derive ``safe_metadata`` from the future,
+    fresh **POST_FREEZE** `V8B_T2_REUSE_CONDITIONS_RECHECK.json` artifact
+    (§12.4), read from a **verified Git object** -- never a caller-supplied
+    mapping or path, and never the §12.2 pre-freeze document. This artifact
+    does not exist in this repository yet, so this fails closed today.
     """
-    commit = require_git_commit(verified_head, "PRESERVATION_RECHECK_HEAD_INVALID")
+    commit = require_git_commit(verified_head, "POST_FREEZE_RECHECK_HEAD_INVALID")
     try:
-        blob = resolve_git_blob(repository_root, commit, PRESERVATION_RECHECK_GIT_PATH)
+        raw = read_git_object_bytes(repository_root, commit, POST_FREEZE_RECHECK_GIT_PATH)
     except V8BGitProvenanceBlocked as error:
-        raise _wrap(error, "V8B_T2_PRESERVATION_RECHECK_DOC_MISSING") from error
-    if blob != EXPECTED_PRESERVATION_RECHECK_BLOB:
-        raise V8BT2PreservationRecheckBlocked("V8B_T2_PRESERVATION_RECHECK_DOC_MUTATED")
-    try:
-        raw = read_git_object_bytes(repository_root, commit, PRESERVATION_RECHECK_GIT_PATH)
-    except V8BGitProvenanceBlocked as error:
-        raise _wrap(error, "V8B_T2_PRESERVATION_RECHECK_DOC_MISSING") from error
+        raise _wrap(error, "V8B_T2_REUSE_CONDITIONS_RECHECK_MISSING") from error
 
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise V8BT2PreservationRecheckBlocked("V8B_T2_PRESERVATION_RECHECK_DOC_INVALID_ENCODING") from error
+    artifact = _strict_json_object(raw)
+    if set(artifact) != set(POST_FREEZE_RECHECK_FIELDS):
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_SCHEMA_INVALID")
+    if artifact["schema_version"] != POST_FREEZE_RECHECK_SCHEMA_VERSION:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_SCHEMA_VERSION_MISMATCH")
+    if artifact["study"] != "V8B_HISTORICAL_RESEARCH":
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_STUDY_MISMATCH")
+    if artifact["gate"] != POST_FREEZE_RECHECK_GATE:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_GATE_MISMATCH")
+    if artifact["frozen_design_git_commit"] != EXPECTED_V8B_FROZEN_DESIGN_COMMIT:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_DESIGN_COMMIT_MISMATCH")
+    if artifact["stage"] != POST_FREEZE_RECHECK_STAGE:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_NOT_POST_FREEZE")
+    if artifact["result"] != "PASS":
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_NOT_PASS")
+    if artifact["layer_b_completed"] is not True:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_LAYER_B_NOT_COMPLETE")
+    if artifact["frozen_final_candidate_established"] is not True:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_NO_FROZEN_FINAL_CANDIDATE")
 
-    header = dict(_HEADER_LINE_PATTERN.findall(text))
-    if header.get("result") != "PASS":
-        raise V8BT2PreservationRecheckBlocked("V8B_T2_PRESERVATION_RECHECK_BLOCKED:DOC_RESULT_NOT_PASS")
-    if header.get("reviewed_design_commit") != EXPECTED_V8B_FROZEN_DESIGN_COMMIT:
-        raise V8BT2PreservationRecheckBlocked("V8B_T2_PRESERVATION_RECHECK_BLOCKED:DOC_DESIGN_COMMIT_MISMATCH")
-
-    start = text.find(_SECTION_B_START)
-    end = text.find(_SECTION_B_END)
-    if start == -1 or end == -1 or end <= start:
-        raise V8BT2PreservationRecheckBlocked("V8B_T2_PRESERVATION_RECHECK_BLOCKED:DOC_SECTION_B_MISSING")
-    section_b = text[start:end]
-
-    doc_fields = dict(_FIELD_LINE_PATTERN.findall(section_b))
-    safe_metadata: dict[str, Any] = {}
-    for doc_field, safe_field in _DOC_FIELD_TO_SAFE_METADATA_FIELD.items():
-        if doc_field not in doc_fields:
-            raise V8BT2PreservationRecheckBlocked("V8B_T2_PRESERVATION_RECHECK_BLOCKED:MISSING_SAFE_METADATA")
-        safe_metadata[safe_field] = doc_fields[doc_field] == "true"
-    return safe_metadata
+    return {field: artifact[field] for field in REQUIRED_SAFE_METADATA_FIELDS}
 
 
 def resolve_and_recheck_t2_reuse_conditions(repository_root, verified_head: str) -> dict[str, Any]:
@@ -189,8 +210,11 @@ def resolve_and_recheck_t2_reuse_conditions(repository_root, verified_head: str)
 
 
 __all__ = [
-    "EXPECTED_PRESERVATION_RECHECK_BLOB",
-    "PRESERVATION_RECHECK_GIT_PATH",
+    "POST_FREEZE_RECHECK_FIELDS",
+    "POST_FREEZE_RECHECK_GATE",
+    "POST_FREEZE_RECHECK_GIT_PATH",
+    "POST_FREEZE_RECHECK_SCHEMA_VERSION",
+    "POST_FREEZE_RECHECK_STAGE",
     "REQUIRED_SAFE_METADATA_FIELDS",
     "V8BT2PreservationRecheckBlocked",
     "recheck_t2_reuse_conditions",

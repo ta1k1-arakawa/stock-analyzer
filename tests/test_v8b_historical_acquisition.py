@@ -165,10 +165,27 @@ def not_authorized_pin() -> dict:
     }
 
 
-def default_deps(*, block, opener, artifact_path=None, pin=None, partition_manifest_path=None, anchor=None, bridge=None, **overrides):
+def default_deps(
+    *,
+    block,
+    opener,
+    artifact_path=None,
+    pin=None,
+    partition_manifest_path=None,
+    anchor=None,
+    bridge=None,
+    confirmation=None,
+    t2_reuse_recheck_resolver=None,
+    **overrides,
+):
     deps = dict(
         output_root=None,
         block=block,
+        confirmation=(
+            confirmation
+            if confirmation is not None
+            else acquisition.ACQUISITION_CONFIRMATION_BY_BLOCK.get(block, "")
+        ),
         partition_manifest_path=partition_manifest_path,
         t1b_allocation_artifact_path=artifact_path,
         git_commit_resolver=lambda: SYNTHETIC_COMMIT,
@@ -179,6 +196,7 @@ def default_deps(*, block, opener, artifact_path=None, pin=None, partition_manif
         zoneinfo_loader=lambda: object(),
         anchor_reader=lambda head: anchor or {},
         bridge_reader=lambda head: bridge or {},
+        t2_reuse_recheck_resolver=t2_reuse_recheck_resolver or (lambda head: {"result": "PASS", "block": "T2"}),
         t1b_trust_pin_reader=lambda head: pin or {},
         opener=opener,
         clock=clock_stub,
@@ -291,7 +309,7 @@ def test_public_production_signature_has_only_required_inputs():
     import inspect
 
     assert tuple(inspect.signature(acquisition.acquire_v8b_historical_block_bundle).parameters) == (
-        "output_root", "block", "partition_manifest_path", "t1b_allocation_artifact_path",
+        "output_root", "block", "confirmation", "partition_manifest_path", "t1b_allocation_artifact_path",
     )
 
 
@@ -327,6 +345,7 @@ def test_all_prohibited_blocks_rejected(tmp_path, block):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_BLOCK_ACQUISITION_PROHIBITED:" + block
+    assert excinfo.value.authorization_consumed is False
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +363,7 @@ def test_step1_git_provenance_failure_blocks_before_network(tmp_path):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "PRODUCTION_GIT_WORKTREE_DIRTY"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_step2_frozen_design_object_failure_blocks_before_network(tmp_path):
@@ -356,6 +376,7 @@ def test_step2_frozen_design_object_failure_blocks_before_network(tmp_path):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_FROZEN_DESIGN_OBJECT_MUTATED"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_step2_freeze_approval_failure_blocks_before_network(tmp_path):
@@ -368,6 +389,7 @@ def test_step2_freeze_approval_failure_blocks_before_network(tmp_path):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_DESIGN_FREEZE_APPROVAL_NOT_APPROVED"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_step3_missing_implementation_review_blocks_before_network_on_real_repo(tmp_path):
@@ -376,7 +398,10 @@ def test_step3_missing_implementation_review_blocks_before_network_on_real_repo(
     artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         acquisition.acquire_v8b_historical_block_bundle(
-            output_root=tmp_path / "private", block="T1B", t1b_allocation_artifact_path=artifact_path,
+            output_root=tmp_path / "private",
+            block="T1B",
+            confirmation=acquisition.T1B_ACQUISITION_CONFIRMATION,
+            t1b_allocation_artifact_path=artifact_path,
         )
     assert excinfo.value.reason in {
         "PRODUCTION_GIT_WORKTREE_DIRTY",
@@ -385,6 +410,7 @@ def test_step3_missing_implementation_review_blocks_before_network_on_real_repo(
         "V8B_DESIGN_FREEZE_APPROVAL_MISSING",
         "V8B_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING",
     }
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_step3_reviewed_implementation_binder_failure_blocks_before_network(tmp_path):
@@ -397,6 +423,7 @@ def test_step3_reviewed_implementation_binder_failure_blocks_before_network(tmp_
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_REVIEWED_IMPLEMENTATION_BLOB_DRIFT:src/v8b_allocation.py"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_step4_classifier_mismatch_blocks_before_network(tmp_path):
@@ -405,6 +432,7 @@ def test_step4_classifier_mismatch_blocks_before_network(tmp_path):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_PRODUCTION_CLASSIFIER_VERSION_MISMATCH"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_step5_zoneinfo_unavailable_blocks_before_network(tmp_path):
@@ -417,6 +445,7 @@ def test_step5_zoneinfo_unavailable_blocks_before_network(tmp_path):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_ASIA_TOKYO_ZONEINFO_UNAVAILABLE"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_step6_t1b_trust_pin_not_authorized_blocks(tmp_path):
@@ -425,6 +454,7 @@ def test_step6_t1b_trust_pin_not_authorized_blocks(tmp_path):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_TRUST_PIN_NOT_AUTHORIZED"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_step6_t1b_trust_pin_read_from_git_missing_blocks(tmp_path):
@@ -437,6 +467,7 @@ def test_step6_t1b_trust_pin_read_from_git_missing_blocks(tmp_path):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_TRUSTED_ALLOCATION_MISSING"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_step6_t1b_allocation_artifact_self_hash_tampered_blocks(tmp_path):
@@ -451,6 +482,7 @@ def test_step6_t1b_allocation_artifact_self_hash_tampered_blocks(tmp_path):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason.startswith("V8B_ALLOCATION_ARTIFACT_INVALID:")
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_step6_t1b_trust_pin_artifact_mismatch_blocks(tmp_path):
@@ -482,6 +514,7 @@ def test_step6_t1b_trust_pin_artifact_mismatch_blocks(tmp_path):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_TRUST_PIN_ALLOCATION_ARTIFACT_MISMATCH"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_step8_output_path_inside_repository_blocks(tmp_path):
@@ -490,6 +523,7 @@ def test_step8_output_path_inside_repository_blocks(tmp_path):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, ROOT / "acquisitions_should_not_be_written_here")
     assert excinfo.value.reason == "OUTPUT_PATH_INSIDE_SOURCE_REPOSITORY"
+    assert excinfo.value.authorization_consumed is False
 
 
 # ---------------------------------------------------------------------------
@@ -519,6 +553,7 @@ def test_t2_wrong_study_name_on_otherwise_valid_manifest_blocks(tmp_path, monkey
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "PARTITION_MANIFEST_STUDY_NAME_MISMATCH"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_t2_self_consistent_synthetic_manifest_still_blocks_without_frozen_pin(tmp_path):
@@ -536,6 +571,7 @@ def test_t2_self_consistent_synthetic_manifest_still_blocks_without_frozen_pin(t
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "PARTITION_TICKER_LIST_SHA_MISMATCH:T2"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_t2_anchor_repin_with_matching_forged_manifest_still_blocks_via_public_path(tmp_path):
@@ -556,6 +592,7 @@ def test_t2_anchor_repin_with_matching_forged_manifest_still_blocks_via_public_p
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8_TRUSTED_PARTITION_BLOB_MUTATED"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_t2_bridge_cannot_be_bypassed_wrong_manifest_binding(tmp_path, monkeypatch):
@@ -570,6 +607,7 @@ def test_t2_bridge_cannot_be_bypassed_wrong_manifest_binding(tmp_path, monkeypat
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "V8B_T2_AUTHORITY_BRIDGE_MANIFEST_SHA_MISMATCH"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_t2_anchor_not_authorized_blocks(tmp_path, monkeypatch):
@@ -584,6 +622,7 @@ def test_t2_anchor_not_authorized_blocks(tmp_path, monkeypatch):
     with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
         run(deps, tmp_path / "private")
     assert excinfo.value.reason == "TRUSTED_PARTITION_NOT_AUTHORIZED"
+    assert excinfo.value.authorization_consumed is False
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +690,188 @@ def test_t1b_atomic_no_partial_publication_on_mid_loop_block(tmp_path):
     assert not final_dir.exists()
     staging_entries = list((output_root / acquisition.ACQUISITIONS_DIRNAME).iterdir())
     assert staging_entries == []
+
+
+# ---------------------------------------------------------------------------
+# Round-3 HIGH-1: exact block-specific confirmation token + one-shot
+# authorization_consumed semantics.
+# ---------------------------------------------------------------------------
+
+
+def test_confirmation_constants_are_block_specific_and_distinct():
+    assert acquisition.T1B_ACQUISITION_CONFIRMATION == "V8B_PRODUCTION_ACQUIRE_T1B"
+    assert acquisition.T2_ACQUISITION_CONFIRMATION == "V8B_PRODUCTION_ACQUIRE_T2"
+    assert acquisition.T1B_ACQUISITION_CONFIRMATION != acquisition.T2_ACQUISITION_CONFIRMATION
+    assert acquisition.ACQUISITION_CONFIRMATION_BY_BLOCK == {
+        "T1B": acquisition.T1B_ACQUISITION_CONFIRMATION,
+        "T2": acquisition.T2_ACQUISITION_CONFIRMATION,
+    }
+
+
+def test_missing_confirmation_blocks_before_network(tmp_path):
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    deps = default_deps(block="T1B", opener=forbidden_opener, artifact_path=artifact_path, pin=pin, confirmation="")
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "V8B_ACQUISITION_CONFIRMATION_INVALID"
+    assert excinfo.value.authorization_consumed is False
+
+
+def test_t2_token_cannot_authorize_t1b_acquisition(tmp_path):
+    """A caller who supplies the T2 confirmation literal cannot acquire T1B
+    -- proves the two block-specific gates cannot cross-authorize."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    deps = default_deps(
+        block="T1B",
+        opener=forbidden_opener,
+        artifact_path=artifact_path,
+        pin=pin,
+        confirmation=acquisition.T2_ACQUISITION_CONFIRMATION,
+    )
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "V8B_ACQUISITION_CONFIRMATION_INVALID"
+    assert excinfo.value.authorization_consumed is False
+
+
+def test_t1b_token_cannot_authorize_t2_acquisition(tmp_path, monkeypatch):
+    """The inverse of the above: the T1B confirmation literal cannot
+    authorize T2 acquisition."""
+    t2_tickers = _tickers("T2", 300)
+    patch_t2_expected_constants(monkeypatch, t2_tickers)
+    manifest_path = tmp_path / "partition.json"
+    manifest, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
+    deps = default_deps(
+        block="T2",
+        opener=forbidden_opener,
+        partition_manifest_path=manifest_path,
+        anchor=anchor,
+        bridge=bridge,
+        confirmation=acquisition.T1B_ACQUISITION_CONFIRMATION,
+    )
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "V8B_ACQUISITION_CONFIRMATION_INVALID"
+    assert excinfo.value.authorization_consumed is False
+
+
+def test_confirmation_checked_before_any_other_pre_network_step(tmp_path):
+    """An invalid confirmation blocks even when every other dependency
+    would raise first if reached -- proving confirmation is checked as
+    step (0), strictly before git-provenance resolution."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+
+    def unreachable_resolver():
+        raise AssertionError("git_commit_resolver must not run before confirmation is checked")
+
+    deps = default_deps(
+        block="T1B",
+        opener=forbidden_opener,
+        artifact_path=artifact_path,
+        pin=pin,
+        confirmation="WRONG_TOKEN",
+        git_commit_resolver=unreachable_resolver,
+    )
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "V8B_ACQUISITION_CONFIRMATION_INVALID"
+    assert excinfo.value.authorization_consumed is False
+
+
+def test_t2_reuse_recheck_blocked_prevents_network(tmp_path, monkeypatch):
+    """HIGH-2 wiring: a T2 reuse-recheck that fails closed (as it does on
+    the real repository today) must block before the first opener call."""
+    t2_tickers = _tickers("T2", 300)
+    patch_t2_expected_constants(monkeypatch, t2_tickers)
+    manifest_path = tmp_path / "partition.json"
+    manifest, anchor, bridge = build_t2_fixture(t2_tickers, manifest_path)
+
+    def missing_recheck(head):
+        raise acquisition.V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_MISSING")
+
+    deps = default_deps(
+        block="T2",
+        opener=forbidden_opener,
+        partition_manifest_path=manifest_path,
+        anchor=anchor,
+        bridge=bridge,
+        t2_reuse_recheck_resolver=missing_recheck,
+    )
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.reason == "V8B_T2_REUSE_CONDITIONS_RECHECK_MISSING"
+    assert excinfo.value.authorization_consumed is False
+
+
+def test_authorization_consumed_true_only_once_first_opener_attempt_begins(tmp_path):
+    """The very first ticker's transport failure must already report
+    authorization_consumed=True -- consumption begins at the first Yahoo
+    request attempt, not at its success."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    first_ticker = artifact["t1b_tickers"][0]
+
+    def failing_opener(request_obj):
+        raise OSError("simulated failure on the very first request")
+
+    deps = default_deps(block="T1B", opener=failing_opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.authorization_consumed is True
+    assert first_ticker  # sanity: fixture produced a first ticker to fail on
+
+
+def test_authorization_consumed_true_on_failure_at_a_later_ticker_too(tmp_path):
+    """Consumption never resets: a failure on ticker index 5 (after four
+    successful requests) still reports authorization_consumed=True, proving
+    the flag is set once at the loop's start and never toggled back."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    fifth_ticker = artifact["t1b_tickers"][5]
+
+    def failing_payload(ticker: str) -> bytes:
+        if ticker == fifth_ticker:
+            return synthetic_payload(ticker, DEFAULT_DATES, bad_row_indices=[0, 1, 2])
+        return synthetic_payload(ticker, DEFAULT_DATES)
+
+    opener = FakeOpener(failing_payload)
+    deps = default_deps(block="T1B", opener=opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked) as excinfo:
+        run(deps, tmp_path / "private")
+    assert excinfo.value.authorization_consumed is True
+    assert len(opener.calls) == 6
+
+
+def test_no_automatic_or_manual_retry_after_authorization_consumed(tmp_path):
+    """Once a V8BHistoricalAcquisitionBlocked is raised mid-loop, calling
+    the same dependency-injected entrypoint again with the SAME deps must
+    not resume or retry the interrupted acquisition -- it re-attempts the
+    full pre-network sequence and the per-ticker loop from ticker 0, and
+    the module offers no state that would let a second call "continue"
+    from where the first one stopped. This proves there is no hidden retry
+    path, not merely that RETRY_COUNT == 0 (already covered elsewhere)."""
+    artifact, pin, artifact_path = build_t1b_fixture(tmp_path)
+    calls: list[str] = []
+
+    def always_failing_payload(ticker: str) -> bytes:
+        calls.append(ticker)
+        return synthetic_payload(ticker, DEFAULT_DATES, bad_row_indices=[0])
+
+    opener = FakeOpener(always_failing_payload)
+    deps = default_deps(block="T1B", opener=opener, artifact_path=artifact_path, pin=pin)
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked):
+        run(deps, tmp_path / "private")
+    with pytest.raises(acquisition.V8BHistoricalAcquisitionBlocked):
+        run(deps, tmp_path / "private")
+    # Each independent call restarts from ticker 0 (no cross-call resume
+    # state) and stops at the very first ticker both times.
+    assert calls == [artifact["t1b_tickers"][0], artifact["t1b_tickers"][0]]
+
+
+def test_successful_manifest_does_not_expose_authorization_consumed_field():
+    """The manifest schema itself carries no authorization_consumed field
+    -- that attribute is exposed only on the safe failure status
+    (V8BHistoricalAcquisitionBlocked.authorization_consumed), never as
+    part of the published, schema-checked manifest."""
+    assert "authorization_consumed" not in acquisition.ACQUISITION_MANIFEST_FIELDS
 
 
 # ---------------------------------------------------------------------------

@@ -7,17 +7,47 @@ code that produced it. Any single invariant failing is `BLOCK`: no trust
 pin may be created and no acquisition may proceed (§11.4, §12's
 `READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION` gate).
 
-This module performs no I/O and no network access. It never returns ticker
-identities -- ``verify_t1b_allocation_artifact`` returns a safe aggregate
-public result (hashes/counts/status only) on PASS, and raises
-``V8BAllocationVerificationBlocked`` (carrying only a reason code, never a
-ticker) on any failure.
+Two, and only two, ways to call this module (round-3 finding MEDIUM-2, this
+implementation phase):
+
+- ``verify_t1b_allocation_artifact`` -- the **private/pure invariant
+  evaluator**. It performs no I/O and no network access, and accepts
+  every trusted comparison input (the parent `T_spare`/`T0`/old-`T1`/`T2`/
+  `T3` ticker lists, the expected parent hash, the expected frozen design
+  commit) directly from the caller -- exactly the seam fake/synthetic
+  tests need. It is not, by itself, a safe *production* trust root: a
+  caller could supply a favorable but wrong mapping.
+- ``resolve_and_verify_t1b_allocation_artifact`` -- the **production
+  boundary**. It resolves verified V8B Git HEAD; verifies the frozen
+  design object, freeze approval, and reviewed-implementation binding;
+  verifies the exact immutable V8 anchor; reads the private V8 partition
+  manifest and the private `T1B` allocation artifact from caller-supplied
+  paths (private data, so a path parameter remains appropriate, exactly
+  like `src/v8b_t1b_allocator.py` and the `T1B` branch of
+  `src/v8b_historical_acquisition.py`); derives every block's ticker
+  assignment internally from that one verified manifest; checks the
+  artifact's parent manifest SHA/implementation-commit and the exact
+  frozen parent `T_spare` count/hash; checks the artifact's
+  ``v8b_allocation_implementation_commit`` equals the reviewed
+  implementation commit; and only then invokes the pure evaluator above.
+  It never accepts a caller-supplied expected hash/commit as the trust
+  root, performs no network access, and its return value is the pure
+  evaluator's own safe aggregate result -- hashes/counts/status only,
+  never a ticker identity or private path.
 """
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from src.v8_partition import (
+    STUDY_NAME as V8_STUDY_NAME,
+    V8PartitionBlocked,
+    read_partition_manifest,
+)
 from src.v8b_allocation import (
     ALLOCATION_ARTIFACT_FIELDS,
     SELECTION_RULE_TEXT,
@@ -26,6 +56,22 @@ from src.v8b_allocation import (
     ticker_list_sha256,
     verify_allocation_artifact_self_hash,
 )
+from src.v8b_git_provenance import V8BGitProvenanceBlocked, resolve_verified_v8b_production_git_commit
+from src.v8b_production_provenance import (
+    EXPECTED_PARENT_T_SPARE_TICKER_COUNT,
+    EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+    EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+    V8BProductionProvenanceBlocked,
+    V8_DESIGN_COMMIT,
+    read_and_verify_design_freeze_approval,
+    read_and_verify_v8_trusted_partition_anchor,
+    verify_frozen_design_object,
+    verify_reviewed_implementation_binding,
+)
+
+CANONICAL_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+_REQUIRED_BLOCK_KEYS = ("T0", "T1", "T2", "T3", "T_spare")
 
 
 class V8BAllocationVerificationBlocked(RuntimeError):
@@ -147,7 +193,154 @@ def verify_t1b_allocation_artifact(
     }
 
 
+_GIT_OBJECT_MISSING_REASONS = frozenset({"GIT_OBJECT_READ_FAILED", "GIT_BLOB_RESOLUTION_FAILED"})
+
+
+def _wrap(error: BaseException, missing_reason: str | None = None) -> V8BAllocationVerificationBlocked:
+    reason = getattr(error, "reason", None)
+    if missing_reason is not None and reason in _GIT_OBJECT_MISSING_REASONS:
+        return V8BAllocationVerificationBlocked(missing_reason)
+    if isinstance(reason, str):
+        return V8BAllocationVerificationBlocked(reason)
+    return V8BAllocationVerificationBlocked("PROVENANCE_CHECK_FAILED")
+
+
+def _strict_json_object(raw: bytes, *, invalid_reason: str, duplicate_reason: str) -> dict[str, Any]:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise V8BAllocationVerificationBlocked(duplicate_reason)
+            result[key] = value
+        return result
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise V8BAllocationVerificationBlocked(invalid_reason) from error
+    if not isinstance(parsed, dict):
+        raise V8BAllocationVerificationBlocked(invalid_reason)
+    return parsed
+
+
+def resolve_and_verify_t1b_allocation_artifact(
+    allocation_artifact_path: str | os.PathLike[str],
+    partition_manifest_path: str | os.PathLike[str],
+    *,
+    repository_root: str | None = None,
+) -> dict[str, Any]:
+    """Production `READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION` boundary
+    (round-3 finding MEDIUM-2). See module docstring for the full ordering.
+
+    ``allocation_artifact_path``/``partition_manifest_path`` are private
+    data, so caller-supplied paths remain appropriate here -- exactly the
+    same convention `src/v8b_t1b_allocator.py` and the `T1B` branch of
+    `src/v8b_historical_acquisition.py` already use. Every *trust* value
+    (the reviewed implementation commit, the immutable V8 anchor, the
+    frozen parent `T_spare` count/hash) is derived from verified Git
+    objects or this module's own frozen constants, never from the artifact
+    or manifest's own self-reported fields. No network access; never
+    prints a ticker identity or a private path.
+    """
+    root = repository_root if repository_root is not None else CANONICAL_REPOSITORY_ROOT
+
+    try:
+        verified_head = resolve_verified_v8b_production_git_commit(root)
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap(error) from error
+
+    try:
+        verify_frozen_design_object(root)
+        read_and_verify_design_freeze_approval(root, verified_head)
+    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+        raise _wrap(error) from error
+
+    try:
+        review_binding = verify_reviewed_implementation_binding(root, verified_head)
+    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+        raise _wrap(error, "V8B_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING") from error
+    reviewed_commit = review_binding["reviewed_implementation_git_commit"]
+
+    try:
+        anchor = read_and_verify_v8_trusted_partition_anchor(root, verified_head)
+    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+        raise _wrap(error) from error
+
+    try:
+        partition_manifest = read_partition_manifest(partition_manifest_path)
+    except V8PartitionBlocked as error:
+        raise V8BAllocationVerificationBlocked(error.reason) from error
+
+    manifest_sha = partition_manifest["manifest_sha256"]
+    if manifest_sha != anchor["authorized_partition_manifest_sha256"]:
+        raise V8BAllocationVerificationBlocked("TRUSTED_PARTITION_MANIFEST_SHA_MISMATCH")
+    partition_implementation_commit = partition_manifest["partition_implementation_git_commit"]
+    if partition_implementation_commit != anchor["authorized_partition_implementation_git_commit"]:
+        raise V8BAllocationVerificationBlocked("TRUSTED_PARTITION_IMPLEMENTATION_GIT_COMMIT_MISMATCH")
+    if partition_manifest["study_name"] != V8_STUDY_NAME:
+        raise V8BAllocationVerificationBlocked("PARTITION_MANIFEST_STUDY_NAME_MISMATCH")
+    if partition_manifest["design_commit"] != V8_DESIGN_COMMIT:
+        raise V8BAllocationVerificationBlocked("PARTITION_MANIFEST_DESIGN_COMMIT_MISMATCH")
+
+    assignments = partition_manifest["block_assignments"]
+    if not isinstance(assignments, Mapping) or set(_REQUIRED_BLOCK_KEYS) - set(assignments):
+        raise V8BAllocationVerificationBlocked("PARTITION_BLOCK_ASSIGNMENT_MISSING")
+    blocks: dict[str, list[str]] = {}
+    for key in _REQUIRED_BLOCK_KEYS:
+        value = assignments[key]
+        if not isinstance(value, list):
+            raise V8BAllocationVerificationBlocked("PARTITION_BLOCK_ASSIGNMENT_INVALID:" + key)
+        blocks[key] = list(value)
+
+    # Exact frozen parent T_spare count/hash pin -- never merely "whatever
+    # this particular manifest's own T_spare list happens to be".
+    parent_tickers = blocks["T_spare"]
+    if len(parent_tickers) != EXPECTED_PARENT_T_SPARE_TICKER_COUNT:
+        raise V8BAllocationVerificationBlocked("PARENT_T_SPARE_TICKER_COUNT_INVALID")
+    computed_parent_hash = ticker_list_sha256(parent_tickers)
+    if computed_parent_hash != EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256:
+        raise V8BAllocationVerificationBlocked("PARENT_T_SPARE_TICKER_LIST_SHA_MISMATCH")
+    if computed_parent_hash != partition_manifest["t_spare_ticker_list_sha256"]:
+        raise V8BAllocationVerificationBlocked("PARENT_T_SPARE_TICKER_LIST_SHA_MISMATCH")
+
+    try:
+        artifact_raw = Path(allocation_artifact_path).read_bytes()
+    except OSError as error:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_READ_FAILED") from error
+    artifact = _strict_json_object(
+        artifact_raw,
+        invalid_reason="ALLOCATION_ARTIFACT_INVALID_JSON",
+        duplicate_reason="ALLOCATION_ARTIFACT_DUPLICATE_KEY",
+    )
+
+    # Exact parent manifest SHA/implementation-commit binding -- the
+    # artifact must claim the same verified parent this call just derived,
+    # not merely a self-consistent one of its own choosing.
+    if artifact.get("parent_v8_partition_manifest_sha256") != manifest_sha:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_PARENT_MANIFEST_SHA_MISMATCH")
+    if artifact.get("parent_v8_partition_implementation_commit") != partition_implementation_commit:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_PARENT_IMPLEMENTATION_COMMIT_MISMATCH")
+
+    # The artifact must record the *actually reviewed* implementation
+    # commit, never merely a later (possibly audit-drifted) HEAD.
+    if artifact.get("v8b_allocation_implementation_commit") != reviewed_commit:
+        raise V8BAllocationVerificationBlocked("ALLOCATION_ARTIFACT_IMPLEMENTATION_COMMIT_NOT_REVIEWED")
+
+    return verify_t1b_allocation_artifact(
+        artifact,
+        parent_t_spare_tickers=parent_tickers,
+        t0_tickers=blocks["T0"],
+        old_t1_tickers=blocks["T1"],
+        t2_tickers=blocks["T2"],
+        t3_tickers=blocks["T3"],
+        expected_parent_t_spare_ticker_list_sha256=computed_parent_hash,
+        expected_v8b_frozen_design_commit=EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+    )
+
+
 __all__ = [
+    "CANONICAL_REPOSITORY_ROOT",
     "V8BAllocationVerificationBlocked",
+    "resolve_and_verify_t1b_allocation_artifact",
     "verify_t1b_allocation_artifact",
 ]

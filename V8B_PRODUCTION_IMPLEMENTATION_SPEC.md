@@ -196,3 +196,31 @@ medium_findings_fixed=3
 | MEDIUM-3: `open_for_*` research-opening API was exported | Removed entirely from `src/v8b_historical_acquisition.py` -- no research-opening API of any kind exists in this module. |
 
 `NEXT ACTION = REPEAT_INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW` (§12.3).
+
+---
+
+## 8. Remediation round 3 (repeat `INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW`: CRITICAL=0, HIGH=4, MEDIUM=1)
+
+```text
+high_findings_fixed=4
+medium_findings_fixed=1
+raw_acquisition_human_gate_tokens_implemented=true (V8B_PRODUCTION_ACQUIRE_T1B, V8B_PRODUCTION_ACQUIRE_T2)
+one_shot_authorization_consumption_tests_present=true
+fresh_post_freeze_t2_recheck_required=true (V8B_T2_REUSE_CONDITIONS_RECHECK.json does not exist -- fails closed)
+v8_partition_py_bound_to_review=true
+section_12_6_exact_ticker_and_authority_verification=true
+production_t1b_allocation_verifier_implemented=true
+real_allocation_performed=false
+private_real_data_accessed=false
+yahoo_jpx_requests=0
+```
+
+| Finding | Fix |
+|---|---|
+| HIGH-1: raw acquisition/allocation human gates had no mechanical confirmation token or one-shot consumption semantics | `src/v8b_historical_acquisition.py` now requires the exact block-specific literal (`T1B_ACQUISITION_CONFIRMATION`/`T2_ACQUISITION_CONFIRMATION`, checked before any other step) and tracks `authorization_consumed` -- `False` through every pre-network step, `True` from the first per-ticker opener attempt onward, exposed only on `V8BHistoricalAcquisitionBlocked`, never on the published manifest. `src/v8b_t1b_allocator.py` mirrors this for `V8B_PRODUCTION_ALLOCATE_T1B`, with consumption beginning at the first private partition-manifest read. Neither confirmation literal is real human authorization; both remain mechanical anti-fat-finger syntax, matching this repository's existing `--confirmation` convention. |
+| HIGH-2: T2 reuse recheck read the wrong (§12.2 pre-freeze) evidence document for the §12.4 post-freeze gate | `src/v8b_t2_reuse_recheck.py` no longer reads `V8B_TSPARE_T2_T3_PRESERVATION_RECHECK.md`. It now resolves the future `V8B_T2_REUSE_CONDITIONS_RECHECK.json` (schema `V8B_T2_REUSE_CONDITIONS_RECHECK_V1`, `stage=POST_FREEZE`, bound to the frozen design commit) from a verified Git object; that artifact does not exist in this repository, so `T2` production acquisition fails closed by construction today. |
+| HIGH-3: reviewed-implementation binding omitted `src/v8_partition.py`, which V8B production executes directly | `BOUND_PRODUCTION_FILES` in `src/v8b_production_provenance.py` now includes `src/v8_partition.py`; a later drift in that file's blob blocks acquisition/allocation even when every V8B-authored module is unchanged. |
+| HIGH-4: §12.6 verifier accepted caller-supplied expected hashes/authority strings as its trust root, and never checked the manifest's own `ticker_list_sha256` | `verify_acquisition_artifact` (private/pure) now also requires an exact `expected_ticker_list_sha256` and full-value (not merely same-keys) `expected_authority_binding` match. The new production boundary `resolve_and_verify_acquisition_artifact` derives all of these from verified Git objects -- the exact frozen `T2` hash/anchor/bridge, or the Git-sourced `T1B` trust pin -- and never from a caller-supplied value. |
+| MEDIUM-1: no production wrapper existed for `READ_ONLY_T1B_ALLOCATION_ARTIFACT_VERIFICATION` | New `resolve_and_verify_t1b_allocation_artifact` in `src/v8b_allocation_verification.py`: resolves verified Git HEAD, verifies the frozen design/freeze-approval/reviewed-implementation chain and the exact immutable V8 anchor, reads the private V8 partition manifest and `T1B` allocation artifact from caller-supplied paths, derives every block's ticker assignment internally, checks the artifact's parent-manifest SHA/implementation-commit and the exact frozen parent `T_spare` count/hash, checks `v8b_allocation_implementation_commit` equals the reviewed commit, and only then invokes the pure §11.4 evaluator. Returns only the pure evaluator's safe hash/count summary. |
+
+`NEXT ACTION = REPEAT_INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW` (§12.3).

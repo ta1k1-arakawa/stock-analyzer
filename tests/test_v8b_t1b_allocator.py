@@ -112,6 +112,7 @@ def test_wrong_confirmation_blocks_before_any_dependency_call(tmp_path):
             clock=clock_stub,
         )
     assert excinfo.value.reason == "V8B_ALLOCATION_CONFIRMATION_INVALID"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_public_entrypoint_rejects_wrong_confirmation():
@@ -120,6 +121,7 @@ def test_public_entrypoint_rejects_wrong_confirmation():
             confirmation="not the real token", partition_manifest_path="/tmp/x", output_path="/tmp/y"
         )
     assert excinfo.value.reason == "V8B_ALLOCATION_CONFIRMATION_INVALID"
+    assert excinfo.value.authorization_consumed is False
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +149,7 @@ def test_git_provenance_failure_blocks_before_private_manifest_read(tmp_path):
             clock=clock_stub,
         )
     assert excinfo.value.reason == "PRODUCTION_GIT_WORKTREE_DIRTY"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_freeze_approval_failure_blocks_before_private_manifest_read(tmp_path):
@@ -166,6 +169,7 @@ def test_freeze_approval_failure_blocks_before_private_manifest_read(tmp_path):
             clock=clock_stub,
         )
     assert excinfo.value.reason == "V8B_DESIGN_FREEZE_APPROVAL_NOT_APPROVED"
+    assert excinfo.value.authorization_consumed is False
     assert not (tmp_path / "unread.json").exists()  # never even written by test setup -- proves no read attempted crashes differently
 
 
@@ -186,6 +190,7 @@ def test_reviewed_implementation_binder_failure_blocks(tmp_path):
             clock=clock_stub,
         )
     assert excinfo.value.reason == "V8B_REVIEWED_IMPLEMENTATION_BLOB_DRIFT:src/v8b_t1b_allocator.py"
+    assert excinfo.value.authorization_consumed is False
 
 
 def test_anchor_not_authorized_blocks_before_private_manifest_read(tmp_path):
@@ -202,6 +207,7 @@ def test_anchor_not_authorized_blocks_before_private_manifest_read(tmp_path):
             clock=clock_stub,
         )
     assert excinfo.value.reason == "TRUSTED_PARTITION_NOT_AUTHORIZED"
+    assert excinfo.value.authorization_consumed is False
     assert not (tmp_path / "unread.json").exists()
 
 
@@ -247,6 +253,7 @@ def test_wrong_study_name_on_otherwise_matching_manifest_blocks(tmp_path, monkey
             clock=clock_stub,
         )
     assert excinfo.value.reason == "PARTITION_MANIFEST_STUDY_NAME_MISMATCH"
+    assert excinfo.value.authorization_consumed is True
 
 
 def test_parent_t_spare_count_mismatch_blocks(tmp_path):
@@ -265,6 +272,7 @@ def test_parent_t_spare_count_mismatch_blocks(tmp_path):
             clock=clock_stub,
         )
     assert excinfo.value.reason == "PARENT_T_SPARE_TICKER_COUNT_INVALID"
+    assert excinfo.value.authorization_consumed is True
 
 
 def test_synthetic_parent_never_matches_real_frozen_hash_by_accident(tmp_path):
@@ -286,6 +294,7 @@ def test_synthetic_parent_never_matches_real_frozen_hash_by_accident(tmp_path):
             clock=clock_stub,
         )
     assert excinfo.value.reason == "PARENT_T_SPARE_TICKER_LIST_SHA_MISMATCH"
+    assert excinfo.value.authorization_consumed is True
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +357,7 @@ def test_allocation_artifact_never_overwrites_existing_destination(tmp_path, mon
             clock=clock_stub,
         )
     assert excinfo.value.reason == "V8B_ALLOCATION_ARTIFACT_ALREADY_EXISTS"
+    assert excinfo.value.authorization_consumed is True
     assert output_path.read_bytes() == b"pre-existing"
 
 
@@ -374,6 +384,59 @@ def test_output_path_inside_repository_blocks(tmp_path, monkeypatch):
             clock=clock_stub,
         )
     assert excinfo.value.reason == "OUTPUT_PATH_INSIDE_SOURCE_REPOSITORY"
+    assert excinfo.value.authorization_consumed is True
+
+
+# ---------------------------------------------------------------------------
+# Round-3 HIGH-1: one-shot authorization_consumed semantics for the allocator
+# ---------------------------------------------------------------------------
+
+
+def test_authorization_consumed_true_at_first_private_manifest_read_failure(tmp_path):
+    """A failure reading the private partition manifest itself (the very
+    first private action, step (5)) must already report
+    authorization_consumed=True -- consumption begins at the attempt, not
+    at a later success."""
+    with pytest.raises(allocator.V8BT1BAllocatorBlocked) as excinfo:
+        run(
+            confirmation=allocator.ALLOCATION_CONFIRMATION,
+            partition_manifest_path=tmp_path / "does_not_exist.json",
+            output_path=tmp_path / "out.json",
+            git_commit_resolver=lambda: SYNTHETIC_COMMIT,
+            design_freeze_approval_reader=lambda head: {"ok": True},
+            frozen_design_object_verifier=lambda: None,
+            reviewed_implementation_binder=lambda head: {"reviewed_implementation_git_commit": SYNTHETIC_REVIEWED_COMMIT},
+            anchor_reader=lambda head: {"authorization_status": "AUTHORIZED"},
+            clock=clock_stub,
+        )
+    assert excinfo.value.authorization_consumed is True
+
+
+def test_no_automatic_or_manual_retry_after_authorization_consumed(tmp_path):
+    """Calling the same dependency-injected entrypoint twice with identical
+    deps re-attempts the full sequence from confirmation each time -- there
+    is no hidden resume/retry state carried between calls."""
+    manifest_path = tmp_path / "partition.json"
+    manifest = write_partition_manifest(manifest_path, t_spare=_tickers("TS", 1903))
+    kwargs = dict(
+        confirmation=allocator.ALLOCATION_CONFIRMATION,
+        partition_manifest_path=manifest_path,
+        output_path=tmp_path / "out.json",
+        git_commit_resolver=lambda: SYNTHETIC_COMMIT,
+        design_freeze_approval_reader=lambda head: {"ok": True},
+        frozen_design_object_verifier=lambda: None,
+        reviewed_implementation_binder=lambda head: {"reviewed_implementation_git_commit": SYNTHETIC_REVIEWED_COMMIT},
+        anchor_reader=lambda head: _valid_anchor_for(manifest),
+        clock=clock_stub,
+    )
+    with pytest.raises(allocator.V8BT1BAllocatorBlocked) as first:
+        run(**kwargs)
+    with pytest.raises(allocator.V8BT1BAllocatorBlocked) as second:
+        run(**kwargs)
+    assert first.value.reason == second.value.reason == "PARENT_T_SPARE_TICKER_COUNT_INVALID"
+    assert first.value.authorization_consumed is True
+    assert second.value.authorization_consumed is True
+    assert not (tmp_path / "out.json").exists()
 
 
 def test_no_retry_parameter_exists():

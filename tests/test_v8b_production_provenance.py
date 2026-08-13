@@ -184,6 +184,37 @@ def test_reviewed_implementation_binding_passes_when_all_bound_blobs_match(tmp_p
     assert result["bound_files_verified"] == len(pp.BOUND_PRODUCTION_FILES)
 
 
+def test_v8_partition_py_is_bound_to_the_review():
+    assert "src/v8_partition.py" in pp.BOUND_PRODUCTION_FILES
+
+
+def test_reviewed_implementation_binding_blocks_on_v8_partition_drift(tmp_path):
+    """A drift in src/v8_partition.py specifically must BLOCK, even though
+    V8B does not author that file -- round-2 finding HIGH-3."""
+    bogus = tmp_path / "review_drift_v8_partition"
+    bogus.mkdir()
+    files = _bound_file_contents()
+    reviewed_commit = _init_bogus_git_repo(bogus, files=files)
+
+    drifted_path = "src/v8_partition.py"
+    (bogus / drifted_path).write_bytes(files[drifted_path] + b"\n# drifted\n")
+    (bogus / "V8B_PRODUCTION_IMPLEMENTATION_REVIEW.json").write_bytes(
+        json.dumps(_review_artifact(reviewed_commit)).encode()
+    )
+    subprocess.run(["git", "-C", str(bogus), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(bogus), "-c", "user.email=a@b.c", "-c", "user.name=x", "commit", "-q", "-m", "drift"],
+        check=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(bogus), "rev-parse", "HEAD"], capture_output=True, check=True, text=True
+    ).stdout.strip()
+
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        pp.verify_reviewed_implementation_binding(bogus, head)
+    assert excinfo.value.reason == "V8B_REVIEWED_IMPLEMENTATION_BLOB_DRIFT:src/v8_partition.py"
+
+
 def test_reviewed_implementation_binding_blocks_on_bound_blob_drift(tmp_path):
     """A single changed bound production file between HEAD and the reviewed
     commit must BLOCK -- audit-only drift is fine, production-file drift is

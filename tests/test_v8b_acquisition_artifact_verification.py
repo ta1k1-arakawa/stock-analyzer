@@ -101,9 +101,13 @@ def build_and_run_t1b(tmp_path: Path) -> tuple[dict, Path]:
     artifact_path = tmp_path / "artifact.json"
     artifact_path.write_bytes(allocation.canonical_json_bytes(artifact))
 
+    def _unreachable_t2_reuse_recheck_resolver(head):
+        raise AssertionError("t2_reuse_recheck_resolver must not run for a T1B acquisition")
+
     deps = dict(
         output_root=tmp_path / "private",
         block="T1B",
+        confirmation=acquisition.T1B_ACQUISITION_CONFIRMATION,
         partition_manifest_path=None,
         t1b_allocation_artifact_path=artifact_path,
         git_commit_resolver=lambda: SYNTHETIC_COMMIT,
@@ -114,6 +118,7 @@ def build_and_run_t1b(tmp_path: Path) -> tuple[dict, Path]:
         zoneinfo_loader=lambda: object(),
         anchor_reader=lambda head: {},
         bridge_reader=lambda head: {},
+        t2_reuse_recheck_resolver=_unreachable_t2_reuse_recheck_resolver,
         t1b_trust_pin_reader=lambda head: pin,
         opener=FakeOpener(),
         clock=clock_stub,
@@ -121,49 +126,61 @@ def build_and_run_t1b(tmp_path: Path) -> tuple[dict, Path]:
         sleep_fn=lambda _s: None,
     )
     acquisition._acquire_production_v8b_historical_block_bundle_with_dependencies(**deps)
-    return artifact, tmp_path / "private"
+    return artifact, tmp_path / "private", pin
 
 
-EXPECTED_KWARGS = dict(
-    expected_v8b_frozen_design_commit=acquisition.V8B_FROZEN_DESIGN_COMMIT,
-    expected_reviewed_production_implementation_commit=SYNTHETIC_REVIEWED_COMMIT,
-    expected_authority_chain="V8B_SUCCESSOR_ALLOCATION_AUTHORITY",
-)
+def expected_kwargs_for(artifact: dict, pin: dict) -> dict:
+    """The full ``expected_*`` kwarg set a *correctly-computed* production
+    trust root would derive for this synthetic T1B artifact/pin pair --
+    used to exercise the pure ``verify_acquisition_artifact`` checker
+    directly with fake/synthetic values (round-3 finding HIGH-4)."""
+    return dict(
+        expected_v8b_frozen_design_commit=acquisition.V8B_FROZEN_DESIGN_COMMIT,
+        expected_reviewed_production_implementation_commit=SYNTHETIC_REVIEWED_COMMIT,
+        expected_authority_chain="V8B_SUCCESSOR_ALLOCATION_AUTHORITY",
+        expected_ticker_list_sha256=allocation.ticker_list_sha256(artifact["t1b_tickers"]),
+        expected_authority_binding={
+            "authorized_allocation_artifact_self_hash": artifact["artifact_self_hash"],
+            "parent_v8_partition_manifest_sha256": artifact["parent_v8_partition_manifest_sha256"],
+            "parent_v8_partition_implementation_commit": artifact["parent_v8_partition_implementation_commit"],
+            "trust_pin_human_gate": pin["human_gate"],
+        },
+    )
 
 
 def test_pass_on_honest_bundle(tmp_path):
-    artifact, output_root = build_and_run_t1b(tmp_path)
-    result = artifact_verification.verify_acquisition_artifact(output_root, "T1B", **EXPECTED_KWARGS)
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    result = artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert result["result"] == "PASS"
     assert result["payload_manifest_record_count"] == 300
     assert result["ticker_count"] == 300
 
 
 def test_detects_missing_payload_file(tmp_path):
-    artifact, output_root = build_and_run_t1b(tmp_path)
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
     raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
     next(raw_dir.iterdir()).unlink()
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **EXPECTED_KWARGS)
+        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "RAW_PAYLOAD_MISSING"
 
 
 def test_detects_extra_payload_file(tmp_path):
-    artifact, output_root = build_and_run_t1b(tmp_path)
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
     raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
     (raw_dir / "EXTRA9999.json").write_bytes(b"{}")
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **EXPECTED_KWARGS)
+        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "RAW_PAYLOAD_UNEXPECTED_EXTRA"
 
 
 def test_detects_modified_payload_bytes(tmp_path):
-    artifact, output_root = build_and_run_t1b(tmp_path)
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
     raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
     victim = next(raw_dir.iterdir())
     victim.write_bytes(victim.read_bytes() + b"tampered")
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **EXPECTED_KWARGS)
+        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "RAW_PAYLOAD_BYTE_COUNT_MISMATCH"
 
 
@@ -186,54 +203,126 @@ def test_payload_manifest_hash_tampering_blocks(tmp_path):
     """MEDIUM-1: payload_manifest_sha256 is recomputed from the actual
     payload_manifest list, not merely trusted from the manifest's own
     stated field."""
-    artifact, output_root = build_and_run_t1b(tmp_path)
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
     manifest = _load_manifest(output_root, "T1B")
     manifest["payload_manifest_sha256"] = "0" * 64
     _rewrite_manifest(output_root, "T1B", manifest)
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **EXPECTED_KWARGS)
+        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     # read_acquisition_manifest itself doesn't check payload_manifest_sha256
     # consistency, so this reaches the artifact verifier's own recompute check.
     assert excinfo.value.reason == "PAYLOAD_MANIFEST_SHA_MISMATCH"
 
 
 def test_classifier_blob_tampering_blocks(tmp_path):
-    artifact, output_root = build_and_run_t1b(tmp_path)
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
     manifest = _load_manifest(output_root, "T1B")
     manifest["canonical_parser_classifier_blob_sha"] = "0" * 40
     _rewrite_manifest(output_root, "T1B", manifest)
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **EXPECTED_KWARGS)
+        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "CLASSIFIER_BLOB_MISMATCH"
 
 
 def test_data_source_tampering_blocks(tmp_path):
-    artifact, output_root = build_and_run_t1b(tmp_path)
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
     manifest = _load_manifest(output_root, "T1B")
     manifest["data_source_schema"] = "some other schema"
     _rewrite_manifest(output_root, "T1B", manifest)
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **EXPECTED_KWARGS)
+        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "DATA_SOURCE_SCHEMA_MISMATCH"
 
 
 def test_authority_binding_schema_mismatch_blocks(tmp_path):
-    artifact, output_root = build_and_run_t1b(tmp_path)
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    kwargs = expected_kwargs_for(artifact, pin)
+    kwargs["expected_authority_chain"] = "ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY_OPTION_2_BRIDGE"  # wrong chain for T1B
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(
-            output_root, "T1B",
-            expected_v8b_frozen_design_commit=acquisition.V8B_FROZEN_DESIGN_COMMIT,
-            expected_reviewed_production_implementation_commit=SYNTHETIC_REVIEWED_COMMIT,
-            expected_authority_chain="ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY_OPTION_2_BRIDGE",  # wrong chain for T1B
-        )
+        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **kwargs)
     assert excinfo.value.reason == "AUTHORITY_CHAIN_MISMATCH"
 
 
 def test_authority_binding_field_set_must_match_block(tmp_path):
-    artifact, output_root = build_and_run_t1b(tmp_path)
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
     manifest = _load_manifest(output_root, "T1B")
     manifest["authority_binding"]["extra_unexpected_field"] = "value"
     _rewrite_manifest(output_root, "T1B", manifest)
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
-        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **EXPECTED_KWARGS)
+        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "AUTHORITY_BINDING_SCHEMA_INVALID"
+
+
+# ---------------------------------------------------------------------------
+# Round-3 HIGH-4: exact ticker_list_sha256 / authority_binding VALUE checks
+# ---------------------------------------------------------------------------
+
+
+def test_ticker_list_sha_mismatch_blocks(tmp_path):
+    """A manifest whose own ticker_list_sha256 doesn't match the expected
+    (Git-derived, in production) hash must BLOCK -- proves block membership
+    authority is checked, not merely that the field is present."""
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    kwargs = expected_kwargs_for(artifact, pin)
+    kwargs["expected_ticker_list_sha256"] = "0" * 64
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **kwargs)
+    assert excinfo.value.reason == "TICKER_LIST_SHA_MISMATCH"
+
+
+def test_authority_binding_matching_keys_but_wrong_values_blocks(tmp_path):
+    """A forged authority_binding with the exact right KEY SET but one
+    wrong VALUE must still BLOCK -- proves the check is a full value
+    comparison, not merely a schema/key-set check (round-3 finding
+    HIGH-4)."""
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    manifest = _load_manifest(output_root, "T1B")
+    manifest["authority_binding"]["trust_pin_human_gate"] = "FORGED_BUT_SAME_KEY_SET"
+    _rewrite_manifest(output_root, "T1B", manifest)
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "AUTHORITY_BINDING_VALUE_MISMATCH"
+
+
+def test_expected_authority_binding_wrong_schema_blocks(tmp_path):
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    kwargs = expected_kwargs_for(artifact, pin)
+    kwargs["expected_authority_binding"] = {"unexpected_field": "value"}
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification.verify_acquisition_artifact(output_root, "T1B", **kwargs)
+    assert excinfo.value.reason == "EXPECTED_AUTHORITY_BINDING_SCHEMA_INVALID"
+
+
+# ---------------------------------------------------------------------------
+# Round-3 HIGH-4: production resolver derives trust from verified Git only
+# ---------------------------------------------------------------------------
+
+
+def test_production_resolver_signature_accepts_no_caller_supplied_expected_values():
+    import inspect
+
+    params = set(inspect.signature(artifact_verification.resolve_and_verify_acquisition_artifact).parameters)
+    assert params == {"output_root", "block", "repository_root"}
+    for forbidden in (
+        "expected_v8b_frozen_design_commit",
+        "expected_reviewed_production_implementation_commit",
+        "expected_authority_chain",
+        "expected_ticker_list_sha256",
+        "expected_authority_binding",
+    ):
+        assert forbidden not in params
+
+
+def test_production_resolver_fails_closed_on_real_repo_today(tmp_path):
+    """The real repository has no real published T1B/T2 acquisition bundle
+    (and no real V8B_TRUSTED_ALLOCATION.json trust pin either) -- the real
+    production resolver must fail closed today, proving zero real
+    acquisition/allocation is required or performed by this phase."""
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked):
+        artifact_verification.resolve_and_verify_acquisition_artifact(tmp_path / "private", "T1B")
+
+
+def test_production_resolver_rejects_invalid_block():
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification.resolve_and_verify_acquisition_artifact("/nonexistent", "T3")
+    assert excinfo.value.reason == "BLOCK_INVALID"

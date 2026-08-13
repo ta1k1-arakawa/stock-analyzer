@@ -114,6 +114,13 @@ BOUND_PRODUCTION_FILES: tuple[str, ...] = (
     "src/v8b_t2_reuse_recheck.py",
     "src/v8b_t1b_allocator.py",
     "V8B_T2_AUTHORITY_BRIDGE.json",
+    # V8B production executes src/v8_partition.py's read_partition_manifest,
+    # require_absolute_output_path_outside_repository, ticker_list_sha256,
+    # and its constants directly -- a later change to that file must BLOCK
+    # even when every V8B-authored module blob is unchanged (round-2
+    # finding HIGH-3). The independent exact classifier pin for
+    # src/v7_yahoo_collector.py (§7.6) remains separate and unaffected.
+    "src/v8_partition.py",
 )
 
 

@@ -62,11 +62,18 @@ CANONICAL_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 class V8BT1BAllocatorBlocked(RuntimeError):
-    """Fail-closed production T1B allocation error."""
+    """Fail-closed production T1B allocation error.
 
-    def __init__(self, reason: str) -> None:
+    ``authorization_consumed`` is ``False`` for every pre-private-access
+    failure (confirmation, provenance, freeze, review, anchor) and
+    ``True`` for any failure at or after the first private partition read
+    -- a safe boolean, never a ticker or path (round-2 finding HIGH-1).
+    """
+
+    def __init__(self, reason: str, *, authorization_consumed: bool = False) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.authorization_consumed = authorization_consumed
 
 
 _GIT_OBJECT_MISSING_REASONS = frozenset({"GIT_OBJECT_READ_FAILED", "GIT_BLOB_RESOLUTION_FAILED"})
@@ -191,63 +198,66 @@ def _allocate_t1b_production_with_dependencies(
     if anchor["authorization_status"] != "AUTHORIZED":
         raise V8BT1BAllocatorBlocked("TRUSTED_PARTITION_NOT_AUTHORIZED")
 
-    # (5) only now read the private V8 partition manifest
+    # (5) onward: the first private action (reading the private V8 partition
+    # manifest) is about to begin -- authorization is consumed as of this
+    # exact point, regardless of what happens next. No automatic or manual
+    # retry is authorized by this implementation: this function makes
+    # exactly one attempt per call.
     try:
         partition_manifest = read_partition_manifest(partition_manifest_path)
-    except V8PartitionBlocked as error:
-        raise V8BT1BAllocatorBlocked(error.reason) from error
 
-    manifest_sha = partition_manifest["manifest_sha256"]
-    if manifest_sha != anchor["authorized_partition_manifest_sha256"]:
-        raise V8BT1BAllocatorBlocked("TRUSTED_PARTITION_MANIFEST_SHA_MISMATCH")
-    partition_implementation_commit = partition_manifest["partition_implementation_git_commit"]
-    if partition_implementation_commit != anchor["authorized_partition_implementation_git_commit"]:
-        raise V8BT1BAllocatorBlocked("TRUSTED_PARTITION_IMPLEMENTATION_GIT_COMMIT_MISMATCH")
-    if partition_manifest["study_name"] != V8_STUDY_NAME:
-        raise V8BT1BAllocatorBlocked("PARTITION_MANIFEST_STUDY_NAME_MISMATCH")
-    if partition_manifest["design_commit"] != V8_DESIGN_COMMIT:
-        raise V8BT1BAllocatorBlocked("PARTITION_MANIFEST_DESIGN_COMMIT_MISMATCH")
+        manifest_sha = partition_manifest["manifest_sha256"]
+        if manifest_sha != anchor["authorized_partition_manifest_sha256"]:
+            raise V8BT1BAllocatorBlocked("TRUSTED_PARTITION_MANIFEST_SHA_MISMATCH")
+        partition_implementation_commit = partition_manifest["partition_implementation_git_commit"]
+        if partition_implementation_commit != anchor["authorized_partition_implementation_git_commit"]:
+            raise V8BT1BAllocatorBlocked("TRUSTED_PARTITION_IMPLEMENTATION_GIT_COMMIT_MISMATCH")
+        if partition_manifest["study_name"] != V8_STUDY_NAME:
+            raise V8BT1BAllocatorBlocked("PARTITION_MANIFEST_STUDY_NAME_MISMATCH")
+        if partition_manifest["design_commit"] != V8_DESIGN_COMMIT:
+            raise V8BT1BAllocatorBlocked("PARTITION_MANIFEST_DESIGN_COMMIT_MISMATCH")
 
-    assignments = partition_manifest["block_assignments"]
-    if not isinstance(assignments, Mapping) or "T_spare" not in assignments:
-        raise V8BT1BAllocatorBlocked("PARTITION_BLOCK_ASSIGNMENT_MISSING:T_SPARE")
-    parent_assignment = assignments["T_spare"]
-    if not isinstance(parent_assignment, list):
-        raise V8BT1BAllocatorBlocked("PARTITION_BLOCK_ASSIGNMENT_INVALID:T_SPARE")
-    parent_tickers = list(parent_assignment)
+        assignments = partition_manifest["block_assignments"]
+        if not isinstance(assignments, Mapping) or "T_spare" not in assignments:
+            raise V8BT1BAllocatorBlocked("PARTITION_BLOCK_ASSIGNMENT_MISSING:T_SPARE")
+        parent_assignment = assignments["T_spare"]
+        if not isinstance(parent_assignment, list):
+            raise V8BT1BAllocatorBlocked("PARTITION_BLOCK_ASSIGNMENT_INVALID:T_SPARE")
+        parent_tickers = list(parent_assignment)
 
-    # (6) exact frozen parent T_spare count/hash pin (HIGH-7)
-    if len(parent_tickers) != EXPECTED_PARENT_T_SPARE_TICKER_COUNT:
-        raise V8BT1BAllocatorBlocked("PARENT_T_SPARE_TICKER_COUNT_INVALID")
-    computed_hash = ticker_list_sha256(parent_tickers)
-    if computed_hash != EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256:
-        raise V8BT1BAllocatorBlocked("PARENT_T_SPARE_TICKER_LIST_SHA_MISMATCH")
-    if computed_hash != partition_manifest["t_spare_ticker_list_sha256"]:
-        raise V8BT1BAllocatorBlocked("PARENT_T_SPARE_TICKER_LIST_SHA_MISMATCH")
+        # (6) exact frozen parent T_spare count/hash pin (HIGH-7)
+        if len(parent_tickers) != EXPECTED_PARENT_T_SPARE_TICKER_COUNT:
+            raise V8BT1BAllocatorBlocked("PARENT_T_SPARE_TICKER_COUNT_INVALID")
+        computed_hash = ticker_list_sha256(parent_tickers)
+        if computed_hash != EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256:
+            raise V8BT1BAllocatorBlocked("PARENT_T_SPARE_TICKER_LIST_SHA_MISMATCH")
+        if computed_hash != partition_manifest["t_spare_ticker_list_sha256"]:
+            raise V8BT1BAllocatorBlocked("PARENT_T_SPARE_TICKER_LIST_SHA_MISMATCH")
 
-    # (7) output path safety (private, outside repository)
-    try:
+        # (7) output path safety (private, outside repository)
         destination = require_absolute_output_path_outside_repository(output_path, CANONICAL_REPOSITORY_ROOT)
+
+        # (8) deterministic §4 zero-offset slice -- no OHLCV, no network
+        try:
+            artifact = build_t1b_allocation_artifact(
+                parent_t_spare_tickers=parent_tickers,
+                parent_v8_partition_manifest_sha256=manifest_sha,
+                parent_v8_partition_implementation_commit=partition_implementation_commit,
+                parent_t_spare_ticker_list_sha256=computed_hash,
+                v8b_frozen_design_commit=EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+                v8b_allocation_implementation_commit=reviewed_commit,
+                clock=clock,
+            )
+        except V8BAllocationBlocked as error:
+            raise V8BT1BAllocatorBlocked("V8B_ALLOCATION_ARTIFACT_BUILD_FAILED:" + error.reason) from error
+
+        _write_allocation_artifact_once(destination, canonical_json_bytes(artifact))
+        return public_allocation_summary(artifact)
     except V8PartitionBlocked as error:
-        raise V8BT1BAllocatorBlocked(error.reason) from error
-
-    # (8) deterministic §4 zero-offset slice -- no OHLCV, no network
-    try:
-        artifact = build_t1b_allocation_artifact(
-            parent_t_spare_tickers=parent_tickers,
-            parent_v8_partition_manifest_sha256=manifest_sha,
-            parent_v8_partition_implementation_commit=partition_implementation_commit,
-            parent_t_spare_ticker_list_sha256=computed_hash,
-            v8b_frozen_design_commit=EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
-            v8b_allocation_implementation_commit=reviewed_commit,
-            clock=clock,
-        )
-    except V8BAllocationBlocked as error:
-        raise V8BT1BAllocatorBlocked("V8B_ALLOCATION_ARTIFACT_BUILD_FAILED:" + error.reason) from error
-
-    _write_allocation_artifact_once(destination, canonical_json_bytes(artifact))
-
-    return public_allocation_summary(artifact)
+        raise V8BT1BAllocatorBlocked(error.reason, authorization_consumed=True) from error
+    except V8BT1BAllocatorBlocked as error:
+        error.authorization_consumed = True
+        raise
 
 
 __all__ = [

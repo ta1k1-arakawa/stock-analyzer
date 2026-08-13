@@ -7,6 +7,25 @@ other research outcome, and never parses raw payload bytes into OHLCV --
 it reads them solely to recompute `byte_count`/SHA-256 and compare against
 the acquisition manifest's own `payload_manifest`. Any mismatch is
 `BLOCK`, with no research opening. Performs no network access.
+
+Two, and only two, ways to call this module (round-3 finding HIGH-4):
+
+- `verify_acquisition_artifact` -- a **private/pure integrity checker**.
+  It compares the published manifest's own fields against caller-supplied
+  ``expected_*`` values and performs no Git access of its own. It exists
+  so fake/synthetic tests can exercise every mismatch branch directly; it
+  is not, by itself, a safe *production* trust root, because nothing stops
+  a caller from fabricating favorable ``expected_*`` values (this was
+  exactly the round-3 gap: the previous production call site supplied
+  those values itself instead of deriving them from Git).
+- `resolve_and_verify_acquisition_artifact` -- the **production
+  resolver**. It derives every ``expected_*`` value -- including the
+  block's `ticker_list_sha256` and the *exact values* (not merely the key
+  set) of `authority_binding` -- from **verified Git objects**: the
+  frozen design/freeze-approval/reviewed-implementation chain, the exact
+  immutable V8 anchor + `OPTION_2` bridge (`T2`), or the Git-sourced
+  `V8B_TRUSTED_ALLOCATION.json` trust pin (`T1B`). It never accepts a
+  caller-supplied expected hash or authority string as the trust root.
 """
 
 from __future__ import annotations
@@ -15,6 +34,7 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+from src.v8b_git_provenance import V8BGitProvenanceBlocked, resolve_verified_v8b_production_git_commit
 from src.v8b_historical_acquisition import (
     ACQUISITIONS_DIRNAME,
     BLOCK_ROLE,
@@ -29,8 +49,27 @@ from src.v8b_historical_acquisition import (
     V8BHistoricalAcquisitionBlocked,
     canonical_json_bytes,
     read_acquisition_manifest,
+    read_t1b_trust_pin_from_verified_head,
     sha256_bytes,
 )
+from src.v8b_production_provenance import (
+    EXPECTED_T2_TICKER_LIST_SHA256,
+    EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+    V8BProductionProvenanceBlocked,
+    read_and_verify_design_freeze_approval,
+    read_and_verify_t2_authority_bridge,
+    read_and_verify_v8_trusted_partition_anchor,
+    verify_frozen_design_object,
+    verify_reviewed_implementation_binding,
+)
+from src.v8b_trust_pin import V8BTrustPinBlocked, validate_trust_pin
+
+CANONICAL_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+
+EXPECTED_AUTHORITY_CHAIN_BY_BLOCK = {
+    "T1B": "V8B_SUCCESSOR_ALLOCATION_AUTHORITY",
+    "T2": "ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY_OPTION_2_BRIDGE",
+}
 
 # The exact §7.6 F1_C1 policy metadata every honest manifest must carry.
 _EXPECTED_MALFORMED_OHLCV_POLICY_METADATA = {
@@ -84,8 +123,20 @@ def verify_acquisition_artifact(
     expected_v8b_frozen_design_commit: str,
     expected_reviewed_production_implementation_commit: str,
     expected_authority_chain: str,
+    expected_ticker_list_sha256: str,
+    expected_authority_binding: dict[str, Any],
 ) -> dict[str, Any]:
-    """Verify §12.6's full checklist for one published `T1B`/`T2` bundle.
+    """Private/pure integrity checker -- fake/synthetic tests only, not a
+    production trust root (see module docstring). Verify §12.6's full
+    checklist for one published `T1B`/`T2` bundle against caller-supplied
+    ``expected_*`` values.
+
+    ``expected_ticker_list_sha256`` and ``expected_authority_binding``
+    prove **block membership authority**, not merely internal
+    self-consistency (round-3 finding HIGH-4): the manifest's own
+    ``ticker_list_sha256`` must equal the exact expected hash, and
+    ``authority_binding`` must equal ``expected_authority_binding`` value
+    for value, not merely share its key set.
 
     Returns a safe aggregate PASS result (counts/hashes/status only, never
     a ticker or raw OHLCV value) or raises
@@ -111,10 +162,22 @@ def verify_acquisition_artifact(
     if manifest["authority_chain"] != expected_authority_chain:
         raise V8BAcquisitionArtifactVerificationBlocked("AUTHORITY_CHAIN_MISMATCH")
 
-    # authority_binding semantics appropriate to T1B/T2 (§12.6).
+    # HIGH-4: block membership authority -- the manifest's own ticker-list
+    # hash must equal the exact expected value, never merely be internally
+    # present/well-formed.
+    if not isinstance(manifest.get("ticker_list_sha256"), str) or manifest["ticker_list_sha256"] != expected_ticker_list_sha256:
+        raise V8BAcquisitionArtifactVerificationBlocked("TICKER_LIST_SHA_MISMATCH")
+
+    # authority_binding semantics appropriate to T1B/T2 (§12.6): exact key
+    # set AND exact values, never merely "same field names present"
+    # (round-3 finding HIGH-4).
     authority_binding = manifest["authority_binding"]
     if not isinstance(authority_binding, dict) or set(authority_binding) != _EXPECTED_AUTHORITY_BINDING_FIELDS[block]:
         raise V8BAcquisitionArtifactVerificationBlocked("AUTHORITY_BINDING_SCHEMA_INVALID")
+    if not isinstance(expected_authority_binding, dict) or set(expected_authority_binding) != _EXPECTED_AUTHORITY_BINDING_FIELDS[block]:
+        raise V8BAcquisitionArtifactVerificationBlocked("EXPECTED_AUTHORITY_BINDING_SCHEMA_INVALID")
+    if authority_binding != expected_authority_binding:
+        raise V8BAcquisitionArtifactVerificationBlocked("AUTHORITY_BINDING_VALUE_MISMATCH")
 
     # Exact block role/status/sealed (defense-in-depth: read_acquisition_manifest
     # already re-validates these against this module's own constants).
@@ -204,7 +267,104 @@ def verify_acquisition_artifact(
     }
 
 
+_GIT_OBJECT_MISSING_REASONS = frozenset({"GIT_OBJECT_READ_FAILED", "GIT_BLOB_RESOLUTION_FAILED"})
+
+
+def _wrap(error: BaseException, missing_reason: str | None = None) -> V8BAcquisitionArtifactVerificationBlocked:
+    reason = getattr(error, "reason", None)
+    if missing_reason is not None and reason in _GIT_OBJECT_MISSING_REASONS:
+        return V8BAcquisitionArtifactVerificationBlocked(missing_reason)
+    if isinstance(reason, str):
+        return V8BAcquisitionArtifactVerificationBlocked(reason)
+    return V8BAcquisitionArtifactVerificationBlocked("PROVENANCE_CHECK_FAILED")
+
+
+def resolve_and_verify_acquisition_artifact(
+    output_root,
+    block: str,
+    *,
+    repository_root: str | None = None,
+) -> dict[str, Any]:
+    """Production §12.6 boundary (round-3 finding HIGH-4).
+
+    Derives every trust value -- the reviewed implementation commit, the
+    block's exact expected ``ticker_list_sha256``, and the exact
+    ``authority_binding`` values (`T2`: the immutable V8 anchor + `OPTION_2`
+    bridge; `T1B`: the Git-sourced `V8B_TRUSTED_ALLOCATION.json` trust pin)
+    -- from **verified Git objects**, never from a caller-supplied expected
+    hash or authority string. Delegates the actual integrity checklist to
+    ``verify_acquisition_artifact``, the same pure checker fake/synthetic
+    tests use directly with their own synthetic ``expected_*`` values.
+    Performs no network access and parses no OHLCV.
+    """
+    if block not in EXPECTED_AUTHORITY_CHAIN_BY_BLOCK:
+        raise V8BAcquisitionArtifactVerificationBlocked("BLOCK_INVALID")
+    root = repository_root if repository_root is not None else CANONICAL_REPOSITORY_ROOT
+
+    try:
+        verified_head = resolve_verified_v8b_production_git_commit(root)
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap(error) from error
+
+    try:
+        verify_frozen_design_object(root)
+        read_and_verify_design_freeze_approval(root, verified_head)
+    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+        raise _wrap(error) from error
+
+    try:
+        review_binding = verify_reviewed_implementation_binding(root, verified_head)
+    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+        raise _wrap(error, "V8B_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING") from error
+    reviewed_commit = review_binding["reviewed_implementation_git_commit"]
+
+    if block == "T2":
+        try:
+            anchor = read_and_verify_v8_trusted_partition_anchor(root, verified_head)
+            bridge = read_and_verify_t2_authority_bridge(root, verified_head)
+        except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+            raise _wrap(error) from error
+        expected_ticker_list_sha256 = EXPECTED_T2_TICKER_LIST_SHA256
+        expected_authority_binding = {
+            "v8_partition_manifest_sha256": anchor["authorized_partition_manifest_sha256"],
+            "v8_partition_implementation_commit": anchor["authorized_partition_implementation_git_commit"],
+            "v8_trust_anchor_git_identity": bridge["v8_trust_anchor_git_identity"],
+            "option_2_bridge_human_gate": bridge["human_gate"],
+        }
+    else:
+        try:
+            raw_pin = read_t1b_trust_pin_from_verified_head(root, verified_head)
+        except V8BGitProvenanceBlocked as error:
+            raise _wrap(error, "V8B_TRUSTED_ALLOCATION_MISSING") from error
+        try:
+            pin = validate_trust_pin(raw_pin)
+        except V8BTrustPinBlocked as error:
+            raise V8BAcquisitionArtifactVerificationBlocked("V8B_TRUST_PIN_INVALID:" + error.reason) from error
+        if pin["authorization_status"] != "AUTHORIZED":
+            raise V8BAcquisitionArtifactVerificationBlocked("V8B_TRUST_PIN_NOT_AUTHORIZED")
+        expected_ticker_list_sha256 = pin["t1b_ticker_list_sha256"]
+        expected_authority_binding = {
+            "authorized_allocation_artifact_self_hash": pin["authorized_allocation_artifact_self_hash"],
+            "parent_v8_partition_manifest_sha256": pin["parent_v8_partition_manifest_sha256"],
+            "parent_v8_partition_implementation_commit": pin["parent_v8_partition_implementation_commit"],
+            "trust_pin_human_gate": pin["human_gate"],
+        }
+
+    return verify_acquisition_artifact(
+        output_root,
+        block,
+        expected_v8b_frozen_design_commit=EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+        expected_reviewed_production_implementation_commit=reviewed_commit,
+        expected_authority_chain=EXPECTED_AUTHORITY_CHAIN_BY_BLOCK[block],
+        expected_ticker_list_sha256=expected_ticker_list_sha256,
+        expected_authority_binding=expected_authority_binding,
+    )
+
+
 __all__ = [
+    "CANONICAL_REPOSITORY_ROOT",
+    "EXPECTED_AUTHORITY_CHAIN_BY_BLOCK",
     "V8BAcquisitionArtifactVerificationBlocked",
+    "resolve_and_verify_acquisition_artifact",
     "verify_acquisition_artifact",
 ]
