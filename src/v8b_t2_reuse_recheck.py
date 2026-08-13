@@ -66,19 +66,17 @@ BLOCKing the corresponding preservation condition):
   exact-blob-pinned trust artifacts elsewhere in this module), so its
   *current* content at the verified head is read and type-validated, never
   pinned to one historical blob.
-- Two new dedicated, Git-tracked, exact-schema stage-completion approval
-  artifacts (`src.v8b_production_provenance.read_and_verify_layer_b_
-  completion` / `read_and_verify_frozen_final_candidate`) are now
-  independently required to PASS in addition to -- not instead of -- the
-  existing self-declared `layer_b_completed`/`frozen_final_candidate_
-  established` fields on `V8B_T2_REUSE_CONDITIONS_RECHECK.json` itself.
-  A future recheck artifact that merely self-declares these booleans
-  ``True`` is no longer sufficient by itself: each stage's completion must
-  additionally be recorded in its own dedicated artifact, bound to the
-  frozen design commit and a fixed human-gate string. Neither dedicated
-  artifact exists in this repository yet, so `T2` production acquisition
-  continues to fail closed today by construction -- no real Layer B run or
-  frozen-final-candidate selection has occurred.
+- The concrete, Git-tracked `V8B_LAYER_B_VALIDATION_REPORT.json` and
+  `V8B_FROZEN_FINAL_CANDIDATE.json` artifacts are now independently required
+  for T2 reuse. Their exact schemas, Git blobs, source references, candidate
+  identity, and strict ancestry are verified by
+  `src.v8b_production_provenance`; the recheck artifact's own booleans are
+  only claims that must agree with the derived stage evidence. The former
+  approval-only JSONs are retained only as compatibility readers for old
+  synthetic callers and are never used by the production resolver. Neither
+  concrete artifact exists in this repository yet, so `T2` production
+  acquisition continues to fail closed today by construction -- no real
+  Layer B run or frozen-final-candidate selection has occurred.
 
 Two distinct roles (first-round finding MEDIUM-2, tightened further in
 round 3's repeat review):
@@ -122,6 +120,8 @@ from typing import Any, Callable, Mapping
 from src.v8b_git_provenance import (
     V8BGitProvenanceBlocked,
     read_git_object_bytes,
+    require_git_commit,
+    require_strict_git_ancestor,
     resolve_verified_v8b_production_git_commit,
 )
 from src.v8b_human_gate_consumption import (
@@ -134,7 +134,7 @@ from src.v8b_production_provenance import (
     EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
     V8BProductionProvenanceBlocked,
     read_and_verify_frozen_final_candidate,
-    read_and_verify_layer_b_completion,
+    read_and_verify_layer_b_validation_report,
     read_and_verify_v8_trusted_partition_anchor,
     verify_reviewed_implementation_binding,
 )
@@ -168,6 +168,12 @@ POST_FREEZE_RECHECK_FIELDS = (
     "t2_universe_definition_unchanged",
     "t2_partition_algorithm_unchanged",
     "t2_v8b_f1_c1_policy_fixed",
+    "layer_b_validation_report_git_path",
+    "layer_b_validation_report_git_blob_sha",
+    "layer_b_validation_report_git_commit",
+    "frozen_final_candidate_git_path",
+    "frozen_final_candidate_git_blob_sha",
+    "frozen_final_candidate_git_commit",
 )
 
 
@@ -360,14 +366,15 @@ def _resolve_t2_reuse_safe_metadata_with_dependencies(
     anchor_reader: Callable[[str], Mapping[str, Any]],
     reviewed_implementation_binder: Callable[[str], Mapping[str, Any]],
     consumption_state_root,
-    layer_b_completion_reader: Callable[[str], Mapping[str, Any]],
-    frozen_final_candidate_reader: Callable[[str], Mapping[str, Any]],
+    layer_b_validation_reader: Callable[[str], Mapping[str, Any]] | None = None,
+    frozen_final_candidate_reader: Callable[[str], Mapping[str, Any]] | None = None,
     no_research_opening_api_exists: Callable[[], bool] = _default_no_research_opening_api_exists,
     git_object_reader: Callable[[str, str, str], bytes] = read_git_object_bytes,
     gate_consumption_checker: Callable[[Any, str, str], bool] = has_gate_been_consumed,
     v8_state_evidence_reader: Callable[[Any, str, Callable[[str, str, str], bytes]], Mapping[str, Any]] = (
         _default_read_v8_state_t2_evidence
     ),
+    layer_b_completion_reader: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Private DI-testable implementation -- fake/synthetic tests only, not
     a production API. Derives ``safe_metadata`` from authoritative
@@ -406,18 +413,35 @@ def _resolve_t2_reuse_safe_metadata_with_dependencies(
     except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
         raise _wrap(error, "V8B_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING") from error
 
-    # Repeat-round finding HIGH-2: LAYER_B / FROZEN_FINAL_CANDIDATE stage
-    # completion is independently required from dedicated, Git-tracked
-    # approval artifacts -- in addition to, not instead of, the future
-    # recheck artifact's own self-declared fields checked further below.
-    try:
-        layer_b_completion_reader(verified_head)
-    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
-        raise _wrap(error, "V8B_LAYER_B_COMPLETION_APPROVAL_MISSING") from error
-    try:
-        frozen_final_candidate_reader(verified_head)
-    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
-        raise _wrap(error, "V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_MISSING") from error
+    # HIGH-2: concrete Git-tracked stage outputs, not approval-only
+    # declarations, are the production authority. The legacy branch is kept
+    # only for old private DI tests; the public resolver below supplies the
+    # concrete readers and cannot enter this branch.
+    legacy_stage_mode = layer_b_validation_reader is None
+    if legacy_stage_mode:
+        if layer_b_completion_reader is None or frozen_final_candidate_reader is None:
+            raise V8BT2PreservationRecheckBlocked("V8B_LAYER_B_VALIDATION_REPORT_MISSING")
+        try:
+            layer_b_completion_reader(verified_head)
+        except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+            raise _wrap(error, "V8B_LAYER_B_COMPLETION_APPROVAL_MISSING") from error
+        try:
+            frozen_final_candidate_reader(verified_head)
+        except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+            raise _wrap(error, "V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_MISSING") from error
+        layer_b_report = None
+        frozen_candidate = None
+    else:
+        if frozen_final_candidate_reader is None:
+            raise V8BT2PreservationRecheckBlocked("V8B_FROZEN_FINAL_CANDIDATE_MISSING")
+        try:
+            layer_b_report = layer_b_validation_reader(verified_head)
+        except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+            raise _wrap(error, "V8B_LAYER_B_VALIDATION_REPORT_MISSING") from error
+        try:
+            frozen_candidate = frozen_final_candidate_reader(verified_head)
+        except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+            raise _wrap(error, "V8B_FROZEN_FINAL_CANDIDATE_MISSING") from error
 
     # Authoritative derivation: whether T2_RAW_ACQUISITION_HUMAN_GATE has
     # already been durably consumed (src.v8b_human_gate_consumption),
@@ -466,7 +490,24 @@ def _resolve_t2_reuse_safe_metadata_with_dependencies(
         raise _wrap(error, "V8B_T2_REUSE_CONDITIONS_RECHECK_MISSING") from error
 
     artifact = _strict_json_object(raw)
-    if set(artifact) != set(POST_FREEZE_RECHECK_FIELDS):
+    legacy_fields = (
+        "schema_version",
+        "study",
+        "gate",
+        "frozen_design_git_commit",
+        "stage",
+        "result",
+        "layer_b_completed",
+        "frozen_final_candidate_established",
+        "t2_acquired",
+        "t2_opened",
+        "t2_ticker_identities_exposed_to_human_public_research_loop",
+        "t2_market_data_raw_ohlcv_feature_outcome_research_exposure",
+        "t2_universe_definition_unchanged",
+        "t2_partition_algorithm_unchanged",
+        "t2_v8b_f1_c1_policy_fixed",
+    )
+    if set(artifact) != (set(legacy_fields) if legacy_stage_mode else set(POST_FREEZE_RECHECK_FIELDS)):
         raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_SCHEMA_INVALID")
     if artifact["schema_version"] != POST_FREEZE_RECHECK_SCHEMA_VERSION:
         raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_SCHEMA_VERSION_MISMATCH")
@@ -485,16 +526,73 @@ def _resolve_t2_reuse_safe_metadata_with_dependencies(
     if artifact["frozen_final_candidate_established"] is not True:
         raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_NO_FROZEN_FINAL_CANDIDATE")
 
-    # HIGH-3: the artifact's own self-declared value for each derivable
-    # field must AGREE with the independently derived value -- a
-    # disagreement BLOCKs rather than silently preferring either source.
-    # The value actually used below is always the derived one, never the
-    # artifact's bare claim.
+    # The artifact's self-declared value must agree with independently
+    # derived safe metadata before either legacy-test compatibility or the
+    # concrete Git-stage chain can return PASS.
     for field in REQUIRED_SAFE_METADATA_FIELDS:
         if artifact[field] != derived[field]:
             raise V8BT2PreservationRecheckBlocked(
                 "V8B_T2_REUSE_CONDITIONS_RECHECK_SELF_DECLARED_MISMATCH:" + field
             )
+
+    if legacy_stage_mode:
+        return derived
+
+    layer_b_report_commit = require_git_commit(
+        artifact["layer_b_validation_report_git_commit"],
+        "V8B_T2_REUSE_CONDITIONS_RECHECK_LAYER_B_COMMIT_INVALID",
+    )
+    layer_b_report_blob = require_git_commit(
+        artifact["layer_b_validation_report_git_blob_sha"],
+        "V8B_T2_REUSE_CONDITIONS_RECHECK_LAYER_B_BLOB_INVALID",
+    )
+    candidate_commit = require_git_commit(
+        artifact["frozen_final_candidate_git_commit"],
+        "V8B_T2_REUSE_CONDITIONS_RECHECK_CANDIDATE_COMMIT_INVALID",
+    )
+    candidate_blob = require_git_commit(
+        artifact["frozen_final_candidate_git_blob_sha"],
+        "V8B_T2_REUSE_CONDITIONS_RECHECK_CANDIDATE_BLOB_INVALID",
+    )
+    if artifact["layer_b_validation_report_git_path"] != layer_b_report["git_path"]:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_LAYER_B_PATH_MISMATCH")
+    if artifact["frozen_final_candidate_git_path"] != frozen_candidate["git_path"]:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_CANDIDATE_PATH_MISMATCH")
+    if layer_b_report_blob != layer_b_report["git_blob_sha"]:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_LAYER_B_REFERENCE_MISMATCH")
+    if candidate_blob != frozen_candidate["git_blob_sha"]:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_CANDIDATE_REFERENCE_MISMATCH")
+    if frozen_candidate["source_layer_b_validation_report_git_commit"] != layer_b_report_commit:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_LAYER_B_CHAIN_MISMATCH")
+    if frozen_candidate["source_layer_b_validation_report_git_blob_sha"] != layer_b_report_blob:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_LAYER_B_CHAIN_MISMATCH")
+    try:
+        require_strict_git_ancestor(
+            repository_root,
+            layer_b_report_commit,
+            candidate_commit,
+            "V8B_T2_REUSE_CONDITIONS_RECHECK_LAYER_B_NOT_STRICT_ANCESTOR",
+        )
+        require_strict_git_ancestor(
+            repository_root,
+            candidate_commit,
+            commit,
+            "V8B_T2_REUSE_CONDITIONS_RECHECK_CANDIDATE_NOT_STRICT_ANCESTOR",
+        )
+    except V8BGitProvenanceBlocked as error:
+        raise V8BT2PreservationRecheckBlocked(error.reason) from error
+
+    try:
+        source_layer_b_report = layer_b_validation_reader(layer_b_report_commit)
+        if source_layer_b_report["git_blob_sha"] != layer_b_report_blob:
+            raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_STAGE_BLOB_DRIFT")
+        candidate_at_stage = frozen_final_candidate_reader(candidate_commit)
+    except (V8BProductionProvenanceBlocked, V8BGitProvenanceBlocked) as error:
+        raise _wrap(error, "V8B_FROZEN_FINAL_CANDIDATE_MISSING") from error
+    if candidate_at_stage["git_blob_sha"] != candidate_blob:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_CANDIDATE_BLOB_DRIFT")
+    if candidate_at_stage["source_layer_b_validation_report_git_commit"] != layer_b_report_commit:
+        raise V8BT2PreservationRecheckBlocked("V8B_T2_REUSE_CONDITIONS_RECHECK_LAYER_B_CHAIN_MISMATCH")
 
     return derived
 
@@ -525,7 +623,9 @@ def resolve_and_recheck_t2_reuse_conditions() -> dict[str, Any]:
             CANONICAL_REPOSITORY_ROOT, head
         ),
         consumption_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
-        layer_b_completion_reader=lambda head: read_and_verify_layer_b_completion(CANONICAL_REPOSITORY_ROOT, head),
+        layer_b_validation_reader=lambda head: read_and_verify_layer_b_validation_report(
+            CANONICAL_REPOSITORY_ROOT, head
+        ),
         frozen_final_candidate_reader=lambda head: read_and_verify_frozen_final_candidate(
             CANONICAL_REPOSITORY_ROOT, head
         ),

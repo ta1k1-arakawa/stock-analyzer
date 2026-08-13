@@ -168,27 +168,36 @@ def test_canonical_state_root_is_outside_the_repository():
 
 def test_default_state_root_does_not_depend_on_module_file_location():
     assert gate_consumption.CANONICAL_CONSUMPTION_STATE_ROOT == gate_consumption._default_consumption_state_root()
-    # Re-deriving from scratch (independent of Path(__file__)) yields the
-    # exact same path -- the state root is a pure function of the home
-    # directory + fixed repository identity, never of this module's own
-    # checkout location.
-    assert "stock-analyzer" not in str(gate_consumption.CANONICAL_CONSUMPTION_STATE_ROOT)
+    assert gate_consumption.CANONICAL_CONSUMPTION_STATE_ROOT.name == "v8b-human-gate-state"
 
 
-def test_default_state_root_is_derived_from_home_directory_and_fixed_repository_identity(monkeypatch, tmp_path):
-    fake_home = tmp_path / "fake-home"
-    monkeypatch.setattr(gate_consumption.Path, "home", classmethod(lambda cls: fake_home))
-    root = gate_consumption._default_consumption_state_root()
-    assert root == fake_home / ".v8b_human_gate_state" / gate_consumption._REPOSITORY_IDENTITY_NAMESPACE
+def test_default_state_root_is_fixed_machine_location(monkeypatch):
+    monkeypatch.setattr(gate_consumption.os, "name", "posix")
+    assert str(gate_consumption._default_consumption_state_root()).replace("\\", "/") == "/var/lib/stock-analyzer/v8b-human-gate-state"
 
 
-def test_home_directory_unavailable_falls_back_to_fixed_non_checkout_path(monkeypatch):
-    def raise_runtime_error():
-        raise RuntimeError("no passwd entry")
+def test_default_state_root_does_not_read_home_or_userprofile(monkeypatch):
+    monkeypatch.setattr(gate_consumption.os, "name", "posix")
+    monkeypatch.setenv("HOME", "C:/attacker/home")
+    monkeypatch.setenv("USERPROFILE", "C:/attacker/profile")
+    assert str(gate_consumption._default_consumption_state_root()).replace("\\", "/") == "/var/lib/stock-analyzer/v8b-human-gate-state"
 
-    monkeypatch.setattr(gate_consumption.Path, "home", staticmethod(raise_runtime_error))
-    root = gate_consumption._default_consumption_state_root()
-    assert root == gate_consumption._FALLBACK_HOME_DIRECTORY / ".v8b_human_gate_state" / gate_consumption._REPOSITORY_IDENTITY_NAMESPACE
+
+def test_windows_root_uses_known_folder_api_not_environment(monkeypatch, tmp_path):
+    expected = tmp_path / "ProgramData"
+    monkeypatch.setattr(gate_consumption.os, "name", "nt")
+    monkeypatch.setattr(gate_consumption, "_resolve_windows_program_data_directory", lambda: expected)
+    monkeypatch.setenv("PROGRAMDATA", "C:/attacker/programdata")
+    assert gate_consumption._default_consumption_state_root() == expected / "stock-analyzer" / "v8b-human-gate-state"
+
+
+def test_unavailable_fixed_windows_location_fails_closed(monkeypatch):
+    monkeypatch.setattr(gate_consumption.os, "name", "nt")
+    def unavailable():
+        raise RuntimeError("unavailable")
+    monkeypatch.setattr(gate_consumption, "_resolve_windows_program_data_directory", unavailable)
+    with pytest.raises(RuntimeError):
+        gate_consumption._default_consumption_state_root()
 
 
 def _load_module_from_a_different_checkout_path(tmp_path, suffix):
@@ -218,6 +227,9 @@ def test_two_different_checkout_paths_share_the_same_canonical_ledger_and_second
 
     checkout_a = _load_module_from_a_different_checkout_path(tmp_path, "a")
     checkout_b = _load_module_from_a_different_checkout_path(tmp_path, "b")
+    fake_ledger = tmp_path / "machine-ledger"
+    checkout_a.CANONICAL_CONSUMPTION_STATE_ROOT = fake_ledger
+    checkout_b.CANONICAL_CONSUMPTION_STATE_ROOT = fake_ledger
 
     # The two "checkouts" live at completely different filesystem paths...
     assert checkout_a.CANONICAL_REPOSITORY_ROOT != checkout_b.CANONICAL_REPOSITORY_ROOT

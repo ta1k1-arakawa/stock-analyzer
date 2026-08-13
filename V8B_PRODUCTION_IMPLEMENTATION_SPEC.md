@@ -257,6 +257,39 @@ Full-boundary self-review (implementation review → T1B allocation → allocati
 
 `NEXT ACTION = FINAL_REPEAT_INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW` (§12.3).
 
+## ChatGPT-approved non-methodological technical provenance contract
+
+This contract records the binding decision used for the remaining V8B
+production remediation. It does not modify `V8B_HISTORICAL_RESEARCH_DESIGN_DRAFT.md`
+or `V8_HISTORICAL_RESEARCH_DESIGN.md`: frozen methodology, thresholds,
+metrics, selection rules, candidate count, and holdout design are unchanged.
+No Layer B execution, candidate selection, acquisition, or other real
+research stage was performed.
+
+The already-required Layer B validation report is mechanically addressable at
+`V8B_LAYER_B_VALIDATION_REPORT.json` under schema
+`V8B_LAYER_B_VALIDATION_REPORT_V1`. Its provenance contract binds the study,
+artifact role, frozen design commit, `validation_access_count=1`,
+`validation_result=PASS`, a non-empty unique list of lowercase SHA-256
+surviving candidate identities, and an object-shaped `validation_payload`.
+The verifier does not validate the scientific contents of that payload.
+
+The already-required immutable final candidate is mechanically addressable at
+`V8B_FROZEN_FINAL_CANDIDATE.json` under schema
+`V8B_FROZEN_FINAL_CANDIDATE_V1`. Its four component hashes and derived
+`candidate_definition_sha256` are verified using the fixed technical identity
+formula, and the artifact binds to the exact Layer B report path, blob, and
+commit. The candidate identity must occur in the concrete Layer B survivor
+list. The post-freeze T2 recheck additionally records and verifies the exact
+Layer B and candidate Git references and strict ancestry
+`Layer B -> frozen candidate -> T2 recheck/current HEAD`; timestamps are not
+stage-order evidence.
+
+The prior approval-only JSONs are not authority for the T2 recheck. These
+schemas only make already-required stage outputs mechanically
+addressable/bindable in Git; they do not invent scientific result contents,
+change the frozen methodology, or authorize any stage.
+
 ---
 
 ## 10. Remediation round 5 (`FINAL_REPEAT_INDEPENDENT_V8B_PRODUCTION_IMPLEMENTATION_REVIEW`: CRITICAL=0, HIGH=3, MEDIUM=2)

@@ -232,6 +232,32 @@ def resolve_git_blob(
     return blob_sha
 
 
+def require_strict_git_ancestor(
+    repository_root: str | os.PathLike[str],
+    ancestor_commit: str,
+    descendant_commit: str,
+    reason: str = "GIT_STRICT_ANCESTRY_INVALID",
+) -> None:
+    """Require ``ancestor_commit`` to be a strict Git ancestor of
+    ``descendant_commit``.
+
+    Git's graph relation is the authority here; commit timestamps are never
+    consulted.  ``merge-base --is-ancestor`` is run with the same sanitized
+    environment as every other provenance command and any non-success,
+    including an unknown or unrelated object, fails closed.
+    """
+    ancestor = require_git_commit(ancestor_commit, reason)
+    descendant = require_git_commit(descendant_commit, reason)
+    if ancestor == descendant:
+        raise V8BGitProvenanceBlocked(reason)
+    result = _run_git(
+        ["merge-base", "--is-ancestor", ancestor, descendant],
+        repository_root=repository_root,
+    )
+    if result.returncode != 0:
+        raise V8BGitProvenanceBlocked(reason)
+
+
 def read_git_object_bytes(
     repository_root: str | os.PathLike[str],
     commit: str,
@@ -262,6 +288,7 @@ __all__ = [
     "V8BGitProvenanceBlocked",
     "isolated_git_subprocess_env",
     "read_git_object_bytes",
+    "require_strict_git_ancestor",
     "require_git_commit",
     "resolve_git_blob",
     "resolve_verified_v8b_production_git_commit",

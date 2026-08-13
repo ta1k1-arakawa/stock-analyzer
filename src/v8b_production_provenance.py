@@ -18,12 +18,13 @@ private-data access.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Mapping
 
 from src.v8b_git_provenance import (
     V8BGitProvenanceBlocked,
     read_git_object_bytes,
     require_git_commit,
+    require_strict_git_ancestor,
     resolve_git_blob,
 )
 
@@ -143,6 +144,47 @@ TRUST_PIN_INDEPENDENT_REVIEW_FIELDS = (
 # `src.v8b_historical_acquisition.T1B_TRUST_PIN_GIT_PATH` exactly -- cross-
 # checked by a dedicated test.
 TRUST_PIN_GIT_PATH = "V8B_TRUSTED_ALLOCATION.json"
+
+LAYER_B_VALIDATION_REPORT_GIT_PATH = "V8B_LAYER_B_VALIDATION_REPORT.json"
+LAYER_B_VALIDATION_REPORT_SCHEMA_VERSION = "V8B_LAYER_B_VALIDATION_REPORT_V1"
+LAYER_B_VALIDATION_REPORT_ARTIFACT_ROLE = "LAYER_B_VALIDATION_REPORT"
+LAYER_B_VALIDATION_REPORT_FIELDS = (
+    "schema_version",
+    "study",
+    "artifact_role",
+    "v8b_frozen_design_commit",
+    "validation_access_count",
+    "validation_result",
+    "surviving_candidate_definition_sha256s",
+    "validation_payload",
+)
+
+FROZEN_FINAL_CANDIDATE_ARTIFACT_GIT_PATH = "V8B_FROZEN_FINAL_CANDIDATE.json"
+FROZEN_FINAL_CANDIDATE_ARTIFACT_SCHEMA_VERSION = "V8B_FROZEN_FINAL_CANDIDATE_V1"
+FROZEN_FINAL_CANDIDATE_ARTIFACT_ROLE = "FROZEN_FINAL_CANDIDATE"
+FROZEN_FINAL_CANDIDATE_ARTIFACT_FIELDS = (
+    "schema_version",
+    "study",
+    "artifact_role",
+    "v8b_frozen_design_commit",
+    "frozen_final_candidate_count",
+    "parameters_sha256",
+    "features_sha256",
+    "friction_assumptions_sha256",
+    "universe_sha256",
+    "candidate_definition_sha256",
+    "source_layer_b_validation_report_git_path",
+    "source_layer_b_validation_report_git_blob_sha",
+    "source_layer_b_validation_report_git_commit",
+    "candidate_payload",
+)
+
+_CANDIDATE_COMPONENT_HASH_FIELDS = (
+    "parameters_sha256",
+    "features_sha256",
+    "friction_assumptions_sha256",
+    "universe_sha256",
+)
 
 # Every production-relevant fixed source/artifact file that must be
 # byte-for-byte identical between current verified HEAD and the exact
@@ -500,6 +542,24 @@ def read_and_verify_trust_pin_independent_review(
         review["reviewed_trust_pin_git_blob_sha"], "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_BLOB_SHA_INVALID"
     )
     try:
+        require_strict_git_ancestor(
+            repository_root,
+            reviewed_commit,
+            commit,
+            "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_NOT_STRICT_ANCESTOR",
+        )
+    except V8BGitProvenanceBlocked as error:
+        raise V8BProductionProvenanceBlocked(error.reason) from error
+    try:
+        resolve_git_blob(repository_root, reviewed_commit, TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH)
+    except V8BGitProvenanceBlocked as error:
+        if error.reason != "GIT_BLOB_RESOLUTION_FAILED":
+            raise _wrap_git_provenance_error(error) from error
+    else:
+        raise V8BProductionProvenanceBlocked(
+            "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEW_ARTIFACT_PRESENT_AT_REVIEWED_COMMIT"
+        )
+    try:
         blob_at_reviewed_commit = resolve_git_blob(repository_root, reviewed_commit, TRUST_PIN_GIT_PATH)
     except V8BGitProvenanceBlocked as error:
         raise _wrap_git_provenance_error(
@@ -521,6 +581,149 @@ def read_and_verify_trust_pin_independent_review(
 
 
 # ---------------------------------------------------------------------------
+# Concrete Layer B / FROZEN_FINAL_CANDIDATE artifacts (HIGH-2)
+# ---------------------------------------------------------------------------
+
+
+def _read_layer_b_validation_report_at_commit(repository_root, commit: str) -> dict[str, Any]:
+    verified_commit = require_git_commit(commit, "V8B_LAYER_B_VALIDATION_REPORT_COMMIT_INVALID")
+    try:
+        blob_sha = resolve_git_blob(repository_root, verified_commit, LAYER_B_VALIDATION_REPORT_GIT_PATH)
+        raw = read_git_object_bytes(repository_root, verified_commit, LAYER_B_VALIDATION_REPORT_GIT_PATH)
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap_git_provenance_error(error, "V8B_LAYER_B_VALIDATION_REPORT_MISSING") from error
+    report = _strict_json_object(
+        raw,
+        invalid_reason="V8B_LAYER_B_VALIDATION_REPORT_INVALID_JSON",
+        duplicate_reason="V8B_LAYER_B_VALIDATION_REPORT_DUPLICATE_KEY",
+    )
+    if set(report) != set(LAYER_B_VALIDATION_REPORT_FIELDS):
+        raise V8BProductionProvenanceBlocked("V8B_LAYER_B_VALIDATION_REPORT_SCHEMA_INVALID")
+    if report["schema_version"] != LAYER_B_VALIDATION_REPORT_SCHEMA_VERSION:
+        raise V8BProductionProvenanceBlocked("V8B_LAYER_B_VALIDATION_REPORT_SCHEMA_VERSION_MISMATCH")
+    if report["study"] != STUDY_NAME:
+        raise V8BProductionProvenanceBlocked("V8B_LAYER_B_VALIDATION_REPORT_STUDY_MISMATCH")
+    if report["artifact_role"] != LAYER_B_VALIDATION_REPORT_ARTIFACT_ROLE:
+        raise V8BProductionProvenanceBlocked("V8B_LAYER_B_VALIDATION_REPORT_ARTIFACT_ROLE_MISMATCH")
+    if report["v8b_frozen_design_commit"] != EXPECTED_V8B_FROZEN_DESIGN_COMMIT:
+        raise V8BProductionProvenanceBlocked("V8B_LAYER_B_VALIDATION_REPORT_DESIGN_COMMIT_MISMATCH")
+    if type(report["validation_access_count"]) is not int or report["validation_access_count"] != 1:
+        raise V8BProductionProvenanceBlocked("V8B_LAYER_B_VALIDATION_REPORT_ACCESS_COUNT_INVALID")
+    if report["validation_result"] != "PASS":
+        raise V8BProductionProvenanceBlocked("V8B_LAYER_B_VALIDATION_REPORT_NOT_PASS")
+    survivors = report["surviving_candidate_definition_sha256s"]
+    if (
+        not isinstance(survivors, list)
+        or not survivors
+        or len(set(survivors)) != len(survivors)
+        or any(_require_sha256_hex(value, "V8B_LAYER_B_VALIDATION_REPORT_CANDIDATE_ID_INVALID") != value for value in survivors)
+    ):
+        raise V8BProductionProvenanceBlocked("V8B_LAYER_B_VALIDATION_REPORT_CANDIDATE_IDS_INVALID")
+    if not isinstance(report["validation_payload"], dict):
+        raise V8BProductionProvenanceBlocked("V8B_LAYER_B_VALIDATION_REPORT_PAYLOAD_INVALID")
+    return {
+        **report,
+        "git_path": LAYER_B_VALIDATION_REPORT_GIT_PATH,
+        "git_blob_sha": blob_sha,
+        "git_commit": verified_commit,
+    }
+
+
+def read_and_verify_layer_b_validation_report(repository_root, verified_head: str) -> dict[str, Any]:
+    """Verify the concrete, Git-tracked Layer B validation report.
+
+    This checks only the technical stage contract and provenance. It does
+    not validate the scientific contents of ``validation_payload``.
+    """
+    return _read_layer_b_validation_report_at_commit(repository_root, verified_head)
+
+
+def _candidate_definition_sha256(candidate: Mapping[str, Any]) -> str:
+    identity_text = (
+        "parameters=" + candidate["parameters_sha256"] + "\n"
+        + "features=" + candidate["features_sha256"] + "\n"
+        + "friction_assumptions=" + candidate["friction_assumptions_sha256"] + "\n"
+        + "universe=" + candidate["universe_sha256"] + "\n"
+    )
+    import hashlib
+
+    return hashlib.sha256(identity_text.encode("ascii")).hexdigest()
+
+
+def _read_frozen_final_candidate_at_commit(repository_root, commit: str) -> dict[str, Any]:
+    verified_commit = require_git_commit(commit, "V8B_FROZEN_FINAL_CANDIDATE_COMMIT_INVALID")
+    try:
+        blob_sha = resolve_git_blob(repository_root, verified_commit, FROZEN_FINAL_CANDIDATE_ARTIFACT_GIT_PATH)
+        raw = read_git_object_bytes(repository_root, verified_commit, FROZEN_FINAL_CANDIDATE_ARTIFACT_GIT_PATH)
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap_git_provenance_error(error, "V8B_FROZEN_FINAL_CANDIDATE_MISSING") from error
+    candidate = _strict_json_object(
+        raw,
+        invalid_reason="V8B_FROZEN_FINAL_CANDIDATE_INVALID_JSON",
+        duplicate_reason="V8B_FROZEN_FINAL_CANDIDATE_DUPLICATE_KEY",
+    )
+    if set(candidate) != set(FROZEN_FINAL_CANDIDATE_ARTIFACT_FIELDS):
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_SCHEMA_INVALID")
+    if candidate["schema_version"] != FROZEN_FINAL_CANDIDATE_ARTIFACT_SCHEMA_VERSION:
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_SCHEMA_VERSION_MISMATCH")
+    if candidate["study"] != STUDY_NAME:
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_STUDY_MISMATCH")
+    if candidate["artifact_role"] != FROZEN_FINAL_CANDIDATE_ARTIFACT_ROLE:
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_ARTIFACT_ROLE_MISMATCH")
+    if candidate["v8b_frozen_design_commit"] != EXPECTED_V8B_FROZEN_DESIGN_COMMIT:
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_DESIGN_COMMIT_MISMATCH")
+    if type(candidate["frozen_final_candidate_count"]) is not int or candidate["frozen_final_candidate_count"] != 1:
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_COUNT_INVALID")
+    for field in _CANDIDATE_COMPONENT_HASH_FIELDS:
+        _require_sha256_hex(candidate[field], "V8B_FROZEN_FINAL_CANDIDATE_COMPONENT_HASH_INVALID")
+    if candidate["source_layer_b_validation_report_git_path"] != LAYER_B_VALIDATION_REPORT_GIT_PATH:
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_SOURCE_PATH_MISMATCH")
+    source_commit = require_git_commit(
+        candidate["source_layer_b_validation_report_git_commit"],
+        "V8B_FROZEN_FINAL_CANDIDATE_SOURCE_COMMIT_INVALID",
+    )
+    source_blob = require_git_commit(
+        candidate["source_layer_b_validation_report_git_blob_sha"],
+        "V8B_FROZEN_FINAL_CANDIDATE_SOURCE_BLOB_INVALID",
+    )
+    if not isinstance(candidate["candidate_payload"], dict):
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_PAYLOAD_INVALID")
+    recomputed = _candidate_definition_sha256(candidate)
+    if candidate["candidate_definition_sha256"] != recomputed:
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_IDENTITY_MISMATCH")
+    try:
+        report_blob_at_source = resolve_git_blob(repository_root, source_commit, LAYER_B_VALIDATION_REPORT_GIT_PATH)
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap_git_provenance_error(error, "V8B_FROZEN_FINAL_CANDIDATE_SOURCE_REPORT_MISSING") from error
+    if report_blob_at_source != source_blob:
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_SOURCE_BLOB_MISMATCH")
+    report = _read_layer_b_validation_report_at_commit(repository_root, source_commit)
+    try:
+        report_blob_at_candidate_commit = resolve_git_blob(
+            repository_root, verified_commit, LAYER_B_VALIDATION_REPORT_GIT_PATH
+        )
+    except V8BGitProvenanceBlocked as error:
+        raise _wrap_git_provenance_error(error, "V8B_FROZEN_FINAL_CANDIDATE_CURRENT_REPORT_MISSING") from error
+    if report_blob_at_candidate_commit != source_blob:
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_SOURCE_REPORT_DRIFT")
+    if candidate["candidate_definition_sha256"] not in report["surviving_candidate_definition_sha256s"]:
+        raise V8BProductionProvenanceBlocked("V8B_FROZEN_FINAL_CANDIDATE_NOT_A_LAYER_B_SURVIVOR")
+    return {
+        **candidate,
+        "git_path": FROZEN_FINAL_CANDIDATE_ARTIFACT_GIT_PATH,
+        "git_blob_sha": blob_sha,
+        "git_commit": verified_commit,
+        "source_layer_b_validation_report": report,
+    }
+
+
+def read_and_verify_frozen_final_candidate(repository_root, verified_head: str) -> dict[str, Any]:
+    """Verify the concrete frozen candidate at ``verified_head`` and its
+    exact Layer B source binding."""
+    return _read_frozen_final_candidate_at_commit(repository_root, verified_head)
+
+
+# ---------------------------------------------------------------------------
 # LAYER_B / FROZEN_FINAL_CANDIDATE stage-completion approvals
 # (repeat-round finding HIGH-2)
 # ---------------------------------------------------------------------------
@@ -530,13 +733,15 @@ def read_and_verify_trust_pin_independent_review(
 # ``layer_b_completed``/``frozen_final_candidate_established`` booleans as
 # sufficient by themselves -- a self-declaration proves nothing about
 # whether Layer B validation or FROZEN_FINAL_CANDIDATE selection actually
-# happened. These two dedicated, Git-tracked, exact-schema approval
-# artifacts are the authoritative evidence: each stage's completion must be
-# recorded in its own artifact, bound to the frozen V8B design commit and
+# happened. The concrete validation-report and frozen-candidate artifacts
+# above are the production authority. These legacy approval-only readers
+# remain only for compatibility with old synthetic/private callers and are
+# deliberately not wired into the public T2 resolver. Their old contracts
+# are retained solely so the absence of the concrete artifacts fails closed;
+# no real Layer B run or frozen-final-candidate selection has occurred.
 # to a fixed human-gate string, exactly like every other §12 gate in this
-# module. Neither artifact exists in this repository yet, so reading either
-# fails closed today by construction -- no real Layer B run or
-# frozen-final-candidate selection has occurred.
+# (Concrete artifacts are absent from this repository, so production T2
+# remains fail-closed; no real Layer B run or candidate selection occurred.)
 
 LAYER_B_COMPLETION_GIT_PATH = "V8B_LAYER_B_COMPLETION_APPROVAL.json"
 LAYER_B_COMPLETION_SCHEMA_VERSION = "V8B_LAYER_B_COMPLETION_APPROVAL_V1"
@@ -604,7 +809,7 @@ def _read_and_verify_stage_completion_approval(
     return dict(approval)
 
 
-def read_and_verify_layer_b_completion(repository_root, verified_head: str) -> dict[str, Any]:
+def read_and_verify_legacy_layer_b_completion_approval(repository_root, verified_head: str) -> dict[str, Any]:
     """Read and verify the future `V8B_LAYER_B_COMPLETION_APPROVAL.json`
     artifact from a verified Git object. Does not exist yet, so this fails
     closed today by construction -- no real Layer B run has occurred."""
@@ -629,7 +834,7 @@ def read_and_verify_layer_b_completion(repository_root, verified_head: str) -> d
     )
 
 
-def read_and_verify_frozen_final_candidate(repository_root, verified_head: str) -> dict[str, Any]:
+def read_and_verify_legacy_frozen_final_candidate_approval(repository_root, verified_head: str) -> dict[str, Any]:
     """Read and verify the future `V8B_FROZEN_FINAL_CANDIDATE_APPROVAL.json`
     artifact from a verified Git object. Does not exist yet, so this fails
     closed today by construction -- no frozen-final-candidate selection has
@@ -671,6 +876,10 @@ __all__ = [
     "EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT",
     "EXPECTED_V8_PARTITION_MANIFEST_SHA256",
     "EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA",
+    "FROZEN_FINAL_CANDIDATE_ARTIFACT_FIELDS",
+    "FROZEN_FINAL_CANDIDATE_ARTIFACT_GIT_PATH",
+    "FROZEN_FINAL_CANDIDATE_ARTIFACT_ROLE",
+    "FROZEN_FINAL_CANDIDATE_ARTIFACT_SCHEMA_VERSION",
     "FROZEN_FINAL_CANDIDATE_GATE",
     "FROZEN_FINAL_CANDIDATE_GIT_PATH",
     "FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX",
@@ -678,6 +887,10 @@ __all__ = [
     "IMPLEMENTATION_REVIEW_FIELDS",
     "IMPLEMENTATION_REVIEW_GIT_PATH",
     "IMPLEMENTATION_REVIEW_SCHEMA_VERSION",
+    "LAYER_B_VALIDATION_REPORT_ARTIFACT_ROLE",
+    "LAYER_B_VALIDATION_REPORT_FIELDS",
+    "LAYER_B_VALIDATION_REPORT_GIT_PATH",
+    "LAYER_B_VALIDATION_REPORT_SCHEMA_VERSION",
     "LAYER_B_COMPLETION_GATE",
     "LAYER_B_COMPLETION_GIT_PATH",
     "LAYER_B_COMPLETION_HUMAN_GATE_PREFIX",
@@ -698,8 +911,9 @@ __all__ = [
     "V8BProductionProvenanceBlocked",
     "V8_DESIGN_COMMIT",
     "read_and_verify_design_freeze_approval",
-    "read_and_verify_frozen_final_candidate",
-    "read_and_verify_layer_b_completion",
+    "read_and_verify_legacy_frozen_final_candidate_approval",
+    "read_and_verify_legacy_layer_b_completion_approval",
+    "read_and_verify_layer_b_validation_report",
     "read_and_verify_t2_authority_bridge",
     "read_and_verify_trust_pin_independent_review",
     "read_and_verify_v8_trusted_partition_anchor",

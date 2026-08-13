@@ -44,6 +44,8 @@ files actually name a different 300-ticker set BLOCKs.
 from __future__ import annotations
 
 import hashlib
+import os
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -289,20 +291,46 @@ def _verify_acquisition_artifact(
 
     raw_dir = Path(output_root) / ACQUISITIONS_DIRNAME / block / RAW_DIRNAME
     try:
-        actual_files = {entry.name for entry in raw_dir.iterdir() if entry.is_file()}
+        with os.scandir(raw_dir) as scan:
+            raw_entries = list(scan)
     except OSError as error:
         raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_DIRECTORY_UNREADABLE") from error
 
     expected_files = {entry["ticker"] + ".json" for entry in payload_manifest}
-    if expected_files - actual_files:
+    actual_entries = {entry.name for entry in raw_entries}
+    for entry in raw_entries:
+        try:
+            if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_NON_REGULAR_ENTRY")
+        except OSError as error:
+            raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_NON_REGULAR_ENTRY") from error
+    if len(raw_entries) != 300 or actual_entries != expected_files:
+        if expected_files - actual_entries:
+            raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_MISSING")
+        raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_UNEXPECTED_EXTRA")
+
+    if expected_files - actual_entries:
         raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_MISSING")
-    if actual_files - expected_files:
+    if actual_entries - expected_files:
         raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_UNEXPECTED_EXTRA")
 
     for entry in payload_manifest:
         path = raw_dir / (entry["ticker"] + ".json")
         try:
-            raw = path.read_bytes()
+            mode = os.lstat(path).st_mode
+            if not stat.S_ISREG(mode):
+                raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_NON_REGULAR_ENTRY")
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            try:
+                if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                    raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_NON_REGULAR_ENTRY")
+                with os.fdopen(descriptor, "rb") as stream:
+                    descriptor = -1
+                    raw = stream.read()
+            finally:
+                if descriptor != -1:
+                    os.close(descriptor)
         except OSError as error:
             raise V8BAcquisitionArtifactVerificationBlocked("RAW_PAYLOAD_MISSING") from error
         if len(raw) != entry["byte_count"]:

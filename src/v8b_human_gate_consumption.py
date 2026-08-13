@@ -30,12 +30,12 @@ be derived from this module file's own checkout path
 worktree of this same repository at a different filesystem path resolved to
 a *different*, empty receipt directory -- silently defeating the one-shot
 guarantee above for any caller running from that second checkout. The
-canonical state root is now derived only from fixed, trust-bearing values
-that do not vary by checkout path: the user's home directory (falling back
-to a fixed non-checkout path if home resolution fails) joined with a
-namespace derived from this repository's fixed identity string
-(``REPOSITORY_IDENTITY``). Every checkout of this same repository, at any
-path, on the same machine, now resolves to the exact same canonical ledger.
+canonical state root is now fixed to the machine-wide Windows ProgramData
+known folder (resolved through the Known Folder API) or POSIX
+``/var/lib/stock-analyzer``. It never consults HOME, USERPROFILE, cwd, the
+checkout path, or caller input. Every checkout of this same repository on
+the same machine therefore resolves to the exact same canonical ledger, and
+storage failure blocks closed.
 
 A "consumption" here is a small, fsync'd, atomically-created (never
 overwritten) receipt file on durable local storage, keyed by the exact
@@ -60,11 +60,13 @@ is deliberately no deletion/reset API: a consumed gate stays consumed.
 
 This module performs no Git access, no network access, and never reads or
 writes a ticker identity, private path, or raw OHLCV value. Importing it
-performs no I/O beyond resolving the home directory path (no read/write).
+performs no state-ledger read/write; production root resolution uses only
+the fixed machine-local OS location described below (never HOME/USERPROFILE).
 """
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -93,35 +95,55 @@ KNOWN_GATES = (
     GATE_T2_RAW_ACQUISITION,
 )
 
-# Informational only (no longer used to derive the state root -- MEDIUM-1).
+# Informational only (never used to derive the state root).
 CANONICAL_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
-_REPOSITORY_IDENTITY_NAMESPACE = hashlib.sha256(REPOSITORY_IDENTITY.encode("utf-8")).hexdigest()[:16]
-
-# A fixed, non-checkout-path-derived fallback used only if the home
-# directory cannot be resolved at all (e.g. no passwd entry / no HOME env).
-_FALLBACK_HOME_DIRECTORY = Path("/var/lib")
+_POSIX_MACHINE_STATE_BASE = Path("/var/lib/stock-analyzer")
 
 
-def _resolve_home_directory() -> Path:
+class _GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+_FOLDERID_PROGRAM_DATA = _GUID(
+    0x62AB5D82,
+    0xFDC1,
+    0x4DC3,
+    (ctypes.c_ubyte * 8)(0xA9, 0xDD, 0x07, 0x0D, 0x1D, 0x49, 0x5D, 0x97),
+)
+
+
+def _resolve_windows_program_data_directory() -> Path:
     try:
-        return Path.home()
-    except RuntimeError:
-        return _FALLBACK_HOME_DIRECTORY
+        path_ptr = ctypes.c_wchar_p()
+        result = ctypes.windll.shell32.SHGetKnownFolderPath(
+            ctypes.byref(_FOLDERID_PROGRAM_DATA), 0, None, ctypes.byref(path_ptr)
+        )
+        if result != 0 or not path_ptr.value:
+            raise RuntimeError
+        path = Path(path_ptr.value)
+        ctypes.windll.ole32.CoTaskMemFree(path_ptr)
+        return path
+    except (AttributeError, OSError, TypeError, RuntimeError) as error:
+        raise RuntimeError("V8B_HUMAN_GATE_STATE_ROOT_UNAVAILABLE") from error
 
 
 def _default_consumption_state_root() -> Path:
-    return _resolve_home_directory() / ".v8b_human_gate_state" / _REPOSITORY_IDENTITY_NAMESPACE
+    if os.name == "nt":
+        base = _resolve_windows_program_data_directory()
+        return base / "stock-analyzer" / "v8b-human-gate-state"
+    else:
+        base = _POSIX_MACHINE_STATE_BASE
+        return base / "v8b-human-gate-state"
 
 
-# The one fixed, non-overridable production consumption-state root. Derived
-# solely from the machine-local home directory and a namespace fixed by
-# REPOSITORY_IDENTITY -- never from this module's own checkout path, so
-# every clone/worktree of this repository on this machine resolves to the
-# exact same durable ledger (MEDIUM-1, repeat round). This is deliberately
-# not caller-suppliable on any public production entrypoint, mirroring this
-# repository's existing no-caller-override convention for other
-# trust-bearing roots.
+# The one fixed, non-overridable production consumption-state root. It is
+# independent of checkout path, cwd, HOME, USERPROFILE, and caller input.
 CANONICAL_CONSUMPTION_STATE_ROOT = _default_consumption_state_root()
 
 

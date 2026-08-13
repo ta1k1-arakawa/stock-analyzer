@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from src import v8b_human_gate_consumption as gate_consumption
+from src import v8b_production_provenance as provenance
 from src import v8b_t2_reuse_recheck as recheck
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -533,7 +534,7 @@ def test_public_resolver_wires_real_layer_b_and_frozen_final_candidate_readers()
     import inspect
 
     source = inspect.getsource(recheck.resolve_and_recheck_t2_reuse_conditions)
-    assert "read_and_verify_layer_b_completion" in source
+    assert "read_and_verify_layer_b_validation_report" in source
     assert "read_and_verify_frozen_final_candidate" in source
 
 
@@ -560,3 +561,161 @@ def test_only_the_production_resolver_and_safe_constants_are_public():
         "V8BT2PreservationRecheckBlocked",
         "resolve_and_recheck_t2_reuse_conditions",
     }
+
+
+# ---------------------------------------------------------------------------
+# ChatGPT-approved HIGH-2 concrete stage provenance contract.
+# ---------------------------------------------------------------------------
+
+
+def _git_commit(repo: Path, message: str) -> str:
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=a@b.c", "-c", "user.name=x", "commit", "-q", "-m", message],
+        check=True,
+    )
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, check=True, text=True
+    ).stdout.strip()
+
+
+def _stage_chain_repo(tmp_path: Path, *, same_candidate_and_recheck_commit: bool = False):
+    import hashlib
+
+    repo = tmp_path / ("stage-chain-same" if same_candidate_and_recheck_commit else "stage-chain")
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "README.md").write_bytes(b"synthetic")
+    _git_commit(repo, "root")
+    component_hashes = {"parameters_sha256": "1" * 64, "features_sha256": "2" * 64, "friction_assumptions_sha256": "3" * 64, "universe_sha256": "4" * 64}
+    identity_text = "parameters=" + component_hashes["parameters_sha256"] + "\nfeatures=" + component_hashes["features_sha256"] + "\nfriction_assumptions=" + component_hashes["friction_assumptions_sha256"] + "\nuniverse=" + component_hashes["universe_sha256"] + "\n"
+    candidate_id = hashlib.sha256(identity_text.encode("ascii")).hexdigest()
+    report = {
+        "schema_version": provenance.LAYER_B_VALIDATION_REPORT_SCHEMA_VERSION,
+        "study": provenance.STUDY_NAME,
+        "artifact_role": provenance.LAYER_B_VALIDATION_REPORT_ARTIFACT_ROLE,
+        "v8b_frozen_design_commit": provenance.EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+        "validation_access_count": 1,
+        "validation_result": "PASS",
+        "surviving_candidate_definition_sha256s": [candidate_id],
+        "validation_payload": {},
+    }
+    (repo / provenance.LAYER_B_VALIDATION_REPORT_GIT_PATH).write_bytes(json.dumps(report).encode())
+    report_commit = _git_commit(repo, "layer b report")
+    report_blob = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", report_commit + ":" + provenance.LAYER_B_VALIDATION_REPORT_GIT_PATH],
+        capture_output=True, check=True, text=True,
+    ).stdout.strip()
+    candidate = {
+        "schema_version": provenance.FROZEN_FINAL_CANDIDATE_ARTIFACT_SCHEMA_VERSION,
+        "study": provenance.STUDY_NAME,
+        "artifact_role": provenance.FROZEN_FINAL_CANDIDATE_ARTIFACT_ROLE,
+        "v8b_frozen_design_commit": provenance.EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+        "frozen_final_candidate_count": 1,
+        **component_hashes,
+        "candidate_definition_sha256": candidate_id,
+        "source_layer_b_validation_report_git_path": provenance.LAYER_B_VALIDATION_REPORT_GIT_PATH,
+        "source_layer_b_validation_report_git_blob_sha": report_blob,
+        "source_layer_b_validation_report_git_commit": report_commit,
+        "candidate_payload": {},
+    }
+    (repo / provenance.FROZEN_FINAL_CANDIDATE_ARTIFACT_GIT_PATH).write_bytes(json.dumps(candidate).encode())
+    candidate_commit = _git_commit(repo, "frozen candidate")
+    candidate_blob = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", candidate_commit + ":" + provenance.FROZEN_FINAL_CANDIDATE_ARTIFACT_GIT_PATH],
+        capture_output=True, check=True, text=True,
+    ).stdout.strip()
+    recheck_artifact = {
+        "schema_version": recheck.POST_FREEZE_RECHECK_SCHEMA_VERSION,
+        "study": "V8B_HISTORICAL_RESEARCH",
+        "gate": recheck.POST_FREEZE_RECHECK_GATE,
+        "frozen_design_git_commit": provenance.EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+        "stage": "POST_FREEZE",
+        "result": "PASS",
+        "layer_b_completed": True,
+        "frozen_final_candidate_established": True,
+        "t2_acquired": False,
+        "t2_opened": False,
+        "t2_ticker_identities_exposed_to_human_public_research_loop": False,
+        "t2_market_data_raw_ohlcv_feature_outcome_research_exposure": False,
+        "t2_universe_definition_unchanged": True,
+        "t2_partition_algorithm_unchanged": True,
+        "t2_v8b_f1_c1_policy_fixed": True,
+        "layer_b_validation_report_git_path": provenance.LAYER_B_VALIDATION_REPORT_GIT_PATH,
+        "layer_b_validation_report_git_blob_sha": report_blob,
+        "layer_b_validation_report_git_commit": report_commit,
+        "frozen_final_candidate_git_path": provenance.FROZEN_FINAL_CANDIDATE_ARTIFACT_GIT_PATH,
+        "frozen_final_candidate_git_blob_sha": candidate_blob,
+        "frozen_final_candidate_git_commit": candidate_commit,
+    }
+    if same_candidate_and_recheck_commit:
+        (repo / recheck.POST_FREEZE_RECHECK_GIT_PATH).write_bytes(json.dumps(recheck_artifact).encode())
+        head = _git_commit(repo, "recheck same stage commit")
+        recheck_artifact["frozen_final_candidate_git_commit"] = head
+        (repo / recheck.POST_FREEZE_RECHECK_GIT_PATH).write_bytes(json.dumps(recheck_artifact).encode())
+        head = _git_commit(repo, "self-referential recheck")
+    else:
+        (repo / recheck.POST_FREEZE_RECHECK_GIT_PATH).write_bytes(json.dumps(recheck_artifact).encode())
+        head = _git_commit(repo, "t2 recheck")
+    return repo, head, report_commit, candidate_commit, report_blob, candidate_blob
+
+
+def _run_concrete_stage_chain(repo, head, *, report_commit, candidate_commit, report_blob, candidate_blob, **overrides):
+    def reader(root, commit, path):
+        return provenance.read_git_object_bytes(repo, commit, path)
+
+    deps = dict(
+        git_commit_resolver=lambda: head,
+        anchor_reader=lambda commit: {},
+        reviewed_implementation_binder=lambda commit: {},
+        consumption_state_root=repo / "ledger",
+        layer_b_validation_reader=lambda commit: provenance.read_and_verify_layer_b_validation_report(repo, commit),
+        frozen_final_candidate_reader=lambda commit: provenance.read_and_verify_frozen_final_candidate(repo, commit),
+        no_research_opening_api_exists=lambda: True,
+        git_object_reader=reader,
+        gate_consumption_checker=lambda root, gate, design: False,
+        v8_state_evidence_reader=lambda root, commit, object_reader: _safe_v8_state_evidence(),
+    )
+    deps.update(overrides)
+    return recheck._resolve_and_recheck_t2_reuse_conditions_with_dependencies(repo, **deps)
+
+
+def test_concrete_layer_b_candidate_t2_chain_passes_with_strict_ancestry(tmp_path):
+    repo, head, report_commit, candidate_commit, report_blob, candidate_blob = _stage_chain_repo(tmp_path)
+    result = _run_concrete_stage_chain(
+        repo, head, report_commit=report_commit, candidate_commit=candidate_commit, report_blob=report_blob, candidate_blob=candidate_blob
+    )
+    assert result == {"result": "PASS", "block": "T2"}
+
+
+def test_concrete_chain_blocks_candidate_identity_not_in_layer_b_survivors(tmp_path):
+    repo, head, report_commit, candidate_commit, report_blob, candidate_blob = _stage_chain_repo(tmp_path)
+    candidate_path = repo / provenance.FROZEN_FINAL_CANDIDATE_ARTIFACT_GIT_PATH
+    candidate = json.loads(candidate_path.read_bytes())
+    candidate["candidate_definition_sha256"] = "f" * 64
+    candidate_path.write_bytes(json.dumps(candidate).encode())
+    with pytest.raises(provenance.V8BProductionProvenanceBlocked):
+        provenance.read_and_verify_frozen_final_candidate(repo, _git_commit(repo, "candidate identity mismatch"))
+
+
+def test_concrete_chain_blocks_report_blob_drift_at_current_head(tmp_path):
+    repo, _head, report_commit, candidate_commit, report_blob, candidate_blob = _stage_chain_repo(tmp_path)
+    report_path = repo / provenance.LAYER_B_VALIDATION_REPORT_GIT_PATH
+    report = json.loads(report_path.read_bytes())
+    report["validation_payload"] = {"synthetic_drift": True}
+    report_path.write_bytes(json.dumps(report).encode())
+    drift_head = _git_commit(repo, "report drift")
+    candidate = json.loads((repo / provenance.FROZEN_FINAL_CANDIDATE_ARTIFACT_GIT_PATH).read_bytes())
+    recheck_artifact = json.loads((repo / recheck.POST_FREEZE_RECHECK_GIT_PATH).read_bytes())
+    recheck_artifact["frozen_final_candidate_git_commit"] = candidate_commit
+    (repo / recheck.POST_FREEZE_RECHECK_GIT_PATH).write_bytes(json.dumps(recheck_artifact).encode())
+    with pytest.raises(recheck.V8BT2PreservationRecheckBlocked):
+        _run_concrete_stage_chain(repo, drift_head, report_commit=report_commit, candidate_commit=candidate_commit, report_blob=report_blob, candidate_blob=candidate_blob)
+
+
+def test_concrete_chain_blocks_candidate_and_recheck_same_commit(tmp_path):
+    repo, head, report_commit, candidate_commit, report_blob, candidate_blob = _stage_chain_repo(tmp_path, same_candidate_and_recheck_commit=True)
+    from src.v8b_git_provenance import V8BGitProvenanceBlocked, require_strict_git_ancestor
+    with pytest.raises(V8BGitProvenanceBlocked) as excinfo:
+        require_strict_git_ancestor(repo, head, head, "V8B_T2_REUSE_CONDITIONS_RECHECK_CANDIDATE_NOT_STRICT_ANCESTOR")
+    assert "STRICT_ANCESTOR" in excinfo.value.reason

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -279,6 +280,58 @@ def test_detects_extra_payload_file(tmp_path):
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
         artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "RAW_PAYLOAD_UNEXPECTED_EXTRA"
+
+
+@pytest.mark.parametrize("directory_name", ["features", "research", "backtest", "model"])
+def test_raw_directory_extra_or_nested_directory_blocks(tmp_path, directory_name):
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
+    (raw_dir / directory_name).mkdir()
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "RAW_PAYLOAD_NON_REGULAR_ENTRY"
+
+
+def test_expected_raw_payload_replaced_by_directory_blocks(tmp_path):
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
+    expected = next(raw_dir.glob("*.json"))
+    expected.unlink()
+    expected.mkdir()
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "RAW_PAYLOAD_NON_REGULAR_ENTRY"
+
+
+def test_expected_raw_payload_symlink_blocks_without_following(tmp_path):
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
+    expected = next(raw_dir.glob("*.json"))
+    target = tmp_path / "outside-payload.json"
+    target.write_bytes(expected.read_bytes())
+    expected.unlink()
+    try:
+        expected.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links unavailable in this test environment")
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "RAW_PAYLOAD_NON_REGULAR_ENTRY"
+
+
+def test_extra_raw_symlink_blocks(tmp_path):
+    artifact, output_root, pin = build_and_run_t1b(tmp_path)
+    raw_dir = output_root / acquisition.ACQUISITIONS_DIRNAME / "T1B" / acquisition.RAW_DIRNAME
+    target = tmp_path / "outside-payload.json"
+    target.write_bytes(b"{}")
+    link = raw_dir / "EXTRA_LINK.json"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links unavailable in this test environment")
+    with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
+        artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
+    assert excinfo.value.reason == "RAW_PAYLOAD_NON_REGULAR_ENTRY"
 
 
 def test_detects_modified_payload_bytes(tmp_path):
@@ -756,14 +809,14 @@ SECRET_PRIVATE_PATH_FRAGMENT = "/very/secret/private/acquisition/output"
 def test_raw_payload_directory_unreadable_never_leaks_path(tmp_path, monkeypatch):
     artifact, output_root, pin = build_and_run_t1b(tmp_path)
 
-    real_iterdir = Path.iterdir
+    real_scandir = artifact_verification.os.scandir
 
-    def poisoned_iterdir(self):
-        if self.name == acquisition.RAW_DIRNAME:
+    def poisoned_scandir(path):
+        if Path(path).name == acquisition.RAW_DIRNAME:
             raise OSError(f"permission denied listing {SECRET_PRIVATE_PATH_FRAGMENT}/raw")
-        return real_iterdir(self)
+        return real_scandir(path)
 
-    monkeypatch.setattr(Path, "iterdir", poisoned_iterdir)
+    monkeypatch.setattr(artifact_verification.os, "scandir", poisoned_scandir)
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
         artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "RAW_PAYLOAD_DIRECTORY_UNREADABLE"
@@ -774,14 +827,14 @@ def test_raw_payload_read_failure_never_leaks_path_or_ticker(tmp_path, monkeypat
     artifact, output_root, pin = build_and_run_t1b(tmp_path)
     secret_ticker = artifact["t1b_tickers"][0]
 
-    real_read_bytes = Path.read_bytes
+    real_open = artifact_verification.os.open
 
-    def poisoned_read_bytes(self):
-        if self.suffix == ".json" and self.parent.name == acquisition.RAW_DIRNAME:
+    def poisoned_open(path, flags, *args):
+        if Path(path).suffix == ".json" and Path(path).parent.name == acquisition.RAW_DIRNAME:
             raise OSError(f"permission denied reading {secret_ticker} at {SECRET_PRIVATE_PATH_FRAGMENT}")
-        return real_read_bytes(self)
+        return real_open(path, flags, *args)
 
-    monkeypatch.setattr(Path, "read_bytes", poisoned_read_bytes)
+    monkeypatch.setattr(artifact_verification.os, "open", poisoned_open)
     with pytest.raises(artifact_verification.V8BAcquisitionArtifactVerificationBlocked) as excinfo:
         artifact_verification._verify_acquisition_artifact(output_root, "T1B", **expected_kwargs_for(artifact, pin))
     assert excinfo.value.reason == "RAW_PAYLOAD_MISSING"

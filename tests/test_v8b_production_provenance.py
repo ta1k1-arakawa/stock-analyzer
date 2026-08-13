@@ -513,6 +513,70 @@ def test_trust_pin_review_reviewed_commit_missing_trust_pin_rejected(tmp_path):
     assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_TRUST_PIN_MISSING"
 
 
+def test_trust_pin_review_requires_strict_pin_to_review_ancestry(tmp_path):
+    bogus, head, pin_commit, _pin_blob = _build_trust_pin_review_repo(tmp_path, "trust_pin_review_order")
+    result = _read_review(bogus, head)
+    assert result["reviewed_trust_pin_git_commit"] == pin_commit
+
+
+def test_trust_pin_review_same_commit_blocks(tmp_path):
+    bogus = tmp_path / "trust_pin_review_same_commit"
+    bogus.mkdir()
+    pin_commit = _init_bogus_git_repo(bogus, files={pp.TRUST_PIN_GIT_PATH: b'{"synthetic":"pin"}'})
+    from src.v8b_git_provenance import V8BGitProvenanceBlocked, require_strict_git_ancestor
+
+    with pytest.raises(V8BGitProvenanceBlocked) as excinfo:
+        require_strict_git_ancestor(
+            bogus,
+            pin_commit,
+            pin_commit,
+            "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_NOT_STRICT_ANCESTOR",
+        )
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_NOT_STRICT_ANCESTOR"
+
+
+def test_trust_pin_review_sibling_commit_with_identical_blob_blocks(tmp_path):
+    bogus = tmp_path / "trust_pin_review_sibling"
+    bogus.mkdir()
+    root_commit = _init_bogus_git_repo(bogus, files={"README.md": b"root"})
+    (bogus / pp.TRUST_PIN_GIT_PATH).write_bytes(b'{"synthetic":"pin"}')
+    main_pin_commit = _commit_all(bogus, "main pin publication")
+    pin_blob = _git_blob_sha(bogus, main_pin_commit, pp.TRUST_PIN_GIT_PATH)
+    subprocess.run(["git", "-C", str(bogus), "checkout", "-q", "-b", "sibling", root_commit], check=True)
+    (bogus / pp.TRUST_PIN_GIT_PATH).write_bytes(b'{"synthetic":"pin"}')
+    sibling_commit = _commit_all(bogus, "unrelated pin publication")
+    subprocess.run(["git", "-C", str(bogus), "checkout", "-q", "-"], check=True)
+    review = _trust_pin_review_artifact(reviewed_trust_pin_git_commit=sibling_commit, reviewed_trust_pin_git_blob_sha=pin_blob)
+    (bogus / pp.TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH).write_bytes(json.dumps(review).encode())
+    main_review = _commit_all(bogus, "main-line review")
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        _read_review(bogus, main_review)
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_NOT_STRICT_ANCESTOR"
+
+
+def test_trust_pin_review_artifact_present_at_pin_commit_blocks(tmp_path, monkeypatch):
+    bogus = tmp_path / "trust_pin_review_already_present"
+    bogus.mkdir()
+    pin_bytes = b'{"synthetic":"pin"}'
+    (bogus / pp.TRUST_PIN_GIT_PATH).write_bytes(pin_bytes)
+    pin_commit = _commit_all(bogus, "publish pin") if (bogus / ".git").exists() else _init_bogus_git_repo(bogus, files={pp.TRUST_PIN_GIT_PATH: pin_bytes})
+    pin_blob = _git_blob_sha(bogus, pin_commit, pp.TRUST_PIN_GIT_PATH)
+    review = _trust_pin_review_artifact(reviewed_trust_pin_git_commit=pin_commit, reviewed_trust_pin_git_blob_sha=pin_blob)
+    (bogus / pp.TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH).write_bytes(json.dumps(review).encode())
+    head = _commit_all(bogus, "review present before review stage")
+    real_resolve = pp.resolve_git_blob
+
+    def pretend_review_existed(repository_root, commit, path):
+        if commit == pin_commit and path == pp.TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH:
+            return "a" * 40
+        return real_resolve(repository_root, commit, path)
+
+    monkeypatch.setattr(pp, "resolve_git_blob", pretend_review_existed)
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        _read_review(bogus, head)
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEW_ARTIFACT_PRESENT_AT_REVIEWED_COMMIT"
+
+
 @pytest.mark.parametrize(
     "field,value,expected_reason",
     [
@@ -565,149 +629,101 @@ def test_trust_pin_creation_and_gate_consumption_modules_are_bound_to_the_review
 
 
 # ---------------------------------------------------------------------------
-# Repeat-round finding HIGH-2: LAYER_B / FROZEN_FINAL_CANDIDATE dedicated
-# stage-completion approval artifacts.
+# Repeat-round finding HIGH-2: concrete Layer B / frozen-candidate artifacts.
 # ---------------------------------------------------------------------------
 
 
-def _stage_completion_approval(*, gate: str, human_gate_prefix: str, **overrides) -> dict:
-    approval = {
-        "schema_version": None,
+def _layer_b_report(candidate_ids=None, **overrides) -> dict:
+    report = {
+        "schema_version": pp.LAYER_B_VALIDATION_REPORT_SCHEMA_VERSION,
         "study": pp.STUDY_NAME,
-        "gate": gate,
+        "artifact_role": pp.LAYER_B_VALIDATION_REPORT_ARTIFACT_ROLE,
         "v8b_frozen_design_commit": pp.EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
-        "result": "PASS",
-        "approval_status": "APPROVED",
-        "human_gate": human_gate_prefix + pp.EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+        "validation_access_count": 1,
+        "validation_result": "PASS",
+        "surviving_candidate_definition_sha256s": candidate_ids or ["a" * 64],
+        "validation_payload": {},
     }
-    approval.update(overrides)
-    return approval
+    report.update(overrides)
+    return report
 
 
-@pytest.mark.parametrize(
-    "reader,git_path,gate,human_gate_prefix,schema_version,missing_reason",
-    [
-        (
-            "read_and_verify_layer_b_completion",
-            "LAYER_B_COMPLETION_GIT_PATH",
-            "LAYER_B_COMPLETION_GATE",
-            "LAYER_B_COMPLETION_HUMAN_GATE_PREFIX",
-            "LAYER_B_COMPLETION_SCHEMA_VERSION",
-            "V8B_LAYER_B_COMPLETION_APPROVAL_MISSING",
-        ),
-        (
-            "read_and_verify_frozen_final_candidate",
-            "FROZEN_FINAL_CANDIDATE_GIT_PATH",
-            "FROZEN_FINAL_CANDIDATE_GATE",
-            "FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX",
-            "FROZEN_FINAL_CANDIDATE_SCHEMA_VERSION",
-            "V8B_FROZEN_FINAL_CANDIDATE_APPROVAL_MISSING",
-        ),
-    ],
-)
-def test_stage_completion_approval_missing_blocks_on_real_repo(
-    reader, git_path, gate, human_gate_prefix, schema_version, missing_reason
-):
-    """Neither future artifact exists in this repository yet -- production
-    must fail closed today (no real Layer B run or frozen-final-candidate
-    selection has occurred)."""
+def _candidate_artifact(source_commit: str, source_blob: str, **overrides) -> dict:
+    candidate = {
+        "schema_version": pp.FROZEN_FINAL_CANDIDATE_ARTIFACT_SCHEMA_VERSION,
+        "study": pp.STUDY_NAME,
+        "artifact_role": pp.FROZEN_FINAL_CANDIDATE_ARTIFACT_ROLE,
+        "v8b_frozen_design_commit": pp.EXPECTED_V8B_FROZEN_DESIGN_COMMIT,
+        "frozen_final_candidate_count": 1,
+        "parameters_sha256": "1" * 64,
+        "features_sha256": "2" * 64,
+        "friction_assumptions_sha256": "3" * 64,
+        "universe_sha256": "4" * 64,
+        "candidate_definition_sha256": "a" * 64,
+        "source_layer_b_validation_report_git_path": pp.LAYER_B_VALIDATION_REPORT_GIT_PATH,
+        "source_layer_b_validation_report_git_blob_sha": source_blob,
+        "source_layer_b_validation_report_git_commit": source_commit,
+        "candidate_payload": {},
+    }
+    candidate.update(overrides)
+    return candidate
+
+
+def _build_concrete_stage_repo(tmp_path: Path, name: str = "concrete_stages") -> tuple[Path, str, str, str, str]:
+    import hashlib
+
+    repo = tmp_path / name
+    repo.mkdir()
+    report = _layer_b_report()
+    report_bytes = json.dumps(report, sort_keys=True, separators=(",", ":")).encode()
+    report_commit = _init_bogus_git_repo(repo, files={pp.LAYER_B_VALIDATION_REPORT_GIT_PATH: report_bytes})
+    report_blob = _git_blob_sha(repo, report_commit, pp.LAYER_B_VALIDATION_REPORT_GIT_PATH)
+    identity_text = "parameters=" + "1" * 64 + "\nfeatures=" + "2" * 64 + "\nfriction_assumptions=" + "3" * 64 + "\nuniverse=" + "4" * 64 + "\n"
+    candidate_id = hashlib.sha256(identity_text.encode("ascii")).hexdigest()
+    report["surviving_candidate_definition_sha256s"] = [candidate_id]
+    (repo / pp.LAYER_B_VALIDATION_REPORT_GIT_PATH).write_bytes(json.dumps(report).encode())
+    report_commit = _commit_all(repo, "finalize validation report")
+    report_blob = _git_blob_sha(repo, report_commit, pp.LAYER_B_VALIDATION_REPORT_GIT_PATH)
+    candidate = _candidate_artifact(report_commit, report_blob, candidate_definition_sha256=candidate_id)
+    (repo / pp.FROZEN_FINAL_CANDIDATE_ARTIFACT_GIT_PATH).write_bytes(json.dumps(candidate).encode())
+    candidate_commit = _commit_all(repo, "freeze final candidate")
+    return repo, report_commit, report_blob, candidate_commit, candidate_id
+
+
+def test_concrete_layer_b_and_candidate_readers_pass(tmp_path):
+    repo, report_commit, report_blob, candidate_commit, candidate_id = _build_concrete_stage_repo(tmp_path)
+    report = pp.read_and_verify_layer_b_validation_report(repo, report_commit)
+    candidate = pp.read_and_verify_frozen_final_candidate(repo, candidate_commit)
+    assert report["git_blob_sha"] == report_blob
+    assert candidate["candidate_definition_sha256"] == candidate_id
+
+
+def test_approval_only_artifacts_are_not_concrete_stage_evidence(tmp_path):
+    repo = tmp_path / "approval_only"
+    repo.mkdir()
+    approval = {"schema_version": "synthetic", "result": "PASS", "approval_status": "APPROVED"}
+    head = _init_bogus_git_repo(repo, files={
+        "V8B_LAYER_B_COMPLETION_APPROVAL.json": json.dumps(approval).encode(),
+        "V8B_FROZEN_FINAL_CANDIDATE_APPROVAL.json": json.dumps(approval).encode(),
+    })
     with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
-        getattr(pp, reader)(ROOT, _real_head())
-    assert excinfo.value.reason == missing_reason
+        pp.read_and_verify_layer_b_validation_report(repo, head)
+    assert excinfo.value.reason == "V8B_LAYER_B_VALIDATION_REPORT_MISSING"
 
 
 @pytest.mark.parametrize(
-    "reader,git_path_attr,gate_attr,human_gate_prefix_attr,schema_version_attr",
+    "field,value,reason",
     [
-        (
-            "read_and_verify_layer_b_completion",
-            "LAYER_B_COMPLETION_GIT_PATH",
-            "LAYER_B_COMPLETION_GATE",
-            "LAYER_B_COMPLETION_HUMAN_GATE_PREFIX",
-            "LAYER_B_COMPLETION_SCHEMA_VERSION",
-        ),
-        (
-            "read_and_verify_frozen_final_candidate",
-            "FROZEN_FINAL_CANDIDATE_GIT_PATH",
-            "FROZEN_FINAL_CANDIDATE_GATE",
-            "FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX",
-            "FROZEN_FINAL_CANDIDATE_SCHEMA_VERSION",
-        ),
+        ("validation_access_count", 0, "V8B_LAYER_B_VALIDATION_REPORT_ACCESS_COUNT_INVALID"),
+        ("validation_result", "BLOCK", "V8B_LAYER_B_VALIDATION_REPORT_NOT_PASS"),
+        ("surviving_candidate_definition_sha256s", [], "V8B_LAYER_B_VALIDATION_REPORT_CANDIDATE_IDS_INVALID"),
     ],
 )
-def test_stage_completion_approval_passes_on_well_formed_synthetic_artifact(
-    tmp_path, reader, git_path_attr, gate_attr, human_gate_prefix_attr, schema_version_attr
-):
-    git_path = getattr(pp, git_path_attr)
-    gate = getattr(pp, gate_attr)
-    human_gate_prefix = getattr(pp, human_gate_prefix_attr)
-    schema_version = getattr(pp, schema_version_attr)
-    approval = _stage_completion_approval(gate=gate, human_gate_prefix=human_gate_prefix, schema_version=schema_version)
-    bogus = tmp_path / ("stage_completion_pass_" + reader)
-    bogus.mkdir()
-    commit = _init_bogus_git_repo(bogus, files={git_path: json.dumps(approval).encode()})
-    result = getattr(pp, reader)(bogus, commit)
-    assert result["result"] == "PASS"
-    assert result["approval_status"] == "APPROVED"
-
-
-@pytest.mark.parametrize(
-    "reader,git_path_attr,gate_attr,human_gate_prefix_attr,schema_version_attr",
-    [
-        (
-            "read_and_verify_layer_b_completion",
-            "LAYER_B_COMPLETION_GIT_PATH",
-            "LAYER_B_COMPLETION_GATE",
-            "LAYER_B_COMPLETION_HUMAN_GATE_PREFIX",
-            "LAYER_B_COMPLETION_SCHEMA_VERSION",
-        ),
-        (
-            "read_and_verify_frozen_final_candidate",
-            "FROZEN_FINAL_CANDIDATE_GIT_PATH",
-            "FROZEN_FINAL_CANDIDATE_GATE",
-            "FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX",
-            "FROZEN_FINAL_CANDIDATE_SCHEMA_VERSION",
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "field,value,expected_reason_suffix",
-    [
-        ("result", "FAIL", "NOT_PASS"),
-        ("approval_status", "PENDING", "NOT_APPROVED"),
-        ("v8b_frozen_design_commit", "0" * 40, "DESIGN_COMMIT_MISMATCH"),
-        ("human_gate", "V8B_HUMAN_CONFIRM_SOMETHING_ELSE_FOR_DESIGN_" + "0" * 40, "HUMAN_GATE_MISMATCH"),
-        ("gate", "SOME_OTHER_GATE", "GATE_MISMATCH"),
-        ("study", "V8_HISTORICAL_RESEARCH", "STUDY_MISMATCH"),
-    ],
-)
-def test_stage_completion_approval_field_semantics_enforced(
-    tmp_path,
-    reader,
-    git_path_attr,
-    gate_attr,
-    human_gate_prefix_attr,
-    schema_version_attr,
-    field,
-    value,
-    expected_reason_suffix,
-):
-    git_path = getattr(pp, git_path_attr)
-    gate = getattr(pp, gate_attr)
-    human_gate_prefix = getattr(pp, human_gate_prefix_attr)
-    schema_version = getattr(pp, schema_version_attr)
-    base = _stage_completion_approval(gate=gate, human_gate_prefix=human_gate_prefix, schema_version=schema_version)
-    base[field] = value
-    approval = base
-    bogus = tmp_path / ("stage_completion_field_" + reader + "_" + field)
-    bogus.mkdir()
-    commit = _init_bogus_git_repo(bogus, files={git_path: json.dumps(approval).encode()})
+def test_layer_b_contract_rejects_invalid_stage_claims(tmp_path, field, value, reason):
+    repo = tmp_path / ("bad_layer_b_" + field)
+    repo.mkdir()
+    report = _layer_b_report(**{field: value})
+    head = _init_bogus_git_repo(repo, files={pp.LAYER_B_VALIDATION_REPORT_GIT_PATH: json.dumps(report).encode()})
     with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
-        getattr(pp, reader)(bogus, commit)
-    assert excinfo.value.reason.endswith(expected_reason_suffix)
-
-
-def test_layer_b_and_frozen_final_candidate_artifacts_are_distinct_git_paths():
-    assert pp.LAYER_B_COMPLETION_GIT_PATH != pp.FROZEN_FINAL_CANDIDATE_GIT_PATH
-    assert pp.LAYER_B_COMPLETION_GATE != pp.FROZEN_FINAL_CANDIDATE_GATE
-    assert pp.LAYER_B_COMPLETION_HUMAN_GATE_PREFIX != pp.FROZEN_FINAL_CANDIDATE_HUMAN_GATE_PREFIX
+        pp.read_and_verify_layer_b_validation_report(repo, head)
+    assert excinfo.value.reason == reason
