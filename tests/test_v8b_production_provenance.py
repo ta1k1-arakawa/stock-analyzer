@@ -539,18 +539,70 @@ def test_trust_pin_review_sibling_commit_with_identical_blob_blocks(tmp_path):
     bogus = tmp_path / "trust_pin_review_sibling"
     bogus.mkdir()
     root_commit = _init_bogus_git_repo(bogus, files={"README.md": b"root"})
+    main_branch = subprocess.run(
+        ["git", "-C", str(bogus), "symbolic-ref", "--short", "HEAD"],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
     (bogus / pp.TRUST_PIN_GIT_PATH).write_bytes(b'{"synthetic":"pin"}')
     main_pin_commit = _commit_all(bogus, "main pin publication")
     pin_blob = _git_blob_sha(bogus, main_pin_commit, pp.TRUST_PIN_GIT_PATH)
     subprocess.run(["git", "-C", str(bogus), "checkout", "-q", "-b", "sibling", root_commit], check=True)
     (bogus / pp.TRUST_PIN_GIT_PATH).write_bytes(b'{"synthetic":"pin"}')
     sibling_commit = _commit_all(bogus, "unrelated pin publication")
-    subprocess.run(["git", "-C", str(bogus), "checkout", "-q", "-"], check=True)
+    subprocess.run(["git", "-C", str(bogus), "checkout", "-q", main_branch], check=True)
     review = _trust_pin_review_artifact(reviewed_trust_pin_git_commit=sibling_commit, reviewed_trust_pin_git_blob_sha=pin_blob)
     (bogus / pp.TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH).write_bytes(json.dumps(review).encode())
     main_review = _commit_all(bogus, "main-line review")
     with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
         _read_review(bogus, main_review)
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_NOT_STRICT_ANCESTOR"
+
+
+def test_trust_pin_review_orphan_commit_with_identical_blob_blocks(tmp_path):
+    bogus = tmp_path / "trust_pin_review_orphan"
+    bogus.mkdir()
+    _init_bogus_git_repo(bogus, files={"README.md": b"root"})
+    main_branch = subprocess.run(
+        ["git", "-C", str(bogus), "symbolic-ref", "--short", "HEAD"],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    (bogus / pp.TRUST_PIN_GIT_PATH).write_bytes(b'{"synthetic":"pin"}')
+    main_pin_commit = _commit_all(bogus, "main pin publication")
+    pin_blob = _git_blob_sha(bogus, main_pin_commit, pp.TRUST_PIN_GIT_PATH)
+
+    subprocess.run(["git", "-C", str(bogus), "checkout", "-q", "--orphan", "orphan-pin"], check=True)
+    for path in bogus.iterdir():
+        if path.name != ".git" and path.is_file():
+            path.unlink()
+    (bogus / pp.TRUST_PIN_GIT_PATH).write_bytes(b'{"synthetic":"pin"}')
+    orphan_commit = _commit_all(bogus, "orphan identical pin publication")
+    subprocess.run(["git", "-C", str(bogus), "checkout", "-q", main_branch], check=True)
+
+    review = _trust_pin_review_artifact(
+        reviewed_trust_pin_git_commit=orphan_commit,
+        reviewed_trust_pin_git_blob_sha=pin_blob,
+    )
+    (bogus / pp.TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH).write_bytes(json.dumps(review).encode())
+    main_review = _commit_all(bogus, "main-line review")
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        _read_review(bogus, main_review)
+    assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_NOT_STRICT_ANCESTOR"
+
+
+def test_trust_pin_review_nonexistent_reviewed_commit_blocks(tmp_path):
+    bogus, head, _pin_commit, pin_blob = _build_trust_pin_review_repo(tmp_path, "trust_pin_review_missing_commit")
+    review = _trust_pin_review_artifact(
+        reviewed_trust_pin_git_commit="f" * 40,
+        reviewed_trust_pin_git_blob_sha=pin_blob,
+    )
+    (bogus / pp.TRUST_PIN_INDEPENDENT_REVIEW_GIT_PATH).write_bytes(json.dumps(review).encode())
+    head = _commit_all(bogus, "review references nonexistent commit")
+    with pytest.raises(pp.V8BProductionProvenanceBlocked) as excinfo:
+        _read_review(bogus, head)
     assert excinfo.value.reason == "V8B_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_NOT_STRICT_ANCESTOR"
 
 
