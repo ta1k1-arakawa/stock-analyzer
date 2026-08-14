@@ -125,7 +125,6 @@ def create_v8c_trusted_allocation_pin_production(
     human_pin_authorization: str,
     allocation_artifact_path: str | os.PathLike[str],
     partition_manifest_path: str | os.PathLike[str],
-    t1b_allocation_artifact_path: str | os.PathLike[str],
     output_path: str | os.PathLike[str],
     authorization_note: str,
 ) -> dict[str, Any]:
@@ -135,7 +134,6 @@ def create_v8c_trusted_allocation_pin_production(
         human_pin_authorization=human_pin_authorization,
         allocation_artifact_path=allocation_artifact_path,
         partition_manifest_path=partition_manifest_path,
-        t1b_allocation_artifact_path=t1b_allocation_artifact_path,
         output_path=output_path,
         authorization_note=authorization_note,
         git_commit_resolver=lambda: resolve_verified_v8c_production_git_commit(CANONICAL_REPOSITORY_ROOT),
@@ -147,7 +145,7 @@ def create_v8c_trusted_allocation_pin_production(
             CANONICAL_REPOSITORY_ROOT, head
         ),
         allocation_verification_resolver=lambda: resolve_and_verify_t1c_allocation_artifact(
-            allocation_artifact_path, partition_manifest_path, t1b_allocation_artifact_path
+            allocation_artifact_path, partition_manifest_path
         ),
         clock=lambda: datetime.now(timezone.utc),
         consumption_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
@@ -160,7 +158,6 @@ def _create_v8c_trusted_allocation_pin_production_with_dependencies(
     human_pin_authorization: str,
     allocation_artifact_path: str | os.PathLike[str],
     partition_manifest_path: str | os.PathLike[str],
-    t1b_allocation_artifact_path: str | os.PathLike[str],
     output_path: str | os.PathLike[str],
     authorization_note: str,
     git_commit_resolver: Callable[[], str],
@@ -193,7 +190,7 @@ def _create_v8c_trusted_allocation_pin_production_with_dependencies(
         raise _wrap(error) from error
 
     try:
-        reviewed_implementation_binder(verified_head)
+        review_binding = reviewed_implementation_binder(verified_head)
     except (V8CProductionProvenanceBlocked, V8CGitProvenanceBlocked) as error:
         raise _wrap(error, "V8C_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING") from error
 
@@ -202,6 +199,8 @@ def _create_v8c_trusted_allocation_pin_production_with_dependencies(
     except V8CAllocationVerificationBlocked as error:
         raise V8CTrustPinCreationBlocked("V8C_ALLOCATION_VERIFICATION_FAILED:" + error.reason) from error
 
+    verification_result = dict(verification_result)
+    verification_result["v8c_reviewed_production_implementation_commit"] = review_binding["reviewed_implementation_git_commit"]
     artifact_self_hash = verification_result.get("artifact_self_hash")
     if not isinstance(artifact_self_hash, str):
         raise V8CTrustPinCreationBlocked("V8C_ALLOCATION_VERIFICATION_RESULT_INVALID")

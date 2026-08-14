@@ -287,3 +287,25 @@ def test_sleep_backoff_index_bounds():
         transport.sleep_backoff(-1)
     with pytest.raises(transport.V8CTransportBlocked):
         transport.sleep_backoff(2)
+def test_named_redirect_failures_remain_exact_nonretryable_labels():
+    for label in ("UNTRUSTED_REDIRECT", "RESPONSE_HOST_MISMATCH"):
+        error = transport.V8CTransportNamedFailure(label)
+        assert transport.classify_transport_exception(error) == (label, False)
+        assert transport.classify_named_condition(label) == (label, False)
+
+
+def test_retry_audit_contains_immutable_fingerprint_and_concrete_metadata():
+    calls = []
+    def attempt():
+        calls.append(1)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError("https://synthetic.invalid", 503, "ignored", {}, None)
+        return "ok"
+    result, audit = transport.attempt_with_frozen_retry(
+        attempt, sleep_fn=lambda _: None, request_fingerprint="f" * 64
+    )
+    assert result == "ok"
+    assert audit["history"][0]["classification"] == "HTTP_503"
+    assert audit["history"][0]["retryable"] is True
+    assert audit["history"][0]["classification_metadata"]["http_code"] == 503
+    assert {entry["request_fingerprint"] for entry in audit["history"]} == {"f" * 64}

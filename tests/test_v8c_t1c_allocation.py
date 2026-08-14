@@ -53,8 +53,9 @@ def test_t1c_is_exact_300_600_slice():
 def test_remaining_is_parent_minus_t1c_slice():
     parent = _parent()
     artifact = build(parent_t_spare_tickers=parent)
-    assert artifact["remaining_t_spare_tickers"] == parent[:300] + parent[600:]
-    assert artifact["remaining_t_spare_ticker_count"] == len(parent) - 300
+    assert artifact["remaining_t_spare_tickers"] == parent[600:]
+    assert artifact["remaining_t_spare_ticker_count"] == len(parent) - 600
+    assert artifact["predecessor_burned_count"] == 300
 
 
 def test_t1c_and_remaining_partition_the_parent_exactly():
@@ -63,7 +64,7 @@ def test_t1c_and_remaining_partition_the_parent_exactly():
     t1c = set(artifact["t1c_tickers"])
     remaining = set(artifact["remaining_t_spare_tickers"])
     assert t1c.isdisjoint(remaining)
-    assert t1c | remaining == set(parent)
+    assert t1c | remaining == set(parent[300:])
 
 
 def test_insufficient_parent_size_blocked():

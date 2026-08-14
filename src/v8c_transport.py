@@ -104,6 +104,9 @@ def classify_transport_exception(error: BaseException) -> tuple[str, bool]:
     exception types and the exact numeric ``.code``/``.errno`` attributes
     §4.3 names.
     """
+    if isinstance(error, V8CTransportNamedFailure):
+        return classify_named_condition(error.condition)
+
     if isinstance(error, urllib.error.HTTPError):
         code = error.code
         if isinstance(code, int) and not isinstance(code, bool):
@@ -151,6 +154,21 @@ def classify_named_condition(name: str) -> tuple[str, bool]:
     return name, False
 
 
+def _classification_metadata(error: BaseException, classification: str) -> dict[str, Any]:
+    """Return concrete, non-message metadata for the private retry audit."""
+    if isinstance(error, urllib.error.HTTPError):
+        return {"exception_type": type(error).__name__, "http_code": error.code}
+    if isinstance(error, V8CTransportNamedFailure):
+        return {"exception_type": type(error).__name__, "named_condition": error.condition}
+    reason = getattr(error, "reason", None) if isinstance(error, urllib.error.URLError) else error
+    return {
+        "exception_type": type(error).__name__,
+        "reason_type": type(reason).__name__,
+        "errno": getattr(reason, "errno", None),
+        "classification": classification,
+    }
+
+
 def sleep_backoff(attempt_index: int, sleep_fn: Callable[[float], None] = time.sleep) -> None:
     """Sleep the frozen backoff for ``attempt_index`` (0-based index into
     the retry, i.e. the wait *before* retry attempt ``attempt_index + 2``).
@@ -164,6 +182,7 @@ def attempt_with_frozen_retry(
     attempt_fn: Callable[[], T],
     *,
     sleep_fn: Callable[[float], None] = time.sleep,
+    request_fingerprint: str | None = None,
 ) -> tuple[T, dict[str, Any]]:
     """Execute ``attempt_fn`` under the frozen §4 retry policy.
 
@@ -184,20 +203,26 @@ def attempt_with_frozen_retry(
             result = attempt_fn()
         except V8CTransportNamedFailure as error:
             classification, retryable = classify_named_condition(error.condition)
-            audit_attempts.append({"attempt": attempt_number, "classification": classification, "retryable": retryable})
+            audit_attempts.append({"attempt": attempt_number, "classification": classification, "retryable": retryable,
+                                   "classification_metadata": _classification_metadata(error, classification),
+                                   "request_fingerprint": request_fingerprint})
             last_error = error
             if not retryable or attempt_number == MAXIMUM_ATTEMPTS_PER_TICKER:
                 setattr(error, "transport_audit", audit_attempts)
                 raise
         except BaseException as error:  # noqa: BLE001 - must classify every exception, including unmapped ones
             classification, retryable = classify_transport_exception(error)
-            audit_attempts.append({"attempt": attempt_number, "classification": classification, "retryable": retryable})
+            audit_attempts.append({"attempt": attempt_number, "classification": classification, "retryable": retryable,
+                                   "classification_metadata": _classification_metadata(error, classification),
+                                   "request_fingerprint": request_fingerprint})
             last_error = error
             if not retryable or attempt_number == MAXIMUM_ATTEMPTS_PER_TICKER:
                 setattr(error, "transport_audit", audit_attempts)
                 raise
         else:
-            audit_attempts.append({"attempt": attempt_number, "classification": "SUCCESS", "retryable": None})
+            audit_attempts.append({"attempt": attempt_number, "classification": "SUCCESS", "retryable": None,
+                                   "classification_metadata": {"exception_type": None},
+                                   "request_fingerprint": request_fingerprint})
             return result, {
                 "attempts": len(audit_attempts),
                 "retry_count": len(audit_attempts) - 1,

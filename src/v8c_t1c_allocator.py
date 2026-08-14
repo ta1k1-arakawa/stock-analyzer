@@ -167,6 +167,7 @@ def _allocate_t1c_production_with_dependencies(
     anchor_reader: Callable[[str], Mapping[str, Any]],
     clock: Callable[[], datetime],
     consumption_state_root: str | os.PathLike[str],
+    output_repository_root: str | os.PathLike[str] = CANONICAL_REPOSITORY_ROOT,
 ) -> dict[str, Any]:
     """Private fake-only seam. No OHLCV, no network, no retry: exactly one
     deterministic attempt per call -- either it succeeds once or raises."""
@@ -241,7 +242,7 @@ def _allocate_t1c_production_with_dependencies(
         if computed_hash != partition_manifest["t_spare_ticker_list_sha256"]:
             raise V8CT1CAllocatorBlocked("PARENT_T_SPARE_TICKER_LIST_SHA_MISMATCH")
 
-        destination = require_absolute_output_path_outside_repository(output_path, CANONICAL_REPOSITORY_ROOT)
+        destination = require_absolute_output_path_outside_repository(output_path, output_repository_root)
 
         try:
             artifact = build_t1c_allocation_artifact(

@@ -31,6 +31,7 @@ from src.v8c_git_provenance import (
     V8CGitProvenanceBlocked,
     read_git_object_bytes,
     require_git_commit,
+    resolve_git_blob,
     resolve_verified_v8c_production_git_commit,
 )
 from src.v8c_human_gate_consumption import (
@@ -52,6 +53,7 @@ from src.v8c_production_provenance import (
     verify_frozen_design_object,
     verify_reviewed_implementation_binding,
 )
+from src.v8c_stage_state import read_valid_t2_recheck_pass, V8CStageEvidenceBlocked
 
 STUDY_NAME = "V8C_HISTORICAL_RESEARCH"
 SCHEMA_VERSION = "V8C_T2_AUTHORITY_BRIDGE_V1"
@@ -104,6 +106,7 @@ BRIDGE_REVIEW_FIELDS = (
     "v8_trust_anchor_git_identity",
     "authorized_parent_v8_partition_manifest_sha256",
     "exact_human_bridge_authorization_identity",
+    "reviewed_production_implementation_commit",
     "review_result",
     "approval_status",
 )
@@ -303,6 +306,11 @@ def create_v8c_t2_authority_bridge_production(
         anchor_reader=lambda head: read_and_verify_v8_trusted_partition_anchor(CANONICAL_REPOSITORY_ROOT, head),
         clock=lambda: datetime.now(timezone.utc),
         consumption_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
+        t2_preservation_pass_reader=lambda implementation_commit: read_valid_t2_recheck_pass(
+            CANONICAL_CONSUMPTION_STATE_ROOT,
+            frozen_design_commit=EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
+            reviewed_implementation_commit=implementation_commit,
+        ),
     )
 
 
@@ -319,6 +327,7 @@ def _create_v8c_t2_authority_bridge_production_with_dependencies(
     anchor_reader: Callable[[str], Mapping[str, Any]],
     clock: Callable[[], datetime],
     consumption_state_root: str | os.PathLike[str],
+    t2_preservation_pass_reader: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if confirmation != BRIDGE_CONFIRMATION:
         raise V8CT2BridgeBlocked("V8C_BRIDGE_CREATION_CONFIRMATION_INVALID")
@@ -356,6 +365,14 @@ def _create_v8c_t2_authority_bridge_production_with_dependencies(
 
     if human_bridge_authorization != expected_human_gate(EXPECTED_V8C_FROZEN_DESIGN_COMMIT):
         raise V8CT2BridgeBlocked("V8C_HUMAN_BRIDGE_AUTHORIZATION_INVALID")
+
+    if t2_preservation_pass_reader is not None:
+        try:
+            preservation = t2_preservation_pass_reader(reviewed_commit)
+            if preservation.get("result") != "PASS" or preservation.get("recheck_point") != "recheck_2":
+                raise V8CT2BridgeBlocked("V8C_T2_PRESERVATION_RECHECK_PASS_REQUIRED")
+        except (V8CStageEvidenceBlocked, V8CT2BridgeBlocked) as error:
+            raise V8CT2BridgeBlocked("V8C_T2_PRESERVATION_RECHECK_PASS_REQUIRED") from error
 
     try:
         consume_gate_once(
@@ -414,7 +431,15 @@ def read_and_verify_v8c_t2_authority_bridge(repository_root, verified_head: str)
     bridge = _strict_json_object(
         raw, invalid_reason="V8C_T2_AUTHORITY_BRIDGE_INVALID_JSON", duplicate_reason="V8C_T2_AUTHORITY_BRIDGE_DUPLICATE_KEY"
     )
-    return validate_v8c_t2_authority_bridge(bridge)
+    validated = validate_v8c_t2_authority_bridge(bridge)
+    try:
+        from src.v8c_production_provenance import verify_reviewed_implementation_binding
+        expected_impl = verify_reviewed_implementation_binding(repository_root, commit)["reviewed_implementation_git_commit"]
+    except Exception as error:  # noqa: BLE001
+        raise V8CT2BridgeBlocked("V8C_T2_BRIDGE_IMPLEMENTATION_REVIEW_BINDING_FAILED") from error
+    if validated["reviewed_production_implementation_commit"] != expected_impl:
+        raise V8CT2BridgeBlocked("V8C_T2_BRIDGE_REVIEWED_IMPLEMENTATION_MISMATCH")
+    return validated
 
 
 def read_and_verify_v8c_t2_authority_bridge_independent_review(
@@ -442,6 +467,8 @@ def read_and_verify_v8c_t2_authority_bridge_independent_review(
         raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_INDEPENDENT_REVIEW_SCHEMA_VERSION_MISMATCH")
     if review["study"] != STUDY_NAME:
         raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_INDEPENDENT_REVIEW_STUDY_MISMATCH")
+    if review["artifact_role"] != "INDEPENDENT_V8C_T2_AUTHORITY_BRIDGE_REVIEW":
+        raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_INDEPENDENT_REVIEW_ROLE_MISMATCH")
     if review["exact_frozen_v8c_design_commit"] != EXPECTED_V8C_FROZEN_DESIGN_COMMIT:
         raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_INDEPENDENT_REVIEW_DESIGN_COMMIT_MISMATCH")
     if review["v8_trust_anchor_git_identity"] != EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA:
@@ -450,6 +477,26 @@ def read_and_verify_v8c_t2_authority_bridge_independent_review(
         raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_INDEPENDENT_REVIEW_MANIFEST_MISMATCH")
     if review["exact_bridge_git_blob_sha"] != expected_bridge_git_blob_sha:
         raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_INDEPENDENT_REVIEW_BLOB_MISMATCH")
+    reviewed_bridge_commit = _require_git_commit(review["exact_bridge_git_commit"], "V8C_T2_AUTHORITY_BRIDGE_REVIEW_COMMIT_INVALID")
+    try:
+        reviewed_bridge_blob = resolve_git_blob(repository_root, reviewed_bridge_commit, BRIDGE_GIT_PATH)
+        current_bridge_blob = resolve_git_blob(repository_root, verified_head, BRIDGE_GIT_PATH)
+    except V8CGitProvenanceBlocked as error:
+        raise _wrap(error, "V8C_T2_AUTHORITY_BRIDGE_REVIEWED_BLOB_MISSING") from error
+    if reviewed_bridge_blob != review["exact_bridge_git_blob_sha"]:
+        raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_REVIEWED_BLOB_SELF_MISMATCH")
+    if current_bridge_blob != review["exact_bridge_git_blob_sha"]:
+        raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_CURRENT_BLOB_DRIFT")
+    bridge = read_and_verify_v8c_t2_authority_bridge(repository_root, verified_head)
+    if review["exact_human_bridge_authorization_identity"] != bridge["exact_human_bridge_authorization_identity"]:
+        raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_REVIEW_HUMAN_GATE_MISMATCH")
+    try:
+        from src.v8c_production_provenance import verify_reviewed_implementation_binding
+        expected_impl = verify_reviewed_implementation_binding(repository_root, verified_head)["reviewed_implementation_git_commit"]
+    except Exception as error:  # noqa: BLE001
+        raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_REVIEW_IMPLEMENTATION_BINDING_FAILED") from error
+    if review["reviewed_production_implementation_commit"] != expected_impl:
+        raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_REVIEW_IMPLEMENTATION_MISMATCH")
     if review["review_result"] != "PASS":
         raise V8CT2BridgeBlocked("V8C_T2_AUTHORITY_BRIDGE_INDEPENDENT_REVIEW_NOT_PASS")
     if review["approval_status"] != "APPROVED":

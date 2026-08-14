@@ -29,10 +29,12 @@ def _summary(**overrides):
         "parent_t_spare_ticker_list_sha256": "e" * 64,
         "t1c_ticker_count": 300,
         "t1c_ticker_list_sha256": "f" * 64,
-        "remaining_t_spare_ticker_count": 1604,
+        "predecessor_burned_count": 300,
+        "remaining_t_spare_ticker_count": 1304,
         "remaining_t_spare_ticker_list_sha256": "0" * 64,
         "v8c_frozen_design_commit": SYNTHETIC_COMMIT,
         "v8c_allocation_implementation_commit": SYNTHETIC_REVIEWED_COMMIT,
+        "v8c_reviewed_production_implementation_commit": SYNTHETIC_REVIEWED_COMMIT,
         "artifact_self_hash": SYNTHETIC_HASH,
     }
     summary.update(overrides)
@@ -68,7 +70,6 @@ def test_wrong_confirmation_blocks(tmp_path):
             human_pin_authorization="whatever",
             allocation_artifact_path=tmp_path / "x.json",
             partition_manifest_path=tmp_path / "y.json",
-            t1b_allocation_artifact_path=tmp_path / "t1b.json",
             output_path=tmp_path / "out.json",
             authorization_note="n",
             **_base_deps(),
@@ -84,7 +85,6 @@ def test_wrong_human_authorization_blocks_before_gate_consumption(tmp_path):
             human_pin_authorization="not the right gate string",
             allocation_artifact_path=tmp_path / "x.json",
             partition_manifest_path=tmp_path / "y.json",
-            t1b_allocation_artifact_path=tmp_path / "t1b.json",
             output_path=tmp_path / "out.json",
             authorization_note="n",
             consumption_state_root=state_root,
@@ -106,7 +106,6 @@ def test_valid_flow_writes_pin_and_consumes_gate_exactly_once(tmp_path):
         human_pin_authorization=human_auth,
         allocation_artifact_path=tmp_path / "x.json",
         partition_manifest_path=tmp_path / "y.json",
-        t1b_allocation_artifact_path=tmp_path / "t1b.json",
         output_path=output_path,
         authorization_note="note",
         consumption_state_root=state_root,
@@ -127,7 +126,6 @@ def test_valid_flow_writes_pin_and_consumes_gate_exactly_once(tmp_path):
             human_pin_authorization=human_auth,
             allocation_artifact_path=tmp_path / "x.json",
             partition_manifest_path=tmp_path / "y.json",
-            t1b_allocation_artifact_path=tmp_path / "t1b.json",
             output_path=tmp_path / "out2.json",
             authorization_note="note",
             consumption_state_root=state_root,
@@ -144,7 +142,6 @@ def test_writing_twice_to_same_path_blocks(tmp_path):
     run(
         confirmation=creation.PIN_CREATION_CONFIRMATION, human_pin_authorization=human_auth,
         allocation_artifact_path=tmp_path / "x.json", partition_manifest_path=tmp_path / "y.json",
-        t1b_allocation_artifact_path=tmp_path / "t1b.json",
         output_path=output_path, authorization_note="note",
         consumption_state_root=tmp_path / "state1", **_base_deps(),
     )
@@ -152,7 +149,6 @@ def test_writing_twice_to_same_path_blocks(tmp_path):
         run(
             confirmation=creation.PIN_CREATION_CONFIRMATION, human_pin_authorization=human_auth,
             allocation_artifact_path=tmp_path / "x.json", partition_manifest_path=tmp_path / "y.json",
-            t1b_allocation_artifact_path=tmp_path / "t1b.json",
             output_path=output_path, authorization_note="note",
             consumption_state_root=tmp_path / "state2", **_base_deps(),
         )

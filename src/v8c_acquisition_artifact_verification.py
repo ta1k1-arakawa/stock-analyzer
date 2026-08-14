@@ -27,8 +27,10 @@ fields (``max_attempts_per_ticker``, ``max_retries``, ``backoff_seconds``,
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import socket
 import stat
 from pathlib import Path
 from typing import Any
@@ -68,7 +70,7 @@ from src.v8c_production_provenance import (
 )
 from src.v8c_t2_bridge import V8CT2BridgeBlocked, read_and_verify_v8c_t2_authority_bridge
 from src.v8c_trust_pin import V8CTrustPinBlocked, validate_trust_pin
-from src.v8c_transport import BACKOFF_SECONDS, JITTER, MAXIMUM_ATTEMPTS_PER_TICKER, MAXIMUM_RETRIES
+from src.v8c_transport import BACKOFF_SECONDS, JITTER, MAXIMUM_ATTEMPTS_PER_TICKER, MAXIMUM_RETRIES, RETRYABLE_CLASSES, NONRETRYABLE_CLASSES
 
 EXPECTED_AUTHORITY_CHAIN_BY_BLOCK = {
     "T1C": "V8C_SUCCESSOR_ALLOCATION_AUTHORITY",
@@ -115,6 +117,70 @@ class V8CAcquisitionArtifactVerificationBlocked(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def _verify_member_transport_audit(ticker: str, audit: Any) -> tuple[int, str]:
+    if not isinstance(audit, list) or not (1 <= len(audit) <= MAXIMUM_ATTEMPTS_PER_TICKER):
+        raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_HISTORY_INVALID")
+    expected_fingerprint = hashlib.sha256(canonical_json_bytes({
+        "logical_request_identity": ticker,
+        "request_start": "2016-04-01",
+        "request_end_exclusive": "2026-01-01",
+        "provider": DATA_SOURCE,
+        "host": DATA_SOURCE_HOST,
+        "request_parameters": {"interval": "1d", "events": "div,splits", "includeAdjustedClose": True},
+    })).hexdigest()
+    fingerprints = []
+    for index, entry in enumerate(audit, start=1):
+        if not isinstance(entry, dict) or set(entry) != {"attempt", "classification", "retryable", "classification_metadata", "request_fingerprint"}:
+            raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_ENTRY_SCHEMA_INVALID")
+        if entry["attempt"] != index or entry["request_fingerprint"] != expected_fingerprint:
+            raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_REQUEST_FINGERPRINT_MISMATCH")
+        fingerprints.append(entry["request_fingerprint"])
+        classification = entry["classification"]
+        metadata = entry["classification_metadata"]
+        if not isinstance(metadata, dict) or "exception_type" not in metadata:
+            raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_CLASSIFICATION_METADATA_INVALID")
+        if index < len(audit):
+            if classification not in RETRYABLE_CLASSES or entry["retryable"] is not True:
+                raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_NONRETRYABLE_INTERMEDIATE_FAILURE")
+            if metadata.get("exception_type") is None:
+                raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_INTERMEDIATE_EXCEPTION_MISSING")
+            if "http_code" in metadata:
+                code = metadata.get("http_code")
+                derived = f"HTTP_{code}" if isinstance(code, int) and not isinstance(code, bool) else None
+            elif "named_condition" in metadata:
+                derived = metadata.get("named_condition")
+            else:
+                if set(metadata) != {"exception_type", "reason_type", "errno", "classification"}:
+                    raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_CLASSIFICATION_METADATA_INVALID")
+                exception_type = metadata["exception_type"]
+                reason_type = metadata["reason_type"]
+                error_number = metadata["errno"]
+                derived = None
+                if classification == "NETWORK_TIMEOUT" and (
+                    exception_type in {"TimeoutError", "socket.timeout"}
+                    or reason_type in {"TimeoutError", "socket.timeout"}
+                ):
+                    derived = "NETWORK_TIMEOUT"
+                elif classification == "CONNECTION_RESET" and (
+                    exception_type == "ConnectionResetError"
+                    or reason_type == "ConnectionResetError"
+                    or error_number == errno.ECONNRESET
+                ):
+                    derived = "CONNECTION_RESET"
+                elif classification == "TEMPORARY_DNS_FAILURE" and (
+                    reason_type == "gaierror" and error_number == socket.EAI_AGAIN
+                ):
+                    derived = "TEMPORARY_DNS_FAILURE"
+            if derived != classification:
+                raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_CLASSIFICATION_DERIVATION_MISMATCH")
+        else:
+            if classification != "SUCCESS" or entry["retryable"] is not None or metadata != {"exception_type": None}:
+                raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_TERMINAL_SUCCESS_INVALID")
+    if len(set(fingerprints)) != 1:
+        raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_REQUEST_FINGERPRINT_DRIFT")
+    return len(audit) - 1, expected_fingerprint
 
 
 def _verify_acquisition_artifact(
@@ -197,8 +263,6 @@ def _verify_acquisition_artifact(
         raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_TOTAL_RETRY_COUNT_INVALID")
     if manifest["total_request_attempts"] != 300 + total_retry_count:
         raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_TOTAL_REQUEST_ATTEMPTS_INVALID")
-    if manifest["retry_audit_all_intermediate_failures_retryable"] is not True:
-        raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_NONRETRYABLE_INTERMEDIATE_FAILURE")
 
     payload_manifest = manifest["payload_manifest"]
     if not isinstance(payload_manifest, list) or len(payload_manifest) != 300:
@@ -206,6 +270,7 @@ def _verify_acquisition_artifact(
 
     payload_tickers: list[str] = []
     retry_count_sum = 0
+    derived_all_intermediate_retryable = True
     for entry in payload_manifest:
         if not isinstance(entry, dict) or set(entry) != set(PAYLOAD_RECORD_FIELDS):
             raise V8CAcquisitionArtifactVerificationBlocked("PAYLOAD_MANIFEST_RECORD_SCHEMA_INVALID")
@@ -226,10 +291,18 @@ def _verify_acquisition_artifact(
             raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_ATTEMPTS_INVALID")
         if type(retry_count) is not int or retry_count != attempts - 1:
             raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_RETRY_COUNT_INVALID")
+        derived_retry_count, _ = _verify_member_transport_audit(ticker, entry["transport_audit"])
+        if derived_retry_count != retry_count or attempts != len(entry["transport_audit"]):
+            raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_DERIVED_COUNT_MISMATCH")
         retry_count_sum += retry_count
+        derived_all_intermediate_retryable = derived_all_intermediate_retryable and all(
+            item["retryable"] is True for item in entry["transport_audit"][:-1]
+        )
 
     if retry_count_sum != total_retry_count:
         raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_TOTAL_RETRY_COUNT_MISMATCH")
+    if manifest["retry_audit_all_intermediate_failures_retryable"] is not derived_all_intermediate_retryable:
+        raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_SUMMARY_MISMATCH")
 
     if len(payload_tickers) != 300 or len(set(payload_tickers)) != 300:
         raise V8CAcquisitionArtifactVerificationBlocked("PAYLOAD_MANIFEST_DUPLICATE_TICKER")

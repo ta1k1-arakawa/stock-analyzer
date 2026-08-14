@@ -77,9 +77,11 @@ def _tickers(prefix, count):
 
 
 def build_manifest(tmp_path) -> dict:
+    synthetic_repository_root = tmp_path / "synthetic-repository"
+    synthetic_repository_root.mkdir()
     return acquisition._acquire_v8c_block_bundle_with_validated_inputs(
         output_root=tmp_path,
-        repository_root=acquisition.CANONICAL_REPOSITORY_ROOT,
+        repository_root=synthetic_repository_root,
         block="T1C",
         tickers=_tickers("FAKE", 300),
         authority_binding={
@@ -194,7 +196,10 @@ def test_symlink_raw_payload_rejected(tmp_path):
     victim_ticker = payload_manifest[0]["ticker"]
     victim_path = raw_dir / (victim_ticker + ".json")
     victim_path.unlink()
-    link_name.symlink_to(target)
+    try:
+        link_name.symlink_to(target)
+    except OSError as error:
+        pytest.skip(f"symlink privilege unavailable: {error}")
     link_name.rename(victim_path)
     with pytest.raises(verification.V8CAcquisitionArtifactVerificationBlocked) as excinfo:
         verification._verify_acquisition_artifact(tmp_path, "T1C", **_expected_kwargs(manifest))

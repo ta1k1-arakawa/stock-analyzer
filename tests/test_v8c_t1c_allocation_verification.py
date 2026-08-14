@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import inspect
 
 import pytest
 
@@ -41,7 +42,6 @@ def _verify(artifact, parent, **overrides):
         parent_t_spare_tickers=parent,
         t0_tickers=_tickers("T0", 300),
         old_t1_tickers=_tickers("T1", 300),
-        t1b_tickers=_tickers("T1B", 300),
         t2_tickers=_tickers("T2", 300),
         t3_tickers=_tickers("T3", 300),
         expected_parent_t_spare_ticker_list_sha256=allocation.ticker_list_sha256(parent),
@@ -59,14 +59,15 @@ def test_valid_artifact_passes():
     assert result["t1c_ticker_count"] == 300
 
 
-def test_disjoint_from_t1b_required():
+def test_t1b_disjointness_is_coordinate_derived_without_t1b_artifact():
     parent = _parent()
     artifact = _artifact(parent)
-    # Make T1B overlap with T1C's actual slice.
-    overlapping_t1b = list(parent[300:600])
-    with pytest.raises(verification.V8CAllocationVerificationBlocked) as excinfo:
-        _verify(artifact, parent, t1b_tickers=overlapping_t1b)
-    assert excinfo.value.reason == "T1C_NOT_DISJOINT_FROM_T1B"
+    assert artifact["t1c_tickers"] == parent[300:600]
+    assert artifact["predecessor_burned_count"] == 300
+    assert "t1b_tickers" not in verification._verify_t1c_allocation_artifact.__code__.co_varnames
+    assert "t1b_allocation_artifact_path" not in inspect.signature(
+        verification.resolve_and_verify_t1c_allocation_artifact
+    ).parameters
 
 
 def test_disjoint_from_t0_required():
@@ -114,7 +115,7 @@ def test_wrong_slice_blocked():
     # self-hash/consistency check passes and only the exact-slice check
     # inside the verification module catches the shift.
     wrong_t1c = parent[301:601]
-    wrong_remaining = parent[:301] + parent[601:]
+    wrong_remaining = parent[601:] + [parent[0]]
     tampered["t1c_tickers"] = wrong_t1c
     tampered["t1c_ticker_list_sha256"] = allocation.ticker_list_sha256(wrong_t1c)
     tampered["remaining_t_spare_tickers"] = wrong_remaining

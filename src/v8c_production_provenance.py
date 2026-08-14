@@ -71,10 +71,13 @@ TRUST_PIN_INDEPENDENT_REVIEW_FIELDS = (
     "schema_version",
     "study",
     "artifact_role",
+    "reviewed_v8c_frozen_design_commit",
     "reviewed_allocation_artifact_self_hash",
     "reviewed_trust_pin_human_gate",
     "reviewed_trust_pin_git_blob_sha",
     "reviewed_trust_pin_git_commit",
+    "reviewed_allocation_implementation_commit",
+    "reviewed_production_implementation_commit",
     "review_result",
     "approval_status",
 )
@@ -115,6 +118,7 @@ BOUND_PRODUCTION_FILES: tuple[str, ...] = (
     "src/v8c_historical_acquisition.py",
     "src/v8c_acquisition_artifact_verification.py",
     "src/v8c_research_opening_guard.py",
+    "src/v8c_stage_state.py",
 )
 
 
@@ -271,6 +275,8 @@ def verify_reviewed_implementation_binding(repository_root, verified_head: str) 
         raise V8CProductionProvenanceBlocked("V8C_PRODUCTION_IMPLEMENTATION_REVIEW_SCHEMA_VERSION_MISMATCH")
     if review["study"] != STUDY_NAME:
         raise V8CProductionProvenanceBlocked("V8C_PRODUCTION_IMPLEMENTATION_REVIEW_STUDY_MISMATCH")
+    if review["artifact_role"] != "PRODUCTION_IMPLEMENTATION_REVIEW":
+        raise V8CProductionProvenanceBlocked("V8C_PRODUCTION_IMPLEMENTATION_REVIEW_ARTIFACT_ROLE_MISMATCH")
     if review["review_result"] != "PASS":
         raise V8CProductionProvenanceBlocked("V8C_PRODUCTION_IMPLEMENTATION_REVIEW_NOT_PASS")
     if review["approval_status"] != "APPROVED":
@@ -343,10 +349,24 @@ def read_and_verify_trust_pin_independent_review(
         raise V8CProductionProvenanceBlocked("V8C_TRUST_PIN_INDEPENDENT_REVIEW_STUDY_MISMATCH")
     if review["artifact_role"] != TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE:
         raise V8CProductionProvenanceBlocked("V8C_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_ROLE_MISMATCH")
+    if review["reviewed_v8c_frozen_design_commit"] != EXPECTED_V8C_FROZEN_DESIGN_COMMIT:
+        raise V8CProductionProvenanceBlocked("V8C_TRUST_PIN_INDEPENDENT_REVIEW_DESIGN_COMMIT_MISMATCH")
     if review["reviewed_allocation_artifact_self_hash"] != expected_allocation_artifact_self_hash:
         raise V8CProductionProvenanceBlocked("V8C_TRUST_PIN_INDEPENDENT_REVIEW_ARTIFACT_HASH_MISMATCH")
     if review["reviewed_trust_pin_human_gate"] != expected_trust_pin_human_gate:
         raise V8CProductionProvenanceBlocked("V8C_TRUST_PIN_INDEPENDENT_REVIEW_HUMAN_GATE_MISMATCH")
+    try:
+        current_pin = _strict_json_object(
+            read_git_object_bytes(repository_root, commit, TRUST_PIN_GIT_PATH),
+            invalid_reason="V8C_TRUST_PIN_INVALID_JSON",
+            duplicate_reason="V8C_TRUST_PIN_DUPLICATE_KEY",
+        )
+    except V8CGitProvenanceBlocked as error:
+        raise _wrap_git_provenance_error(error, "V8C_TRUST_PIN_INDEPENDENT_REVIEW_CURRENT_TRUST_PIN_MISSING") from error
+    if review["reviewed_allocation_implementation_commit"] != current_pin.get("v8c_allocation_implementation_commit"):
+        raise V8CProductionProvenanceBlocked("V8C_TRUST_PIN_INDEPENDENT_REVIEW_ALLOCATION_IMPLEMENTATION_MISMATCH")
+    if review["reviewed_production_implementation_commit"] != current_pin.get("v8c_reviewed_production_implementation_commit"):
+        raise V8CProductionProvenanceBlocked("V8C_TRUST_PIN_INDEPENDENT_REVIEW_PRODUCTION_IMPLEMENTATION_MISMATCH")
     reviewed_commit = require_git_commit(
         review["reviewed_trust_pin_git_commit"], "V8C_TRUST_PIN_INDEPENDENT_REVIEW_REVIEWED_COMMIT_INVALID"
     )

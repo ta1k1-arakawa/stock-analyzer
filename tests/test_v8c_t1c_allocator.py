@@ -92,6 +92,11 @@ def _valid_anchor_for(manifest: dict) -> dict:
 
 def run(**overrides):
     overrides.setdefault("consumption_state_root", Path(tempfile.gettempdir()) / ("v8c_gate_state-" + uuid.uuid4().hex))
+    output = overrides.get("output_path")
+    if isinstance(output, Path) and output.is_absolute():
+        synthetic_root = output.parent / "synthetic-repository"
+        synthetic_root.mkdir(exist_ok=True)
+        overrides.setdefault("output_repository_root", synthetic_root)
     return allocator._allocate_t1c_production_with_dependencies(**overrides)
 
 

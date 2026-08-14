@@ -65,6 +65,7 @@ ALLOCATION_ARTIFACT_FIELDS = (
     "t1c_ticker_count",
     "t1c_tickers",
     "t1c_ticker_list_sha256",
+    "predecessor_burned_count",
     "remaining_t_spare_ticker_count",
     "remaining_t_spare_tickers",
     "remaining_t_spare_ticker_list_sha256",
@@ -172,10 +173,12 @@ def build_t1c_allocation_artifact(
     )
 
     t1c_tickers = tickers[T1C_SLICE_START_INCLUSIVE:T1C_SLICE_END_EXCLUSIVE]
-    remaining_tickers = tickers[:T1C_SLICE_START_INCLUSIVE] + tickers[T1C_SLICE_END_EXCLUSIVE:]
+    # The predecessor V8B T1B slice [0:300] is burned forever.  It is not
+    # returned, hashed, or reclassified as fresh spare in a V8C artifact.
+    remaining_tickers = tickers[T1C_SLICE_END_EXCLUSIVE:]
     if len(t1c_tickers) != T1C_TICKER_COUNT:
         raise V8CAllocationBlocked("T1C_SLICE_SIZE_INVALID")
-    if len(t1c_tickers) + len(remaining_tickers) != len(tickers):
+    if len(t1c_tickers) + len(remaining_tickers) + T1C_SLICE_START_INCLUSIVE != len(tickers):
         raise V8CAllocationBlocked("T1C_SLICE_ACCOUNTING_INVALID")
     if set(t1c_tickers) & set(remaining_tickers):
         raise V8CAllocationBlocked("T1C_REMAINING_OVERLAP")
@@ -199,6 +202,7 @@ def build_t1c_allocation_artifact(
         "t1c_ticker_count": len(t1c_tickers),
         "t1c_tickers": list(t1c_tickers),
         "t1c_ticker_list_sha256": _ticker_list_sha(t1c_tickers),
+        "predecessor_burned_count": T1C_SLICE_START_INCLUSIVE,
         "remaining_t_spare_ticker_count": len(remaining_tickers),
         "remaining_t_spare_tickers": list(remaining_tickers),
         "remaining_t_spare_ticker_list_sha256": _ticker_list_sha(remaining_tickers),
@@ -241,6 +245,10 @@ def verify_allocation_artifact_self_hash(artifact: Mapping[str, Any]) -> dict[st
         raise V8CAllocationBlocked("ALLOCATION_ARTIFACT_REMAINING_HASH_MISMATCH")
     if set(t1c_tickers) & set(remaining_tickers):
         raise V8CAllocationBlocked("ALLOCATION_ARTIFACT_T1C_REMAINING_OVERLAP")
+    if artifact["predecessor_burned_count"] != T1C_SLICE_START_INCLUSIVE:
+        raise V8CAllocationBlocked("ALLOCATION_ARTIFACT_PREDECESSOR_BURNED_COUNT_INVALID")
+    if artifact["remaining_t_spare_ticker_count"] != artifact["parent_t_spare_ticker_count"] - T1C_TICKER_COUNT - T1C_SLICE_START_INCLUSIVE:
+        raise V8CAllocationBlocked("ALLOCATION_ARTIFACT_REMAINING_COUNT_INVALID")
     return dict(artifact)
 
 

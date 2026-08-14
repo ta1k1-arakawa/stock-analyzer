@@ -32,6 +32,8 @@ transport-only.
 from __future__ import annotations
 
 import time
+import hashlib
+import json
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,7 +42,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from src.v7_yahoo_collector import HOST, V7YahooCollectorBlocked, fetch_chart_once
-from src.v8_partition import V8PartitionBlocked, read_partition_manifest
+from src.v8_partition import V8PartitionBlocked
 from src.v8c_git_provenance import (
     CANONICAL_REPOSITORY_ROOT,
     V8CGitProvenanceBlocked,
@@ -68,6 +70,12 @@ from src.v8c_production_provenance import (
     verify_reviewed_implementation_binding,
 )
 from src.v8c_transport import V8CTransportNamedFailure, attempt_with_frozen_retry
+from src.v8c_stage_state import V8CStageEvidenceBlocked, write_readiness_pass
+from src.v8c_git_provenance import read_git_object_bytes
+from src.v8c_trust_pin import read_trust_pin_bytes
+from src.v8c_production_provenance import read_and_verify_trust_pin_independent_review
+from src.v8c_t2_bridge import read_and_verify_v8c_t2_authority_bridge, read_and_verify_v8c_t2_authority_bridge_independent_review
+from src.v8c_stage_state import read_valid_t2_recheck_pass
 
 SENTINEL_INDICES: tuple[int, ...] = (0, 149, 299)
 SENTINEL_PROBE_START = "2025-12-01"
@@ -78,6 +86,47 @@ STAGE_GATE = {
     "T1C": GATE_T1C_TRANSPORT_READINESS,
     "T2": GATE_T2_TRANSPORT_READINESS,
 }
+
+
+def _production_stage_prerequisites(stage: str, verified_head: str) -> Mapping[str, Any]:
+    """Verify the non-readiness stages immediately upstream of readiness."""
+    if stage == "T1C":
+        try:
+            pin = read_trust_pin_bytes(read_git_object_bytes(CANONICAL_REPOSITORY_ROOT, verified_head, "V8C_TRUSTED_ALLOCATION.json"))
+            review = read_and_verify_trust_pin_independent_review(
+                CANONICAL_REPOSITORY_ROOT,
+                verified_head,
+                expected_allocation_artifact_self_hash=pin["authorized_allocation_artifact_self_hash"],
+                expected_trust_pin_human_gate=pin["human_gate"],
+            )
+        except Exception as error:  # noqa: BLE001
+            raise V8CReadinessBlocked("V8C_T1C_AUTHORITY_PREREQUISITES_BLOCKED") from error
+        return {
+            "authorized_allocation_artifact_self_hash": pin["authorized_allocation_artifact_self_hash"],
+            "parent_v8_partition_manifest_sha256": pin["parent_v8_partition_manifest_sha256"],
+            "parent_v8_partition_implementation_commit": pin["parent_v8_partition_implementation_commit"],
+            "trust_pin_human_gate": pin["human_gate"],
+        }
+    try:
+        implementation = verify_reviewed_implementation_binding(CANONICAL_REPOSITORY_ROOT, verified_head)
+        recheck = read_valid_t2_recheck_pass(
+            CANONICAL_CONSUMPTION_STATE_ROOT,
+            frozen_design_commit=EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
+            reviewed_implementation_commit=implementation["reviewed_implementation_git_commit"],
+        )
+        bridge = read_and_verify_v8c_t2_authority_bridge(CANONICAL_REPOSITORY_ROOT, verified_head)
+        bridge_blob = resolve_git_blob(CANONICAL_REPOSITORY_ROOT, verified_head, "V8C_T2_AUTHORITY_BRIDGE.json")
+        review = read_and_verify_v8c_t2_authority_bridge_independent_review(
+            CANONICAL_REPOSITORY_ROOT, verified_head, expected_bridge_git_blob_sha=bridge_blob
+        )
+    except Exception as error:  # noqa: BLE001
+        raise V8CReadinessBlocked("V8C_T2_AUTHORITY_PREREQUISITES_BLOCKED") from error
+    return {
+        "v8_partition_manifest_sha256": bridge["authorized_parent_v8_partition_manifest_sha256"],
+        "v8_partition_implementation_commit": EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "v8_trust_anchor_git_identity": bridge["v8_trust_anchor_git_identity"],
+        "v8c_t2_authority_bridge_human_gate": bridge["exact_human_bridge_authorization_identity"],
+    }
 
 
 class V8CReadinessBlocked(RuntimeError):
@@ -125,7 +174,7 @@ class _TrustedYahooRedirectHandler(urllib.request.HTTPRedirectHandler):
         try:
             _require_exact_origin(newurl, hostname=HOST)
         except V8CTransportNamedFailure as error:
-            raise urllib.error.URLError(error.condition) from error
+            raise error
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -156,6 +205,194 @@ def _probe_one_sentinel(ticker: str, opener: Callable[[Any], Any], sleep_fn: Cal
     return {"result": result, "audit": audit}
 
 
+def _read_selective_t0_sentinels(partition_manifest_path: str | Path) -> tuple[str, str, tuple[str, ...]]:
+    """Resolve only the fixed T0 sentinel coordinates.
+
+    Readiness deliberately does not call the full partition-manifest reader,
+    whose return value contains every private block assignment.  The parser
+    is strict and the returned value contains only the three permitted
+    sentinel identities.
+    """
+    decoder = json.JSONDecoder()
+
+    class _SelectiveManifestParseError(ValueError):
+        pass
+
+    def whitespace(raw: str, position: int) -> int:
+        while position < len(raw) and raw[position] in " \t\r\n":
+            position += 1
+        return position
+
+    def string(raw: str, position: int) -> tuple[str, int]:
+        position = whitespace(raw, position)
+        if position >= len(raw) or raw[position] != '"':
+            raise _SelectiveManifestParseError("string expected")
+        value, end = decoder.raw_decode(raw, position)
+        if not isinstance(value, str):
+            raise _SelectiveManifestParseError("string expected")
+        return value, end
+
+    def skip_value(raw: str, position: int) -> int:
+        """Skip one JSON value without deserializing its contents."""
+        position = whitespace(raw, position)
+        if position >= len(raw):
+            raise _SelectiveManifestParseError("value expected")
+        marker = raw[position]
+        if marker == '"':
+            end = position + 1
+            escaped = False
+            while end < len(raw):
+                char = raw[end]
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    return end + 1
+                end += 1
+            raise _SelectiveManifestParseError("unterminated string")
+        if marker == '[':
+            position = whitespace(raw, position + 1)
+            if position < len(raw) and raw[position] == ']':
+                return position + 1
+            while True:
+                position = skip_value(raw, position)
+                position = whitespace(raw, position)
+                if position >= len(raw):
+                    raise _SelectiveManifestParseError("unterminated array")
+                if raw[position] == ']':
+                    return position + 1
+                if raw[position] != ',':
+                    raise _SelectiveManifestParseError("array separator expected")
+                position += 1
+        if marker == '{':
+            position = whitespace(raw, position + 1)
+            keys: set[str] = set()
+            if position < len(raw) and raw[position] == '}':
+                return position + 1
+            while True:
+                key, position = string(raw, position)
+                if key in keys:
+                    raise _SelectiveManifestParseError("duplicate object key")
+                keys.add(key)
+                position = whitespace(raw, position)
+                if position >= len(raw) or raw[position] != ':':
+                    raise _SelectiveManifestParseError("object colon expected")
+                position = skip_value(raw, position + 1)
+                position = whitespace(raw, position)
+                if position >= len(raw):
+                    raise _SelectiveManifestParseError("unterminated object")
+                if raw[position] == '}':
+                    return position + 1
+                if raw[position] != ',':
+                    raise _SelectiveManifestParseError("object separator expected")
+                position += 1
+        value, end = decoder.raw_decode(raw, position)
+        if isinstance(value, (dict, list, str)):
+            raise _SelectiveManifestParseError("unexpected value")
+        return end
+
+    def selective_t0_array(raw: str, position: int) -> tuple[tuple[str, ...], int]:
+        position = whitespace(raw, position)
+        if position >= len(raw) or raw[position] != '[':
+            raise _SelectiveManifestParseError("T0 array expected")
+        position = whitespace(raw, position + 1)
+        selected: list[str] = []
+        for index in range(T0_EXPECTED_COUNT):
+            if index in SENTINEL_INDICES:
+                value, position = string(raw, position)
+                if not value:
+                    raise _SelectiveManifestParseError("empty sentinel")
+                selected.append(value)
+            else:
+                position = skip_value(raw, position)
+            position = whitespace(raw, position)
+            if index < T0_EXPECTED_COUNT - 1:
+                if position >= len(raw) or raw[position] != ',':
+                    raise _SelectiveManifestParseError("T0 separator expected")
+                position = whitespace(raw, position + 1)
+            elif position >= len(raw) or raw[position] != ']':
+                raise _SelectiveManifestParseError("T0 terminator expected")
+            else:
+                position = whitespace(raw, position + 1)
+        return tuple(selected), position
+
+    def selective_assignments(raw: str, position: int) -> tuple[tuple[str, ...], int]:
+        position = whitespace(raw, position)
+        if position >= len(raw) or raw[position] != '{':
+            raise _SelectiveManifestParseError("assignment object expected")
+        position = whitespace(raw, position + 1)
+        names: set[str] = set()
+        selected: tuple[str, ...] | None = None
+        if position < len(raw) and raw[position] == '}':
+            raise _SelectiveManifestParseError("empty assignment object")
+        while True:
+            name, position = string(raw, position)
+            if name in names:
+                raise _SelectiveManifestParseError("duplicate assignment key")
+            names.add(name)
+            position = whitespace(raw, position)
+            if position >= len(raw) or raw[position] != ':':
+                raise _SelectiveManifestParseError("assignment colon expected")
+            if name == "T0":
+                selected, position = selective_t0_array(raw, position + 1)
+            else:
+                position = skip_value(raw, position + 1)
+            position = whitespace(raw, position)
+            if position >= len(raw):
+                raise _SelectiveManifestParseError("unterminated assignment object")
+            if raw[position] == '}':
+                position += 1
+                break
+            if raw[position] != ',':
+                raise _SelectiveManifestParseError("assignment separator expected")
+            position += 1
+        if names != {"T0", "T1", "T2", "T3", "T_spare"} or selected is None:
+            raise _SelectiveManifestParseError("assignment schema invalid")
+        return selected, whitespace(raw, position)
+
+    try:
+        raw = Path(partition_manifest_path).read_bytes()
+        text = raw.decode("utf-8")
+        position = whitespace(text, 0)
+        if position >= len(text) or text[position] != '{':
+            raise _SelectiveManifestParseError("top-level object expected")
+        position = whitespace(text, position + 1)
+        seen: set[str] = set()
+        manifest_sha: str | None = None
+        implementation: str | None = None
+        selected: tuple[str, ...] | None = None
+        while position < len(text) and text[position] != '}':
+            key, position = string(text, position)
+            if key in seen:
+                raise _SelectiveManifestParseError("duplicate top-level key")
+            seen.add(key)
+            position = whitespace(text, position)
+            if position >= len(text) or text[position] != ':':
+                raise _SelectiveManifestParseError("top-level colon expected")
+            if key == "block_assignments":
+                selected, position = selective_assignments(text, position + 1)
+            elif key == "partition_implementation_git_commit":
+                implementation, position = string(text, position + 1)
+            elif key == "manifest_sha256":
+                manifest_sha, position = string(text, position + 1)
+            else:
+                position = skip_value(text, position + 1)
+            position = whitespace(text, position)
+            if position < len(text) and text[position] == ',':
+                position = whitespace(text, position + 1)
+            elif position >= len(text) or text[position] != '}':
+                raise _SelectiveManifestParseError("top-level separator expected")
+        if position >= len(text) or text[position] != '}' or selected is None:
+            raise _SelectiveManifestParseError("top-level object incomplete")
+        position = whitespace(text, position + 1)
+        if position != len(text) or manifest_sha is None or implementation is None:
+            raise _SelectiveManifestParseError("required manifest field missing")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, _SelectiveManifestParseError) as error:
+        raise V8CReadinessBlocked("PARTITION_MANIFEST_SELECTIVE_READ_FAILED") from error
+    return manifest_sha, implementation, selected
+
+
 def _execute_transport_readiness_probe(
     *,
     stage: str,
@@ -171,6 +408,8 @@ def _execute_transport_readiness_probe(
     sleep_fn: Callable[[float], None],
     clock: Callable[[], datetime],
     consumption_state_root: str | Path,
+    stage_prerequisite_checker: Callable[[str, str], Mapping[str, Any]] | None = None,
+    readiness_pass_state_writer: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if stage not in STAGE_GATE:
         raise V8CReadinessBlocked("V8C_READINESS_STAGE_INVALID")
@@ -202,11 +441,19 @@ def _execute_transport_readiness_probe(
     except (V8CProductionProvenanceBlocked, V8CGitProvenanceBlocked) as error:
         raise _wrap(error) from error
 
-    # (3) reviewed implementation binding (future artifact; fails closed today)
+    # (3) reviewed implementation binding
     try:
-        reviewed_implementation_binder(verified_head)
+        review_binding = reviewed_implementation_binder(verified_head)
+        reviewed_commit = review_binding["reviewed_implementation_git_commit"]
     except (V8CProductionProvenanceBlocked, V8CGitProvenanceBlocked) as error:
         raise _wrap(error, "V8C_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING") from error
+    except KeyError as error:
+        raise V8CReadinessBlocked("V8C_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING") from error
+
+    try:
+        authority_prerequisites = dict(stage_prerequisite_checker(stage, verified_head)) if stage_prerequisite_checker else {"dependency_injection": "synthetic"}
+    except Exception as error:  # noqa: BLE001 - every unmet prerequisite BLOCKs
+        raise V8CReadinessBlocked(getattr(error, "reason", "V8C_READINESS_STAGE_PREREQUISITES_BLOCKED")) from error
 
     # (4) classifier blob -- before opener/gate consumption
     try:
@@ -227,29 +474,15 @@ def _execute_transport_readiness_probe(
         raise V8CReadinessBlocked("TRUSTED_PARTITION_NOT_AUTHORIZED")
 
     # (6) minimum read-only private T0 sentinel membership resolution (§3.2)
-    try:
-        partition_manifest = read_partition_manifest(partition_manifest_path)
-    except V8PartitionBlocked as error:
-        raise V8CReadinessBlocked(error.reason) from error
-    if partition_manifest["manifest_sha256"] != anchor["authorized_partition_manifest_sha256"]:
+    manifest_sha, manifest_implementation, sentinel_tickers = _read_selective_t0_sentinels(partition_manifest_path)
+    if manifest_sha != anchor["authorized_partition_manifest_sha256"]:
         raise V8CReadinessBlocked("TRUSTED_PARTITION_MANIFEST_SHA_MISMATCH")
-    if partition_manifest["partition_implementation_git_commit"] != anchor["authorized_partition_implementation_git_commit"]:
+    if manifest_implementation != anchor["authorized_partition_implementation_git_commit"]:
         raise V8CReadinessBlocked("TRUSTED_PARTITION_IMPLEMENTATION_GIT_COMMIT_MISMATCH")
-    if partition_manifest["manifest_sha256"] != EXPECTED_V8_PARTITION_MANIFEST_SHA256:
+    if manifest_sha != EXPECTED_V8_PARTITION_MANIFEST_SHA256:
         raise V8CReadinessBlocked("TRUSTED_PARTITION_MANIFEST_SHA_MISMATCH")
-    if partition_manifest["partition_implementation_git_commit"] != EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT:
+    if manifest_implementation != EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT:
         raise V8CReadinessBlocked("TRUSTED_PARTITION_IMPLEMENTATION_GIT_COMMIT_MISMATCH")
-
-    assignments = partition_manifest["block_assignments"]
-    if not isinstance(assignments, Mapping) or "T0" not in assignments:
-        raise V8CReadinessBlocked("PARTITION_BLOCK_ASSIGNMENT_MISSING:T0")
-    t0_assignment = assignments["T0"]
-    if not isinstance(t0_assignment, list) or len(t0_assignment) != T0_EXPECTED_COUNT:
-        raise V8CReadinessBlocked("PARTITION_TICKER_COUNT_INVALID:T0")
-
-    sentinel_tickers = tuple(t0_assignment[index] for index in SENTINEL_INDICES)
-    if len(sentinel_tickers) != len(SENTINEL_INDICES) or any(not isinstance(t, str) or not t for t in sentinel_tickers):
-        raise V8CReadinessBlocked("SENTINEL_MEMBERSHIP_INVALID")
 
     # (7) durably, fail-closed, per-authorization consume the readiness
     # gate -- strictly before the first real Yahoo request for this
@@ -272,7 +505,7 @@ def _execute_transport_readiness_probe(
             all_pass = False
             sentinel_results.append({"pass": False})
 
-    return {
+    result = {
         "stage": stage,
         "result": "PASS" if all_pass else "BLOCK",
         "all_three_sentinels_required": True,
@@ -282,7 +515,28 @@ def _execute_transport_readiness_probe(
         "probe_end_exclusive": SENTINEL_PROBE_END_EXCLUSIVE,
         "readiness_failure_consumes_acquisition_gate": False,
         "readiness_is_research_opening": False,
+        "frozen_design_commit": EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
+        "reviewed_implementation_commit": reviewed_commit,
+        "classifier_blob_sha": classifier_blob_sha,
+        "authority_prerequisites": authority_prerequisites,
     }
+    if all_pass:
+        try:
+            (readiness_pass_state_writer or write_readiness_pass)(
+                consumption_state_root,
+                stage=stage,
+                frozen_design_commit=EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
+                reviewed_implementation_commit=reviewed_commit,
+                sentinel_indices=list(SENTINEL_INDICES),
+                probe_start=SENTINEL_PROBE_START,
+                probe_end_exclusive=SENTINEL_PROBE_END_EXCLUSIVE,
+                classifier_blob_sha=classifier_blob_sha,
+                authority_prerequisites=authority_prerequisites,
+                clock_text=clock().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+        except V8CStageEvidenceBlocked as error:
+            raise V8CReadinessBlocked(error.reason) from error
+    return result
 
 
 def execute_t1c_transport_readiness_probe(
@@ -304,6 +558,7 @@ def execute_t1c_transport_readiness_probe(
         sleep_fn=time.sleep,
         clock=lambda: datetime.now(timezone.utc),
         consumption_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
+        stage_prerequisite_checker=_production_stage_prerequisites,
     )
 
 
@@ -326,6 +581,7 @@ def execute_t2_transport_readiness_probe(
         sleep_fn=time.sleep,
         clock=lambda: datetime.now(timezone.utc),
         consumption_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
+        stage_prerequisite_checker=_production_stage_prerequisites,
     )
 
 

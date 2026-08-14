@@ -19,7 +19,7 @@ from typing import Any, Mapping
 
 STUDY_NAME = "V8C_HISTORICAL_RESEARCH"
 SCHEMA_VERSION = "V8C_TRUSTED_ALLOCATION_V1"
-ARTIFACT_ROLE = "T1C_ALLOCATION_TRUST_PIN"
+ARTIFACT_ROLE = "TRUSTED_T1C_ALLOCATION_PIN"
 LOGICAL_BLOCK = "T1C"
 
 HUMAN_GATE_PREFIX = "V8C_HUMAN_AUTHORIZE_T1C_ALLOCATION_PIN_AT_"
@@ -46,10 +46,12 @@ TRUST_PIN_FIELDS = (
     "parent_t_spare_ticker_list_sha256",
     "t1c_ticker_count",
     "t1c_ticker_list_sha256",
+    "predecessor_burned_count",
     "remaining_t_spare_ticker_count",
     "remaining_t_spare_ticker_list_sha256",
     "v8c_frozen_design_commit",
     "v8c_allocation_implementation_commit",
+    "v8c_reviewed_production_implementation_commit",
     "verification_result",
     "human_gate",
     "authorization_note",
@@ -62,10 +64,12 @@ _REQUIRED_VERIFICATION_SUMMARY_FIELDS = (
     "parent_t_spare_ticker_list_sha256",
     "t1c_ticker_count",
     "t1c_ticker_list_sha256",
+    "predecessor_burned_count",
     "remaining_t_spare_ticker_count",
     "remaining_t_spare_ticker_list_sha256",
     "v8c_frozen_design_commit",
     "v8c_allocation_implementation_commit",
+    "v8c_reviewed_production_implementation_commit",
     "artifact_self_hash",
 )
 
@@ -136,6 +140,7 @@ def build_trust_pin(
         "t1c_ticker_list_sha256": _require_sha256_hex(
             verification_result_summary["t1c_ticker_list_sha256"], "T1C_TICKER_LIST_SHA_INVALID"
         ),
+        "predecessor_burned_count": int(verification_result_summary["predecessor_burned_count"]),
         "remaining_t_spare_ticker_count": int(verification_result_summary["remaining_t_spare_ticker_count"]),
         "remaining_t_spare_ticker_list_sha256": _require_sha256_hex(
             verification_result_summary["remaining_t_spare_ticker_list_sha256"],
@@ -147,6 +152,10 @@ def build_trust_pin(
         "v8c_allocation_implementation_commit": _require_git_commit(
             verification_result_summary["v8c_allocation_implementation_commit"],
             "V8C_ALLOCATION_IMPLEMENTATION_COMMIT_INVALID",
+        ),
+        "v8c_reviewed_production_implementation_commit": _require_git_commit(
+            verification_result_summary["v8c_reviewed_production_implementation_commit"],
+            "V8C_REVIEWED_PRODUCTION_IMPLEMENTATION_COMMIT_INVALID",
         ),
         "verification_result": "PASS",
         "human_gate": human_gate,
@@ -185,10 +194,12 @@ def validate_trust_pin(pin: Mapping[str, Any]) -> dict[str, Any]:
         "parent_t_spare_ticker_list_sha256",
         "t1c_ticker_count",
         "t1c_ticker_list_sha256",
+        "predecessor_burned_count",
         "remaining_t_spare_ticker_count",
         "remaining_t_spare_ticker_list_sha256",
         "v8c_frozen_design_commit",
         "v8c_allocation_implementation_commit",
+        "v8c_reviewed_production_implementation_commit",
         "verification_result",
     )
     if status == "NOT_AUTHORIZED":
@@ -207,14 +218,17 @@ def validate_trust_pin(pin: Mapping[str, Any]) -> dict[str, Any]:
     if type(pin["t1c_ticker_count"]) is not int or pin["t1c_ticker_count"] != 300:
         raise V8CTrustPinBlocked("T1C_TICKER_COUNT_INVALID")
     _require_sha256_hex(pin["t1c_ticker_list_sha256"], "T1C_TICKER_LIST_SHA_INVALID")
+    if type(pin["predecessor_burned_count"]) is not int or pin["predecessor_burned_count"] != 300:
+        raise V8CTrustPinBlocked("PREDECESSOR_BURNED_COUNT_INVALID")
     if (
         type(pin["remaining_t_spare_ticker_count"]) is not int
-        or pin["remaining_t_spare_ticker_count"] != pin["parent_t_spare_ticker_count"] - 300
+        or pin["remaining_t_spare_ticker_count"] != pin["parent_t_spare_ticker_count"] - 600
     ):
         raise V8CTrustPinBlocked("REMAINING_T_SPARE_TICKER_COUNT_INVALID")
     _require_sha256_hex(pin["remaining_t_spare_ticker_list_sha256"], "REMAINING_T_SPARE_TICKER_LIST_SHA_INVALID")
     _require_git_commit(pin["v8c_frozen_design_commit"], "V8C_FROZEN_DESIGN_COMMIT_INVALID")
     _require_git_commit(pin["v8c_allocation_implementation_commit"], "V8C_ALLOCATION_IMPLEMENTATION_COMMIT_INVALID")
+    _require_git_commit(pin["v8c_reviewed_production_implementation_commit"], "V8C_REVIEWED_PRODUCTION_IMPLEMENTATION_COMMIT_INVALID")
     if pin["verification_result"] != "PASS":
         raise V8CTrustPinBlocked("TRUST_PIN_VERIFICATION_RESULT_NOT_PASS")
     if pin["human_gate"] != expected_human_gate(pin["authorized_allocation_artifact_self_hash"]):

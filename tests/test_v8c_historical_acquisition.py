@@ -129,6 +129,12 @@ def run_low_level(**overrides):
         sleep_fn=lambda s: None,
     )
     defaults.update(overrides)
+    if defaults["output_root"] is not None and defaults["repository_root"] == acquisition.CANONICAL_REPOSITORY_ROOT:
+        output_candidate = Path(defaults["output_root"])
+        if output_candidate.is_absolute():
+            synthetic_root = output_candidate.parent / "synthetic-repository"
+            synthetic_root.mkdir(exist_ok=True)
+            defaults["repository_root"] = synthetic_root
     return acquisition._acquire_v8c_block_bundle_with_validated_inputs(**defaults)
 
 

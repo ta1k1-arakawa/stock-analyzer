@@ -103,6 +103,7 @@ from src.v8c_transport import (
     V8CTransportNamedFailure,
     attempt_with_frozen_retry,
 )
+from src.v8c_stage_state import V8CStageEvidenceBlocked, read_valid_readiness_pass
 
 SCHEMA_VERSION = "V8C_HISTORICAL_ACQUISITION_V1"
 STUDY_NAME = PROVENANCE_STUDY_NAME
@@ -215,6 +216,7 @@ PAYLOAD_RECORD_FIELDS = (
     "split_event_count",
     "attempts",
     "retry_count",
+    "transport_audit",
 )
 
 ACQUISITION_MANIFEST_ZERO_ACCESS_COUNTER_FIELDS = (
@@ -324,7 +326,7 @@ class _TrustedYahooRedirectHandler(urllib.request.HTTPRedirectHandler):
         try:
             _require_trusted_yahoo_url(newurl)
         except V8CTransportNamedFailure as error:
-            raise urllib.error.URLError(error.condition) from error
+            raise error
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -421,7 +423,16 @@ def _fetch_one_ticker_with_retry_and_gate(
         except V7YahooCollectorBlocked as error:
             raise V8CTransportNamedFailure(_classify_v7_collector_error(error.reason)) from error
 
-    result, audit = attempt_with_frozen_retry(attempt, sleep_fn=sleep_fn)
+    fingerprint_material = {
+        "logical_request_identity": ticker,
+        "request_start": request_start,
+        "request_end_exclusive": request_end_exclusive,
+        "provider": DATA_SOURCE,
+        "host": HOST,
+        "request_parameters": {"interval": "1d", "events": "div,splits", "includeAdjustedClose": True},
+    }
+    fingerprint = hashlib.sha256(canonical_json_bytes(fingerprint_material)).hexdigest()
+    result, audit = attempt_with_frozen_retry(attempt, sleep_fn=sleep_fn, request_fingerprint=fingerprint)
     raw_bytes = bytes(capture_holder[-1])
     return result, raw_bytes, audit
 
@@ -666,6 +677,14 @@ def acquire_v8c_historical_block_bundle(
         trust_pin_review_reader=lambda head, artifact_hash, human_gate: read_and_verify_trust_pin_independent_review(
             CANONICAL_REPOSITORY_ROOT, head, expected_allocation_artifact_self_hash=artifact_hash, expected_trust_pin_human_gate=human_gate
         ),
+        readiness_pass_reader=lambda stage, implementation_commit, classifier_sha, authority: read_valid_readiness_pass(
+            CANONICAL_CONSUMPTION_STATE_ROOT,
+            stage=stage,
+            frozen_design_commit=V8C_FROZEN_DESIGN_COMMIT,
+            reviewed_implementation_commit=implementation_commit,
+            classifier_blob_sha=classifier_sha,
+            authority_prerequisites=authority,
+        ),
         opener=_default_trusted_yahoo_opener,
         clock=lambda: datetime.now(timezone.utc),
         sleep_fn=time.sleep,
@@ -692,6 +711,7 @@ def _acquire_production_v8c_historical_block_bundle_with_dependencies(
     t2_preservation_recheck_resolver: Callable[[], Mapping[str, Any]],
     t1c_trust_pin_reader: Callable[[str], Mapping[str, Any]],
     trust_pin_review_reader: Callable[[str, str, str], Mapping[str, Any]],
+    readiness_pass_reader: Callable[[str, str, str, Mapping[str, Any]], Mapping[str, Any]] | None = None,
     opener: Callable[[Any], Any],
     clock: Callable[[], datetime],
     consumption_state_root: str | os.PathLike[str],
@@ -751,12 +771,19 @@ def _acquire_production_v8c_historical_block_bundle_with_dependencies(
         except V8CGitProvenanceBlocked as error:
             raise _wrap(error, "V8C_TRUSTED_ALLOCATION_MISSING") from error
         tickers, authority_binding = _validated_t1c_binding(allocation_artifact, trust_pin)
+        if trust_pin.get("v8c_reviewed_production_implementation_commit") != reviewed_implementation_git_commit:
+            raise V8CHistoricalAcquisitionBlocked("V8C_TRUST_PIN_PRODUCTION_IMPLEMENTATION_MISMATCH")
         try:
             trust_pin_review_reader(
                 verified_head, authority_binding["authorized_allocation_artifact_self_hash"], authority_binding["trust_pin_human_gate"]
             )
         except (V8CProductionProvenanceBlocked, V8CGitProvenanceBlocked) as error:
             raise _wrap(error, "V8C_TRUST_PIN_INDEPENDENT_REVIEW_MISSING") from error
+        if readiness_pass_reader is not None:
+            try:
+                readiness_pass_reader("T1C", reviewed_implementation_git_commit, classifier_blob_sha, authority_binding)
+            except Exception as error:  # noqa: BLE001 - stale/missing readiness blocks before raw gate
+                raise V8CHistoricalAcquisitionBlocked(getattr(error, "reason", "V8C_READINESS_PASS_REQUIRED")) from error
     else:
         if partition_manifest_path is None:
             raise V8CHistoricalAcquisitionBlocked("V8C_T2_INPUTS_MISSING")
@@ -775,6 +802,11 @@ def _acquire_production_v8c_historical_block_bundle_with_dependencies(
         except (V8CT2PreservationRecheckBlocked, V8CGitProvenanceBlocked) as error:
             raise _wrap(error) from error
         tickers, authority_binding = _validated_t2_binding(partition_manifest_path, anchor, bridge)
+        if readiness_pass_reader is not None:
+            try:
+                readiness_pass_reader("T2", reviewed_implementation_git_commit, classifier_blob_sha, authority_binding)
+            except Exception as error:  # noqa: BLE001
+                raise V8CHistoricalAcquisitionBlocked(getattr(error, "reason", "V8C_READINESS_PASS_REQUIRED")) from error
 
     return _acquire_v8c_block_bundle_with_validated_inputs(
         output_root=output_root,
@@ -935,6 +967,7 @@ def _acquire_v8c_block_bundle_with_validated_inputs(
                 "split_event_count": len(split_rows),
                 "attempts": attempts_used,
                 "retry_count": retry_used,
+                "transport_audit": audit["history"],
             })
             success_transport_count += 1
 

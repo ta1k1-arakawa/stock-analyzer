@@ -17,10 +17,12 @@ def _summary(**overrides):
         "parent_t_spare_ticker_list_sha256": "d" * 64,
         "t1c_ticker_count": 300,
         "t1c_ticker_list_sha256": SYNTHETIC_HASH,
-        "remaining_t_spare_ticker_count": 1604,
+        "predecessor_burned_count": 300,
+        "remaining_t_spare_ticker_count": 1304,
         "remaining_t_spare_ticker_list_sha256": "e" * 64,
         "v8c_frozen_design_commit": SYNTHETIC_COMMIT,
         "v8c_allocation_implementation_commit": SYNTHETIC_COMMIT,
+        "v8c_reviewed_production_implementation_commit": SYNTHETIC_COMMIT,
         "artifact_self_hash": SYNTHETIC_HASH,
     }
     summary.update(overrides)

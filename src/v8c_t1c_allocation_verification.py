@@ -80,7 +80,6 @@ def _verify_t1c_allocation_artifact(
     parent_t_spare_tickers: Sequence[str],
     t0_tickers: Sequence[str],
     old_t1_tickers: Sequence[str],
-    t1b_tickers: Sequence[str],
     t2_tickers: Sequence[str],
     t3_tickers: Sequence[str],
     expected_parent_t_spare_ticker_list_sha256: str,
@@ -88,10 +87,9 @@ def _verify_t1c_allocation_artifact(
 ) -> dict[str, Any]:
     """Verify every invariant; return a safe public PASS summary.
 
-    ``t1b_tickers`` (V8B's `T1B = original_parent_T_spare[0:300]`) is
-    required in addition to `T0`/old-`T1`/`T2`/`T3` -- `T1C` must also be
-    disjoint from V8B's already-drawn `T1B`, since both are drawn from the
-    same `original_parent_T_spare` sequence.
+    T1B/T1C disjointness is established from the trusted unique parent
+    ordering and the frozen coordinate slices [0:300] and [300:600]. The
+    V8B T1B artifact is deliberately never accepted or read.
     """
     try:
         verified = verify_allocation_artifact_self_hash(artifact)
@@ -127,12 +125,12 @@ def _verify_t1c_allocation_artifact(
     # T1C = original_parent_T_spare[300:600]
     if t1c != parent[300:600]:
         raise V8CAllocationVerificationBlocked("T1C_NOT_EXACT_300_600_SLICE")
-    if remaining != parent[:300] + parent[600:]:
+    if remaining != parent[600:]:
         raise V8CAllocationVerificationBlocked("REMAINING_T_SPARE_NOT_EXACT_TAIL_SLICE")
 
     if len(t1c) != T1C_TICKER_COUNT:
         raise V8CAllocationVerificationBlocked("T1C_SIZE_INVALID")
-    if len(t1c) + len(remaining) != len(parent):
+    if len(t1c) + len(remaining) + T1C_SLICE_START_INCLUSIVE != len(parent):
         raise V8CAllocationVerificationBlocked("T1C_REMAINING_ACCOUNTING_INVALID")
 
     t1c_set = set(t1c)
@@ -141,15 +139,15 @@ def _verify_t1c_allocation_artifact(
 
     if t1c_set & remaining_set:
         raise V8CAllocationVerificationBlocked("T1C_REMAINING_NOT_DISJOINT")
-    if (t1c_set | remaining_set) != parent_set:
+    if (t1c_set | remaining_set) != set(parent[T1C_SLICE_START_INCLUSIVE:]):
         raise V8CAllocationVerificationBlocked("T1C_REMAINING_UNION_MISMATCH")
 
     if t1c_set & set(t0_tickers):
         raise V8CAllocationVerificationBlocked("T1C_NOT_DISJOINT_FROM_T0")
     if t1c_set & set(old_t1_tickers):
         raise V8CAllocationVerificationBlocked("T1C_NOT_DISJOINT_FROM_OLD_T1")
-    if t1c_set & set(t1b_tickers):
-        raise V8CAllocationVerificationBlocked("T1C_NOT_DISJOINT_FROM_T1B")
+    if verified["predecessor_burned_count"] != T1C_SLICE_START_INCLUSIVE:
+        raise V8CAllocationVerificationBlocked("PREDECESSOR_BURNED_COUNT_INVALID")
     if t1c_set & set(t2_tickers):
         raise V8CAllocationVerificationBlocked("T1C_NOT_DISJOINT_FROM_T2")
     if t1c_set & set(t3_tickers):
@@ -183,6 +181,7 @@ def _verify_t1c_allocation_artifact(
         "parent_t_spare_ticker_list_sha256": verified["parent_t_spare_ticker_list_sha256"],
         "t1c_ticker_count": verified["t1c_ticker_count"],
         "t1c_ticker_list_sha256": verified["t1c_ticker_list_sha256"],
+        "predecessor_burned_count": verified["predecessor_burned_count"],
         "remaining_t_spare_ticker_count": verified["remaining_t_spare_ticker_count"],
         "remaining_t_spare_ticker_list_sha256": verified["remaining_t_spare_ticker_list_sha256"],
         "artifact_self_hash": verified["artifact_self_hash"],
@@ -227,17 +226,12 @@ def _strict_json_object(raw: bytes, *, invalid_reason: str, duplicate_reason: st
 def _resolve_and_verify_t1c_allocation_artifact_with_repository_root(
     allocation_artifact_path: str | os.PathLike[str],
     partition_manifest_path: str | os.PathLike[str],
-    t1b_allocation_artifact_path: str | os.PathLike[str] | None,
     *,
     repository_root,
 ) -> dict[str, Any]:
     """Private DI-testable implementation -- fake/synthetic tests only.
-    ``t1b_allocation_artifact_path`` is optional private data (V8B's own
-    private `T1B` allocation artifact, needed only for the disjointness
-    check); if omitted, the disjointness check against `T1B` uses an empty
-    set, which is fail-open for that one specific check and therefore only
-    ever acceptable in a test context -- the public production entrypoint
-    below always requires it.
+    The predecessor T1B is burned by coordinate, so this resolver never
+    reads a V8B T1B artifact or accepts its path.
     """
     root = repository_root
 
@@ -298,22 +292,6 @@ def _resolve_and_verify_t1c_allocation_artifact_with_repository_root(
     if computed_parent_hash != partition_manifest["t_spare_ticker_list_sha256"]:
         raise V8CAllocationVerificationBlocked("PARENT_T_SPARE_TICKER_LIST_SHA_MISMATCH")
 
-    t1b_tickers: list[str] = []
-    if t1b_allocation_artifact_path is not None:
-        try:
-            t1b_raw = Path(t1b_allocation_artifact_path).read_bytes()
-        except OSError as error:
-            raise V8CAllocationVerificationBlocked("T1B_ALLOCATION_ARTIFACT_READ_FAILED") from error
-        t1b_artifact = _strict_json_object(
-            t1b_raw,
-            invalid_reason="T1B_ALLOCATION_ARTIFACT_INVALID_JSON",
-            duplicate_reason="T1B_ALLOCATION_ARTIFACT_DUPLICATE_KEY",
-        )
-        t1b_list = t1b_artifact.get("t1b_tickers")
-        if not isinstance(t1b_list, list):
-            raise V8CAllocationVerificationBlocked("T1B_ALLOCATION_ARTIFACT_SCHEMA_INVALID")
-        t1b_tickers = list(t1b_list)
-
     try:
         artifact_raw = Path(allocation_artifact_path).read_bytes()
     except OSError as error:
@@ -336,7 +314,6 @@ def _resolve_and_verify_t1c_allocation_artifact_with_repository_root(
         parent_t_spare_tickers=parent_tickers,
         t0_tickers=blocks["T0"],
         old_t1_tickers=blocks["T1"],
-        t1b_tickers=t1b_tickers,
         t2_tickers=blocks["T2"],
         t3_tickers=blocks["T3"],
         expected_parent_t_spare_ticker_list_sha256=computed_parent_hash,
@@ -347,18 +324,15 @@ def _resolve_and_verify_t1c_allocation_artifact_with_repository_root(
 def resolve_and_verify_t1c_allocation_artifact(
     allocation_artifact_path: str | os.PathLike[str],
     partition_manifest_path: str | os.PathLike[str],
-    t1b_allocation_artifact_path: str | os.PathLike[str],
 ) -> dict[str, Any]:
     """The sole public production `READ_ONLY_T1C_ALLOCATION_ARTIFACT_
     VERIFICATION` boundary. Always resolves trust from
-    ``CANONICAL_REPOSITORY_ROOT``. ``t1b_allocation_artifact_path`` is
-    required in production so the `T1C`/`T1B` disjointness check is never
-    silently skipped.
+    ``CANONICAL_REPOSITORY_ROOT``. V8B's burned T1B artifact is never read;
+    the fixed coordinate rule is the authority.
     """
     return _resolve_and_verify_t1c_allocation_artifact_with_repository_root(
         allocation_artifact_path,
         partition_manifest_path,
-        t1b_allocation_artifact_path,
         repository_root=CANONICAL_REPOSITORY_ROOT,
     )
 

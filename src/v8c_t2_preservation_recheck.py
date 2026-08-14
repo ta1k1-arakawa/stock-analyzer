@@ -54,6 +54,7 @@ from src.v8c_production_provenance import (
     read_and_verify_v8_trusted_partition_anchor,
     verify_reviewed_implementation_binding,
 )
+from src.v8c_stage_state import V8CStageEvidenceBlocked, write_t2_recheck_pass
 
 STUDY_NAME = "V8C_HISTORICAL_RESEARCH"
 
@@ -181,6 +182,7 @@ def _default_read_v8_state_t2_evidence(
         "block_assignments_exposed": _require_bool(
             trust_anchor_pinning.get("block_assignments_exposed"), "V8_STATE_BLOCK_ASSIGNMENTS_EXPOSED_INVALID"
         ),
+        "compatibility": state.get("v8c_preservation_compatibility"),
     }
 
 
@@ -235,36 +237,68 @@ def _resolve_t2_preservation_safe_metadata_with_dependencies(
     )
     exposure_value = not v8_state_says_no_exposure
 
+    # Compatibility is evidence, not a default.  The committed state must
+    # explicitly carry these safe aggregate assertions; missing evidence
+    # blocks rather than silently becoming a favorable value.
+    compatibility = v8_state_evidence.get("compatibility")
+    if not isinstance(compatibility, Mapping):
+        raise V8CT2PreservationRecheckBlocked(
+            "V8C_T2_PRESERVATION_RECHECK_BLOCKED:MISSING_COMPATIBILITY_EVIDENCE"
+        )
     return {
         "t2_real_data_acquired": t2_acquired_derived,
         "t2_opened": exposure_value,
         "t2_research_access_count": (v8_state_evidence["t2_sealed_holdout_access_count"] or 0),
         "t2_features_observed": exposure_value,
         "t2_outcomes_observed": exposure_value,
-        "t2_membership_reassigned": False,
-        "universe_definition_compatible": True,
-        "partition_algorithm_compatible": True,
-        "data_quality_policy_unchanged": True,
+        "t2_membership_reassigned": compatibility.get("t2_membership_reassigned"),
+        "universe_definition_compatible": compatibility.get("universe_definition_compatible"),
+        "partition_algorithm_compatible": compatibility.get("partition_algorithm_compatible"),
+        "data_quality_policy_unchanged": compatibility.get("data_quality_policy_unchanged"),
     }
 
 
 def _resolve_and_recheck_t2_preservation_with_dependencies(repository_root, **dependencies) -> dict[str, Any]:
     """Private DI-testable implementation -- fake/synthetic tests only."""
+    state_root = dependencies.pop("stage_state_root", None)
+    reviewed_commit = dependencies.pop("reviewed_implementation_commit", None)
     safe_metadata = _resolve_t2_preservation_safe_metadata_with_dependencies(repository_root, **dependencies)
-    return _recheck_t2_preservation_conditions(safe_metadata)
+    result = _recheck_t2_preservation_conditions(safe_metadata)
+    if state_root is not None:
+        if not isinstance(reviewed_commit, str):
+            raise V8CT2PreservationRecheckBlocked("V8C_T2_PRESERVATION_RECHECK_IMPLEMENTATION_BINDING_MISSING")
+        try:
+            write_t2_recheck_pass(
+                state_root,
+                {
+                    **safe_metadata,
+                    **result,
+                    "frozen_design_commit": EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
+                    "reviewed_implementation_commit": reviewed_commit,
+                },
+            )
+        except V8CStageEvidenceBlocked as error:
+            raise V8CT2PreservationRecheckBlocked(error.reason) from error
+    return {**result, **safe_metadata}
 
 
 def resolve_and_recheck_t2_preservation() -> dict[str, Any]:
     """The public production `READ_ONLY_T2_PRESERVATION_RECHECK` entrypoint
     (§7.1's ``recheck_2``). Always resolves the current verified production
     HEAD itself and accepts no caller-supplied trust root."""
-    return _resolve_and_recheck_t2_preservation_with_dependencies(
+    result = _resolve_and_recheck_t2_preservation_with_dependencies(
         CANONICAL_REPOSITORY_ROOT,
         git_commit_resolver=lambda: resolve_verified_v8c_production_git_commit(CANONICAL_REPOSITORY_ROOT),
         anchor_reader=lambda head: read_and_verify_v8_trusted_partition_anchor(CANONICAL_REPOSITORY_ROOT, head),
         reviewed_implementation_binder=lambda head: verify_reviewed_implementation_binding(CANONICAL_REPOSITORY_ROOT, head),
         consumption_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
+        stage_state_root=CANONICAL_CONSUMPTION_STATE_ROOT,
+        reviewed_implementation_commit=verify_reviewed_implementation_binding(
+            CANONICAL_REPOSITORY_ROOT,
+            resolve_verified_v8c_production_git_commit(CANONICAL_REPOSITORY_ROOT),
+        )["reviewed_implementation_git_commit"],
     )
+    return result
 
 
 __all__ = [
