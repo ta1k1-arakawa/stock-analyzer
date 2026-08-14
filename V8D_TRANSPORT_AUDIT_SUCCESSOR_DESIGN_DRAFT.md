@@ -20,6 +20,23 @@ continuation under the V8C frozen design.
 The V8C readiness BLOCK is transport and auditability evidence only. It is
 not strategy evidence, profitability evidence, or T1C data-quality evidence.
 
+The immutable methodology and predecessor anchors are:
+
+```text
+inherited_methodology_authority_commit=c9c541ac7f7ba3bcca76db6250fe8273d9bb5756
+predecessor_terminal_commit=d18368c1ec1c26d752ea5862115ab9f4315d1780
+canonical_parser_classifier_file=src/v7_yahoo_collector.py
+canonical_parser_classifier_commit=28e281c3ee30d6b4c2f981c5da3ddc983c09724d
+canonical_parser_classifier_blob=76b57b077f3214e666ff9dc06d9c224afc16df9f
+original_v8_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62
+original_v8_partition_implementation_commit=36cbed941050e728f7f96ce2af505e81175cc02c
+original_v8_trusted_partition_blob=61faade0625139cec3fb61216ab2f97f572a7028
+```
+
+After `HUMAN_V8D_DESIGN_FREEZE`, semantic design changes inside V8D are
+prohibited unless this frozen design explicitly pre-authorizes the exact
+change. Otherwise a successor study is required.
+
 ## 2. Unchanged research methodology
 
 Unless an explicitly authorized successor-study design later changes a
@@ -76,6 +93,29 @@ positively establish all of the following:
 - original V8 provenance is unchanged; and
 - the V8C terminal adjudication remains authoritative.
 
+The pre-freeze preservation sequence is explicitly separate:
+
+```text
+HUMAN_V8D_T1C_PRESERVATION_PRIVATE_VERIFICATION_GATE
+V8D_T1C_PRESERVATION_RECHECK
+INDEPENDENT_V8D_T1C_PRESERVATION_RECHECK_REVIEW
+```
+
+The human gate authorizes exactly one minimum read-only verification of the
+existing private V8C T1C allocation artifact and the authoritative private V8
+partition manifest, solely to verify the existing allocation and provenance
+commitments. It authorizes no ticker display, raw OHLCV access,
+feature/outcome access, network, allocation, redraw, or research opening.
+
+The preservation output must contain only public/privacy-safe hashes, counts,
+booleans, and Git provenance. The private verification must positively verify
+that the current allocation artifact self-hash is
+`16e3c2b026e4aaf4382d88e5bce25c2a52f0bb7ebbc03838679c3c6e84daaf7c` and that
+the current T1C list remains `count=300` with
+`sha256=85a06d4b88698915315f5cf72e0d3e04dfacafb5403786ac3bb613e14b0deb54`.
+Absence of evidence is not PASS. The preservation artifact must receive an
+independent exact-SHA review before `V8D_DESIGN_FINALIZED`.
+
 Absence of evidence is not PASS. If preservation cannot be positively
 established, then:
 
@@ -89,6 +129,16 @@ CHATGPT_DECISION_REQUIRED
 
 This draft does not automatically authorize T1C reuse merely because the
 candidate is named.
+
+The validation identity is frozen:
+
+```text
+validation_block_identity=EXACT_EXISTING_V8C_T1C_ONLY
+new_validation_block_creation=false
+alternate_T_spare_slice=false
+redraw=false
+T3_substitution=false
+```
 
 ## 4. V8D-specific allocation authority
 
@@ -111,6 +161,45 @@ The allocation-authority bridge must not be semantically bound to a
 particular V8D transport implementation commit. Transport implementation
 authority is reviewed separately.
 
+The V8D T1C allocation-authority bridge schema and validation semantics are
+defined before freeze. It contains only safe fields:
+
+```text
+schema_version
+study=V8D_HISTORICAL_RESEARCH
+artifact_role=T1C_ALLOCATION_AUTHORITY_BRIDGE
+logical_block=T1C
+v8d_frozen_design_commit
+source_v8c_terminal_commit
+source_v8c_trust_pin_git_commit
+source_v8c_trust_pin_git_blob_sha
+authorized_allocation_artifact_self_hash
+t1c_ticker_count
+t1c_ticker_list_sha256
+parent_v8_partition_manifest_sha256
+parent_v8_partition_implementation_commit
+parent_t_spare_ticker_list_sha256
+preservation_recheck_git_commit
+preservation_recheck_git_blob_sha
+preservation_recheck_result=PASS
+human_gate
+authorization_status=AUTHORIZED
+authorization_note
+```
+
+The bridge must not bind a V8D production implementation commit. Its human
+gate grammar is frozen as:
+
+```text
+human_gate="V8D_HUMAN_AUTHORIZE_T1C_AUTHORITY_BRIDGE_AT_"
+            + v8d_frozen_design_commit
+            + "_FOR_"
+            + authorized_allocation_artifact_self_hash
+```
+
+Bridge creation itself requires the explicit human gate and must not read
+ticker identities or private OHLCV.
+
 ## 5. Root defect V8D must fix
 
 The predecessor finding is:
@@ -122,7 +211,7 @@ V8C_POST_PRODUCTION_HIGH_1_READINESS_TRANSPORT_AUDIT_NOT_RETAINED
 V8D production code must durably retain the frozen transport audit for every
 Yahoo-request-bearing production path, including at least:
 
-- T1C/T1D transport readiness;
+- T1C transport readiness;
 - validation-block raw acquisition;
 - T2 transport readiness; and
 - T2 raw acquisition.
@@ -149,25 +238,43 @@ containing a ticker, raw payload, price, raw exception message, or private
 filesystem path. Private audit may contain only the minimum private-safe
 metadata required by the frozen audit requirement.
 
-## 6. Durability order
+## 6. Per-attempt durability order
 
-A terminal transport audit must be durably written before readiness or
-acquisition code collapses or aggregates that failure. The code must never
-convert an exception to `{"pass": false}` or an aggregate BLOCK in a way
-that destroys the underlying audit.
+The following order is frozen for every request attempt, not only terminal
+failures:
+
+```text
+request attempt
+→ construct privacy-safe audit record
+→ durably/atomically persist that attempt record
+→ only then permit:
+   - retry backoff
+   - next retry attempt
+   - success return
+   - failure aggregation
+   - readiness/acquisition aggregate publication
+```
+
+A retryable failed attempt must be durable before sleeping or retrying. A
+successful attempt must be durable before returning success. The code must
+never convert an exception to `{"pass": false}` or an aggregate BLOCK in a
+way that destroys the underlying audit.
 
 A completed production execution must always leave independently readable
 audit evidence for every attempted sentinel or logical request, including a
 BLOCK. Persistence must be atomic and fail closed.
 
-If audit persistence fails:
+If attempt-audit persistence fails:
 
 ```text
-execution_result=BLOCK
+execution=BLOCK
+no_next_request=true
+no_success_return=true
+no_aggregate_PASS=true
 ```
 
-The execution must not silently continue, and missing audit evidence cannot
-be treated as a successful or complete result.
+The execution must stop without silently continuing, and missing audit
+evidence cannot be treated as a successful or complete result.
 
 ## 7. Public privacy-safe summary
 
@@ -189,6 +296,51 @@ No mapping from a classification to a ticker identity may be public.
 Request fingerprints must not be exposed publicly. Only safe equality or
 consistency results, or hashes explicitly established as safe by the frozen
 design, may be exposed.
+
+## 7A. Independently re-derivable named-condition evidence
+
+The verifier must not merely trust a stored `named_condition`. For each
+named condition below, the private audit stores only the frozen,
+privacy-safe detector evidence, and the read-only verifier recomputes the
+classification from that evidence. No raw URL, ticker, payload, price, or
+exception message is permitted.
+
+The finite evidence contract is:
+
+```text
+UNTRUSTED_REDIRECT:
+  scheme_https: boolean
+  hostname_matches_expected: boolean
+  credentials_absent: boolean
+  port_allowed: boolean
+  context=REDIRECT_TARGET
+
+RESPONSE_HOST_MISMATCH:
+  scheme_https: boolean
+  hostname_matches_expected: boolean
+  credentials_absent: boolean
+  port_allowed: boolean
+  context=INITIAL_OR_FINAL_RESPONSE
+
+PARSER_SCHEMA_FAILURE:
+  parser_schema_valid=false
+  parser_failure_category: FROZEN_PARSER_FAILURE_CATEGORY
+
+SYMBOL_MISMATCH:
+  expected_symbol_binding=false
+
+DATA_QUALITY_GATE_FAILURE:
+  nonempty_timestamp: boolean
+  valid_price_row_count: nonnegative safe integer
+  trading_date_fields_valid: boolean
+```
+
+`FROZEN_PARSER_FAILURE_CATEGORY` is a finite enum containing only
+`MISSING_REQUIRED_FIELD`, `INVALID_FIELD_TYPE`, `INVALID_CONTAINER_SHAPE`,
+`INVALID_TIMESTAMP_FIELD`, and `UNEXPECTED_SCHEMA_FIELD`. The evidence
+contract stores neither symbol value. The verifier derives the corresponding
+named classification from these fields and rejects a producer-stated
+classification that disagrees with the derived result.
 
 ## 8. Independent audit verifier
 
@@ -281,7 +433,7 @@ BLOCK.
 
 ## 11. V8D readiness stopping rule
 
-V8D permits exactly one top-level real T1C/T1D readiness execution, and only
+V8D permits exactly one top-level real T1C readiness execution, and only
 after all of the following are complete:
 
 - V8D design freeze;
@@ -302,16 +454,38 @@ If the V8D readiness result is BLOCK:
 
 This prevents repeated readiness tuning until PASS.
 
+The T1C raw-acquisition hard gate is frozen as:
+
+```text
+T1C_RAW_ACQUISITION_ALLOWED iff:
+  readiness_result=PASS
+  AND READ_ONLY_TRANSPORT_AUDIT_VERIFICATION=PASS
+```
+
+If either condition is not PASS, `T1C_RAW_ACQUISITION=PROHIBITED`.
+
 ## 12. Raw acquisition
 
-Only after V8D readiness PASS may a separate human gate authorize exact
-validation-block raw acquisition. Readiness authorization never authorizes
-acquisition.
+Only after V8D readiness PASS and transport-audit verification PASS may a
+separate human gate authorize exact T1C validation-block raw acquisition.
+Readiness authorization never authorizes acquisition.
 
 Acquisition must use the same frozen research period and data-quality rules
 as V8C, together with the same transport-audit retention requirements. A
 consumed acquisition gate remains one-shot. Acquisition PASS does not imply
 research opening.
+
+The T1C research-opening hard gate is frozen as:
+
+```text
+T1C_RESEARCH_OPENING_ALLOWED iff:
+  raw_acquisition_result=PASS
+  AND READ_ONLY_T1C_ACQUISITION_ARTIFACT_VERIFICATION=PASS
+  AND READ_ONLY_T1C_TRANSPORT_AUDIT_VERIFICATION=PASS
+  AND fresh separate research-opening human authorization exists
+```
+
+No verification PASS may imply research opening by itself.
 
 ## 13. T2
 
@@ -336,7 +510,9 @@ The following stages are ordered and may not be skipped or silently merged:
 CREATE_V8D_DESIGN_DRAFT
 INDEPENDENT_V8D_DESIGN_REVIEW
 
+HUMAN_V8D_T1C_PRESERVATION_PRIVATE_VERIFICATION_GATE
 V8D_T1C_PRESERVATION_RECHECK
+INDEPENDENT_V8D_T1C_PRESERVATION_RECHECK_REVIEW
 V8D_DESIGN_FINALIZED
 HUMAN_V8D_DESIGN_FREEZE
 
@@ -355,16 +531,36 @@ if readiness PASS:
 T1C_RAW_ACQUISITION_HUMAN_GATE
 EXECUTE_V8D_T1C_RAW_ACQUISITION
 READ_ONLY_T1C_ACQUISITION_AND_TRANSPORT_AUDIT_VERIFICATION
+READ_ONLY_T1C_TRANSPORT_AUDIT_VERIFICATION
 
 SEPARATE_T1C_RESEARCH_OPENING_GATE
 LAYER_B
 
-then only through separately governed T2 stages.
+READ_ONLY_V8D_T2_PRESERVATION_RECHECK
+INDEPENDENT_V8D_T2_PRESERVATION_RECHECK_REVIEW
+HUMAN_V8D_T2_AUTHORITY_BRIDGE_GATE
+CREATE_V8D_T2_AUTHORITY_BRIDGE
+INDEPENDENT_V8D_T2_AUTHORITY_BRIDGE_REVIEW
+T2_TRANSPORT_READINESS_HUMAN_GATE
+EXECUTE_FIXED_T0_TRANSPORT_READINESS_PROBE_FOR_T2
+READ_ONLY_T2_TRANSPORT_AUDIT_VERIFICATION
+
+only if readiness PASS AND audit verification PASS:
+T2_RAW_ACQUISITION_HUMAN_GATE
+EXECUTE_V8D_T2_RAW_ACQUISITION
+READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION
+READ_ONLY_T2_TRANSPORT_AUDIT_VERIFICATION
+
+only after all required verification PASS:
+SEPARATE_T2_RESEARCH_OPENING_GATE
+LAYER_C
 ```
 
-The T1C preservation recheck must PASS before V8D design finalization and
-human design freeze. The authority bridge, readiness, acquisition, and
-research-opening gates remain separate human gates.
+The T1C preservation recheck and its independent review must PASS before
+V8D design finalization and human design freeze. Each T2 preservation,
+authority-bridge, readiness, acquisition, transport-audit, and
+research-opening stage is separate and ordered. No stage may be skipped or
+silently merged.
 
 ## 15. Design status
 
