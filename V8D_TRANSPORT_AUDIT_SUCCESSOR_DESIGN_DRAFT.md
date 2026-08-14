@@ -135,10 +135,61 @@ before that boundary.
 
 After consumption, reset, deletion, and reuse of the same identity are
 prohibited. Failure does not restore authorization. Another private
-verification requires a fresh explicit human authorization. A durable receipt
-must bind the gate, reviewed design candidate commit, authorization identity
-hash, and allocation artifact self-hash. The public preservation artifact
-must not publish the raw human authorization identity.
+verification requires a fresh explicit human authorization.
+
+The privacy-safe durable consumption receipt is frozen as:
+
+```text
+schema_version=V8D_T1C_PRESERVATION_GATE_RECEIPT_V1
+study=V8D_HISTORICAL_RESEARCH
+artifact_role=T1C_PRESERVATION_PRIVATE_GATE_RECEIPT
+gate=HUMAN_V8D_T1C_PRESERVATION_PRIVATE_VERIFICATION_GATE
+reviewed_design_candidate_commit
+authorization_identity_sha256
+authorized_allocation_artifact_self_hash
+consumed=true
+consumption_count=1
+consumption_boundary=IMMEDIATELY_BEFORE_FIRST_PRIVATE_BYTE_READ
+consumption_timestamp_utc
+receipt_self_hash
+```
+
+This receipt schema is an exact field set: no extra fields and no omitted
+fields are permitted.
+
+The receipt is machine-local/private-safe evidence and must never contain
+the raw human authorization identity, ticker identities, private paths, raw
+allocation or manifest content, OHLCV, features, or outcomes. Only
+privacy-safe hashes, booleans, counts, and provenance may be surfaced
+publicly.
+
+A valid PASS preservation execution requires exactly one valid receipt with
+the exact gate, exact `reviewed_design_candidate_commit`, exact
+`authorized_allocation_artifact_self_hash=16e3c2b026e4aaf4382d88e5bce25c2a52f0bb7ebbc03838679c3c6e84daaf7c`,
+`consumed=true`, `consumption_count=1`, and
+`consumption_boundary=IMMEDIATELY_BEFORE_FIRST_PRIVATE_BYTE_READ`. The
+receipt `authorization_identity_sha256` must equal SHA-256 of the exact
+human authorization identity supplied for that execution.
+
+If the receipt is missing, malformed, duplicated, mismatched, has a
+consumption count other than 1, is bound to another design SHA or allocation
+artifact, or cannot prove the frozen boundary, then:
+
+```text
+V8D_T1C_PRESERVATION_RECHECK=BLOCK
+INDEPENDENT_V8D_T1C_PRESERVATION_RECHECK_REVIEW=BLOCK
+V8D_DESIGN_FINALIZED=PROHIBITED
+HUMAN_V8D_DESIGN_FREEZE=PROHIBITED
+```
+
+No authorization reset or reuse is permitted. The public preservation
+artifact and independent review artifact must not contain the raw human
+authorization identity.
+
+Public preservation and review provenance may expose only the gate name,
+`consumed=true`, `consumption_count=1`, authorization identity SHA-256,
+receipt self-hash, PASS/BLOCK, and design/allocation hashes. It may not expose
+the raw authorization identity or private paths or content.
 
 The preservation artifact schema and exact field-set requirement are:
 
@@ -179,14 +230,25 @@ valid only when every frozen preservation condition is positively verified.
 
 `INDEPENDENT_V8D_T1C_PRESERVATION_RECHECK_REVIEW` must review an exact
 40-hex preservation artifact commit and mechanically resolve the artifact
-blob from that exact commit. The independent review record and provenance
-bind externally to:
+blob from that exact commit. It must independently read and verify the
+durable gate receipt and must not trust the preservation producer's statement
+that authorization was consumed. At minimum it verifies the exact receipt
+schema, receipt self-hash/integrity, exact gate, exact
+`reviewed_design_candidate_commit`, exact allocation artifact self-hash,
+`consumed=true`, `consumption_count=1`, the frozen consumption boundary, the
+authorization identity hash associated with the authorized execution, and
+that the receipt corresponds to the same preservation execution whose
+artifact is reviewed.
+
+The independent review record and provenance bind externally to:
 
 ```text
 reviewed_preservation_recheck_git_commit
 reviewed_preservation_recheck_git_blob_sha
 reviewed_design_candidate_commit
 preservation_recheck_result=PASS
+reviewed_gate_receipt_self_hash
+gate_receipt_validation_result=PASS
 ```
 
 Absence of evidence is not PASS. If preservation cannot be positively
