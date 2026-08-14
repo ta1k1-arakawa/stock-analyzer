@@ -480,3 +480,47 @@ def test_public_artifact_contains_no_private_identity_fields():
     assert "t1c_tickers" not in public
     assert "remaining_t_spare_tickers" not in public
     assert SYNTHETIC_AUTHORIZATION not in json.dumps(public)
+
+
+def test_production_hash_defaults_are_frozen_exact():
+    assert preservation.EXPECTED_V8D_T1C_TICKER_COUNT == 300
+    assert preservation.EXPECTED_V8D_T1C_TICKER_LIST_SHA256 == "85a06d4b88698915315f5cf72e0d3e04dfacafb5403786ac3bb613e14b0deb54"
+    assert preservation.EXPECTED_V8D_PARENT_T_SPARE_TICKER_LIST_SHA256 == "360d5c874e6c08471f118af8ac450dadb38ca138fecd1ecdb834cc08156a9e70"
+    assert preservation.EXPECTED_V8D_REMAINING_T_SPARE_TICKER_LIST_SHA256 == "699e7bc29b2714128de99203bd6fedb38ee24c6f7bfee7c725b605669c178632"
+    parameters = inspect.signature(preservation._verify_private_artifacts).parameters
+    assert parameters["expected_t1c_ticker_list_sha256"].default == preservation.EXPECTED_V8D_T1C_TICKER_LIST_SHA256
+    assert parameters["expected_parent_t_spare_ticker_list_sha256"].default == preservation.EXPECTED_V8D_PARENT_T_SPARE_TICKER_LIST_SHA256
+    assert parameters["expected_remaining_t_spare_ticker_list_sha256"].default == preservation.EXPECTED_V8D_REMAINING_T_SPARE_TICKER_LIST_SHA256
+
+
+def test_production_default_t1c_hash_mismatch_blocks():
+    artifact, manifest = _private_fixture()
+    with pytest.raises(preservation.V8DT1CPreservationBlocked) as excinfo:
+        preservation._verify_private_artifacts(
+            allocation.canonical_json_bytes(artifact),
+            v8_partition.canonical_json_bytes(manifest),
+            expected_allocation_artifact_self_hash=artifact["artifact_self_hash"],
+            expected_parent_t_spare_ticker_list_sha256=artifact["parent_t_spare_ticker_list_sha256"],
+            expected_partition_manifest_sha256=manifest["manifest_sha256"],
+            expected_partition_implementation_commit=SYNTHETIC_IMPL,
+            expected_reviewed_implementation_commit=SYNTHETIC_IMPL,
+            expected_v8c_frozen_design_commit=SYNTHETIC_V8C_DESIGN,
+        )
+    assert excinfo.value.reason == "V8D_T1C_HASH_MISMATCH"
+
+
+def test_production_default_remaining_t_spare_hash_mismatch_blocks():
+    artifact, manifest = _private_fixture()
+    with pytest.raises(preservation.V8DT1CPreservationBlocked) as excinfo:
+        preservation._verify_private_artifacts(
+            allocation.canonical_json_bytes(artifact),
+            v8_partition.canonical_json_bytes(manifest),
+            expected_allocation_artifact_self_hash=artifact["artifact_self_hash"],
+            expected_parent_t_spare_ticker_list_sha256=artifact["parent_t_spare_ticker_list_sha256"],
+            expected_t1c_ticker_list_sha256=artifact["t1c_ticker_list_sha256"],
+            expected_partition_manifest_sha256=manifest["manifest_sha256"],
+            expected_partition_implementation_commit=SYNTHETIC_IMPL,
+            expected_reviewed_implementation_commit=SYNTHETIC_IMPL,
+            expected_v8c_frozen_design_commit=SYNTHETIC_V8C_DESIGN,
+        )
+    assert excinfo.value.reason == "V8D_REMAINING_T_SPARE_HASH_MISMATCH"

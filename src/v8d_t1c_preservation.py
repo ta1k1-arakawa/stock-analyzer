@@ -69,6 +69,10 @@ V8D_FROZEN_DESIGN_BLOB_SHA = "9577a88c7bf46483b941aec3301c6064d9734c1f"
 CANONICAL_V8D_T1C_PRESERVATION_STATE_ROOT = (
     CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8d-t1c-preservation-gate-state"
 )
+EXPECTED_V8D_T1C_TICKER_COUNT = 300
+EXPECTED_V8D_T1C_TICKER_LIST_SHA256 = "85a06d4b88698915315f5cf72e0d3e04dfacafb5403786ac3bb613e14b0deb54"
+EXPECTED_V8D_PARENT_T_SPARE_TICKER_LIST_SHA256 = "360d5c874e6c08471f118af8ac450dadb38ca138fecd1ecdb834cc08156a9e70"
+EXPECTED_V8D_REMAINING_T_SPARE_TICKER_LIST_SHA256 = "699e7bc29b2714128de99203bd6fedb38ee24c6f7bfee7c725b605669c178632"
 
 V8C_TERMINAL_COMMIT = "d18368c1ec1c26d752ea5862115ab9f4315d1780"
 V8C_TERMINAL_ADJUDICATION_GIT_PATH = "V8C_T1C_READINESS_BLOCK_ADJUDICATION.md"
@@ -518,9 +522,9 @@ def _verify_private_artifacts(
     partition_manifest_raw: bytes,
     *,
     expected_allocation_artifact_self_hash: str = "16e3c2b026e4aaf4382d88e5bce25c2a52f0bb7ebbc03838679c3c6e84daaf7c",
-    expected_parent_t_spare_ticker_list_sha256: str = EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
-    expected_t1c_ticker_list_sha256: str | None = None,
-    expected_remaining_t_spare_ticker_list_sha256: str | None = None,
+    expected_parent_t_spare_ticker_list_sha256: str = EXPECTED_V8D_PARENT_T_SPARE_TICKER_LIST_SHA256,
+    expected_t1c_ticker_list_sha256: str = EXPECTED_V8D_T1C_TICKER_LIST_SHA256,
+    expected_remaining_t_spare_ticker_list_sha256: str = EXPECTED_V8D_REMAINING_T_SPARE_TICKER_LIST_SHA256,
     expected_partition_manifest_sha256: str = EXPECTED_V8_PARTITION_MANIFEST_SHA256,
     expected_partition_implementation_commit: str = EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
     expected_reviewed_implementation_commit: str = "",
@@ -568,11 +572,13 @@ def _verify_private_artifacts(
         raise V8DT1CPreservationBlocked("V8D_PRIVATE_ALLOCATION_VERIFICATION_BLOCKED") from error
     if safe["artifact_self_hash"] != expected_allocation_artifact_self_hash:
         raise V8DT1CPreservationBlocked("V8D_ALLOCATION_ARTIFACT_SELF_HASH_MISMATCH_TRUSTED")
-    if safe["t1c_ticker_count"] != T1C_TICKER_COUNT:
+    if safe["t1c_ticker_count"] != EXPECTED_V8D_T1C_TICKER_COUNT:
         raise V8DT1CPreservationBlocked("V8D_T1C_COUNT_MISMATCH")
-    if expected_t1c_ticker_list_sha256 is not None and safe["t1c_ticker_list_sha256"] != expected_t1c_ticker_list_sha256:
+    if safe["t1c_ticker_list_sha256"] != expected_t1c_ticker_list_sha256:
         raise V8DT1CPreservationBlocked("V8D_T1C_HASH_MISMATCH")
-    if expected_remaining_t_spare_ticker_list_sha256 is not None and safe["remaining_t_spare_ticker_list_sha256"] != expected_remaining_t_spare_ticker_list_sha256:
+    if safe["parent_t_spare_ticker_list_sha256"] != expected_parent_t_spare_ticker_list_sha256:
+        raise V8DT1CPreservationBlocked("V8D_PARENT_T_SPARE_HASH_MISMATCH")
+    if safe["remaining_t_spare_ticker_list_sha256"] != expected_remaining_t_spare_ticker_list_sha256:
         raise V8DT1CPreservationBlocked("V8D_REMAINING_T_SPARE_HASH_MISMATCH")
     return {
         "allocation_artifact_self_hash": safe["artifact_self_hash"],
