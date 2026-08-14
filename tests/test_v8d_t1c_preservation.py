@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -133,6 +134,50 @@ def _consume_synthetic(state_root):
     )
 
 
+def test_real_entry_signature_has_no_state_root():
+    assert "state_root" not in inspect.signature(preservation.resolve_and_verify_t1c_preservation).parameters
+
+
+def test_real_entry_forwards_only_canonical_root_and_output_does_not_change_it(monkeypatch, tmp_path):
+    forwarded_roots = []
+
+    def fake_execute(**kwargs):
+        forwarded_roots.append(kwargs["state_root"])
+        return {}
+
+    monkeypatch.setattr(preservation, "_execute_with_dependencies", fake_execute)
+    for output_name in ("first-result.json", "second-result.json"):
+        preservation.resolve_and_verify_t1c_preservation(
+            "SYNTHETIC-ENTRY-IDENTITY",
+            allocation_artifact_path=tmp_path / "allocation.json",
+            partition_manifest_path=tmp_path / "manifest.json",
+            output_path=tmp_path / output_name,
+        )
+    assert forwarded_roots == [
+        preservation.CANONICAL_V8D_T1C_PRESERVATION_STATE_ROOT,
+        preservation.CANONICAL_V8D_T1C_PRESERVATION_STATE_ROOT,
+    ]
+    assert preservation.compute_receipt_key(
+        SYNTHETIC_AUTHORIZATION,
+        SYNTHETIC_DESIGN,
+        SYNTHETIC_ALLOCATION_HASH,
+    ) == preservation.compute_receipt_key(
+        SYNTHETIC_AUTHORIZATION,
+        SYNTHETIC_DESIGN,
+        SYNTHETIC_ALLOCATION_HASH,
+    )
+
+
+def test_canonical_root_is_v8c_base_child_and_outside_repository():
+    from src import v8c_human_gate_consumption as v8c_gate
+
+    root = preservation.CANONICAL_V8D_T1C_PRESERVATION_STATE_ROOT.resolve()
+    assert root == (v8c_gate.CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8d-t1c-preservation-gate-state").resolve()
+    assert root.name == "v8d-t1c-preservation-gate-state"
+    with pytest.raises(ValueError):
+        root.relative_to(preservation.CANONICAL_REPOSITORY_ROOT.resolve())
+
+
 def test_synthetic_authorization_grammar_passes():
     preservation.validate_authorization_identity(
         SYNTHETIC_AUTHORIZATION,
@@ -254,6 +299,39 @@ def test_execution_consumes_synthetic_gate_before_first_private_read(tmp_path):
         )
     assert len(reads) == 2
     assert list((tmp_path / "state").glob("*.json"))
+
+
+def test_existing_receipt_at_canonical_semantic_path_blocks_internal_replay(tmp_path):
+    allocation_path = tmp_path / "allocation.json"
+    manifest_path = tmp_path / "manifest.json"
+    allocation_path.write_bytes(b"synthetic allocation")
+    manifest_path.write_bytes(b"synthetic manifest")
+    state_root = tmp_path / "canonical-semantic-state"
+    _consume_synthetic(state_root)
+    private_reads = 0
+
+    def count_private_read(path):
+        nonlocal private_reads
+        private_reads += 1
+        return path.read_bytes()
+
+    with pytest.raises(preservation.V8DT1CPreservationBlocked) as excinfo:
+        preservation._execute_with_dependencies(
+            authorization_identity=SYNTHETIC_AUTHORIZATION,
+            state_root=state_root,
+            output_path=tmp_path / "replay-result.json",
+            allocation_artifact_path=allocation_path,
+            partition_manifest_path=manifest_path,
+            repository_root=tmp_path / "repo",
+            public_preflight=_public_preflight,
+            private_reader=count_private_read,
+            gate_consumer=preservation.consume_gate_once,
+            clock=_clock,
+            reviewed_design_candidate_commit=SYNTHETIC_DESIGN,
+            authorized_allocation_artifact_self_hash=SYNTHETIC_ALLOCATION_HASH,
+        )
+    assert excinfo.value.reason == "V8D_GATE_ALREADY_CONSUMED"
+    assert private_reads == 0
 
 
 def test_authorization_mismatch_blocks_before_receipt_and_private_reader(tmp_path):

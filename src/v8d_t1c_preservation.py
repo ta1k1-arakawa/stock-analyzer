@@ -39,6 +39,7 @@ from src.v8c_git_provenance import (
     read_git_object_bytes,
     resolve_git_blob,
 )
+from src.v8c_human_gate_consumption import CANONICAL_CONSUMPTION_STATE_ROOT
 from src.v8c_production_provenance import (
     EXPECTED_PARENT_T_SPARE_TICKER_COUNT,
     EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
@@ -65,6 +66,9 @@ V8D_STUDY_NAME = "V8D_HISTORICAL_RESEARCH"
 V8D_PRODUCTION_BRANCH = "v8d-transport-audit-design"
 V8D_FROZEN_DESIGN_COMMIT = "eda657cde2383718d986c4c4bfaae794784fe04d"
 V8D_FROZEN_DESIGN_BLOB_SHA = "9577a88c7bf46483b941aec3301c6064d9734c1f"
+CANONICAL_V8D_T1C_PRESERVATION_STATE_ROOT = (
+    CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8d-t1c-preservation-gate-state"
+)
 
 V8C_TERMINAL_COMMIT = "d18368c1ec1c26d752ea5862115ab9f4315d1780"
 V8C_TERMINAL_ADJUDICATION_GIT_PATH = "V8C_T1C_READINESS_BLOCK_ADJUDICATION.md"
@@ -704,13 +708,12 @@ def resolve_and_verify_t1c_preservation(
     allocation_artifact_path: str | os.PathLike[str],
     partition_manifest_path: str | os.PathLike[str],
     output_path: str | os.PathLike[str],
-    state_root: str | os.PathLike[str],
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Future real execution entry point; never called by preparation tests."""
     return _execute_with_dependencies(
         authorization_identity=authorization_identity,
-        state_root=state_root,
+        state_root=CANONICAL_V8D_T1C_PRESERVATION_STATE_ROOT,
         output_path=output_path,
         allocation_artifact_path=allocation_artifact_path,
         partition_manifest_path=partition_manifest_path,
@@ -723,6 +726,7 @@ def resolve_and_verify_t1c_preservation(
 
 
 __all__ = [
+    "CANONICAL_V8D_T1C_PRESERVATION_STATE_ROOT",
     "V8D_FROZEN_DESIGN_BLOB_SHA",
     "V8D_FROZEN_DESIGN_COMMIT",
     "V8D_PRESERVATION_ARTIFACT_FIELDS",
