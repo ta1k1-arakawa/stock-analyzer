@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 
 import pytest
@@ -8,6 +9,7 @@ from src import v8c_human_gate_consumption as gate_consumption
 from src import v8c_stage_state as state
 
 FROZEN_DESIGN_COMMIT = "a" * 40
+OTHER_DESIGN_COMMIT = "d" * 40
 REVIEWED_IMPLEMENTATION_COMMIT = "b" * 40
 CLASSIFIER_BLOB_SHA = "c" * 40
 
@@ -138,6 +140,136 @@ def test_pass_after_block_at_same_identity_replay_still_blocked_by_gate_replay(t
         reviewed_implementation_commit=REVIEWED_IMPLEMENTATION_COMMIT,
         classifier_blob_sha=CLASSIFIER_BLOB_SHA, authority_prerequisites=_authority(),
     )["result"] == "PASS"
+
+
+def test_directly_constructed_self_hashed_pass_without_real_gate_consumption_blocks(tmp_path):
+    """Test A: a syntactically valid, correctly self-hashed PASS evidence
+    file constructed directly (never through write_readiness_pass, and
+    without ever consuming a readiness gate) must still BLOCK."""
+    fake_identity = "NEVER-CONSUMED-IDENTITY"
+    receipt_key = gate_consumption.compute_receipt_key(
+        gate_consumption.GATE_T1C_TRANSPORT_READINESS, FROZEN_DESIGN_COMMIT, fake_identity
+    )
+    evidence = {
+        "schema_version": state.SCHEMA_VERSION, "result": "PASS", "stage": "T1C",
+        "frozen_design_commit": FROZEN_DESIGN_COMMIT,
+        "reviewed_implementation_commit": REVIEWED_IMPLEMENTATION_COMMIT,
+        "sentinel_indices": [0, 149, 299], "probe_start": "2025-12-01", "probe_end_exclusive": "2025-12-08",
+        "classifier_blob_sha": CLASSIFIER_BLOB_SHA, "authority_prerequisites": _authority(),
+        "sentinel_count": 3, "sentinel_pass_count": 3,
+        "authorization_identity_sha256": hashlib.sha256(fake_identity.encode("utf-8")).hexdigest(),
+        "consumed_gate_receipt_key": receipt_key,
+        "recorded_at_utc": "2026-08-14T00:00:00Z",
+    }
+    evidence["evidence_self_hash"] = hashlib.sha256(state._canonical(evidence)).hexdigest()
+    path = tmp_path / "v8c_readiness_pass_T1C.json"
+    path.write_bytes(state._canonical(evidence))
+    with pytest.raises(state.V8CStageEvidenceBlocked) as excinfo:
+        state.read_valid_readiness_pass(
+            tmp_path, stage="T1C", frozen_design_commit=FROZEN_DESIGN_COMMIT,
+            reviewed_implementation_commit=REVIEWED_IMPLEMENTATION_COMMIT,
+            classifier_blob_sha=CLASSIFIER_BLOB_SHA, authority_prerequisites=_authority(),
+        )
+    assert excinfo.value.reason == "V8C_READINESS_PASS_RECEIPT_MISSING_OR_INVALID"
+
+
+def test_valid_pass_with_deleted_receipt_blocks(tmp_path):
+    """Test C."""
+    _consume(tmp_path, "T1C", "AUTH-1")
+    evidence = _write(tmp_path)
+    receipt_path = tmp_path / (evidence["consumed_gate_receipt_key"] + ".json")
+    assert receipt_path.exists()
+    receipt_path.unlink()
+    with pytest.raises(state.V8CStageEvidenceBlocked) as excinfo:
+        state.read_valid_readiness_pass(
+            tmp_path, stage="T1C", frozen_design_commit=FROZEN_DESIGN_COMMIT,
+            reviewed_implementation_commit=REVIEWED_IMPLEMENTATION_COMMIT,
+            classifier_blob_sha=CLASSIFIER_BLOB_SHA, authority_prerequisites=_authority(),
+        )
+    assert excinfo.value.reason == "V8C_READINESS_PASS_RECEIPT_MISSING_OR_INVALID"
+
+
+def _retamper_and_rewrite(path, evidence, **overrides):
+    tampered = dict(evidence)
+    tampered.update(overrides)
+    tampered.pop("evidence_self_hash", None)
+    tampered["evidence_self_hash"] = hashlib.sha256(state._canonical(tampered)).hexdigest()
+    path.write_bytes(state._canonical(tampered))
+    return tampered
+
+
+def test_valid_pass_pointing_at_wrong_gate_receipt_blocks(tmp_path):
+    """Test D: the evidence's own gate (T1C, implied by ``stage``/path) is
+    correct, but its ``consumed_gate_receipt_key`` is swapped to point at a
+    real receipt consumed for a DIFFERENT gate (T2 readiness)."""
+    _consume(tmp_path, "T1C", "AUTH-1")
+    _consume(tmp_path, "T2", "AUTH-1")
+    evidence = _write(tmp_path, stage="T1C", identity="AUTH-1")
+    wrong_key = gate_consumption.compute_receipt_key(
+        gate_consumption.GATE_T2_TRANSPORT_READINESS, FROZEN_DESIGN_COMMIT, "AUTH-1"
+    )
+    path = tmp_path / "v8c_readiness_pass_T1C.json"
+    _retamper_and_rewrite(path, evidence, consumed_gate_receipt_key=wrong_key)
+    with pytest.raises(state.V8CStageEvidenceBlocked) as excinfo:
+        state.read_valid_readiness_pass(
+            tmp_path, stage="T1C", frozen_design_commit=FROZEN_DESIGN_COMMIT,
+            reviewed_implementation_commit=REVIEWED_IMPLEMENTATION_COMMIT,
+            classifier_blob_sha=CLASSIFIER_BLOB_SHA, authority_prerequisites=_authority(),
+        )
+    assert excinfo.value.reason == "V8C_READINESS_PASS_RECEIPT_BINDING_MISMATCH"
+
+
+def test_valid_pass_pointing_at_wrong_design_commit_receipt_blocks(tmp_path):
+    """Test E: the receipt is real and per-authorization, but was consumed
+    under a DIFFERENT frozen design commit."""
+    _consume(tmp_path, "T1C", "AUTH-1")
+    gate_consumption.consume_gate_once(
+        tmp_path, gate_consumption.GATE_T1C_TRANSPORT_READINESS, OTHER_DESIGN_COMMIT,
+        clock=clock_stub, authorization_identity="AUTH-1",
+    )
+    evidence = _write(tmp_path, stage="T1C", identity="AUTH-1")
+    wrong_key = gate_consumption.compute_receipt_key(
+        gate_consumption.GATE_T1C_TRANSPORT_READINESS, OTHER_DESIGN_COMMIT, "AUTH-1"
+    )
+    path = tmp_path / "v8c_readiness_pass_T1C.json"
+    _retamper_and_rewrite(path, evidence, consumed_gate_receipt_key=wrong_key)
+    with pytest.raises(state.V8CStageEvidenceBlocked) as excinfo:
+        state.read_valid_readiness_pass(
+            tmp_path, stage="T1C", frozen_design_commit=FROZEN_DESIGN_COMMIT,
+            reviewed_implementation_commit=REVIEWED_IMPLEMENTATION_COMMIT,
+            classifier_blob_sha=CLASSIFIER_BLOB_SHA, authority_prerequisites=_authority(),
+        )
+    assert excinfo.value.reason == "V8C_READINESS_PASS_RECEIPT_BINDING_MISMATCH"
+
+
+def test_valid_pass_with_mismatched_authorization_identity_receipt_blocks(tmp_path):
+    """Test F: the receipt is real, correct gate, correct design commit --
+    but for a DIFFERENT authorization identity than the one this evidence
+    claims."""
+    _consume(tmp_path, "T1C", "AUTH-1")
+    _consume(tmp_path, "T1C", "AUTH-2")
+    evidence = _write(tmp_path, stage="T1C", identity="AUTH-1")
+    wrong_key = gate_consumption.compute_receipt_key(
+        gate_consumption.GATE_T1C_TRANSPORT_READINESS, FROZEN_DESIGN_COMMIT, "AUTH-2"
+    )
+    path = tmp_path / "v8c_readiness_pass_T1C.json"
+    # authorization_identity_sha256 is left as AUTH-1's hash (unchanged) --
+    # it disagrees with the AUTH-2 receipt this now points at.
+    _retamper_and_rewrite(path, evidence, consumed_gate_receipt_key=wrong_key)
+    with pytest.raises(state.V8CStageEvidenceBlocked) as excinfo:
+        state.read_valid_readiness_pass(
+            tmp_path, stage="T1C", frozen_design_commit=FROZEN_DESIGN_COMMIT,
+            reviewed_implementation_commit=REVIEWED_IMPLEMENTATION_COMMIT,
+            classifier_blob_sha=CLASSIFIER_BLOB_SHA, authority_prerequisites=_authority(),
+        )
+    assert excinfo.value.reason == "V8C_READINESS_PASS_RECEIPT_BINDING_MISMATCH"
+
+
+def test_readiness_evidence_file_never_contains_raw_authorization_identity(tmp_path):
+    _consume(tmp_path, "T1C", "RAW-HUMAN-AUTH-TOKEN")
+    _write(tmp_path, identity="RAW-HUMAN-AUTH-TOKEN")
+    raw_text = (tmp_path / "v8c_readiness_pass_T1C.json").read_text()
+    assert "RAW-HUMAN-AUTH-TOKEN" not in raw_text
 
 
 def test_missing_readiness_execution_blocks_read(tmp_path):

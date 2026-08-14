@@ -178,6 +178,87 @@ def _receipt_path(
     return Path(state_root) / (_receipt_key(gate, v8c_frozen_design_commit, authorization_identity) + ".json")
 
 
+def compute_receipt_key(
+    gate: str, v8c_frozen_design_commit: str, authorization_identity: str | None = None
+) -> str:
+    """Public, safe wrapper around the internal receipt key derivation.
+    Other V8C modules (e.g. durable stage evidence) may record this key --
+    a one-way hash, never the raw authorization identity -- so a later
+    reader can deterministically locate and mechanically re-verify the
+    exact real consumed receipt without ever needing the raw identity
+    itself."""
+    return _receipt_key(gate, v8c_frozen_design_commit, authorization_identity)
+
+
+RECEIPT_FIELDS = (
+    "schema_version",
+    "study_name",
+    "repository",
+    "gate",
+    "v8c_frozen_design_commit",
+    "per_authorization_gate",
+    "authorization_identity_sha256",
+    "consumed_at_utc",
+)
+
+
+def read_gate_consumption_receipt(state_root: str | os.PathLike[str], receipt_key: str) -> dict[str, Any]:
+    """Read-only: mechanically read and strictly validate the exact durable
+    gate-consumption receipt located at ``receipt_key`` (as returned by
+    ``compute_receipt_key``/produced by ``consume_gate_once``) -- never
+    inferred from another artifact's claims about the receipt's content.
+    Fails closed on a missing, malformed, duplicate-keyed, or schema-
+    invalid receipt."""
+    if not isinstance(receipt_key, str) or len(receipt_key) != 64 or any(
+        char not in "0123456789abcdef" for char in receipt_key
+    ):
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_KEY_INVALID")
+    path = Path(state_root) / (receipt_key + ".json")
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_MISSING") from error
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_DUPLICATE_KEY")
+            result[key] = value
+        return result
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_INVALID_JSON") from error
+    if not isinstance(parsed, dict) or set(parsed) != set(RECEIPT_FIELDS):
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_SCHEMA_INVALID")
+    if parsed["schema_version"] != SCHEMA_VERSION:
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_SCHEMA_VERSION_MISMATCH")
+    if parsed["study_name"] != STUDY_NAME:
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_STUDY_MISMATCH")
+    if parsed["repository"] != REPOSITORY_IDENTITY:
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_REPOSITORY_MISMATCH")
+    if parsed["gate"] not in KNOWN_GATES:
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_GATE_INVALID")
+    _require_git_commit(parsed["v8c_frozen_design_commit"])
+    if not isinstance(parsed["per_authorization_gate"], bool):
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_PER_AUTHORIZATION_FLAG_INVALID")
+    if parsed["per_authorization_gate"] != (parsed["gate"] in PER_AUTHORIZATION_GATES):
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_PER_AUTHORIZATION_FLAG_MISMATCH")
+    identity_hash = parsed["authorization_identity_sha256"]
+    if parsed["per_authorization_gate"]:
+        if not isinstance(identity_hash, str) or len(identity_hash) != 64 or any(
+            char not in "0123456789abcdef" for char in identity_hash
+        ):
+            raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_AUTHORIZATION_IDENTITY_HASH_INVALID")
+    elif identity_hash is not None:
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_AUTHORIZATION_IDENTITY_HASH_INVALID")
+    if not isinstance(parsed["consumed_at_utc"], str) or not parsed["consumed_at_utc"]:
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_TIMESTAMP_INVALID")
+    return dict(parsed)
+
+
 def _utc_timestamp(value: Any) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() != timedelta(0):
         raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_CLOCK_INVALID")
@@ -247,6 +328,11 @@ def consume_gate_once(
         "gate": gate,
         "v8c_frozen_design_commit": v8c_frozen_design_commit,
         "per_authorization_gate": gate in PER_AUTHORIZATION_GATES,
+        "authorization_identity_sha256": (
+            hashlib.sha256(authorization_identity.encode("utf-8")).hexdigest()
+            if authorization_identity is not None
+            else None
+        ),
         "consumed_at_utc": _timestamp_text(_utc_timestamp(clock() if callable(clock) else clock)),
     }
     payload = (json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
@@ -293,11 +379,14 @@ __all__ = [
     "GATE_T2_TRANSPORT_READINESS",
     "KNOWN_GATES",
     "PER_AUTHORIZATION_GATES",
+    "RECEIPT_FIELDS",
     "REPOSITORY_IDENTITY",
     "SCHEMA_VERSION",
     "STUDY_NAME",
     "V8CHumanGateConsumptionBlocked",
+    "compute_receipt_key",
     "consume_gate_once",
     "has_gate_been_consumed",
+    "read_gate_consumption_receipt",
     "require_gate_not_yet_consumed",
 ]

@@ -119,6 +119,58 @@ class V8CAcquisitionArtifactVerificationBlocked(RuntimeError):
         self.reason = reason
 
 
+# Exact concrete-type shapes ``src.v8c_transport._classification_metadata``
+# can actually produce for each retryable classification -- mirrors
+# ``src.v8c_transport``'s own concrete isinstance/errno checks exactly.
+# ``_classification_metadata`` sets ``reason_type = exception_type`` for a
+# *direct* (non-``URLError``-wrapped) exception (since its own "reason" is
+# literally the same object as the error itself), and sets
+# ``exception_type == "URLError"`` for a *wrapped* exception (reason_type
+# then being the concrete type of ``error.reason``). No other outer/reason
+# type pairing is ever produced by the real classifier -- so no other
+# pairing may be accepted here, regardless of how plausible ``reason_type``
+# or ``errno`` alone might look.
+_DIRECT_TIMEOUT_TYPES = frozenset({"TimeoutError", "socket.timeout"})
+_DIRECT_CONNECTION_RESET_TYPE = "ConnectionResetError"
+_DIRECT_OSERROR_TYPE = "OSError"
+_DIRECT_DNS_FAILURE_TYPE = "gaierror"
+_WRAPPED_OUTER_TYPE = "URLError"
+
+
+def _derive_classification_from_concrete_types(
+    classification: str, exception_type: object, reason_type: object, error_number: object
+) -> str | None:
+    is_direct = exception_type == reason_type
+    is_wrapped = exception_type == _WRAPPED_OUTER_TYPE
+
+    if classification == "NETWORK_TIMEOUT":
+        if is_direct and exception_type in _DIRECT_TIMEOUT_TYPES:
+            return "NETWORK_TIMEOUT"
+        if is_wrapped and reason_type in _DIRECT_TIMEOUT_TYPES:
+            return "NETWORK_TIMEOUT"
+        return None
+
+    if classification == "CONNECTION_RESET":
+        if is_direct and exception_type == _DIRECT_CONNECTION_RESET_TYPE:
+            return "CONNECTION_RESET"
+        if is_wrapped and reason_type == _DIRECT_CONNECTION_RESET_TYPE:
+            return "CONNECTION_RESET"
+        if is_direct and exception_type == _DIRECT_OSERROR_TYPE and error_number == errno.ECONNRESET:
+            return "CONNECTION_RESET"
+        if is_wrapped and reason_type == _DIRECT_OSERROR_TYPE and error_number == errno.ECONNRESET:
+            return "CONNECTION_RESET"
+        return None
+
+    if classification == "TEMPORARY_DNS_FAILURE":
+        if is_direct and exception_type == _DIRECT_DNS_FAILURE_TYPE and error_number == socket.EAI_AGAIN:
+            return "TEMPORARY_DNS_FAILURE"
+        if is_wrapped and reason_type == _DIRECT_DNS_FAILURE_TYPE and error_number == socket.EAI_AGAIN:
+            return "TEMPORARY_DNS_FAILURE"
+        return None
+
+    return None
+
+
 def _verify_member_transport_audit(ticker: str, audit: Any) -> tuple[int, str]:
     if not isinstance(audit, list) or not (1 <= len(audit) <= MAXIMUM_ATTEMPTS_PER_TICKER):
         raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_HISTORY_INVALID")
@@ -180,28 +232,9 @@ def _verify_member_transport_audit(ticker: str, audit: Any) -> tuple[int, str]:
                 exception_type = metadata["exception_type"]
                 reason_type = metadata["reason_type"]
                 error_number = metadata["errno"]
-                derived = None
-                if classification == "NETWORK_TIMEOUT" and (
-                    exception_type in {"TimeoutError", "socket.timeout"}
-                    or reason_type in {"TimeoutError", "socket.timeout"}
-                ):
-                    derived = "NETWORK_TIMEOUT"
-                elif classification == "CONNECTION_RESET" and (
-                    # Mirrors ``src.v8c_transport._connection_reset_errno``
-                    # exactly: an outer ``ConnectionResetError`` (regardless
-                    # of errno), or a concrete ``OSError`` whose errno is
-                    # exactly ECONNRESET -- never an errno match alone
-                    # against an arbitrary/forged concrete type name.
-                    exception_type == "ConnectionResetError"
-                    or reason_type == "ConnectionResetError"
-                    or (exception_type == "OSError" and error_number == errno.ECONNRESET)
-                    or (reason_type == "OSError" and error_number == errno.ECONNRESET)
-                ):
-                    derived = "CONNECTION_RESET"
-                elif classification == "TEMPORARY_DNS_FAILURE" and (
-                    reason_type == "gaierror" and error_number == socket.EAI_AGAIN
-                ):
-                    derived = "TEMPORARY_DNS_FAILURE"
+                derived = _derive_classification_from_concrete_types(
+                    classification, exception_type, reason_type, error_number
+                )
             if derived != classification:
                 raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_CLASSIFICATION_DERIVATION_MISMATCH")
         else:

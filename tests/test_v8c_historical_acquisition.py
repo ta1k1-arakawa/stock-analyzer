@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import urllib.error
@@ -13,7 +14,10 @@ import pytest
 
 from src import v8c_historical_acquisition as acquisition
 from src import v8c_human_gate_consumption as gate_consumption
+from src import v8c_stage_state as stage_state
 from src.v8c_production_provenance import CANONICAL_PARSER_CLASSIFIER_BLOB_SHA
+from src.v8c_t1c_allocation import build_t1c_allocation_artifact
+from src.v8c_trust_pin import build_trust_pin
 
 SYNTHETIC_COMMIT = "a" * 40
 SYNTHETIC_REVIEWED_COMMIT = "b" * 40
@@ -347,3 +351,103 @@ def test_acquisition_initial_request_wrong_origin_still_response_host_mismatch()
     with pytest.raises(acquisition.V8CTransportNamedFailure) as excinfo:
         acquisition._require_trusted_yahoo_url("https://evil.example.com/x")
     assert excinfo.value.condition == "RESPONSE_HOST_MISMATCH"
+
+
+# ---------------------------------------------------------------------------
+# HIGH-1 test H: raw acquisition with fabricated readiness evidence (a
+# hand-crafted, self-hashed PASS with no real consumed readiness gate
+# receipt behind it) must BLOCK before raw-acquisition gate consumption
+# and before the Yahoo opener.
+# ---------------------------------------------------------------------------
+
+
+def test_t1c_acquisition_blocks_on_fabricated_readiness_evidence_before_gate_and_opener(tmp_path):
+    state_root = _fresh_state_root()
+
+    parent = _tickers("SPARE", 650)
+    artifact = build_t1c_allocation_artifact(
+        parent,
+        parent_v8_partition_manifest_sha256="1" * 64,
+        parent_v8_partition_implementation_commit="2" * 40,
+        parent_t_spare_ticker_list_sha256=acquisition._ticker_list_sha(parent),
+        v8c_frozen_design_commit=acquisition.V8C_FROZEN_DESIGN_COMMIT,
+        v8c_allocation_implementation_commit=acquisition.V8C_FROZEN_DESIGN_COMMIT,
+        clock=clock_stub,
+    )
+    allocation_path = tmp_path / "allocation_artifact.json"
+    allocation_path.write_bytes(acquisition.canonical_json_bytes(artifact))
+
+    summary = {
+        "result": "PASS",
+        "parent_v8_partition_manifest_sha256": artifact["parent_v8_partition_manifest_sha256"],
+        "parent_v8_partition_implementation_commit": artifact["parent_v8_partition_implementation_commit"],
+        "parent_t_spare_ticker_count": artifact["parent_t_spare_ticker_count"],
+        "parent_t_spare_ticker_list_sha256": artifact["parent_t_spare_ticker_list_sha256"],
+        "t1c_ticker_count": artifact["t1c_ticker_count"],
+        "t1c_ticker_list_sha256": artifact["t1c_ticker_list_sha256"],
+        "predecessor_burned_count": artifact["predecessor_burned_count"],
+        "remaining_t_spare_ticker_count": artifact["remaining_t_spare_ticker_count"],
+        "remaining_t_spare_ticker_list_sha256": artifact["remaining_t_spare_ticker_list_sha256"],
+        "v8c_frozen_design_commit": artifact["v8c_frozen_design_commit"],
+        "v8c_allocation_implementation_commit": artifact["v8c_allocation_implementation_commit"],
+        "v8c_reviewed_production_implementation_commit": SYNTHETIC_REVIEWED_COMMIT,
+        "artifact_self_hash": artifact["artifact_self_hash"],
+    }
+    pin = build_trust_pin(verification_result_summary=summary, authorization_note="n")
+
+    authority_binding = {
+        "authorized_allocation_artifact_self_hash": artifact["artifact_self_hash"],
+        "parent_v8_partition_manifest_sha256": artifact["parent_v8_partition_manifest_sha256"],
+        "parent_v8_partition_implementation_commit": artifact["parent_v8_partition_implementation_commit"],
+        "trust_pin_human_gate": pin["human_gate"],
+    }
+
+    # A hand-crafted, correctly self-hashed readiness PASS -- written
+    # directly to the evidence path, never through write_readiness_pass,
+    # and with no readiness gate ever actually consumed.
+    fake_identity = "NEVER-CONSUMED-IDENTITY"
+    receipt_key = gate_consumption.compute_receipt_key(
+        gate_consumption.GATE_T1C_TRANSPORT_READINESS, acquisition.V8C_FROZEN_DESIGN_COMMIT, fake_identity
+    )
+    evidence = {
+        "schema_version": stage_state.SCHEMA_VERSION, "result": "PASS", "stage": "T1C",
+        "frozen_design_commit": acquisition.V8C_FROZEN_DESIGN_COMMIT,
+        "reviewed_implementation_commit": SYNTHETIC_REVIEWED_COMMIT,
+        "sentinel_indices": [0, 149, 299], "probe_start": "2025-12-01", "probe_end_exclusive": "2025-12-08",
+        "classifier_blob_sha": CANONICAL_PARSER_CLASSIFIER_BLOB_SHA,
+        "authority_prerequisites": authority_binding,
+        "sentinel_count": 3, "sentinel_pass_count": 3,
+        "authorization_identity_sha256": hashlib.sha256(fake_identity.encode("utf-8")).hexdigest(),
+        "consumed_gate_receipt_key": receipt_key,
+        "recorded_at_utc": "2026-08-14T00:00:00Z",
+    }
+    evidence["evidence_self_hash"] = hashlib.sha256(stage_state._canonical(evidence)).hexdigest()
+    Path(state_root).mkdir(parents=True, exist_ok=True)
+    (Path(state_root) / "v8c_readiness_pass_T1C.json").write_bytes(stage_state._canonical(evidence))
+
+    with pytest.raises(acquisition.V8CHistoricalAcquisitionBlocked) as excinfo:
+        acquisition._acquire_production_v8c_historical_block_bundle_with_dependencies(
+            output_root=tmp_path, block="T1C", confirmation=acquisition.T1C_ACQUISITION_CONFIRMATION,
+            partition_manifest_path=None, t1c_allocation_artifact_path=allocation_path,
+            git_commit_resolver=lambda: SYNTHETIC_COMMIT,
+            design_freeze_approval_reader=lambda head: {"ok": True},
+            frozen_design_object_verifier=lambda: None,
+            reviewed_implementation_binder=lambda head: {"reviewed_implementation_git_commit": SYNTHETIC_REVIEWED_COMMIT},
+            classifier_blob_resolver=lambda head: CANONICAL_PARSER_CLASSIFIER_BLOB_SHA,
+            anchor_reader=lambda head: {}, bridge_reader=lambda head: {}, bridge_review_reader=lambda head, blob: {},
+            t2_preservation_recheck_resolver=lambda: {"result": "PASS"},
+            t1c_trust_pin_reader=lambda head: pin,
+            trust_pin_review_reader=lambda head, h, g: {},
+            readiness_pass_reader=lambda stage, implementation_commit, classifier_sha, authority: (
+                stage_state.read_valid_readiness_pass(
+                    state_root, stage=stage, frozen_design_commit=acquisition.V8C_FROZEN_DESIGN_COMMIT,
+                    reviewed_implementation_commit=implementation_commit, classifier_blob_sha=classifier_sha,
+                    authority_prerequisites=authority,
+                )
+            ),
+            opener=forbidden_opener, clock=clock_stub, consumption_state_root=state_root,
+        )
+    assert excinfo.value.reason == "V8C_READINESS_PASS_RECEIPT_MISSING_OR_INVALID"
+    assert gate_consumption.has_gate_been_consumed(
+        state_root, gate_consumption.GATE_T1C_RAW_ACQUISITION, acquisition.V8C_FROZEN_DESIGN_COMMIT
+    ) is False

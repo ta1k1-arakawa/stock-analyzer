@@ -383,3 +383,115 @@ def test_unexpected_extra_metadata_field_blocks():
     with pytest.raises(verification.V8CAcquisitionArtifactVerificationBlocked) as excinfo:
         verification._verify_member_transport_audit("AAAA", audit)
     assert excinfo.value.reason == "RETRY_AUDIT_CLASSIFICATION_METADATA_INVALID"
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM-1: exact retry concrete-type pairs. The verifier must accept
+# ONLY the exact direct/URLError-wrapped metadata shapes
+# ``src.v8c_transport._classification_metadata`` can actually produce for
+# a given frozen classification -- never an arbitrary outer type merely
+# because ``reason_type``/``errno`` alone look plausible.
+# ---------------------------------------------------------------------------
+
+
+def _classification_entry(classification, exception_type, reason_type, error_number):
+    return {
+        "classification": classification, "retryable": True,
+        "classification_metadata": {
+            "exception_type": exception_type, "reason_type": reason_type,
+            "errno": error_number, "classification": classification,
+        },
+    }
+
+
+def _assert_passes(entry):
+    audit = _valid_two_attempt_audit("AAAA", entry)
+    retry_count, _ = verification._verify_member_transport_audit("AAAA", audit)
+    assert retry_count == 1
+
+
+def _assert_blocks(entry):
+    audit = _valid_two_attempt_audit("AAAA", entry)
+    with pytest.raises(verification.V8CAcquisitionArtifactVerificationBlocked) as excinfo:
+        verification._verify_member_transport_audit("AAAA", audit)
+    assert excinfo.value.reason == "RETRY_AUDIT_CLASSIFICATION_DERIVATION_MISMATCH"
+
+
+# --- negative: forged outer type + otherwise-plausible reason/errno -------
+
+
+def test_forged_outer_type_with_timeout_error_reason_blocks():
+    _assert_blocks(_classification_entry("NETWORK_TIMEOUT", "ForgedOuterType", "TimeoutError", None))
+
+
+def test_forged_outer_type_with_connection_reset_error_reason_blocks():
+    _assert_blocks(_classification_entry("CONNECTION_RESET", "ForgedOuterType", "ConnectionResetError", None))
+
+
+def test_forged_outer_type_with_gaierror_and_eai_again_blocks():
+    _assert_blocks(_classification_entry("TEMPORARY_DNS_FAILURE", "ForgedOuterType", "gaierror", socket.EAI_AGAIN))
+
+
+def test_forged_outer_type_with_oserror_and_econnreset_blocks():
+    _assert_blocks(_classification_entry("CONNECTION_RESET", "ForgedOuterType", "OSError", errno.ECONNRESET))
+
+
+# --- positive: every legitimate direct representation ---------------------
+
+
+def test_direct_timeout_error_passes():
+    _assert_passes(_classification_entry("NETWORK_TIMEOUT", "TimeoutError", "TimeoutError", None))
+
+
+def test_direct_socket_timeout_alias_passes():
+    _assert_passes(_classification_entry("NETWORK_TIMEOUT", "socket.timeout", "socket.timeout", None))
+
+
+def test_direct_connection_reset_error_passes():
+    _assert_passes(_classification_entry("CONNECTION_RESET", "ConnectionResetError", "ConnectionResetError", None))
+
+
+def test_direct_oserror_econnreset_passes():
+    _assert_passes(_classification_entry("CONNECTION_RESET", "OSError", "OSError", errno.ECONNRESET))
+
+
+def test_direct_gaierror_eai_again_passes():
+    _assert_passes(_classification_entry("TEMPORARY_DNS_FAILURE", "gaierror", "gaierror", socket.EAI_AGAIN))
+
+
+# --- positive: every legitimate URLError-wrapped representation -----------
+
+
+def test_wrapped_timeout_error_via_urlerror_passes():
+    _assert_passes(_classification_entry("NETWORK_TIMEOUT", "URLError", "TimeoutError", None))
+
+
+def test_wrapped_socket_timeout_alias_via_urlerror_passes():
+    _assert_passes(_classification_entry("NETWORK_TIMEOUT", "URLError", "socket.timeout", None))
+
+
+def test_wrapped_connection_reset_error_via_urlerror_passes():
+    _assert_passes(_classification_entry("CONNECTION_RESET", "URLError", "ConnectionResetError", None))
+
+
+def test_wrapped_oserror_econnreset_via_urlerror_passes():
+    _assert_passes(_classification_entry("CONNECTION_RESET", "URLError", "OSError", errno.ECONNRESET))
+
+
+def test_wrapped_gaierror_eai_again_via_urlerror_passes():
+    _assert_passes(_classification_entry("TEMPORARY_DNS_FAILURE", "URLError", "gaierror", socket.EAI_AGAIN))
+
+
+# --- negative: right type names, wrong errno -------------------------------
+
+
+def test_direct_oserror_wrong_errno_blocks():
+    _assert_blocks(_classification_entry("CONNECTION_RESET", "OSError", "OSError", errno.ETIMEDOUT))
+
+
+def test_direct_gaierror_wrong_errno_blocks():
+    _assert_blocks(_classification_entry("TEMPORARY_DNS_FAILURE", "gaierror", "gaierror", 1))
+
+
+def test_wrapped_oserror_wrong_errno_blocks():
+    _assert_blocks(_classification_entry("CONNECTION_RESET", "URLError", "OSError", errno.ETIMEDOUT))

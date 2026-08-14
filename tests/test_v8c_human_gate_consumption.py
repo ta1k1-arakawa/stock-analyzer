@@ -166,3 +166,71 @@ def test_no_deletion_or_reset_api_exists():
 def test_canonical_state_root_is_outside_the_repository():
     assert gate_consumption.CANONICAL_REPOSITORY_ROOT not in gate_consumption.CANONICAL_CONSUMPTION_STATE_ROOT.parents
     assert gate_consumption.CANONICAL_CONSUMPTION_STATE_ROOT.name == "v8c-human-gate-state"
+
+
+# ---------------------------------------------------------------------------
+# HIGH-1: receipts carry a privacy-safe authorization-identity hash, and a
+# public reader can mechanically re-validate a receipt located by key --
+# never by trusting another artifact's claim about it.
+# ---------------------------------------------------------------------------
+
+
+def test_per_authorization_receipt_carries_identity_hash_not_raw_identity(tmp_path):
+    state_root = tmp_path / "state"
+    gate_consumption.consume_gate_once(
+        state_root, gate_consumption.GATE_T1C_TRANSPORT_READINESS, SYNTHETIC_DESIGN_COMMIT, clock=clock_stub,
+        authorization_identity="RAW-HUMAN-TOKEN",
+    )
+    key = gate_consumption.compute_receipt_key(
+        gate_consumption.GATE_T1C_TRANSPORT_READINESS, SYNTHETIC_DESIGN_COMMIT, "RAW-HUMAN-TOKEN"
+    )
+    receipt = gate_consumption.read_gate_consumption_receipt(state_root, key)
+    assert receipt["gate"] == gate_consumption.GATE_T1C_TRANSPORT_READINESS
+    assert receipt["v8c_frozen_design_commit"] == SYNTHETIC_DESIGN_COMMIT
+    assert receipt["per_authorization_gate"] is True
+    import hashlib
+
+    assert receipt["authorization_identity_sha256"] == hashlib.sha256(b"RAW-HUMAN-TOKEN").hexdigest()
+    raw_text = (state_root / (key + ".json")).read_text()
+    assert "RAW-HUMAN-TOKEN" not in raw_text
+
+
+def test_non_per_authorization_receipt_has_null_identity_hash(tmp_path):
+    state_root = tmp_path / "state"
+    gate_consumption.consume_gate_once(state_root, gate_consumption.GATE_ALLOCATE_T1C, SYNTHETIC_DESIGN_COMMIT, clock=clock_stub)
+    key = gate_consumption.compute_receipt_key(gate_consumption.GATE_ALLOCATE_T1C, SYNTHETIC_DESIGN_COMMIT)
+    receipt = gate_consumption.read_gate_consumption_receipt(state_root, key)
+    assert receipt["authorization_identity_sha256"] is None
+    assert receipt["per_authorization_gate"] is False
+
+
+def test_read_gate_consumption_receipt_missing_blocks(tmp_path):
+    state_root = tmp_path / "state"
+    key = gate_consumption.compute_receipt_key(
+        gate_consumption.GATE_T1C_TRANSPORT_READINESS, SYNTHETIC_DESIGN_COMMIT, "NEVER-CONSUMED"
+    )
+    with pytest.raises(gate_consumption.V8CHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(state_root, key)
+    assert excinfo.value.reason == "V8C_HUMAN_GATE_RECEIPT_MISSING"
+
+
+def test_read_gate_consumption_receipt_rejects_malformed_key():
+    with pytest.raises(gate_consumption.V8CHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt("/tmp/whatever", "not-a-valid-hex-key")
+    assert excinfo.value.reason == "V8C_HUMAN_GATE_RECEIPT_KEY_INVALID"
+
+
+def test_read_gate_consumption_receipt_rejects_tampered_schema(tmp_path):
+    state_root = tmp_path / "state"
+    gate_consumption.consume_gate_once(
+        state_root, gate_consumption.GATE_T1C_TRANSPORT_READINESS, SYNTHETIC_DESIGN_COMMIT, clock=clock_stub,
+        authorization_identity="AUTH-1",
+    )
+    key = gate_consumption.compute_receipt_key(
+        gate_consumption.GATE_T1C_TRANSPORT_READINESS, SYNTHETIC_DESIGN_COMMIT, "AUTH-1"
+    )
+    path = state_root / (key + ".json")
+    path.write_text(path.read_text().replace('"per_authorization_gate":true', '"per_authorization_gate":false'))
+    with pytest.raises(gate_consumption.V8CHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(state_root, key)
+    assert excinfo.value.reason == "V8C_HUMAN_GATE_RECEIPT_PER_AUTHORIZATION_FLAG_MISMATCH"

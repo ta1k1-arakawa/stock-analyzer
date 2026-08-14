@@ -18,7 +18,8 @@ from src.v8c_human_gate_consumption import (
     GATE_T1C_TRANSPORT_READINESS,
     GATE_T2_TRANSPORT_READINESS,
     V8CHumanGateConsumptionBlocked,
-    has_gate_been_consumed,
+    compute_receipt_key,
+    read_gate_consumption_receipt,
 )
 
 SCHEMA_VERSION = "V8C_DURABLE_STAGE_EVIDENCE_V1"
@@ -93,15 +94,18 @@ def write_readiness_pass(state_root, *, stage: str, result: str, frozen_design_c
     """Durably record the authoritative result -- PASS or BLOCK -- of one
     real readiness execution. This is deliberately not a generic writer
     that accepts an arbitrary caller-supplied mapping of otherwise-public
-    values: it independently re-verifies, against the real durable
-    per-authorization human-gate consumption ledger
-    (``src.v8c_human_gate_consumption``), that ``human_authorization_identity``
-    has actually, durably consumed the exact readiness gate for this stage/
-    design-commit -- a real one-shot action a caller cannot fabricate merely
-    by knowing public constants. Called after *every* completed readiness
-    execution, regardless of outcome, so a later authorized BLOCK durably
-    overwrites (and thereby invalidates) an earlier PASS at the same
-    destination.
+    values: it independently re-reads and validates, against the real
+    durable per-authorization human-gate consumption ledger
+    (``src.v8c_human_gate_consumption``), the exact receipt proving
+    ``human_authorization_identity`` has actually, durably consumed the
+    exact readiness gate for this stage/design-commit -- a real one-shot
+    action a caller cannot fabricate merely by knowing public constants.
+    The evidence records only a one-way hash-derived ``consumed_gate_
+    receipt_key`` (never the raw authorization identity), letting a later
+    reader locate and mechanically re-verify that same real receipt.
+    Called after *every* completed readiness execution, regardless of
+    outcome, so a later authorized BLOCK durably overwrites (and thereby
+    invalidates) an earlier PASS at the same destination.
     """
     if stage not in {"T1C", "T2"}:
         raise V8CStageEvidenceBlocked("STAGE_EVIDENCE_STAGE_INVALID")
@@ -123,14 +127,18 @@ def write_readiness_pass(state_root, *, stage: str, result: str, frozen_design_c
         raise V8CStageEvidenceBlocked("STAGE_EVIDENCE_AUTHORIZATION_IDENTITY_INVALID")
 
     gate = STAGE_READINESS_GATE[stage]
+    identity_sha256 = hashlib.sha256(human_authorization_identity.encode("utf-8")).hexdigest()
+    receipt_key = compute_receipt_key(gate, frozen_design_commit, human_authorization_identity)
     try:
-        consumed = has_gate_been_consumed(
-            consumption_state_root, gate, frozen_design_commit,
-            authorization_identity=human_authorization_identity,
-        )
+        receipt = read_gate_consumption_receipt(consumption_state_root, receipt_key)
     except V8CHumanGateConsumptionBlocked as error:
-        raise V8CStageEvidenceBlocked("STAGE_EVIDENCE_GATE_STATE_UNAVAILABLE") from error
-    if not consumed:
+        raise V8CStageEvidenceBlocked("STAGE_EVIDENCE_NO_MATCHING_CONSUMED_GATE_RECEIPT") from error
+    if (
+        receipt["gate"] != gate
+        or receipt["v8c_frozen_design_commit"] != frozen_design_commit
+        or receipt["per_authorization_gate"] is not True
+        or receipt["authorization_identity_sha256"] != identity_sha256
+    ):
         raise V8CStageEvidenceBlocked("STAGE_EVIDENCE_NO_MATCHING_CONSUMED_GATE_RECEIPT")
 
     evidence: dict[str, Any] = {
@@ -146,7 +154,8 @@ def write_readiness_pass(state_root, *, stage: str, result: str, frozen_design_c
         "authority_prerequisites": prerequisites,
         "sentinel_count": sentinel_count,
         "sentinel_pass_count": sentinel_pass_count,
-        "authorization_identity_sha256": hashlib.sha256(human_authorization_identity.encode("utf-8")).hexdigest(),
+        "authorization_identity_sha256": identity_sha256,
+        "consumed_gate_receipt_key": receipt_key,
         "recorded_at_utc": clock_text,
     }
     evidence["evidence_self_hash"] = hashlib.sha256(_canonical(evidence)).hexdigest()
@@ -182,7 +191,8 @@ def read_valid_readiness_pass(state_root, *, stage: str, frozen_design_commit: s
     required = {"schema_version", "result", "stage", "frozen_design_commit", "reviewed_implementation_commit",
                 "sentinel_indices", "probe_start", "probe_end_exclusive", "classifier_blob_sha",
                 "authority_prerequisites", "sentinel_count", "sentinel_pass_count",
-                "authorization_identity_sha256", "recorded_at_utc", "evidence_self_hash"}
+                "authorization_identity_sha256", "consumed_gate_receipt_key", "recorded_at_utc",
+                "evidence_self_hash"}
     if set(evidence) != required:
         raise V8CStageEvidenceBlocked("V8C_READINESS_PASS_SCHEMA_INVALID")
     stated = evidence["evidence_self_hash"]
@@ -206,6 +216,24 @@ def read_valid_readiness_pass(state_root, *, stage: str, frozen_design_commit: s
         raise V8CStageEvidenceBlocked("V8C_READINESS_PASS_AUTHORITY_MISMATCH")
     if evidence["sentinel_count"] != 3 or evidence["sentinel_pass_count"] != 3:
         raise V8CStageEvidenceBlocked("V8C_READINESS_PASS_NOT_ALL_SENTINELS")
+
+    # Not merely inferred from this evidence file's own claims: mechanically
+    # locate and independently validate the exact real durable gate-
+    # consumption receipt this evidence references. A hand-crafted,
+    # correctly-self-hashed evidence file for which no real readiness gate
+    # was ever consumed has no receipt at this key and BLOCKs here.
+    try:
+        receipt = read_gate_consumption_receipt(state_root, evidence["consumed_gate_receipt_key"])
+    except V8CHumanGateConsumptionBlocked as error:
+        raise V8CStageEvidenceBlocked("V8C_READINESS_PASS_RECEIPT_MISSING_OR_INVALID") from error
+    expected_gate = STAGE_READINESS_GATE[stage]
+    if (
+        receipt["gate"] != expected_gate
+        or receipt["v8c_frozen_design_commit"] != frozen_design_commit
+        or receipt["per_authorization_gate"] is not True
+        or receipt["authorization_identity_sha256"] != evidence["authorization_identity_sha256"]
+    ):
+        raise V8CStageEvidenceBlocked("V8C_READINESS_PASS_RECEIPT_BINDING_MISMATCH")
     return evidence
 
 
