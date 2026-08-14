@@ -61,6 +61,71 @@ Claude Code and Codex normally:
 
 They do NOT independently change the research design.
 
+## 1.4 Execution environment / agent usage rules
+
+These rules fix the execution environment and operator workflow only.
+They do not change research methodology, human gates, or security rules.
+
+### Claude Code usage
+
+- Use Claude Code only in its Cloud version.
+- Do not operate Claude Code by launching it on the local Windows PC.
+- Future task prompts must not instruct an agent to "launch local Claude Code".
+
+### Codex usage
+
+- When using an AI execution agent on the local Windows PC, use Codex.
+- Unless explicitly specified otherwise, "Codex" means Codex on the local
+  Windows PC.
+- When Codex Cloud is intended, distinguish it explicitly as "Codex Cloud"
+  in the task prompt.
+- Do not conflate Claude Code Cloud with local Codex.
+
+### User operating topology
+
+- The user normally uses Termux on an Android device.
+- From Termux, the user connects to the Windows PC through Tailscale/SSH
+  and operates the Windows terminal / PowerShell.
+- "The user executes a command on the local PC" ordinarily means that the
+  user pastes and executes the command in the Windows terminal reached via
+  Android Termux.
+- Do not assume GUI-based manual operation.
+
+### Long-running execution rule
+
+- Do not make long-running commands depend on the lifetime or timeout of a
+  Claude Code Cloud or Codex agent session. This includes long-running
+  pytest, full regression tests, backtests, large data acquisition,
+  unpacking, and other long-running commands.
+- If long-running processing may be unstable in an agent session, the AI
+  agent must not hold the processing itself for a long time. It must prepare
+  a complete PowerShell command that can be executed directly on the
+  Windows PC.
+- The user executes that PowerShell command through Android
+  Termux/Tailscale/SSH.
+- When necessary, use a design such as `Start-Process` so processing
+  continues on the Windows side after the SSH connection is disconnected.
+- Do not force a long-running command to remain held by Claude Code Cloud or
+  Codex.
+
+### Normal execution rule
+
+- Normal file editing, code implementation, short tests, and git
+  commit/push may be performed by local Codex.
+- Use Claude Code Cloud only when there is a clear reason to execute in a
+  Cloud environment.
+- For each task, ChatGPT must explicitly state whether to use local Codex,
+  Claude Code Cloud, or direct Windows PowerShell.
+
+### User interaction preference
+
+- Do not ask the user to manually edit code or configuration files.
+- In principle, user operations should be one of:
+  A. paste the prompt as-is into Codex / Claude Code Cloud; or
+  B. paste a complete command block as-is into Windows PowerShell through
+     Android Termux.
+- Avoid requiring manual replacement of placeholders whenever possible.
+
 ---
 
 ## 2. No execution-agent methodology discretion
