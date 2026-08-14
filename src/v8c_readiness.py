@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from src.v7_yahoo_collector import HOST, V7YahooCollectorBlocked, fetch_chart_once
-from src.v8_partition import V8PartitionBlocked
+from src.v8_partition import MANIFEST_FIELDS as V8_MANIFEST_FIELDS, V8PartitionBlocked
 from src.v8c_git_provenance import (
     CANONICAL_REPOSITORY_ROOT,
     V8CGitProvenanceBlocked,
@@ -88,8 +88,19 @@ STAGE_GATE = {
 }
 
 
-def _production_stage_prerequisites(stage: str, verified_head: str) -> Mapping[str, Any]:
-    """Verify the non-readiness stages immediately upstream of readiness."""
+def _production_stage_prerequisites(stage: str, verified_head: str, reviewed_commit: str) -> Mapping[str, Any]:
+    """Verify the non-readiness stages immediately upstream of readiness.
+
+    ``reviewed_commit`` is the exact *current* reviewed-implementation
+    commit (resolved immediately before this call, from a fresh
+    ``verify_reviewed_implementation_binding`` at ``verified_head``) -- both
+    ``V8C_TRUSTED_ALLOCATION.json``'s own
+    ``v8c_reviewed_production_implementation_commit`` and
+    ``V8C_TRUST_PIN_INDEPENDENT_REVIEW.json``'s own
+    ``reviewed_production_implementation_commit`` must equal it exactly, not
+    merely equal each other -- a stale pair that only agrees with itself
+    (but no longer with the live implementation binding) still BLOCKs.
+    """
     if stage == "T1C":
         try:
             pin = read_trust_pin_bytes(read_git_object_bytes(CANONICAL_REPOSITORY_ROOT, verified_head, "V8C_TRUSTED_ALLOCATION.json"))
@@ -99,6 +110,10 @@ def _production_stage_prerequisites(stage: str, verified_head: str) -> Mapping[s
                 expected_allocation_artifact_self_hash=pin["authorized_allocation_artifact_self_hash"],
                 expected_trust_pin_human_gate=pin["human_gate"],
             )
+            if pin["v8c_reviewed_production_implementation_commit"] != reviewed_commit:
+                raise V8CReadinessBlocked("V8C_T1C_TRUST_PIN_PRODUCTION_IMPLEMENTATION_STALE")
+            if review["reviewed_production_implementation_commit"] != reviewed_commit:
+                raise V8CReadinessBlocked("V8C_T1C_TRUST_PIN_REVIEW_PRODUCTION_IMPLEMENTATION_STALE")
         except Exception as error:  # noqa: BLE001
             raise V8CReadinessBlocked("V8C_T1C_AUTHORITY_PREREQUISITES_BLOCKED") from error
         return {
@@ -169,10 +184,33 @@ def _require_exact_origin(value: object, *, hostname: str) -> str:
     return value
 
 
+def _require_trusted_redirect_target(value: object, *, hostname: str) -> str:
+    """A rejected *redirect target* is ``UNTRUSTED_REDIRECT`` -- distinct
+    from ``RESPONSE_HOST_MISMATCH``, which is reserved for the initial
+    constructed request or a final/returned response URL whose origin is
+    wrong (``_require_exact_origin`` above)."""
+    if not isinstance(value, str):
+        raise V8CTransportNamedFailure("UNTRUSTED_REDIRECT")
+    try:
+        parsed = urllib.parse.urlparse(value)
+        port = parsed.port
+    except ValueError as error:
+        raise V8CTransportNamedFailure("UNTRUSTED_REDIRECT") from error
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise V8CTransportNamedFailure("UNTRUSTED_REDIRECT")
+    return value
+
+
 class _TrustedYahooRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         try:
-            _require_exact_origin(newurl, hostname=HOST)
+            _require_trusted_redirect_target(newurl, hostname=HOST)
         except V8CTransportNamedFailure as error:
             raise error
         return super().redirect_request(req, fp, code, msg, headers, newurl)
@@ -349,7 +387,12 @@ def _read_selective_t0_sentinels(partition_manifest_path: str | Path) -> tuple[s
             position += 1
         if names != {"T0", "T1", "T2", "T3", "T_spare"} or selected is None:
             raise _SelectiveManifestParseError("assignment schema invalid")
-        return selected, whitespace(raw, position)
+        # Deliberately no trailing whitespace-skip here: ``position`` is
+        # returned exactly at the first character after the value's closing
+        # ``}``, so the caller can capture a byte-exact top-level pair span
+        # for canonical-hash reconstruction. The top-level loop performs its
+        # own whitespace handling afterward.
+        return selected, position
 
     try:
         raw = Path(partition_manifest_path).read_bytes()
@@ -362,7 +405,22 @@ def _read_selective_t0_sentinels(partition_manifest_path: str | Path) -> tuple[s
         manifest_sha: str | None = None
         implementation: str | None = None
         selected: tuple[str, ...] | None = None
+        # Byte-exact spans of every top-level "key":value pair, in file
+        # order, so the manifest's own canonical self-hash can be
+        # independently recomputed (never trusted from the embedded
+        # ``manifest_sha256`` string) without ever materializing any
+        # forbidden private array element as a Python string. Since the
+        # only production writer of this manifest (``src.v8_partition.
+        # write_partition_manifest_once``) always persists it via
+        # ``canonical_json_bytes`` (sorted keys, compact separators,
+        # trailing "\n"), splicing the ``manifest_sha256`` pair (plus its
+        # one adjoining comma) out of these exact original byte spans and
+        # re-joining the rest is byte-identical to re-serializing the
+        # manifest without that one field via the same canonical scheme
+        # ``src.v8_partition.canonical_sha256`` uses.
+        pair_spans: list[tuple[str, int, int]] = []
         while position < len(text) and text[position] != '}':
+            key_start = position
             key, position = string(text, position)
             if key in seen:
                 raise _SelectiveManifestParseError("duplicate top-level key")
@@ -370,14 +428,16 @@ def _read_selective_t0_sentinels(partition_manifest_path: str | Path) -> tuple[s
             position = whitespace(text, position)
             if position >= len(text) or text[position] != ':':
                 raise _SelectiveManifestParseError("top-level colon expected")
+            value_start = position + 1
             if key == "block_assignments":
-                selected, position = selective_assignments(text, position + 1)
+                selected, position = selective_assignments(text, value_start)
             elif key == "partition_implementation_git_commit":
-                implementation, position = string(text, position + 1)
+                implementation, position = string(text, value_start)
             elif key == "manifest_sha256":
-                manifest_sha, position = string(text, position + 1)
+                manifest_sha, position = string(text, value_start)
             else:
-                position = skip_value(text, position + 1)
+                position = skip_value(text, value_start)
+            pair_spans.append((key, key_start, position))
             position = whitespace(text, position)
             if position < len(text) and text[position] == ',':
                 position = whitespace(text, position + 1)
@@ -388,8 +448,17 @@ def _read_selective_t0_sentinels(partition_manifest_path: str | Path) -> tuple[s
         position = whitespace(text, position + 1)
         if position != len(text) or manifest_sha is None or implementation is None:
             raise _SelectiveManifestParseError("required manifest field missing")
+        if seen != set(V8_MANIFEST_FIELDS):
+            raise _SelectiveManifestParseError("required manifest schema invalid")
+
+        reconstructed = "{" + ",".join(
+            text[start:end] for key, start, end in pair_spans if key != "manifest_sha256"
+        ) + "}\n"
+        recomputed_manifest_sha256 = hashlib.sha256(reconstructed.encode("utf-8")).hexdigest()
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, _SelectiveManifestParseError) as error:
         raise V8CReadinessBlocked("PARTITION_MANIFEST_SELECTIVE_READ_FAILED") from error
+    if recomputed_manifest_sha256 != manifest_sha:
+        raise V8CReadinessBlocked("TRUSTED_PARTITION_MANIFEST_SELF_HASH_MISMATCH")
     return manifest_sha, implementation, selected
 
 
@@ -408,7 +477,7 @@ def _execute_transport_readiness_probe(
     sleep_fn: Callable[[float], None],
     clock: Callable[[], datetime],
     consumption_state_root: str | Path,
-    stage_prerequisite_checker: Callable[[str, str], Mapping[str, Any]] | None = None,
+    stage_prerequisite_checker: Callable[[str, str, str], Mapping[str, Any]] | None = None,
     readiness_pass_state_writer: Callable[..., Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if stage not in STAGE_GATE:
@@ -451,7 +520,11 @@ def _execute_transport_readiness_probe(
         raise V8CReadinessBlocked("V8C_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING") from error
 
     try:
-        authority_prerequisites = dict(stage_prerequisite_checker(stage, verified_head)) if stage_prerequisite_checker else {"dependency_injection": "synthetic"}
+        authority_prerequisites = (
+            dict(stage_prerequisite_checker(stage, verified_head, reviewed_commit))
+            if stage_prerequisite_checker
+            else {"dependency_injection": "synthetic"}
+        )
     except Exception as error:  # noqa: BLE001 - every unmet prerequisite BLOCKs
         raise V8CReadinessBlocked(getattr(error, "reason", "V8C_READINESS_STAGE_PREREQUISITES_BLOCKED")) from error
 
@@ -520,22 +593,31 @@ def _execute_transport_readiness_probe(
         "classifier_blob_sha": classifier_blob_sha,
         "authority_prerequisites": authority_prerequisites,
     }
-    if all_pass:
-        try:
-            (readiness_pass_state_writer or write_readiness_pass)(
-                consumption_state_root,
-                stage=stage,
-                frozen_design_commit=EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
-                reviewed_implementation_commit=reviewed_commit,
-                sentinel_indices=list(SENTINEL_INDICES),
-                probe_start=SENTINEL_PROBE_START,
-                probe_end_exclusive=SENTINEL_PROBE_END_EXCLUSIVE,
-                classifier_blob_sha=classifier_blob_sha,
-                authority_prerequisites=authority_prerequisites,
-                clock_text=clock().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-            )
-        except V8CStageEvidenceBlocked as error:
-            raise V8CReadinessBlocked(error.reason) from error
+    # Record the authoritative durable result of *every* completed
+    # readiness execution -- PASS or BLOCK -- not only PASS. A later
+    # authorized BLOCK must overwrite (and thereby invalidate) an earlier
+    # PASS at the same destination, so raw acquisition can never keep
+    # consuming a stale PASS after a fresh authorized execution BLOCKed.
+    try:
+        (readiness_pass_state_writer or write_readiness_pass)(
+            consumption_state_root,
+            stage=stage,
+            result=result["result"],
+            frozen_design_commit=EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
+            reviewed_implementation_commit=reviewed_commit,
+            sentinel_indices=list(SENTINEL_INDICES),
+            probe_start=SENTINEL_PROBE_START,
+            probe_end_exclusive=SENTINEL_PROBE_END_EXCLUSIVE,
+            classifier_blob_sha=classifier_blob_sha,
+            authority_prerequisites=authority_prerequisites,
+            sentinel_count=result["sentinel_count"],
+            sentinel_pass_count=result["sentinel_pass_count"],
+            human_authorization_identity=human_authorization_identity,
+            consumption_state_root=consumption_state_root,
+            clock_text=clock().astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+    except V8CStageEvidenceBlocked as error:
+        raise V8CReadinessBlocked(error.reason) from error
     return result
 
 

@@ -147,13 +147,36 @@ def _verify_member_transport_audit(ticker: str, audit: Any) -> tuple[int, str]:
             if metadata.get("exception_type") is None:
                 raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_INTERMEDIATE_EXCEPTION_MISSING")
             if "http_code" in metadata:
+                # Exact HTTPError concrete metadata -- never accept a valid
+                # numeric code paired with a forged concrete exception type.
+                if set(metadata) != {"exception_type", "http_code"}:
+                    raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_CLASSIFICATION_METADATA_INVALID")
+                if metadata["exception_type"] != "HTTPError":
+                    raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_CLASSIFICATION_DERIVATION_MISMATCH")
                 code = metadata.get("http_code")
                 derived = f"HTTP_{code}" if isinstance(code, int) and not isinstance(code, bool) else None
             elif "named_condition" in metadata:
+                # Exact V8CTransportNamedFailure representation -- never
+                # accept a named condition paired with a forged concrete
+                # exception type, and never accept the outer classification
+                # and the named condition disagreeing.
+                if set(metadata) != {"exception_type", "named_condition"}:
+                    raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_CLASSIFICATION_METADATA_INVALID")
+                if metadata["exception_type"] != "V8CTransportNamedFailure":
+                    raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_CLASSIFICATION_DERIVATION_MISMATCH")
                 derived = metadata.get("named_condition")
+                if derived != classification:
+                    raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_CLASSIFICATION_DERIVATION_MISMATCH")
             else:
                 if set(metadata) != {"exception_type", "reason_type", "errno", "classification"}:
                     raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_CLASSIFICATION_METADATA_INVALID")
+                # The outer per-attempt classification and this metadata's
+                # own embedded classification must agree -- a forged inner
+                # field that disagrees with the outer classification (while
+                # exception_type/reason_type/errno still derive the outer
+                # value) must not silently pass.
+                if metadata["classification"] != classification:
+                    raise V8CAcquisitionArtifactVerificationBlocked("RETRY_AUDIT_CLASSIFICATION_DERIVATION_MISMATCH")
                 exception_type = metadata["exception_type"]
                 reason_type = metadata["reason_type"]
                 error_number = metadata["errno"]
@@ -164,9 +187,15 @@ def _verify_member_transport_audit(ticker: str, audit: Any) -> tuple[int, str]:
                 ):
                     derived = "NETWORK_TIMEOUT"
                 elif classification == "CONNECTION_RESET" and (
+                    # Mirrors ``src.v8c_transport._connection_reset_errno``
+                    # exactly: an outer ``ConnectionResetError`` (regardless
+                    # of errno), or a concrete ``OSError`` whose errno is
+                    # exactly ECONNRESET -- never an errno match alone
+                    # against an arbitrary/forged concrete type name.
                     exception_type == "ConnectionResetError"
                     or reason_type == "ConnectionResetError"
-                    or error_number == errno.ECONNRESET
+                    or (exception_type == "OSError" and error_number == errno.ECONNRESET)
+                    or (reason_type == "OSError" and error_number == errno.ECONNRESET)
                 ):
                     derived = "CONNECTION_RESET"
                 elif classification == "TEMPORARY_DNS_FAILURE" and (

@@ -321,10 +321,33 @@ def _require_trusted_yahoo_url(value: object) -> str:
     return value
 
 
+def _require_trusted_redirect_target(value: object) -> str:
+    """A rejected *redirect target* is ``UNTRUSTED_REDIRECT`` -- distinct
+    from ``RESPONSE_HOST_MISMATCH``, which is reserved for the initial
+    constructed request or a final/returned response URL whose origin is
+    wrong (``_require_trusted_yahoo_url`` above)."""
+    if not isinstance(value, str):
+        raise V8CTransportNamedFailure("UNTRUSTED_REDIRECT")
+    try:
+        parsed = urllib.parse.urlparse(value)
+        port = parsed.port
+    except ValueError as error:
+        raise V8CTransportNamedFailure("UNTRUSTED_REDIRECT") from error
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != HOST
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+    ):
+        raise V8CTransportNamedFailure("UNTRUSTED_REDIRECT")
+    return value
+
+
 class _TrustedYahooRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         try:
-            _require_trusted_yahoo_url(newurl)
+            _require_trusted_redirect_target(newurl)
         except V8CTransportNamedFailure as error:
             raise error
         return super().redirect_request(req, fp, code, msg, headers, newurl)

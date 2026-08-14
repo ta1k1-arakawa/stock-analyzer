@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import errno
+import hashlib
 import json
+import socket
 import tempfile
 import urllib.request
 import uuid
@@ -260,3 +263,123 @@ def test_retry_policy_field_tampering_blocked(tmp_path):
     with pytest.raises(verification.V8CAcquisitionArtifactVerificationBlocked) as excinfo:
         verification._verify_acquisition_artifact(tmp_path, "T1C", **_expected_kwargs(manifest))
     assert excinfo.value.reason == "ACQUISITION_MANIFEST_INVALID:ACQUISITION_MANIFEST_RETRY_POLICY_MISMATCH"
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM-2: retry-audit concrete-exception re-derivation (§4.3), never
+# trusting the recorded ``classification``/``retryable`` fields at face
+# value merely because ``http_code``/``exception_type`` look plausible.
+# ---------------------------------------------------------------------------
+
+
+def _fingerprint(ticker: str) -> str:
+    material = {
+        "logical_request_identity": ticker,
+        "request_start": "2016-04-01",
+        "request_end_exclusive": "2026-01-01",
+        "provider": verification.DATA_SOURCE,
+        "host": verification.DATA_SOURCE_HOST,
+        "request_parameters": {"interval": "1d", "events": "div,splits", "includeAdjustedClose": True},
+    }
+    return hashlib.sha256(verification.canonical_json_bytes(material)).hexdigest()
+
+
+def _valid_two_attempt_audit(ticker: str, intermediate_entry: dict) -> list[dict]:
+    fp = _fingerprint(ticker)
+    entry = dict(intermediate_entry)
+    entry["attempt"] = 1
+    entry["request_fingerprint"] = fp
+    return [
+        entry,
+        {"attempt": 2, "classification": "SUCCESS", "retryable": None,
+         "classification_metadata": {"exception_type": None}, "request_fingerprint": fp},
+    ]
+
+
+def test_valid_network_timeout_intermediate_attempt_passes():
+    audit = _valid_two_attempt_audit("AAAA", {
+        "classification": "NETWORK_TIMEOUT", "retryable": True,
+        "classification_metadata": {
+            "exception_type": "TimeoutError", "reason_type": "TimeoutError",
+            "errno": None, "classification": "NETWORK_TIMEOUT",
+        },
+    })
+    retry_count, fp = verification._verify_member_transport_audit("AAAA", audit)
+    assert retry_count == 1
+    assert fp == audit[0]["request_fingerprint"]
+
+
+def test_http_code_valid_but_exception_type_forged_blocks():
+    audit = _valid_two_attempt_audit("AAAA", {
+        "classification": "HTTP_503", "retryable": True,
+        "classification_metadata": {"exception_type": "ForgedType", "http_code": 503},
+    })
+    with pytest.raises(verification.V8CAcquisitionArtifactVerificationBlocked) as excinfo:
+        verification._verify_member_transport_audit("AAAA", audit)
+    assert excinfo.value.reason == "RETRY_AUDIT_CLASSIFICATION_DERIVATION_MISMATCH"
+
+
+def test_errno_matches_but_concrete_type_forged_blocks():
+    audit = _valid_two_attempt_audit("AAAA", {
+        "classification": "CONNECTION_RESET", "retryable": True,
+        "classification_metadata": {
+            "exception_type": "ForgedOSError", "reason_type": "ForgedOSError",
+            "errno": errno.ECONNRESET, "classification": "CONNECTION_RESET",
+        },
+    })
+    with pytest.raises(verification.V8CAcquisitionArtifactVerificationBlocked) as excinfo:
+        verification._verify_member_transport_audit("AAAA", audit)
+    assert excinfo.value.reason == "RETRY_AUDIT_CLASSIFICATION_DERIVATION_MISMATCH"
+
+
+def test_named_condition_and_concrete_type_disagree_blocks():
+    # A named condition is always nonretryable, so ``retryable=False``
+    # (its only truthful value) is itself already caught by the earlier
+    # retryable-class check before the named-condition/classification
+    # cross-check is reached -- confirming a mismatched named condition can
+    # never masquerade as a legitimate intermediate retry.
+    audit = _valid_two_attempt_audit("AAAA", {
+        "classification": "SYMBOL_MISMATCH", "retryable": False,
+        "classification_metadata": {"exception_type": "V8CTransportNamedFailure", "named_condition": "PARSER_SCHEMA_FAILURE"},
+    })
+    with pytest.raises(verification.V8CAcquisitionArtifactVerificationBlocked) as excinfo:
+        verification._verify_member_transport_audit("AAAA", audit)
+    assert excinfo.value.reason == "RETRY_AUDIT_NONRETRYABLE_INTERMEDIATE_FAILURE"
+
+
+def test_named_condition_forged_exception_type_blocks():
+    # Every named condition is unconditionally nonretryable per §4, so it
+    # can never legitimately be an intermediate (retried) attempt in the
+    # first place -- the earlier retryable-class check already fail-closes
+    # this exact shape before the named-condition schema/type cross-check
+    # is even reached.
+    audit = _valid_two_attempt_audit("AAAA", {
+        "classification": "DATA_QUALITY_GATE_FAILURE", "retryable": True,
+        "classification_metadata": {"exception_type": "ForgedNamedType", "named_condition": "DATA_QUALITY_GATE_FAILURE"},
+    })
+    with pytest.raises(verification.V8CAcquisitionArtifactVerificationBlocked) as excinfo:
+        verification._verify_member_transport_audit("AAAA", audit)
+    assert excinfo.value.reason == "RETRY_AUDIT_NONRETRYABLE_INTERMEDIATE_FAILURE"
+
+
+def test_outer_classification_and_metadata_classification_disagree_blocks():
+    audit = _valid_two_attempt_audit("AAAA", {
+        "classification": "NETWORK_TIMEOUT", "retryable": True,
+        "classification_metadata": {
+            "exception_type": "TimeoutError", "reason_type": "TimeoutError",
+            "errno": None, "classification": "CONNECTION_RESET",  # forged inner field
+        },
+    })
+    with pytest.raises(verification.V8CAcquisitionArtifactVerificationBlocked) as excinfo:
+        verification._verify_member_transport_audit("AAAA", audit)
+    assert excinfo.value.reason == "RETRY_AUDIT_CLASSIFICATION_DERIVATION_MISMATCH"
+
+
+def test_unexpected_extra_metadata_field_blocks():
+    audit = _valid_two_attempt_audit("AAAA", {
+        "classification": "HTTP_503", "retryable": True,
+        "classification_metadata": {"exception_type": "HTTPError", "http_code": 503, "extra": "field"},
+    })
+    with pytest.raises(verification.V8CAcquisitionArtifactVerificationBlocked) as excinfo:
+        verification._verify_member_transport_audit("AAAA", audit)
+    assert excinfo.value.reason == "RETRY_AUDIT_CLASSIFICATION_METADATA_INVALID"

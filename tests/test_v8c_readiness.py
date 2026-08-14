@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -284,3 +285,164 @@ def test_public_result_never_contains_ticker_identity(tmp_path, monkeypatch):
     for value in result.values():
         if isinstance(value, str):
             assert "SECRET_T0" not in value
+
+
+# ---------------------------------------------------------------------------
+# HIGH-1: the selective T0 sentinel reader must independently recompute
+# (never trust) the manifest's embedded ``manifest_sha256``, using the same
+# canonical self-hash semantics as ``src.v8_partition``.
+# ---------------------------------------------------------------------------
+
+
+def test_selective_read_valid_manifest_returns_exactly_three_sentinels(tmp_path):
+    t0 = _tickers("T0", 300)
+    manifest_path, manifest = _t0_manifest(tmp_path, t0)
+    manifest_sha, implementation, sentinels = readiness._read_selective_t0_sentinels(manifest_path)
+    assert manifest_sha == manifest["manifest_sha256"]
+    assert implementation == manifest["partition_implementation_git_commit"]
+    assert sentinels == (t0[0], t0[149], t0[299])
+    assert len(sentinels) == 3
+
+
+def test_selective_read_tampered_sentinel_with_stale_hash_blocks(tmp_path):
+    """Test A: change one permitted T0 sentinel while leaving the old
+    ``manifest_sha256`` unchanged."""
+    t0 = _tickers("T0", 300)
+    manifest_path, manifest = _t0_manifest(tmp_path, t0)
+    raw = manifest_path.read_text()
+    tampered = raw.replace('"' + t0[0] + '"', '"TAMPERED_SENTINEL_0"', 1)
+    assert tampered != raw
+    manifest_path.write_text(tampered)
+    with pytest.raises(readiness.V8CReadinessBlocked) as excinfo:
+        readiness._read_selective_t0_sentinels(manifest_path)
+    assert excinfo.value.reason == "TRUSTED_PARTITION_MANIFEST_SELF_HASH_MISMATCH"
+
+
+def test_selective_read_tampered_forbidden_assignment_with_stale_hash_blocks(tmp_path):
+    """Test B: change a skipped/forbidden private assignment (a non-
+    sentinel T1 member) while leaving the old ``manifest_sha256``
+    unchanged -- the recompute must still catch it even though this value
+    is never selectively decoded as a string."""
+    t0 = _tickers("T0", 300)
+    manifest_path, manifest = _t0_manifest(tmp_path, t0)
+    raw = manifest_path.read_text()
+    tampered = raw.replace('"T10001"', '"TAMPERED_T1_0001"', 1)
+    assert tampered != raw
+    manifest_path.write_text(tampered)
+    with pytest.raises(readiness.V8CReadinessBlocked) as excinfo:
+        readiness._read_selective_t0_sentinels(manifest_path)
+    assert excinfo.value.reason == "TRUSTED_PARTITION_MANIFEST_SELF_HASH_MISMATCH"
+
+
+def test_selective_read_never_leaks_forbidden_identity_in_error(tmp_path):
+    """Test D: forbidden SECRET_* identities never appear in public
+    outputs/errors, even under a triggered BLOCK."""
+    t0 = _tickers("T0", 300)
+    t0[1] = "SECRET_FORBIDDEN_NONSENTINEL"
+    manifest_path, manifest = _t0_manifest(tmp_path, t0)
+    raw = manifest_path.read_text()
+    tampered = raw.replace(
+        '"manifest_sha256":"' + manifest["manifest_sha256"] + '"',
+        '"manifest_sha256":"' + "0" * 64 + '"',
+    )
+    assert tampered != raw
+    manifest_path.write_text(tampered)
+    with pytest.raises(readiness.V8CReadinessBlocked) as excinfo:
+        readiness._read_selective_t0_sentinels(manifest_path)
+    assert "SECRET_FORBIDDEN" not in str(excinfo.value)
+    assert "SECRET_FORBIDDEN" not in excinfo.value.reason
+
+
+def test_selective_read_valid_manifest_with_secret_prefixed_tickers_returns_only_sentinels(tmp_path):
+    """Test C/D combined: only exactly 3 T0 sentinels are ever returned,
+    and non-sentinel forbidden identities never appear in the result."""
+    t0 = _tickers("SECRET_T0", 300)
+    manifest_path, manifest = _t0_manifest(tmp_path, t0)
+    manifest_sha, implementation, sentinels = readiness._read_selective_t0_sentinels(manifest_path)
+    assert sentinels == (t0[0], t0[149], t0[299])
+    assert t0[1] not in sentinels
+    assert t0[298] not in sentinels
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM-1: T1C readiness must bind to the exact CURRENT reviewed
+# implementation commit, not merely require the trust pin and its
+# independent review to agree with each other.
+# ---------------------------------------------------------------------------
+
+
+def _t1c_prereq_stubs(monkeypatch, *, pin_commit, review_commit):
+    import src.v8c_readiness as readiness_module
+
+    pin = {
+        "authorized_allocation_artifact_self_hash": "0" * 64,
+        "human_gate": "V8C_HUMAN_AUTHORIZE_T1C_ALLOCATION_PIN_AT_" + "0" * 64,
+        "parent_v8_partition_manifest_sha256": "1" * 64,
+        "parent_v8_partition_implementation_commit": "2" * 40,
+        "v8c_reviewed_production_implementation_commit": pin_commit,
+    }
+    monkeypatch.setattr(readiness_module, "read_trust_pin_bytes", lambda raw: pin)
+    monkeypatch.setattr(readiness_module, "read_git_object_bytes", lambda *a, **k: b"{}")
+    monkeypatch.setattr(
+        readiness_module, "read_and_verify_trust_pin_independent_review",
+        lambda *a, **k: {"reviewed_production_implementation_commit": review_commit},
+    )
+
+
+def test_t1c_prerequisites_succeed_when_both_bindings_match_current_commit(monkeypatch):
+    _t1c_prereq_stubs(monkeypatch, pin_commit=SYNTHETIC_REVIEWED_COMMIT, review_commit=SYNTHETIC_REVIEWED_COMMIT)
+    result = readiness._production_stage_prerequisites("T1C", SYNTHETIC_COMMIT, SYNTHETIC_REVIEWED_COMMIT)
+    assert result["parent_v8_partition_implementation_commit"] == "2" * 40
+
+
+def test_t1c_prerequisites_block_on_stale_trust_pin_binding(monkeypatch):
+    _t1c_prereq_stubs(monkeypatch, pin_commit="9" * 40, review_commit=SYNTHETIC_REVIEWED_COMMIT)
+    with pytest.raises(readiness.V8CReadinessBlocked) as excinfo:
+        readiness._production_stage_prerequisites("T1C", SYNTHETIC_COMMIT, SYNTHETIC_REVIEWED_COMMIT)
+    assert excinfo.value.reason == "V8C_T1C_AUTHORITY_PREREQUISITES_BLOCKED"
+
+
+def test_t1c_prerequisites_block_on_stale_trust_pin_review_binding(monkeypatch):
+    _t1c_prereq_stubs(monkeypatch, pin_commit=SYNTHETIC_REVIEWED_COMMIT, review_commit="9" * 40)
+    with pytest.raises(readiness.V8CReadinessBlocked) as excinfo:
+        readiness._production_stage_prerequisites("T1C", SYNTHETIC_COMMIT, SYNTHETIC_REVIEWED_COMMIT)
+    assert excinfo.value.reason == "V8C_T1C_AUTHORITY_PREREQUISITES_BLOCKED"
+
+
+def test_t1c_prerequisites_block_when_pin_and_review_agree_but_both_stale(monkeypatch):
+    """Do not merely compare pin and review to each other: a pair that
+    agrees with itself but no longer matches the live implementation
+    binding must still BLOCK."""
+    _t1c_prereq_stubs(monkeypatch, pin_commit="9" * 40, review_commit="9" * 40)
+    with pytest.raises(readiness.V8CReadinessBlocked) as excinfo:
+        readiness._production_stage_prerequisites("T1C", SYNTHETIC_COMMIT, SYNTHETIC_REVIEWED_COMMIT)
+    assert excinfo.value.reason == "V8C_T1C_AUTHORITY_PREREQUISITES_BLOCKED"
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM-3: the actual redirect handler must classify a rejected redirect
+# target as UNTRUSTED_REDIRECT, distinct from RESPONSE_HOST_MISMATCH.
+# ---------------------------------------------------------------------------
+
+
+def test_readiness_redirect_handler_rejects_untrusted_target_as_untrusted_redirect():
+    handler = readiness._TrustedYahooRedirectHandler()
+    req = urllib.request.Request("https://" + readiness.HOST + "/v8/finance/chart/AAAA.T")
+    with pytest.raises(readiness.V8CTransportNamedFailure) as excinfo:
+        handler.redirect_request(req, None, 302, "Found", {}, "https://evil.example.com/steal")
+    assert excinfo.value.condition == "UNTRUSTED_REDIRECT"
+
+
+def test_readiness_redirect_handler_accepts_trusted_target():
+    handler = readiness._TrustedYahooRedirectHandler()
+    req = urllib.request.Request("https://" + readiness.HOST + "/v8/finance/chart/AAAA.T")
+    accepted = handler.redirect_request(
+        req, None, 302, "Found", {}, "https://" + readiness.HOST + "/v8/finance/chart/AAAA.T?range=1d"
+    )
+    assert accepted.full_url == "https://" + readiness.HOST + "/v8/finance/chart/AAAA.T?range=1d"
+
+
+def test_readiness_initial_request_wrong_origin_still_response_host_mismatch():
+    with pytest.raises(readiness.V8CTransportNamedFailure) as excinfo:
+        readiness._require_exact_origin("https://evil.example.com/x", hostname=readiness.HOST)
+    assert excinfo.value.condition == "RESPONSE_HOST_MISMATCH"

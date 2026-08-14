@@ -317,3 +317,33 @@ def test_frozen_retry_policy_fields_recorded_in_manifest(tmp_path):
     assert manifest["max_retries"] == 2
     assert manifest["backoff_seconds"] == [5, 30]
     assert manifest["jitter"] is False
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM-3: the actual acquisition redirect handler must classify a
+# rejected redirect target as UNTRUSTED_REDIRECT, distinct from
+# RESPONSE_HOST_MISMATCH.
+# ---------------------------------------------------------------------------
+
+
+def test_acquisition_redirect_handler_rejects_untrusted_target_as_untrusted_redirect():
+    handler = acquisition._TrustedYahooRedirectHandler()
+    req = urllib.request.Request("https://" + acquisition.HOST + "/v8/finance/chart/AAAA.T")
+    with pytest.raises(acquisition.V8CTransportNamedFailure) as excinfo:
+        handler.redirect_request(req, None, 302, "Found", {}, "https://evil.example.com/steal")
+    assert excinfo.value.condition == "UNTRUSTED_REDIRECT"
+
+
+def test_acquisition_redirect_handler_accepts_trusted_target():
+    handler = acquisition._TrustedYahooRedirectHandler()
+    req = urllib.request.Request("https://" + acquisition.HOST + "/v8/finance/chart/AAAA.T")
+    accepted = handler.redirect_request(
+        req, None, 302, "Found", {}, "https://" + acquisition.HOST + "/v8/finance/chart/AAAA.T?range=1d"
+    )
+    assert accepted.full_url == "https://" + acquisition.HOST + "/v8/finance/chart/AAAA.T?range=1d"
+
+
+def test_acquisition_initial_request_wrong_origin_still_response_host_mismatch():
+    with pytest.raises(acquisition.V8CTransportNamedFailure) as excinfo:
+        acquisition._require_trusted_yahoo_url("https://evil.example.com/x")
+    assert excinfo.value.condition == "RESPONSE_HOST_MISMATCH"
