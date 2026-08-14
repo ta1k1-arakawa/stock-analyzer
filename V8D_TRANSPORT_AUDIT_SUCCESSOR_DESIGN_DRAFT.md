@@ -796,11 +796,17 @@ requires the independent stage
 `INDEPENDENT_V8D_T2_PREFREEZE_PRESERVATION_RECHECK_REVIEW`; both must PASS
 before design finalization or human design freeze.
 
-`READ_ONLY_V8D_T2_POINT_OF_USE_PRESERVATION_RECHECK` occurs later,
-immediately before the ordered T2 authority and acquisition path. Both
-checkpoints use safe committed, audit, and provenance evidence only; neither
-inspects T2 ticker identities or reads raw T2 data, makes a network request,
-or creates acquisition or research authority.
+`READ_ONLY_V8D_T2_POINT_OF_USE_PRESERVATION_RECHECK` is
+`recheck_2=immediately_before_T2_acquisition`: it occurs only after
+`readiness_result=PASS` and
+`READ_ONLY_T2_READINESS_TRANSPORT_AUDIT_VERIFICATION=PASS`, immediately
+before the T2 raw-acquisition gate. Its independent review is the final
+preservation review before that gate. Both checkpoints use safe committed,
+audit, and provenance evidence only; neither inspects T2 ticker identities or
+reads raw T2 data, makes a network request, or creates acquisition or research
+authority. The point-of-use recheck and its independent review bind to the
+exact frozen V8D design commit, exact original V8 authority/provenance, and
+the current T2 preservation evidence at that stage.
 
 Absence of evidence is not PASS. If positive verification cannot be
 established at either checkpoint, the result is BLOCK and execution stops.
@@ -830,6 +836,11 @@ authorization_note
 
 The T2 bridge must not bind a V8D production implementation commit.
 Transport implementation authority is verified separately at point of use.
+The bridge fields `preservation_recheck_git_commit`,
+`preservation_recheck_git_blob_sha`, and `preservation_recheck_result=PASS`
+bind specifically to the exact independently reviewed
+`V8D_T2_PREFREEZE_PRESERVATION_RECHECK` artifact. They do not represent or
+replace the later point-of-use preservation recheck.
 Its exact human-gate grammar is:
 
 ```text
@@ -855,15 +866,24 @@ audit-verification stage is
 transport-audit verification is bound to the exact T2 readiness production
 execution and its transport-audit artifact.
 
+If T2 readiness or its audit verification is BLOCK, the later point-of-use
+T2 preservation recheck is not performed and the raw-acquisition path is not
+reached.
+
 The T2 raw-acquisition hard gate is frozen as:
 
 ```text
 T2_RAW_ACQUISITION_ALLOWED iff:
   readiness_result=PASS
   AND READ_ONLY_T2_READINESS_TRANSPORT_AUDIT_VERIFICATION=PASS
+  AND READ_ONLY_V8D_T2_POINT_OF_USE_PRESERVATION_RECHECK=PASS
+  AND INDEPENDENT_V8D_T2_POINT_OF_USE_PRESERVATION_RECHECK_REVIEW=PASS
 ```
 
-If either condition is not PASS, `T2_RAW_ACQUISITION=PROHIBITED`.
+Only after all four conditions are PASS may
+`T2_RAW_ACQUISITION_HUMAN_GATE` be reached. If any condition is not PASS,
+`T2_RAW_ACQUISITION=PROHIBITED` and the raw-acquisition human gate is not
+reached.
 
 After `EXECUTE_V8D_T2_RAW_ACQUISITION`, the exact required verification
 stages are:
@@ -890,6 +910,19 @@ T2 readiness transport-audit verification cannot substitute for T2
 acquisition transport-audit verification. T2 acquisition transport-audit
 verification cannot retroactively satisfy the T2 raw-acquisition gate. A
 PASS from one phase is invalid as evidence for the other phase.
+
+If either point-of-use preservation stage is not PASS:
+
+```text
+T2_RAW_ACQUISITION=PROHIBITED
+T2_RAW_ACQUISITION_HUMAN_GATE=NOT_REACHED
+Yahoo_T2_acquisition_requests=0
+research_opening=PROHIBITED
+CHATGPT_DECISION_REQUIRED
+```
+
+No alternate T2, T3, or T_spare substitution, retry, redraw, or methodology
+change is permitted.
 
 No T2 access occurs during this design task.
 
@@ -1054,8 +1087,6 @@ AND READ_ONLY_T1C_ACQUISITION_TRANSPORT_AUDIT_VERIFICATION PASS:
 SEPARATE_T1C_RESEARCH_OPENING_GATE
 LAYER_B
 
-READ_ONLY_V8D_T2_POINT_OF_USE_PRESERVATION_RECHECK
-INDEPENDENT_V8D_T2_PRESERVATION_RECHECK_REVIEW
 HUMAN_V8D_T2_AUTHORITY_BRIDGE_GATE
 CREATE_V8D_T2_AUTHORITY_BRIDGE
 INDEPENDENT_V8D_T2_AUTHORITY_BRIDGE_REVIEW
@@ -1065,6 +1096,10 @@ READ_ONLY_T2_READINESS_TRANSPORT_AUDIT_VERIFICATION
 
 only if readiness PASS
 AND READ_ONLY_T2_READINESS_TRANSPORT_AUDIT_VERIFICATION PASS:
+READ_ONLY_V8D_T2_POINT_OF_USE_PRESERVATION_RECHECK
+INDEPENDENT_V8D_T2_POINT_OF_USE_PRESERVATION_RECHECK_REVIEW
+
+only if both point-of-use preservation stages PASS:
 T2_RAW_ACQUISITION_HUMAN_GATE
 EXECUTE_V8D_T2_RAW_ACQUISITION
 READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION
