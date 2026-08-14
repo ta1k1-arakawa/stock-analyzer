@@ -517,6 +517,9 @@ The finite evidence contract is:
 
 ```text
 UNTRUSTED_REDIRECT:
+  detector_source=ORIGIN_GUARD
+  input_is_string: boolean
+  origin_parse_success: boolean
   scheme_https: boolean
   hostname_matches_expected: boolean
   credentials_absent: boolean
@@ -524,6 +527,9 @@ UNTRUSTED_REDIRECT:
   context=REDIRECT_TARGET
 
 RESPONSE_HOST_MISMATCH:
+  detector_source=ORIGIN_GUARD
+  input_is_string: boolean
+  origin_parse_success: boolean
   scheme_https: boolean
   hostname_matches_expected: boolean
   credentials_absent: boolean
@@ -542,6 +548,45 @@ DATA_QUALITY_GATE_FAILURE:
   valid_price_row_count: nonnegative safe integer
   trading_date_fields_valid: boolean
 ```
+
+For `detector_source=ORIGIN_GUARD`, `input_is_string=true` exactly when the
+candidate origin value is a Python `str`. `origin_parse_success=true` exactly
+when `input_is_string=true` and both `urllib.parse.urlparse(value)` completes
+without `ValueError` and evaluating `parsed.port` completes without
+`ValueError`.
+
+If `input_is_string=false` or `origin_parse_success=false`, the canonical
+downstream fill is exactly:
+
+```text
+scheme_https=false
+hostname_matches_expected=false
+credentials_absent=false
+port_allowed=false
+```
+
+No null, omitted, unknown, or implementation-selected representation is
+allowed. If `origin_parse_success=true`, the verifier derives:
+
+```text
+scheme_https = parsed.scheme == "https"
+hostname_matches_expected = parsed.hostname == frozen Yahoo HOST
+credentials_absent = parsed.username is None AND parsed.password is None
+port_allowed = parsed.port in (None, 443)
+```
+
+No raw URL, hostname string, credentials, ticker, or exception message is
+stored in the audit.
+
+For `detector_source=ORIGIN_GUARD`, the verifier derives an origin-guard
+named failure iff any of `input_is_string=false`,
+`origin_parse_success=false`, `scheme_https=false`,
+`hostname_matches_expected=false`, `credentials_absent=false`, or
+`port_allowed=false` holds. If all six conditions are valid and true as
+applicable, an origin-guard named failure declaration is invalid and the
+verifier result is BLOCK. `context=REDIRECT_TARGET` derives
+`UNTRUSTED_REDIRECT`; `context=INITIAL_OR_FINAL_RESPONSE` derives
+`RESPONSE_HOST_MISMATCH`. Any other context is verifier BLOCK.
 
 The exact canonical `V7YahooCollectorBlocked.reason` contract at the frozen
 parser blob is:
@@ -601,6 +646,21 @@ and rejects a producer-stated classification that disagrees. The separately
 defined privacy-safe detector evidence for `UNTRUSTED_REDIRECT` and
 `RESPONSE_HOST_MISMATCH` remains applicable when produced outside the
 canonical collector.
+
+The two evidence sources are explicit and non-ambiguous:
+
+```text
+detector_source=ORIGIN_GUARD
+  uses the origin-guard evidence contract above
+
+detector_source=CANONICAL_COLLECTOR_REASON
+  canonical_collector_reason_code_or_family=RESPONSE_HOST_MISMATCH
+  derives RESPONSE_HOST_MISMATCH
+```
+
+The canonical collector reason path does not require fabricated origin-guard
+booleans. `UNTRUSTED_REDIRECT` is origin-guard-only. Any producer-declared
+source/evidence combination outside these exact contracts is verifier BLOCK.
 
 ## 8. Independent audit verifier
 
