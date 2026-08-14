@@ -819,8 +819,21 @@ cannot retroactively satisfy the raw-acquisition gate.
 
 V8D must not inherit a V8B or V8C T2 human authorization.
 
-Before any T2 action, V8D requires both mandatory preservation checkpoints,
-as well as:
+V8D requires both mandatory T2 preservation checkpoints before T2 raw
+acquisition may be authorized. Their timing is distinct and non-substitutable:
+
+- the pre-freeze checkpoint and its independent review must PASS before V8D
+  design finalization and human design freeze;
+- the point-of-use checkpoint and its independent review occur only after T2
+  readiness and readiness audit verification PASS, and must PASS immediately
+  before the T2 raw-acquisition gate.
+
+The pre-freeze checkpoint does not substitute for the point-of-use
+checkpoint. The point-of-use checkpoint is not required before T2
+authority-bridge creation or T2 readiness, because by frozen design it occurs
+after readiness.
+
+V8D also requires:
 
 - a V8D-specific T2 authority bridge;
 - independent bridge review;
