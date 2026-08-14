@@ -116,6 +116,64 @@ the current T1C list remains `count=300` with
 Absence of evidence is not PASS. The preservation artifact must receive an
 independent exact-SHA review before `V8D_DESIGN_FINALIZED`.
 
+The preservation gate and authorization grammar are frozen as:
+
+```text
+gate=HUMAN_V8D_T1C_PRESERVATION_PRIVATE_VERIFICATION_GATE
+authorization_identity="V8D_HUMAN_AUTHORIZE_T1C_PRESERVATION_VERIFY_AT_"
+                      + reviewed_design_candidate_commit
+                      + "_FOR_"
+                      + allocation_artifact_self_hash
+```
+
+`reviewed_design_candidate_commit` is the exact 40-hex V8D design candidate
+that received independent design-review PASS. The gate is per-authorization
+and one-shot. It is durably consumed immediately before the first byte is
+read from either the private T1C allocation artifact or the authoritative
+private V8 partition manifest. Public Git and provenance preflight may occur
+before that boundary.
+
+After consumption, reset, deletion, and reuse of the same identity are
+prohibited. Failure does not restore authorization. Another private
+verification requires a fresh explicit human authorization. A durable receipt
+must bind the gate, reviewed design candidate commit, authorization identity
+hash, and allocation artifact self-hash. The public preservation artifact
+must not publish the raw human authorization identity.
+
+The preservation artifact schema and exact field-set requirement are:
+
+```text
+schema_version=V8D_T1C_PRESERVATION_RECHECK_V1
+artifact_role=T1C_PRESERVATION_RECHECK
+study=V8D_HISTORICAL_RESEARCH
+reviewed_design_candidate_commit
+source_v8c_terminal_commit
+allocation_artifact_self_hash
+t1c_ticker_count
+t1c_ticker_list_sha256
+parent_t_spare_ticker_list_sha256
+remaining_t_spare_ticker_list_sha256
+t1c_raw_acquisition_performed=false
+t1c_research_opened=false
+t1c_ohlcv_research_access=false
+t1c_feature_access=false
+t1c_outcome_access=false
+t1c_identities_publicly_exposed=false
+t1c_membership_reassigned=false
+allocation_self_hash_unchanged=true
+parent_v8_provenance_unchanged=true
+v8c_terminal_adjudication_authoritative=true
+preservation_recheck_git_commit
+preservation_recheck_git_blob_sha
+preservation_recheck_result=PASS
+```
+
+Its remaining fields are the privacy-safe frozen preservation commitments,
+hashes, counts, booleans, and Git provenance required above; no extra or
+identity-bearing field is permitted. Exact field-set validation is fail
+closed, and PASS is valid only when every frozen preservation condition is
+positively verified.
+
 Absence of evidence is not PASS. If preservation cannot be positively
 established, then:
 
@@ -165,30 +223,33 @@ The V8D T1C allocation-authority bridge schema and validation semantics are
 defined before freeze. It contains only safe fields:
 
 ```text
-schema_version
+schema_version=V8D_T1C_ALLOCATION_AUTHORITY_BRIDGE_V1
 study=V8D_HISTORICAL_RESEARCH
 artifact_role=T1C_ALLOCATION_AUTHORITY_BRIDGE
 logical_block=T1C
 v8d_frozen_design_commit
-source_v8c_terminal_commit
-source_v8c_trust_pin_git_commit
-source_v8c_trust_pin_git_blob_sha
-authorized_allocation_artifact_self_hash
-t1c_ticker_count
-t1c_ticker_list_sha256
-parent_v8_partition_manifest_sha256
-parent_v8_partition_implementation_commit
-parent_t_spare_ticker_list_sha256
-preservation_recheck_git_commit
-preservation_recheck_git_blob_sha
+source_v8c_terminal_commit=d18368c1ec1c26d752ea5862115ab9f4315d1780
+source_v8c_trust_pin_git_commit=2aaf7aa8729ef8e6b20ba8d38dccb2a95ec68372
+source_v8c_trust_pin_git_blob_sha=61082f9818efb68ca2a5ad29fa5918f887575c10
+authorized_allocation_artifact_self_hash=16e3c2b026e4aaf4382d88e5bce25c2a52f0bb7ebbc03838679c3c6e84daaf7c
+t1c_ticker_count=300
+t1c_ticker_list_sha256=85a06d4b88698915315f5cf72e0d3e04dfacafb5403786ac3bb613e14b0deb54
+parent_v8_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62
+parent_v8_partition_implementation_commit=36cbed941050e728f7f96ce2af505e81175cc02c
+parent_t_spare_ticker_list_sha256=360d5c874e6c08471f118af8ac450dadb38ca138fecd1ecdb834cc08156a9e70
+preservation_recheck_git_commit=<exact independently reviewed PASS artifact commit>
+preservation_recheck_git_blob_sha=<exact independently reviewed PASS artifact blob>
 preservation_recheck_result=PASS
 human_gate
 authorization_status=AUTHORIZED
 authorization_note
 ```
 
-The bridge must not bind a V8D production implementation commit. Its human
-gate grammar is frozen as:
+This is an exact field set: no extra fields and no omitted fields are
+permitted. The preservation recheck commit and blob must be the exact
+independently reviewed PASS artifact; the producer has zero discretion to
+substitute another artifact. The bridge must not bind a V8D production
+implementation commit. Its human gate grammar is frozen as:
 
 ```text
 human_gate="V8D_HUMAN_AUTHORIZE_T1C_AUTHORITY_BRIDGE_AT_"
@@ -199,6 +260,41 @@ human_gate="V8D_HUMAN_AUTHORIZE_T1C_AUTHORITY_BRIDGE_AT_"
 
 Bridge creation itself requires the explicit human gate and must not read
 ticker identities or private OHLCV.
+
+### Point-of-use authority revalidation
+
+An earlier preservation PASS is not sufficient authority for raw acquisition.
+Immediately before T1C raw-acquisition gate consumption and before the first
+real Yahoo request, the authorized production acquisition preflight must
+re-read and independently verify the current private V8C T1C allocation
+artifact and the authoritative private V8 partition manifest. It must apply
+the same semantic verification as the official V8C allocation verifier:
+
+```text
+authorized_allocation_artifact_self_hash=16e3c2b026e4aaf4382d88e5bce25c2a52f0bb7ebbc03838679c3c6e84daaf7c
+t1c_ticker_count=300
+t1c_ticker_list_sha256=85a06d4b88698915315f5cf72e0d3e04dfacafb5403786ac3bb613e14b0deb54
+parent_t_spare_ticker_count=1904
+parent_t_spare_ticker_list_sha256=360d5c874e6c08471f118af8ac450dadb38ca138fecd1ecdb834cc08156a9e70
+parent_v8_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62
+parent_v8_partition_implementation_commit=36cbed941050e728f7f96ce2af505e81175cc02c
+```
+
+The verified artifact must imply the exact existing T1C membership. No
+redraw, substitution, or reassignment is permitted. This point-of-use
+verification is part of the explicitly authorized T1C raw-acquisition
+preflight, but occurs before raw-acquisition gate consumption and before any
+Yahoo request. If it fails, then `Yahoo requests=0`, the raw-acquisition gate
+remains unconsumed, raw acquisition is BLOCK, no automatic retry is allowed,
+and execution stops for GPT adjudication. Only after every check PASS may
+the one-shot raw-acquisition gate be consumed immediately before the first
+Yahoo opener.
+
+The equivalent point-of-use rule applies to T2: immediately before T2
+raw-acquisition gate consumption, the authorized preflight must re-read the
+authoritative V8 partition manifest and revalidate the exact T2 count, T2
+list hash, and original authority. Failure leaves Yahoo requests at zero,
+leaves the gate unconsumed, and is BLOCK without automatic retry.
 
 ## 5. Root defect V8D must fix
 
@@ -324,7 +420,7 @@ RESPONSE_HOST_MISMATCH:
 
 PARSER_SCHEMA_FAILURE:
   parser_schema_valid=false
-  parser_failure_category: FROZEN_PARSER_FAILURE_CATEGORY
+  canonical_collector_reason_code_or_family: EXACT_CANONICAL_ALLOWLIST
 
 SYMBOL_MISMATCH:
   expected_symbol_binding=false
@@ -335,12 +431,64 @@ DATA_QUALITY_GATE_FAILURE:
   trading_date_fields_valid: boolean
 ```
 
-`FROZEN_PARSER_FAILURE_CATEGORY` is a finite enum containing only
-`MISSING_REQUIRED_FIELD`, `INVALID_FIELD_TYPE`, `INVALID_CONTAINER_SHAPE`,
-`INVALID_TIMESTAMP_FIELD`, and `UNEXPECTED_SCHEMA_FIELD`. The evidence
-contract stores neither symbol value. The verifier derives the corresponding
-named classification from these fields and rejects a producer-stated
-classification that disagrees with the derived result.
+The exact canonical `V7YahooCollectorBlocked.reason` contract at the frozen
+parser blob is:
+
+```text
+fixed literals:
+EMPTY_TICKER
+INVALID_REQUEST_DATE_ORDER
+RESPONSE_HOST_MISMATCH
+TIMESTAMP_INVALID
+PAYLOAD_JSON_INVALID
+PAYLOAD_ROOT_INVALID
+CHART_ERROR
+CHART_RESULT_INVALID
+INDICATORS_MISSING
+SPLIT_RATIO_INVALID
+EVENTS_INVALID
+SPLITS_INVALID
+SPLIT_EVENT_INVALID
+SPLIT_OUT_OF_REQUEST_WINDOW
+DUPLICATE_SPLIT_EVENT
+SPLIT_NUMERATOR_DENOMINATOR_MISSING
+SPLIT_NUMERATOR_DENOMINATOR_INVALID
+SPLIT_RATIO_MISMATCH
+METADATA_MISSING
+SYMBOL_MISMATCH
+TIMESTAMP_MISSING
+OUT_OF_REQUEST_WINDOW
+DUPLICATE_TRADING_DATE
+RESPONSE_BYTES_INVALID
+
+dynamic families:
+INVALID_DATE:<field> where field is exactly start or end_exclusive
+HTTP_STATUS_<status> where status is exactly the literal None or a
+  canonical base-10 signed integer string returned by response.status or
+  response.getcode
+INDICATOR_SECTION_INVALID:<section> where section is exactly quote or adjclose
+ARRAY_LENGTH_MISMATCH:<field> where field is exactly open, high, low, close,
+  volume, or adjclose
+```
+
+This allowlist and these suffix domains are mechanically bound to
+`src/v7_yahoo_collector.py` at commit
+`28e281c3ee30d6b4c2f981c5da3ddc983c09724d`, blob
+`76b57b077f3214e666ff9dc06d9c224afc16df9f`. The audit stores the structured
+canonical collector reason code or family, never `str(exception)`, a raw
+exception message, ticker, URL, or payload.
+
+`SYMBOL_MISMATCH` derives to `SYMBOL_MISMATCH`,
+`RESPONSE_HOST_MISMATCH` derives to `RESPONSE_HOST_MISMATCH`, and every other
+allowed canonical reason reaching the frozen readiness or acquisition
+wrapper derives to `PARSER_SCHEMA_FAILURE`. Any reason outside this exact
+allowlist or dynamic-family contract is verifier BLOCK. The evidence
+contract stores neither symbol value. The verifier mechanically checks the
+canonical reason against this contract, recomputes the named classification,
+and rejects a producer-stated classification that disagrees. The separately
+defined privacy-safe detector evidence for `UNTRUSTED_REDIRECT` and
+`RESPONSE_HOST_MISMATCH` remains applicable when produced outside the
+canonical collector.
 
 ## 8. Independent audit verifier
 
@@ -459,7 +607,7 @@ The T1C raw-acquisition hard gate is frozen as:
 ```text
 T1C_RAW_ACQUISITION_ALLOWED iff:
   readiness_result=PASS
-  AND READ_ONLY_TRANSPORT_AUDIT_VERIFICATION=PASS
+  AND READ_ONLY_T1C_TRANSPORT_AUDIT_VERIFICATION=PASS
 ```
 
 If either condition is not PASS, `T1C_RAW_ACQUISITION=PROHIBITED`.
@@ -500,6 +648,61 @@ Before any T2 action, V8D requires:
 - a separate T2 acquisition human gate; and
 - a separate T2 research-opening gate.
 
+The nine T2 preservation conditions are inherited and frozen exactly:
+
+```text
+T2_real_data_acquired=false
+T2_opened=false
+T2_research_access_count=0
+T2_features_observed=false
+T2_outcomes_observed=false
+T2_membership_reassigned=false
+universe_definition_compatible=true
+partition_algorithm_compatible=true
+data_quality_policy_unchanged=true
+```
+
+Absence of evidence is not PASS. The T2 preservation recheck uses only safe
+committed and provenance evidence and must not inspect T2 identities or raw
+data. If positive verification cannot be established, the result is BLOCK
+and execution stops.
+
+The conceptual V8D T2 authority bridge is defined before freeze and contains
+only safe fields:
+
+```text
+schema_version=V8D_T2_AUTHORITY_BRIDGE_V1
+study=V8D_HISTORICAL_RESEARCH
+artifact_role=T2_AUTHORITY_BRIDGE
+logical_block=T2
+v8d_frozen_design_commit
+source_authority=ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY
+v8_trust_anchor_git_identity=61faade0625139cec3fb61216ab2f97f572a7028
+authorized_parent_v8_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62
+parent_v8_partition_implementation_commit=36cbed941050e728f7f96ce2af505e81175cc02c
+expected_t2_ticker_count=300
+expected_t2_ticker_list_sha256=e7578db7202dcb6407d7bcd98d6365fc65f22e30aa05467313a347f9cc3d6500
+preservation_recheck_git_commit
+preservation_recheck_git_blob_sha
+preservation_recheck_result=PASS
+human_gate
+authorization_status=AUTHORIZED
+authorization_note
+```
+
+The T2 bridge must not bind a V8D production implementation commit.
+Transport implementation authority is verified separately at point of use.
+Its exact human-gate grammar is:
+
+```text
+human_gate="V8D_HUMAN_AUTHORIZE_T2_AUTHORITY_BRIDGE_AT_"
+            + v8d_frozen_design_commit
+            + "_FOR_"
+            + expected_t2_ticker_list_sha256
+```
+
+An independent exact-SHA T2 bridge review is required before T2 readiness.
+
 No T2 access occurs during this design task.
 
 ## 14. Proposed stage sequence
@@ -527,12 +730,16 @@ T1C_TRANSPORT_READINESS_HUMAN_GATE
 EXECUTE_FIXED_T0_TRANSPORT_READINESS_PROBE_FOR_V8D_T1C
 READ_ONLY_TRANSPORT_AUDIT_VERIFICATION
 
-if readiness PASS:
+only if readiness PASS
+AND READ_ONLY_T1C_TRANSPORT_AUDIT_VERIFICATION PASS:
 T1C_RAW_ACQUISITION_HUMAN_GATE
 EXECUTE_V8D_T1C_RAW_ACQUISITION
-READ_ONLY_T1C_ACQUISITION_AND_TRANSPORT_AUDIT_VERIFICATION
+READ_ONLY_T1C_ACQUISITION_ARTIFACT_VERIFICATION
 READ_ONLY_T1C_TRANSPORT_AUDIT_VERIFICATION
 
+only if raw acquisition PASS
+AND READ_ONLY_T1C_ACQUISITION_ARTIFACT_VERIFICATION PASS
+AND READ_ONLY_T1C_TRANSPORT_AUDIT_VERIFICATION PASS:
 SEPARATE_T1C_RESEARCH_OPENING_GATE
 LAYER_B
 
