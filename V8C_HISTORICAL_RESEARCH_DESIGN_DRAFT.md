@@ -519,6 +519,140 @@ host, and all request parameters remain unchanged. A nonretryable error,
 unknown error, exhausted retryable error, or data-quality failure is
 terminal and cannot produce a successful bundle.
 
+### 4.2 T2 one-shot acquisition gate and terminal-failure semantics
+
+T2's one-shot acquisition gate and post-gate terminal-failure consequences
+are made fully explicit here, symmetric with T1C's (§5):
+
+```text
+t2_one_shot_gate=ONE_TIME_HUMAN_AUTHORIZATION_TO_ACQUIRE_T2
+t2_gate_consumed_immediately_before=first_real_T2_Yahoo_opener_invocation
+t2_gate_reset_after_consumption=PROHIBITED
+t2_gate_reuse_after_consumption=PROHIBITED
+```
+
+The allowed per-ticker transport retries *within* that single already-
+consumed one-shot authorization remain exactly the frozen bounds already
+stated above (`t2_maximum_attempts_per_ticker=3`,
+`t2_maximum_retries=2`); nothing in this subsection prohibits those
+within-attempt transport retries. What this subsection prohibits is a
+**new** acquisition authorization or a **new** acquisition attempt after
+the one-shot gate has already produced a terminal outcome.
+
+After T2 gate consumption, if acquisition reaches any terminal failure
+(a nonretryable error, an unknown error, an exhausted retryable error, or
+a data-quality failure):
+
+```text
+same_study_t2_reacquisition=PROHIBITED
+new_t2_acquisition_authorization_inside_v8c=PROHIBITED
+same_study_retry_after_terminal_failure=PROHIBITED
+alternate_t2_source=PROHIBITED
+t2_membership_replacement=PROHIBITED
+automatic_t3_replacement=PROHIBITED
+automatic_t_spare_replacement=PROHIBITED
+threshold_change=PROHIBITED
+research_opening=PROHIBITED
+layer_c_result_claimed=PROHIBITED
+v8c_confirmatory_layer_c_path=CLOSES_WITHOUT_RESULT
+```
+
+A terminal T2 acquisition failure must not be interpreted as a strategy
+failure, a model failure, profitability evidence, or a Layer C result. If
+another sealed holdout acquisition is scientifically desired after such a
+failure, it requires a `NEW_SUCCESSOR_STUDY_IDENTITY` — exactly as V8C
+itself was required after V8B's T1B transport failure (§0) — not a retry,
+continuation, or amendment of V8C.
+
+### 4.3 Frozen concrete Python transport exception classification
+
+The abstract retry classes above (`NETWORK_TIMEOUT`, `CONNECTION_RESET`,
+`TEMPORARY_DNS_FAILURE`, and the frozen `HTTP_*` codes) must not be left
+to implementation-agent discretion to map from concrete runtime
+exceptions. This subsection freezes that mapping for the production
+transport wrapper around the exact existing collector
+(`src/v7_yahoo_collector.py`'s `fetch_chart_once`/`opener` boundary). It
+applies identically, with no per-stage variation, to all four Yahoo-
+request-bearing stages:
+
+```text
+classification_contract_applies_to=[
+  T1C_transport_readiness,
+  T1C_raw_acquisition,
+  T2_transport_readiness,
+  T2_raw_acquisition
+]
+```
+
+**HTTP.** `urllib.error.HTTPError` is classified from its exact numeric
+`.code` attribute only:
+
+```text
+http_classification_source=urllib.error.HTTPError.code (exact numeric value)
+http_retryable_codes=[HTTP_408, HTTP_425, HTTP_429, HTTP_500, HTTP_502, HTTP_503, HTTP_504]
+http_all_other_codes=NONRETRYABLE_FAIL_CLOSED_UNLESS_EXPLICITLY_LISTED
+http_status_classification_by_message_or_substring=PROHIBITED
+```
+
+**`NETWORK_TIMEOUT`.** Retryable only for these concrete conditions:
+
+```text
+network_timeout_concrete_exceptions=[
+  TimeoutError,
+  socket.timeout,
+  urllib.error.URLError (only when .reason resolves to a timeout condition)
+]
+other_urllib_URLError_reason_values=NOT_NETWORK_TIMEOUT
+```
+
+**`CONNECTION_RESET`.** Retryable only for these concrete conditions:
+
+```text
+connection_reset_concrete_exceptions=[
+  ConnectionResetError,
+  OSError or urllib.error.URLError.reason wrapping an OSError whose concrete errno equals the platform connection-reset errno (errno.ECONNRESET)
+]
+other_errno_values=NOT_CONNECTION_RESET
+```
+
+**`TEMPORARY_DNS_FAILURE`.** Retryable only for one concrete condition:
+
+```text
+temporary_dns_failure_concrete_exception=socket.gaierror whose concrete errno equals socket.EAI_AGAIN
+other_socket_gaierror_values=NOT_TEMPORARY_DNS_FAILURE (includes permanent/non-temporary DNS failures such as EAI_NONAME/EAI_FAIL)
+other_socket_gaierror_values_classification=NONRETRYABLE_FAIL_CLOSED
+```
+
+**Unknown or unmapped exception.** Never guessed:
+
+```text
+unmapped_or_unrecognized_exception=UNKNOWN
+unknown_classification=FAIL_CLOSED_NONRETRYABLE
+os_or_platform_exception_not_mechanically_mappable_by_these_rules=UNKNOWN_FAIL_CLOSED_NONRETRYABLE
+```
+
+**Implementation constraints, binding on the future production transport
+wrapper:**
+
+```text
+original_concrete_exception_classification_retained_in_private_audit_metadata=REQUIRED
+private_audit_metadata_leaks_ticker_identity=PROHIBITED
+public_output_exposes_only_privacy_safe_aggregate_failure_classes=REQUIRED
+substring_or_message_based_heuristic_classification=PROHIBITED
+retryability_broadened_at_implementation_time=PROHIBITED
+retryable_http_list_change=PROHIBITED
+nonretryable_http_list_change=PROHIBITED
+retry_count_change=PROHIBITED
+backoff_change=PROHIBITED
+jitter_change=PROHIBITED
+```
+
+This subsection fixes only how a concrete Python-level exception maps to
+one of the already-frozen abstract retry classes; it does not add, remove,
+or reclassify any `HTTP_*` code, and it does not change
+`maximum_attempts_per_ticker`, `maximum_retries`, `backoff_seconds`, or
+`jitter` anywhere in this document.
+
 ---
 
 ## 5. T1C one-shot acquisition gate
