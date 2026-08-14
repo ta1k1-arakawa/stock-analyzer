@@ -232,7 +232,7 @@ def test_receipt_has_exact_fields_and_raw_identity_is_not_persisted(tmp_path):
     assert set(preservation.read_gate_receipt(tmp_path, key)) == set(preservation.V8D_RECEIPT_FIELDS)
 
 
-def test_receipt_extra_or_missing_field_blocks(tmp_path):
+def test_receipt_extra_field_blocks(tmp_path):
     _consume_synthetic(tmp_path)
     key = _synthetic_receipt_key()
     path = tmp_path / f"{key}.json"
@@ -242,6 +242,43 @@ def test_receipt_extra_or_missing_field_blocks(tmp_path):
     with pytest.raises(preservation.V8DT1CPreservationBlocked) as excinfo:
         preservation.read_gate_receipt(tmp_path, key)
     assert excinfo.value.reason == "V8D_RECEIPT_SCHEMA_INVALID"
+
+
+def test_receipt_missing_field_blocks(tmp_path):
+    _consume_synthetic(tmp_path)
+    key = _synthetic_receipt_key()
+    path = tmp_path / f"{key}.json"
+    data = json.loads(path.read_text())
+    del data["consumption_timestamp_utc"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(preservation.V8DT1CPreservationBlocked) as excinfo:
+        preservation.read_gate_receipt(tmp_path, key)
+    assert excinfo.value.reason == "V8D_RECEIPT_SCHEMA_INVALID"
+
+
+@pytest.mark.parametrize("consumption_count", [2, 0])
+def test_receipt_invalid_consumption_count_blocks(tmp_path, consumption_count):
+    _consume_synthetic(tmp_path)
+    key = _synthetic_receipt_key()
+    path = tmp_path / f"{key}.json"
+    data = json.loads(path.read_text())
+    data["consumption_count"] = consumption_count
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(preservation.V8DT1CPreservationBlocked) as excinfo:
+        preservation.read_gate_receipt(tmp_path, key)
+    assert excinfo.value.reason == "V8D_RECEIPT_CONSUMPTION_INVALID"
+
+
+def test_receipt_wrong_consumption_boundary_blocks(tmp_path):
+    _consume_synthetic(tmp_path)
+    key = _synthetic_receipt_key()
+    path = tmp_path / f"{key}.json"
+    data = json.loads(path.read_text())
+    data["consumption_boundary"] = "WRONG_BOUNDARY"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(preservation.V8DT1CPreservationBlocked) as excinfo:
+        preservation.read_gate_receipt(tmp_path, key)
+    assert excinfo.value.reason == "V8D_RECEIPT_CONSUMPTION_BOUNDARY_INVALID"
 
 
 def test_duplicate_receipt_blocks(tmp_path):
