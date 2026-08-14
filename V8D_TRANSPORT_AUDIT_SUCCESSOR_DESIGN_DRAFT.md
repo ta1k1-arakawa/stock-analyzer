@@ -841,6 +841,56 @@ human_gate="V8D_HUMAN_AUTHORIZE_T2_AUTHORITY_BRIDGE_AT_"
 
 An independent exact-SHA T2 bridge review is required before T2 readiness.
 
+The T2 readiness and acquisition transport-audit verification stages are
+distinct and non-substitutable:
+
+```text
+READ_ONLY_T2_READINESS_TRANSPORT_AUDIT_VERIFICATION
+READ_ONLY_T2_ACQUISITION_TRANSPORT_AUDIT_VERIFICATION
+```
+
+After `EXECUTE_FIXED_T0_TRANSPORT_READINESS_PROBE_FOR_T2`, the exact next
+audit-verification stage is
+`READ_ONLY_T2_READINESS_TRANSPORT_AUDIT_VERIFICATION`. The T2 readiness
+transport-audit verification is bound to the exact T2 readiness production
+execution and its transport-audit artifact.
+
+The T2 raw-acquisition hard gate is frozen as:
+
+```text
+T2_RAW_ACQUISITION_ALLOWED iff:
+  readiness_result=PASS
+  AND READ_ONLY_T2_READINESS_TRANSPORT_AUDIT_VERIFICATION=PASS
+```
+
+If either condition is not PASS, `T2_RAW_ACQUISITION=PROHIBITED`.
+
+After `EXECUTE_V8D_T2_RAW_ACQUISITION`, the exact required verification
+stages are:
+
+```text
+READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION
+READ_ONLY_T2_ACQUISITION_TRANSPORT_AUDIT_VERIFICATION
+```
+
+The T2 acquisition transport-audit verification is bound to the exact T2
+acquisition production execution and its transport-audit artifact.
+
+The T2 research-opening hard gate is frozen as:
+
+```text
+T2_RESEARCH_OPENING_ALLOWED iff:
+  raw_acquisition_result=PASS
+  AND READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION=PASS
+  AND READ_ONLY_T2_ACQUISITION_TRANSPORT_AUDIT_VERIFICATION=PASS
+  AND fresh separate T2 research-opening human authorization exists
+```
+
+T2 readiness transport-audit verification cannot substitute for T2
+acquisition transport-audit verification. T2 acquisition transport-audit
+verification cannot retroactively satisfy the T2 raw-acquisition gate. A
+PASS from one phase is invalid as evidence for the other phase.
+
 No T2 access occurs during this design task.
 
 ## Exact-SHA design freeze protocol
@@ -1011,15 +1061,18 @@ CREATE_V8D_T2_AUTHORITY_BRIDGE
 INDEPENDENT_V8D_T2_AUTHORITY_BRIDGE_REVIEW
 T2_TRANSPORT_READINESS_HUMAN_GATE
 EXECUTE_FIXED_T0_TRANSPORT_READINESS_PROBE_FOR_T2
-READ_ONLY_T2_TRANSPORT_AUDIT_VERIFICATION
+READ_ONLY_T2_READINESS_TRANSPORT_AUDIT_VERIFICATION
 
-only if readiness PASS AND audit verification PASS:
+only if readiness PASS
+AND READ_ONLY_T2_READINESS_TRANSPORT_AUDIT_VERIFICATION PASS:
 T2_RAW_ACQUISITION_HUMAN_GATE
 EXECUTE_V8D_T2_RAW_ACQUISITION
 READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION
-READ_ONLY_T2_TRANSPORT_AUDIT_VERIFICATION
+READ_ONLY_T2_ACQUISITION_TRANSPORT_AUDIT_VERIFICATION
 
-only after all required verification PASS:
+only if raw acquisition PASS
+AND READ_ONLY_T2_ACQUISITION_ARTIFACT_VERIFICATION PASS
+AND READ_ONLY_T2_ACQUISITION_TRANSPORT_AUDIT_VERIFICATION PASS:
 SEPARATE_T2_RESEARCH_OPENING_GATE
 LAYER_C
 ```
