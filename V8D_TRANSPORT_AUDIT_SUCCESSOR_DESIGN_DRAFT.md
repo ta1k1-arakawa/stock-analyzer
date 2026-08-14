@@ -747,6 +747,125 @@ An independent exact-SHA T2 bridge review is required before T2 readiness.
 
 No T2 access occurs during this design task.
 
+## Exact-SHA design freeze protocol
+
+### Exact design candidate identity
+
+The design candidate binding is frozen as:
+
+```text
+design_candidate_binding=EXACT_ONE_40_HEX_GIT_COMMIT_SHA
+moving_branch_binding=INVALID
+latest_HEAD_binding=INVALID
+working_tree_binding=INVALID
+reviewed_design_candidate_commit=exactly one 40-hex Git commit containing V8D_TRANSPORT_AUDIT_SUCCESSOR_DESIGN_DRAFT.md
+```
+
+`reviewed_design_candidate_commit` is the one exact 40-hex Git commit that
+contains the candidate V8D design document. No branch name, moving branch,
+latest HEAD, or working-tree state may substitute for that SHA.
+
+The following three prerequisite chains must all refer to the same exact
+`reviewed_design_candidate_commit`:
+
+1. `INDEPENDENT_V8D_DESIGN_REVIEW`;
+2. `HUMAN_V8D_T1C_PRESERVATION_PRIVATE_VERIFICATION_GATE`,
+   `V8D_T1C_PRESERVATION_RECHECK`, and
+   `INDEPENDENT_V8D_T1C_PRESERVATION_RECHECK_REVIEW`; and
+3. `V8D_T2_PREFREEZE_PRESERVATION_RECHECK` and
+   `INDEPENDENT_V8D_T2_PREFREEZE_PRESERVATION_RECHECK_REVIEW`.
+
+### Exact finalization rule
+
+`V8D_DESIGN_FINALIZED` is allowed only if all of the following are PASS for
+the same exact `reviewed_design_candidate_commit`:
+
+- `INDEPENDENT_V8D_DESIGN_REVIEW`;
+- `V8D_T1C_PRESERVATION_RECHECK`;
+- `INDEPENDENT_V8D_T1C_PRESERVATION_RECHECK_REVIEW`;
+- `V8D_T2_PREFREEZE_PRESERVATION_RECHECK`; and
+- `INDEPENDENT_V8D_T2_PREFREEZE_PRESERVATION_RECHECK_REVIEW`.
+
+If any result is missing, BLOCK, refers to a different design commit, or
+cannot prove its exact SHA binding, then:
+
+```text
+V8D_DESIGN_FINALIZED=PROHIBITED
+HUMAN_V8D_DESIGN_FREEZE=PROHIBITED
+```
+
+### Semantic change invalidation
+
+Any semantic change to
+`V8D_TRANSPORT_AUDIT_SUCCESSOR_DESIGN_DRAFT.md` after any prerequisite
+review or recheck has completed creates a new design candidate SHA. All
+prior candidate-specific results become invalid for the new candidate:
+
+```text
+prior_independent_design_review=INVALID_FOR_NEW_CANDIDATE
+prior_t1c_preservation_recheck=INVALID_FOR_NEW_CANDIDATE
+prior_t1c_preservation_independent_review=INVALID_FOR_NEW_CANDIDATE
+prior_t2_prefreeze_preservation_recheck=INVALID_FOR_NEW_CANDIDATE
+prior_t2_prefreeze_preservation_independent_review=INVALID_FOR_NEW_CANDIDATE
+```
+
+The applicable stages must be repeated for the new exact candidate SHA. A
+prior favorable preservation result may not be carried forward across a
+semantic design change.
+
+### Human design freeze
+
+`HUMAN_V8D_DESIGN_FREEZE` must explicitly name and authorize the exact
+40-hex `reviewed_design_candidate_commit` that satisfied every prerequisite
+PASS condition. One human freeze authorization cannot silently authorize a
+different design SHA.
+
+After `HUMAN_V8D_DESIGN_FREEZE`:
+
+```text
+semantic_design_change=PROHIBITED
+```
+
+This prohibition may be relaxed only where the frozen design explicitly
+pre-authorizes the exact change. Otherwise:
+
+```text
+NEW_SUCCESSOR_STUDY_REQUIRED
+```
+
+### Freeze approval record
+
+After explicit human freeze authorization, a separate later
+public/privacy-safe freeze-approval artifact records the authorization. The
+freeze-approval artifact commit is not the frozen design commit and is not
+self-referential.
+
+Its conceptual minimum schema is:
+
+```text
+schema_version=V8D_DESIGN_FREEZE_APPROVAL_V1
+study=V8D_HISTORICAL_RESEARCH
+frozen_design_git_commit
+design_document=V8D_TRANSPORT_AUDIT_SUCCESSOR_DESIGN_DRAFT.md
+final_independent_design_review_result=PASS
+final_independent_design_review_commit
+t1c_preservation_recheck_result=PASS
+t1c_preservation_recheck_design_commit
+t1c_preservation_independent_review_result=PASS
+t1c_preservation_independent_review_design_commit
+t2_prefreeze_preservation_recheck_result=PASS
+t2_prefreeze_preservation_recheck_design_commit
+t2_prefreeze_preservation_independent_review_result=PASS
+t2_prefreeze_preservation_independent_review_design_commit
+approval_status=APPROVED
+human_gate
+```
+
+Every design-commit field above must resolve to the same exact
+`frozen_design_git_commit` wherever it represents design-candidate binding.
+The approval artifact must not contain a self-referential binding to its own
+Git commit or blob.
+
 ## 14. Proposed stage sequence
 
 The following stages are ordered and may not be skipped or silently merged:
@@ -809,9 +928,10 @@ SEPARATE_T2_RESEARCH_OPENING_GATE
 LAYER_C
 ```
 
-The T1C preservation recheck and its independent review must PASS before
-V8D design finalization and human design freeze. Each T2 preservation,
-authority-bridge, readiness, acquisition, transport-audit, and
+The independent design review, T1C pre-freeze preservation chain, and T2
+pre-freeze preservation chain must all bind to the same exact candidate SHA
+and PASS before V8D design finalization or human design freeze. Each T2
+preservation, authority-bridge, readiness, acquisition, transport-audit, and
 research-opening stage is separate and ordered. No stage may be skipped or
 silently merged.
 
