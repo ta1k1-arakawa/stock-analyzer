@@ -663,9 +663,9 @@ cannot retroactively satisfy the raw-acquisition gate.
 
 V8D must not inherit a V8B or V8C T2 human authorization.
 
-Before any T2 action, V8D requires:
+Before any T2 action, V8D requires both mandatory preservation checkpoints,
+as well as:
 
-- a fresh V8D preservation recheck;
 - a V8D-specific T2 authority bridge;
 - independent bridge review;
 - a separate T2 readiness human gate;
@@ -686,10 +686,28 @@ partition_algorithm_compatible=true
 data_quality_policy_unchanged=true
 ```
 
-Absence of evidence is not PASS. The T2 preservation recheck uses only safe
-committed and provenance evidence and must not inspect T2 identities or raw
-data. If positive verification cannot be established, the result is BLOCK
-and execution stops.
+V8D has two distinct mandatory T2 preservation checkpoints, and both evaluate
+exactly the nine conditions above:
+
+```text
+V8D_T2_PREFREEZE_PRESERVATION_RECHECK
+READ_ONLY_V8D_T2_POINT_OF_USE_PRESERVATION_RECHECK
+```
+
+`V8D_T2_PREFREEZE_PRESERVATION_RECHECK` occurs before
+`V8D_DESIGN_FINALIZED` and `HUMAN_V8D_DESIGN_FREEZE`. The pre-freeze result
+requires the independent stage
+`INDEPENDENT_V8D_T2_PREFREEZE_PRESERVATION_RECHECK_REVIEW`; both must PASS
+before design finalization or human design freeze.
+
+`READ_ONLY_V8D_T2_POINT_OF_USE_PRESERVATION_RECHECK` occurs later,
+immediately before the ordered T2 authority and acquisition path. Both
+checkpoints use safe committed, audit, and provenance evidence only; neither
+inspects T2 ticker identities or reads raw T2 data, makes a network request,
+or creates acquisition or research authority.
+
+Absence of evidence is not PASS. If positive verification cannot be
+established at either checkpoint, the result is BLOCK and execution stops.
 
 The conceptual V8D T2 authority bridge is defined before freeze and contains
 only safe fields:
@@ -740,6 +758,10 @@ INDEPENDENT_V8D_DESIGN_REVIEW
 HUMAN_V8D_T1C_PRESERVATION_PRIVATE_VERIFICATION_GATE
 V8D_T1C_PRESERVATION_RECHECK
 INDEPENDENT_V8D_T1C_PRESERVATION_RECHECK_REVIEW
+
+V8D_T2_PREFREEZE_PRESERVATION_RECHECK
+INDEPENDENT_V8D_T2_PREFREEZE_PRESERVATION_RECHECK_REVIEW
+
 V8D_DESIGN_FINALIZED
 HUMAN_V8D_DESIGN_FREEZE
 
@@ -767,7 +789,7 @@ AND READ_ONLY_T1C_ACQUISITION_TRANSPORT_AUDIT_VERIFICATION PASS:
 SEPARATE_T1C_RESEARCH_OPENING_GATE
 LAYER_B
 
-READ_ONLY_V8D_T2_PRESERVATION_RECHECK
+READ_ONLY_V8D_T2_POINT_OF_USE_PRESERVATION_RECHECK
 INDEPENDENT_V8D_T2_PRESERVATION_RECHECK_REVIEW
 HUMAN_V8D_T2_AUTHORITY_BRIDGE_GATE
 CREATE_V8D_T2_AUTHORITY_BRIDGE
