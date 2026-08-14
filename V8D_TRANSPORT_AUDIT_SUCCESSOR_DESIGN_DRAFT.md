@@ -163,16 +163,31 @@ t1c_membership_reassigned=false
 allocation_self_hash_unchanged=true
 parent_v8_provenance_unchanged=true
 v8c_terminal_adjudication_authoritative=true
-preservation_recheck_git_commit
-preservation_recheck_git_blob_sha
 preservation_recheck_result=PASS
 ```
 
-Its remaining fields are the privacy-safe frozen preservation commitments,
-hashes, counts, booleans, and Git provenance required above; no extra or
-identity-bearing field is permitted. Exact field-set validation is fail
-closed, and PASS is valid only when every frozen preservation condition is
-positively verified.
+preservation_artifact_self_git_identity_inside_artifact=PROHIBITED
+
+The two preservation artifact Git identity fields are intentionally absent:
+`preservation_recheck_git_commit` and `preservation_recheck_git_blob_sha`.
+The preservation artifact is a privacy-safe content artifact whose own Git
+identity is established externally after its bytes and tree exist. Its
+remaining fields are the privacy-safe frozen preservation commitments,
+hashes, counts, and booleans required above; no extra or identity-bearing
+field is permitted. Exact field-set validation is fail closed, and PASS is
+valid only when every frozen preservation condition is positively verified.
+
+`INDEPENDENT_V8D_T1C_PRESERVATION_RECHECK_REVIEW` must review an exact
+40-hex preservation artifact commit and mechanically resolve the artifact
+blob from that exact commit. The independent review record and provenance
+bind externally to:
+
+```text
+reviewed_preservation_recheck_git_commit
+reviewed_preservation_recheck_git_blob_sha
+reviewed_design_candidate_commit
+preservation_recheck_result=PASS
+```
 
 Absence of evidence is not PASS. If preservation cannot be positively
 established, then:
@@ -247,9 +262,10 @@ authorization_note
 
 This is an exact field set: no extra fields and no omitted fields are
 permitted. The preservation recheck commit and blob must be the exact
-independently reviewed PASS artifact; the producer has zero discretion to
-substitute another artifact. The bridge must not bind a V8D production
-implementation commit. Its human gate grammar is frozen as:
+independently reviewed PASS artifact accepted by
+`INDEPENDENT_V8D_T1C_PRESERVATION_RECHECK_REVIEW`; the producer has zero
+discretion to substitute another artifact. The bridge must not bind a V8D
+production implementation commit. Its human gate grammar is frozen as:
 
 ```text
 human_gate="V8D_HUMAN_AUTHORIZE_T1C_AUTHORITY_BRIDGE_AT_"
