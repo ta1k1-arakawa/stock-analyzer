@@ -151,11 +151,40 @@ consumed=true
 consumption_count=1
 consumption_boundary=IMMEDIATELY_BEFORE_FIRST_PRIVATE_BYTE_READ
 consumption_timestamp_utc
-receipt_self_hash
 ```
 
 This receipt schema is an exact field set: no extra fields and no omitted
 fields are permitted.
+
+```text
+receipt_self_hash_inside_receipt=PROHIBITED
+```
+
+The receipt itself contains exactly the fields above and no self-hash. A
+deterministic machine-local receipt key is computed as
+`gate_receipt_key_sha256` using SHA-256 over this exact UTF-8 string:
+
+```text
+repository + "|" + gate + "|" + reviewed_design_candidate_commit + "|"
++ authorization_identity_sha256 + "|" + authorized_allocation_artifact_self_hash
+```
+
+The repository value is exactly `ta1k1-arakawa/stock-analyzer`. No whitespace
+or newline is added. The receipt filename or storage key is derived from
+`gate_receipt_key_sha256`. The independent reader recomputes this key from
+the receipt's own validated safe fields and requires equality with the key or
+path used to locate the receipt. A receipt copied to or fabricated under
+another key is BLOCK.
+
+After the receipt exists, its exact durable raw bytes may additionally be
+hashed externally as:
+
+```text
+gate_receipt_bytes_sha256=SHA256(exact durable receipt bytes)
+```
+
+This byte hash is not stored inside the receipt. The independent preservation
+review computes it independently from the actual receipt bytes.
 
 The receipt is machine-local/private-safe evidence and must never contain
 the raw human authorization identity, ticker identities, private paths, raw
@@ -188,8 +217,9 @@ authorization identity.
 
 Public preservation and review provenance may expose only the gate name,
 `consumed=true`, `consumption_count=1`, authorization identity SHA-256,
-receipt self-hash, PASS/BLOCK, and design/allocation hashes. It may not expose
-the raw authorization identity or private paths or content.
+`gate_receipt_key_sha256`, `gate_receipt_bytes_sha256`, PASS/BLOCK, and
+design/allocation hashes. It may not expose the raw authorization identity or
+private paths or content.
 
 The preservation artifact schema and exact field-set requirement are:
 
@@ -233,12 +263,15 @@ valid only when every frozen preservation condition is positively verified.
 blob from that exact commit. It must independently read and verify the
 durable gate receipt and must not trust the preservation producer's statement
 that authorization was consumed. At minimum it verifies the exact receipt
-schema, receipt self-hash/integrity, exact gate, exact
+schema and field-set integrity, exact gate, exact
 `reviewed_design_candidate_commit`, exact allocation artifact self-hash,
 `consumed=true`, `consumption_count=1`, the frozen consumption boundary, the
 authorization identity hash associated with the authorized execution, and
 that the receipt corresponds to the same preservation execution whose
-artifact is reviewed.
+artifact is reviewed. It independently recomputes the deterministic receipt
+key, verifies that the actual located key equals the recomputed key, and
+computes the exact raw receipt byte SHA-256. It does not trust producer-
+declared receipt integrity.
 
 The independent review record and provenance bind externally to:
 
@@ -247,7 +280,8 @@ reviewed_preservation_recheck_git_commit
 reviewed_preservation_recheck_git_blob_sha
 reviewed_design_candidate_commit
 preservation_recheck_result=PASS
-reviewed_gate_receipt_self_hash
+reviewed_gate_receipt_key_sha256
+reviewed_gate_receipt_bytes_sha256
 gate_receipt_validation_result=PASS
 ```
 
