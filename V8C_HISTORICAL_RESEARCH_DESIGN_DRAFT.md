@@ -123,6 +123,45 @@ retroactively apply to V8B. A data-quality failure is terminal for the
 current acquisition path and cannot trigger ticker replacement,
 repartitioning, or threshold changes.
 
+### 1.2 Exact classifier blob binding
+
+`POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE` depends on a
+specific parser/classifier implementation. V8C inherits that
+implementation unchanged, bound by exact Git blob identity, not by file
+path, version label, or semantic description:
+
+```text
+canonical_parser_classifier_file=src/v7_yahoo_collector.py
+canonical_parser_classifier_git_commit=28e281c3ee30d6b4c2f981c5da3ddc983c09724d
+canonical_parser_classifier_blob_sha=76b57b077f3214e666ff9dc06d9c224afc16df9f
+classifier_version_binding=EXACT_GIT_BLOB
+policy_valid_only_with_exact_classifier_blob=true
+semantically_similar_different_blob_silently_accepted=PROHIBITED
+```
+
+A future production implementation must verify the exact
+`canonical_parser_classifier_blob_sha` before any real Yahoo request, at
+every one of the following stages, and BLOCK on mismatch before that
+stage's acquisition gate is consumed and before the corresponding Yahoo
+request is made:
+
+```text
+classifier_blob_verified_before=[
+  T1C_transport_readiness,
+  T1C_raw_acquisition,
+  T2_transport_readiness,
+  T2_raw_acquisition
+]
+classifier_blob_mismatch_error=V8C_PRODUCTION_CLASSIFIER_VERSION_MISMATCH
+verification_occurs_before_acquisition_gate_consumption=true
+verification_occurs_before_the_corresponding_yahoo_request=true
+```
+
+Any semantic change to the classifier, or to its thresholds, is a
+methodological change, not a transport-resilience concern, and must stop
+with `CHATGPT_DECISION_REQUIRED` before any production use. This document
+does not change the classifier or its thresholds.
+
 ---
 
 ## 2. V8C validation block: `T1C`
@@ -162,15 +201,87 @@ implementation. That implementation may verify the fixed slice and its
 provenance; it may not choose a different offset, inspect prices, use data
 quality, use strategy results, replace a ticker, or redraw the block.
 
+### 2.1 Pre-freeze T1C/T_spare freshness preservation recheck
+
+Proving that the original immutable V8 parent provenance is unchanged is
+not, by itself, proof that the `T1C` candidate slice itself is still
+fresh — untouched, unopened, and not silently consumed by any other
+allocation since V8B closed. A mandatory pre-freeze preservation gate for
+the `T1C` candidate slice is therefore required, in addition to and
+independent of the parent-provenance checks elsewhere in this document:
+
+```text
+gate=T1C_T_SPARE_FRESHNESS_PRESERVATION_RECHECK
+occurs_before=[V8C_DESIGN_FINALIZED, HUMAN_V8C_DESIGN_FREEZE]
+bound_to_exact_candidate_design_sha=true
+bound_to_same_sha_as=[INDEPENDENT_V8C_DESIGN_REVIEW, T2_PRESERVATION_RECHECK]
+evidence_sources=safe_committed_or_audit_or_provenance_metadata_only
+reads_or_prints_actual_ticker_identities=PROHIBITED
+```
+
+At minimum, the recheck must find safe, positive evidence for every one of
+the following -- absence of evidence is never treated as PASS, and any
+missing required safe metadata is itself a BLOCK:
+
+```text
+original_parent_t_spare_provenance_unchanged=REQUIRED
+original_parent_t_spare_count_and_hash_still_trusted=REQUIRED
+v8b_t1b_confirmed_as_using_only_the_fixed_0_300_slice=REQUIRED
+no_further_t_spare_allocation_has_consumed_any_member_of_300_600=REQUIRED
+t1c_candidate_slice_300_600_reassigned=false
+t1c_candidate_slice_ohlcv_acquired=false
+t1c_candidate_slice_feature_or_outcome_research_access=false
+t1c_candidate_slice_research_opened=false
+t1c_candidate_slice_ticker_identities_exposed_to_human_or_public_research_loop=false
+ordering_and_provenance_rule_required_to_interpret_300_600_unchanged=REQUIRED
+```
+
+```text
+absence_of_evidence_counts_as_pass=false
+missing_required_safe_metadata=BLOCK
+```
+
+If any condition fails, or if required safe metadata is missing:
+
+```text
+T1C_T_SPARE_FRESHNESS_PRESERVATION_RESULT=BLOCK
+V8C_DESIGN_FINALIZED_without_pass=PROHIBITED
+HUMAN_V8C_DESIGN_FREEZE_without_pass=PROHIBITED
+automatic_alternate_t_spare_slice=PROHIBITED
+automatic_redraw=PROHIBITED
+automatic_t3_substitution=PROHIBITED
+implementation_time_offset_choice=PROHIBITED
+status=CHATGPT_DECISION_REQUIRED
+```
+
+A failed check must never be resolved by inspecting actual private
+ticker identities to diagnose or work around it; diagnosis is limited to
+the same safe committed/audit/provenance metadata the check itself may
+use. Resolving a failed check requires a separate, explicit design
+decision — this document does not resolve it silently, and no execution
+agent may choose a substitute slice, offset, or block on its own
+discretion.
+
+The exact-SHA binding, and the requirement that this recheck, the
+independent design review, and the T2 preservation recheck (§7) all PASS
+for the same exact design commit SHA before `V8C_DESIGN_FINALIZED` may
+proceed, are specified in §8.
+
 ---
 
 ## 3. Yahoo transport readiness before T1C raw acquisition
 
 Before any real T1C Yahoo raw acquisition, Yahoo transport readiness must
 be checked using only the already-spent original V8 `T0` and
-non-evidential/public material:
+non-evidential/public material. This whole section describes exactly one
+canonical human gate; it is never split into, or duplicated as, a
+separate generic "T0 readiness" gate:
 
 ```text
+canonical_gate_name=T1C_TRANSPORT_READINESS_HUMAN_GATE
+gate_purpose=readiness_for_future_T1C_raw_acquisition
+sentinel_source=original_trusted_V8_T0
+this_gate_is_not_a_generic_T0_research_gate=true
 readiness_allowed_sources=[original V8 T0, synthetic data, Yahoo/provider public specifications]
 readiness_forbidden_sources=[old T1, V8B T1B, V8C T1C, T2, T3, remaining fresh T_spare]
 readiness_may_read_research_or_outcome_data=false
@@ -184,7 +295,7 @@ authorization:
 ```text
 one_readiness_authorization=exactly_one_readiness_probe_execution
 readiness_authorization_reuse=PROHIBITED
-each_readiness_recheck_requires=NEW_EXPLICIT_T0_TRANSPORT_READINESS_HUMAN_GATE
+each_readiness_recheck_requires=NEW_EXPLICIT_T1C_TRANSPORT_READINESS_HUMAN_GATE
 ```
 
 The readiness gate must be executed only after the design and implementation
@@ -193,7 +304,7 @@ rechecked only with the same fixed sentinel, window, and parameters, and
 only after a new explicit readiness authorization. A prior readiness
 authorization never authorizes a later probe.
 
-### 3.1 Fixed T0 readiness sentinel
+### 3.1 Fixed T0-sourced sentinel for T1C transport readiness
 
 The sentinel is fixed before execution and cannot be changed:
 
@@ -247,7 +358,7 @@ window, and parameters cannot be changed.
 
 ### 3.2 Minimal private membership access for the T0 sentinel
 
-The future T0 readiness implementation may resolve only the exact original
+The future T1C transport readiness implementation may resolve only the exact original
 trusted V8 T0 members at sentinel indices `[0,149,299]`, using the minimum
 read-only private membership access required to bind those positions to the
 sentinel. This is the sole private membership access allowed for readiness:
@@ -432,15 +543,15 @@ gate_consumption_forbidden_before_opener=[
   trust pin verification,
   Asia/Tokyo check,
   output/staging check,
-  T0 readiness probe,
+  T1C transport readiness probe,
   local request construction
 ]
 ```
 
 The one-shot authorization is consumed immediately before the first real
 T1C Yahoo opener invocation, regardless of the subsequent transport result.
-The T0 readiness probe is a separate readiness action and never consumes
-this T1C gate.
+The T1C transport readiness probe is a separate readiness action and never
+consumes this T1C gate.
 
 After T1C gate consumption, a terminal failure has the following result:
 
@@ -462,25 +573,31 @@ methodology.
 The following gates are separate and cannot authorize one another:
 
 ```text
-T0 readiness=SEPARATE_HUMAN_GATE
 T1C allocation=SEPARATE_HUMAN_GATE
 T1C trust pin=SEPARATE_HUMAN_GATE
 T1C transport readiness=SEPARATE_HUMAN_GATE
 T1C raw acquisition=SEPARATE_HUMAN_GATE
 T1C research opening=SEPARATE_HUMAN_GATE
+T2 authority bridge=SEPARATE_HUMAN_GATE
 T2 transport readiness=SEPARATE_HUMAN_GATE
 T2 raw acquisition=SEPARATE_HUMAN_GATE
 T2 research opening=SEPARATE_HUMAN_GATE
 ```
 
+`T1C transport readiness` is the single canonical gate for T1C readiness
+(`T1C_TRANSPORT_READINESS_HUMAN_GATE`, §3); it is never split into, or
+duplicated as, a separate "T0 readiness" gate. `T2 authority bridge`
+(`HUMAN_V8C_T2_AUTHORITY_BRIDGE_GATE`, §7.2) is a V8C-specific gate,
+distinct from and not satisfied by any V8B authorization.
+
 The authorization implications are explicitly one-way and limited:
 
 ```text
-T0_readiness_PASS_allows_T1C_acquisition=false
-T0_readiness_PASS_allows_T2_acquisition=false
+T1C_transport_readiness_PASS_allows_T1C_acquisition=false
 T1C_authorization_allows_T2=false
 T1C_raw_acquisition_PASS_allows_research_opening=false
 T1C_research_opening_authorization_allows_T2=false
+V8C_T2_authority_bridge_review_PASS_allows_T2_acquisition=false
 T2_readiness_PASS_allows_T2_acquisition=false
 T2_raw_acquisition_PASS_allows_T2_research_opening=false
 ```
@@ -555,6 +672,75 @@ No automatic T3 replacement or automatic T_spare replacement is allowed.
 Resolving a failed preservation check requires a separate successor study
 and explicit design decision; this V8C design does not resolve it silently.
 
+### 7.2 V8C-specific T2 authority bridge (required, not inherited from V8B)
+
+`V8B_T2_AUTHORITY_BRIDGE.json` is scoped to `V8B_HISTORICAL_RESEARCH` and
+the frozen V8B design commit. It must never be silently reused as V8C
+authority:
+
+```text
+existing_V8B_T2_authority_bridge_authorizes_V8C=false
+```
+
+A separate future V8C `T2` authority bridge is required. It is the same
+`OPTION_2`-style bridge V8B used — `T2` continues to use the original,
+immutable V8 partition/trust authority, untouched, unmodified, unre-pinned
+— re-bound to V8C's own study identity and frozen design commit.
+
+**Conceptual artifact: `V8C_T2_AUTHORITY_BRIDGE.json`.** At minimum it
+binds:
+
+```text
+schema_version
+study=V8C_HISTORICAL_RESEARCH
+role=SEALED_HOLDOUT
+exact_frozen_v8c_design_commit
+source_authority=ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY
+v8_trust_anchor_git_identity=61faade0625139cec3fb61216ab2f97f572a7028
+authorized_parent_v8_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62
+expected_t2_ticker_count=300
+expected_t2_ticker_list_sha256=e7578db7202dcb6407d7bcd98d6365fc65f22e30aa05467313a347f9cc3d6500
+t2_membership_reassignment=PROHIBITED
+v8_trusted_partition_json_mutated_or_repinned=false
+t2_acquired_before_authorized_v8c_acquisition=false
+t2_research_open_count_before_official_opening=0
+reviewed_production_implementation_commit
+exact_human_bridge_authorization_identity
+authorization_note
+```
+
+The bridge must never modify, reinterpret, or re-pin
+`V8_TRUSTED_PARTITION.json` or the original V8 partition manifest; it only
+records V8C's own claim on the existing, immutable `T2` block and
+re-verifies `T2`'s existing V8 provenance, exactly as V8B's own bridge did
+for V8B.
+
+**Separate authority sequence, before T2 raw acquisition:**
+
+```text
+HUMAN_V8C_T2_AUTHORITY_BRIDGE_GATE
+CREATE_V8C_T2_AUTHORITY_BRIDGE
+INDEPENDENT_V8C_T2_AUTHORITY_BRIDGE_REVIEW
+```
+
+The independent review must bind to all of:
+
+```text
+exact_bridge_git_commit
+exact_bridge_git_blob_sha
+exact_frozen_v8c_design_commit
+exact_original_v8_authority_objects=[v8_trust_anchor_git_identity, authorized_parent_v8_partition_manifest_sha256]
+exact_human_bridge_authorization_identity
+```
+
+T2 production acquisition must fail closed if the V8C-specific bridge is
+missing, mismatched, stale (bound to a different frozen design commit or
+a different original V8 authority object than the one currently verified),
+or not independently reviewed. The V8B bridge itself is never treated as
+V8C authorization, and this sequence does not replace, weaken, or merge
+with `T2_PRESERVATION_RECHECK`/`READ_ONLY_T2_PRESERVATION_RECHECK` (§7,
+§7.1) — both remain separately required.
+
 ---
 
 ## 8. Exact-SHA design-freeze protocol
@@ -573,16 +759,18 @@ The protocol is:
 
 ```text
 A. INDEPENDENT_V8C_DESIGN_REVIEW reviews exactly one 40-hex design commit SHA.
-B. T2_PRESERVATION_RECHECK reviews the same exact design commit SHA as A.
-C. V8C_DESIGN_FINALIZED is allowed only if A and B both PASS for that same SHA.
-D. HUMAN_V8C_DESIGN_FREEZE explicitly names and approves that exact 40-hex SHA.
-E. After approval, create a separate V8C_DESIGN_FREEZE_APPROVAL.json artifact in a later commit.
+B. T1C_T_SPARE_FRESHNESS_PRESERVATION_RECHECK (§2.1) reviews the same exact design commit SHA as A.
+C. T2_PRESERVATION_RECHECK (§7) reviews the same exact design commit SHA as A.
+D. V8C_DESIGN_FINALIZED is allowed only if A, B, and C all PASS for that same SHA.
+E. HUMAN_V8C_DESIGN_FREEZE explicitly names and approves that exact 40-hex SHA.
+F. After approval, create a separate V8C_DESIGN_FREEZE_APPROVAL.json artifact in a later commit.
 ```
 
-`V8C_DESIGN_FINALIZED` and `HUMAN_V8C_DESIGN_FREEZE` are prohibited if the
-independent design review and the pre-freeze T2 preservation recheck do not
-both PASS for the same exact SHA. Neither gate may silently rewrite the
-reviewed design body.
+`V8C_DESIGN_FINALIZED` and `HUMAN_V8C_DESIGN_FREEZE` are prohibited unless
+the independent design review, the pre-freeze T1C/T_spare freshness
+preservation recheck, and the pre-freeze T2 preservation recheck all PASS
+for the same exact SHA. No gate may silently rewrite the reviewed design
+body.
 
 The conceptual minimum fields for the separate freeze-approval artifact
 are:
@@ -594,8 +782,10 @@ frozen_design_git_commit
 design_document
 final_independent_review_result
 final_independent_review_design_commit
-preservation_recheck_result
-preservation_recheck_design_commit
+t1c_t_spare_freshness_preservation_recheck_result
+t1c_t_spare_freshness_preservation_recheck_design_commit
+t2_preservation_recheck_result
+t2_preservation_recheck_design_commit
 approval_status
 human_gate
 ```
@@ -605,15 +795,18 @@ frozen design commit is the earlier exact SHA named by the human approval;
 the later commit that records `V8C_DESIGN_FREEZE_APPROVAL.json` cannot
 retroactively become that design commit.
 
-Any semantic change to the design body after either the independent design
-review or the pre-freeze preservation recheck has completed:
+Any semantic change to the design body after the independent design
+review, the T1C/T_spare freshness preservation recheck, or the T2
+preservation recheck has completed:
 
 ```text
 prior_design_review=INVALID
-prior_preservation_recheck=INVALID
+prior_t1c_t_spare_freshness_preservation_recheck=INVALID
+prior_t2_preservation_recheck=INVALID
 new_candidate_sha=REQUIRED
 repeat_independent_design_review=REQUIRED
-repeat_preservation_recheck=REQUIRED
+repeat_t1c_t_spare_freshness_preservation_recheck=REQUIRED
+repeat_t2_preservation_recheck=REQUIRED
 new_human_design_freeze_approval=REQUIRED
 ```
 
@@ -749,11 +942,14 @@ correct_logical_block_and_role=REQUIRED
 exact_frozen_v8c_design_commit=REQUIRED
 exact_reviewed_production_implementation_commit=REQUIRED
 correct_authority_chain=REQUIRED
+t2_authority_chain_requires_v8c_specific_bridge=true
 ticker_count=300
 exact_ticker_list_hash=REQUIRED
 request_start=2016-04-01
 request_end_exclusive=2026-01-01
 exact_data_quality_policy_metadata=POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE
+exact_classifier_blob_sha=76b57b077f3214e666ff9dc06d9c224afc16df9f
+classifier_blob_mismatch=BLOCK
 final_payload_record_count=300
 expected_raw_payload_file_count=300
 file_sha256_binding=REQUIRED
@@ -866,6 +1062,7 @@ different human gate, or treated as authorization for a later stage:
 CREATE_V8C_DESIGN_DRAFT
 INDEPENDENT_V8C_DESIGN_REVIEW
 
+T1C_T_SPARE_FRESHNESS_PRESERVATION_RECHECK
 T2_PRESERVATION_RECHECK
 
 V8C_DESIGN_FINALIZED
@@ -882,8 +1079,8 @@ HUMAN_AUTHORIZATION_TO_PIN_VERIFIED_T1C_ALLOCATION
 CREATE_V8C_TRUSTED_ALLOCATION_PIN
 INDEPENDENT_TRUST_PIN_REVIEW
 
-T0_TRANSPORT_READINESS_HUMAN_GATE
-EXECUTE_FIXED_T0_TRANSPORT_READINESS_PROBE
+T1C_TRANSPORT_READINESS_HUMAN_GATE
+EXECUTE_FIXED_T0_TRANSPORT_READINESS_PROBE_FOR_T1C
 
 T1C_RAW_ACQUISITION_HUMAN_GATE
 EXECUTE_T1C_RAW_ACQUISITION
@@ -895,6 +1092,9 @@ LAYER_B
 FROZEN_FINAL_CANDIDATE
 
 READ_ONLY_T2_PRESERVATION_RECHECK
+HUMAN_V8C_T2_AUTHORITY_BRIDGE_GATE
+CREATE_V8C_T2_AUTHORITY_BRIDGE
+INDEPENDENT_V8C_T2_AUTHORITY_BRIDGE_REVIEW
 T2_TRANSPORT_READINESS_HUMAN_GATE
 EXECUTE_FIXED_T0_TRANSPORT_READINESS_PROBE_FOR_T2
 T2_RAW_ACQUISITION_HUMAN_GATE
@@ -905,16 +1105,27 @@ SEPARATE_T2_RESEARCH_OPENING_GATE
 LAYER_C
 ```
 
-`T2_PRESERVATION_RECHECK` occurs after independent design review and before
-`V8C_DESIGN_FINALIZED`. It is a hard prerequisite: unless it PASSes,
-`V8C_DESIGN_FINALIZED` and `HUMAN_V8C_DESIGN_FREEZE` are both prohibited.
-`READ_ONLY_T2_PRESERVATION_RECHECK` is the second mandatory check
-immediately before T2 transport readiness and T2 acquisition. The two
-checks use the same fixed conditions in section 7 and fail closed.
+`T1C_T_SPARE_FRESHNESS_PRESERVATION_RECHECK` and `T2_PRESERVATION_RECHECK`
+both occur after independent design review and before
+`V8C_DESIGN_FINALIZED`. Both are hard prerequisites, reviewed against the
+same exact design commit SHA as `INDEPENDENT_V8C_DESIGN_REVIEW` (§8):
+unless both PASS, `V8C_DESIGN_FINALIZED` and `HUMAN_V8C_DESIGN_FREEZE` are
+prohibited. `READ_ONLY_T2_PRESERVATION_RECHECK` is the second mandatory T2
+check, immediately before the V8C-specific T2 authority bridge, T2
+transport readiness, and T2 acquisition. The T1C freshness check has no
+second recheck point of its own in this design; T2's two checks use the
+same fixed conditions in section 7 and fail closed.
 
-The T0 readiness gate and probe occur only after the T1C allocation and
-trust-pin prerequisites in the sequence, but before any T1C opener. The
-T1C raw-acquisition gate is consumed only at the boundary in section 5.
+`HUMAN_V8C_T2_AUTHORITY_BRIDGE_GATE`, `CREATE_V8C_T2_AUTHORITY_BRIDGE`, and
+`INDEPENDENT_V8C_T2_AUTHORITY_BRIDGE_REVIEW` are a separate authority
+sequence (§7.2) that must PASS before T2 transport readiness or T2 raw
+acquisition. The existing `V8B_T2_AUTHORITY_BRIDGE.json` does not satisfy
+this sequence; a V8C-specific bridge is required.
+
+The T1C transport readiness gate and probe occur only after the T1C
+allocation and trust-pin prerequisites in the sequence, but before any
+T1C opener. The T1C raw-acquisition gate is consumed only at the boundary
+in section 5.
 The T1C research-opening gate remains separate from raw acquisition. T2 is
 not acquired or opened until after `FROZEN_FINAL_CANDIDATE`, its second
 preservation recheck, its separate T2 readiness gate/probe, and its own
