@@ -234,3 +234,77 @@ def test_read_gate_consumption_receipt_rejects_tampered_schema(tmp_path):
     with pytest.raises(gate_consumption.V8CHumanGateConsumptionBlocked) as excinfo:
         gate_consumption.read_gate_consumption_receipt(state_root, key)
     assert excinfo.value.reason == "V8C_HUMAN_GATE_RECEIPT_PER_AUTHORIZATION_FLAG_MISMATCH"
+
+
+# ---------------------------------------------------------------------------
+# HIGH-1 (round 2): the receipt key must be mechanically recomputable from
+# the receipt's own safe content -- never merely a syntactically valid
+# 64-hex filename with self-consistent-looking field values.
+# ---------------------------------------------------------------------------
+
+
+def test_receipt_key_recomputes_from_content_after_normal_consumption(tmp_path):
+    """Test A."""
+    state_root = tmp_path / "state"
+    gate_consumption.consume_gate_once(
+        state_root, gate_consumption.GATE_T1C_TRANSPORT_READINESS, SYNTHETIC_DESIGN_COMMIT, clock=clock_stub,
+        authorization_identity="AUTH-1",
+    )
+    key = gate_consumption.compute_receipt_key(
+        gate_consumption.GATE_T1C_TRANSPORT_READINESS, SYNTHETIC_DESIGN_COMMIT, "AUTH-1"
+    )
+    receipt = gate_consumption.read_gate_consumption_receipt(state_root, key)
+    recomputed = gate_consumption._receipt_key_from_identity_hash(
+        receipt["gate"], receipt["v8c_frozen_design_commit"], receipt["authorization_identity_sha256"]
+    )
+    assert recomputed == key
+
+
+def test_receipt_at_arbitrary_wrong_filename_blocks(tmp_path):
+    """Test B: a syntactically valid receipt (correct schema, correct
+    fields) written at an ARBITRARY 64-hex filename that does not equal
+    the canonical key its own content derives."""
+    state_root = tmp_path / "state"
+    state_root.mkdir(parents=True, exist_ok=True)
+    receipt = {
+        "schema_version": gate_consumption.SCHEMA_VERSION,
+        "study_name": gate_consumption.STUDY_NAME,
+        "repository": gate_consumption.REPOSITORY_IDENTITY,
+        "gate": gate_consumption.GATE_T1C_TRANSPORT_READINESS,
+        "v8c_frozen_design_commit": SYNTHETIC_DESIGN_COMMIT,
+        "per_authorization_gate": True,
+        "authorization_identity_sha256": "e" * 64,
+        "consumed_at_utc": "2026-08-14T00:00:00Z",
+    }
+    import json as _json
+
+    arbitrary_key = "0" * 64
+    (state_root / (arbitrary_key + ".json")).write_text(
+        _json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    )
+    with pytest.raises(gate_consumption.V8CHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(state_root, arbitrary_key)
+    assert excinfo.value.reason == "V8C_HUMAN_GATE_RECEIPT_KEY_CONTENT_MISMATCH"
+
+
+def test_valid_receipt_copied_to_another_filename_blocks(tmp_path):
+    """Test D: copy a genuinely-consumed receipt's exact bytes to a
+    DIFFERENT 64-hex filename -- the copy's own content still recomputes
+    to the ORIGINAL key, not the new filename it was copied to."""
+    state_root = tmp_path / "state"
+    gate_consumption.consume_gate_once(
+        state_root, gate_consumption.GATE_T1C_TRANSPORT_READINESS, SYNTHETIC_DESIGN_COMMIT, clock=clock_stub,
+        authorization_identity="AUTH-1",
+    )
+    original_key = gate_consumption.compute_receipt_key(
+        gate_consumption.GATE_T1C_TRANSPORT_READINESS, SYNTHETIC_DESIGN_COMMIT, "AUTH-1"
+    )
+    original_bytes = (state_root / (original_key + ".json")).read_bytes()
+    copy_key = "1" * 64
+    assert copy_key != original_key
+    (state_root / (copy_key + ".json")).write_bytes(original_bytes)
+    with pytest.raises(gate_consumption.V8CHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(state_root, copy_key)
+    assert excinfo.value.reason == "V8C_HUMAN_GATE_RECEIPT_KEY_CONTENT_MISMATCH"
+    # The original, correctly-keyed receipt still validates.
+    assert gate_consumption.read_gate_consumption_receipt(state_root, original_key)["gate"] == gate_consumption.GATE_T1C_TRANSPORT_READINESS

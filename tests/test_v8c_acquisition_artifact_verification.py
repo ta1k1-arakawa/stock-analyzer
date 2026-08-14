@@ -5,6 +5,7 @@ import hashlib
 import json
 import socket
 import tempfile
+import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -16,6 +17,7 @@ import pytest
 from src import v8c_acquisition_artifact_verification as verification
 from src import v8c_historical_acquisition as acquisition
 from src import v8c_human_gate_consumption as gate_consumption
+from src import v8c_transport as transport
 from src.v8c_production_provenance import CANONICAL_PARSER_CLASSIFIER_BLOB_SHA
 
 SYNTHETIC_REVIEWED_COMMIT = "b" * 40
@@ -443,10 +445,6 @@ def test_direct_timeout_error_passes():
     _assert_passes(_classification_entry("NETWORK_TIMEOUT", "TimeoutError", "TimeoutError", None))
 
 
-def test_direct_socket_timeout_alias_passes():
-    _assert_passes(_classification_entry("NETWORK_TIMEOUT", "socket.timeout", "socket.timeout", None))
-
-
 def test_direct_connection_reset_error_passes():
     _assert_passes(_classification_entry("CONNECTION_RESET", "ConnectionResetError", "ConnectionResetError", None))
 
@@ -464,10 +462,6 @@ def test_direct_gaierror_eai_again_passes():
 
 def test_wrapped_timeout_error_via_urlerror_passes():
     _assert_passes(_classification_entry("NETWORK_TIMEOUT", "URLError", "TimeoutError", None))
-
-
-def test_wrapped_socket_timeout_alias_via_urlerror_passes():
-    _assert_passes(_classification_entry("NETWORK_TIMEOUT", "URLError", "socket.timeout", None))
 
 
 def test_wrapped_connection_reset_error_via_urlerror_passes():
@@ -495,3 +489,53 @@ def test_direct_gaierror_wrong_errno_blocks():
 
 def test_wrapped_oserror_wrong_errno_blocks():
     _assert_blocks(_classification_entry("CONNECTION_RESET", "URLError", "OSError", errno.ETIMEDOUT))
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM-1 (round 2): "socket.timeout" is impossible serialized metadata --
+# it is an alias of TimeoutError in every currently supported Python
+# version, so type(error).__name__/type(reason).__name__ can never
+# actually emit that string. Metadata is generated from ACTUAL runtime
+# exceptions via src.v8c_transport._classification_metadata (not only
+# hand-written dicts) to prove what the real classifier can and cannot
+# produce.
+# ---------------------------------------------------------------------------
+
+
+def _real_metadata_entry(error, retryable=True):
+    classification, is_retryable = transport.classify_transport_exception(error)
+    metadata = transport._classification_metadata(error, classification)
+    assert is_retryable is True
+    return {"classification": classification, "retryable": retryable, "classification_metadata": metadata}
+
+
+def test_actual_direct_timeout_error_accepted():
+    entry = _real_metadata_entry(TimeoutError("timed out"))
+    assert entry["classification_metadata"]["exception_type"] == "TimeoutError"
+    _assert_passes(entry)
+
+
+def test_actual_direct_socket_timeout_alias_emits_timeout_error_and_is_accepted():
+    """``socket.timeout`` IS ``TimeoutError`` -- the emitted concrete type
+    name is "TimeoutError", never "socket.timeout"."""
+    entry = _real_metadata_entry(socket.timeout("timed out"))
+    assert entry["classification_metadata"]["exception_type"] == "TimeoutError"
+    _assert_passes(entry)
+
+
+def test_actual_urlerror_wrapped_socket_timeout_emits_timeout_error_reason_and_is_accepted():
+    entry = _real_metadata_entry(urllib.error.URLError(socket.timeout("timed out")))
+    assert entry["classification_metadata"]["exception_type"] == "URLError"
+    assert entry["classification_metadata"]["reason_type"] == "TimeoutError"
+    _assert_passes(entry)
+
+
+def test_hand_forged_direct_socket_timeout_string_blocks():
+    """The real classifier can never emit "socket.timeout" -- a hand-forged
+    metadata entry using that impossible string must BLOCK even though it
+    was previously accepted."""
+    _assert_blocks(_classification_entry("NETWORK_TIMEOUT", "socket.timeout", "socket.timeout", None))
+
+
+def test_hand_forged_wrapped_socket_timeout_reason_string_blocks():
+    _assert_blocks(_classification_entry("NETWORK_TIMEOUT", "URLError", "socket.timeout", None))

@@ -130,7 +130,13 @@ class V8CAcquisitionArtifactVerificationBlocked(RuntimeError):
 # type pairing is ever produced by the real classifier -- so no other
 # pairing may be accepted here, regardless of how plausible ``reason_type``
 # or ``errno`` alone might look.
-_DIRECT_TIMEOUT_TYPES = frozenset({"TimeoutError", "socket.timeout"})
+# ``socket.timeout`` is an alias of ``TimeoutError`` in every currently
+# supported Python version (``socket.timeout is TimeoutError``), so
+# ``type(error).__name__``/``type(reason).__name__`` can never actually
+# produce the string ``"socket.timeout"`` -- only ``"TimeoutError"``.
+# Accepting that impossible string would let a forged metadata entry pass
+# under a name the real classifier can never emit.
+_DIRECT_TIMEOUT_TYPES = frozenset({"TimeoutError"})
 _DIRECT_CONNECTION_RESET_TYPE = "ConnectionResetError"
 _DIRECT_OSERROR_TYPE = "OSError"
 _DIRECT_DNS_FAILURE_TYPE = "gaierror"

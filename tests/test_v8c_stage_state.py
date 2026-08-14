@@ -265,6 +265,57 @@ def test_valid_pass_with_mismatched_authorization_identity_receipt_blocks(tmp_pa
     assert excinfo.value.reason == "V8C_READINESS_PASS_RECEIPT_BINDING_MISMATCH"
 
 
+# ---------------------------------------------------------------------------
+# HIGH-1 (round 2): receipt content <-> receipt key consistency, at the
+# readiness-evidence level.
+# ---------------------------------------------------------------------------
+
+
+def test_readiness_evidence_pointing_at_a_copied_receipt_blocks(tmp_path):
+    """Round-2 test D: copy a genuinely-consumed receipt's exact bytes to a
+    different 64-hex filename, and point readiness evidence at the COPY.
+    The copy's own content still recomputes to the original key, not the
+    filename it was copied to, so it fails ``read_gate_consumption_
+    receipt``'s content/key consistency check."""
+    _consume(tmp_path, "T1C", "AUTH-1")
+    evidence = _write(tmp_path, stage="T1C", identity="AUTH-1")
+    original_key = evidence["consumed_gate_receipt_key"]
+    original_bytes = (tmp_path / (original_key + ".json")).read_bytes()
+    copy_key = "9" * 64
+    assert copy_key != original_key
+    (tmp_path / (copy_key + ".json")).write_bytes(original_bytes)
+
+    path = tmp_path / "v8c_readiness_pass_T1C.json"
+    _retamper_and_rewrite(path, evidence, consumed_gate_receipt_key=copy_key)
+    with pytest.raises(state.V8CStageEvidenceBlocked) as excinfo:
+        state.read_valid_readiness_pass(
+            tmp_path, stage="T1C", frozen_design_commit=FROZEN_DESIGN_COMMIT,
+            reviewed_implementation_commit=REVIEWED_IMPLEMENTATION_COMMIT,
+            classifier_blob_sha=CLASSIFIER_BLOB_SHA, authority_prerequisites=_authority(),
+        )
+    assert excinfo.value.reason == "V8C_READINESS_PASS_RECEIPT_MISSING_OR_INVALID"
+
+
+def test_readiness_evidence_with_mutated_authorization_identity_hash_blocks(tmp_path):
+    """Round-2 test E: mutate the readiness evidence's own
+    ``authorization_identity_sha256`` field (leaving
+    ``consumed_gate_receipt_key`` pointing at the real receipt), then
+    recompute the evidence's self-hash so the file stays internally
+    self-consistent. The real receipt's own identity hash still disagrees
+    with what the evidence now claims."""
+    _consume(tmp_path, "T1C", "AUTH-1")
+    evidence = _write(tmp_path, stage="T1C", identity="AUTH-1")
+    path = tmp_path / "v8c_readiness_pass_T1C.json"
+    _retamper_and_rewrite(path, evidence, authorization_identity_sha256="f" * 64)
+    with pytest.raises(state.V8CStageEvidenceBlocked) as excinfo:
+        state.read_valid_readiness_pass(
+            tmp_path, stage="T1C", frozen_design_commit=FROZEN_DESIGN_COMMIT,
+            reviewed_implementation_commit=REVIEWED_IMPLEMENTATION_COMMIT,
+            classifier_blob_sha=CLASSIFIER_BLOB_SHA, authority_prerequisites=_authority(),
+        )
+    assert excinfo.value.reason == "V8C_READINESS_PASS_RECEIPT_BINDING_MISMATCH"
+
+
 def test_readiness_evidence_file_never_contains_raw_authorization_identity(tmp_path):
     _consume(tmp_path, "T1C", "RAW-HUMAN-AUTH-TOKEN")
     _write(tmp_path, identity="RAW-HUMAN-AUTH-TOKEN")

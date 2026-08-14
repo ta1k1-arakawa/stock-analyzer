@@ -159,14 +159,44 @@ def _require_authorization_identity(gate: str, authorization_identity: str | Non
     return None
 
 
-def _receipt_key(gate: str, v8c_frozen_design_commit: str, authorization_identity: str | None) -> str:
+def _identity_sha256(raw_authorization_identity: str) -> str:
+    """The one-way hash of a raw human authorization identity. This is the
+    ONLY form of the identity ever persisted (in a receipt's own content or
+    in a receipt key) -- the raw identity itself is used transiently, as a
+    function argument, and never written to durable storage."""
+    return hashlib.sha256(raw_authorization_identity.encode("utf-8")).hexdigest()
+
+
+def _require_identity_sha256(value: object) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_AUTHORIZATION_IDENTITY_HASH_INVALID")
+    return value
+
+
+def _receipt_key_from_identity_hash(
+    gate: str, v8c_frozen_design_commit: str, authorization_identity_sha256: str | None
+) -> str:
+    """Derive the durable receipt key from only SAFE, already-hashed
+    components -- never the raw authorization identity. Used both to
+    compute the key at consumption time (from a freshly-hashed identity)
+    and to independently RECOMPUTE the key from a receipt's own persisted
+    content at read time, so a receipt's filename/key can never merely be
+    asserted -- it must be mechanically derivable from what the receipt
+    itself safely declares."""
     _require_known_gate(gate)
     _require_git_commit(v8c_frozen_design_commit)
-    identity = _require_authorization_identity(gate, authorization_identity)
     key_material = REPOSITORY_IDENTITY + "|" + gate + "|" + v8c_frozen_design_commit
-    if identity is not None:
-        key_material += "|" + identity
+    if gate in PER_AUTHORIZATION_GATES:
+        key_material += "|" + _require_identity_sha256(authorization_identity_sha256)
+    elif authorization_identity_sha256 is not None:
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_AUTHORIZATION_IDENTITY_NOT_APPLICABLE")
     return hashlib.sha256(key_material.encode("utf-8")).hexdigest()
+
+
+def _receipt_key(gate: str, v8c_frozen_design_commit: str, authorization_identity: str | None) -> str:
+    identity = _require_authorization_identity(gate, authorization_identity)
+    identity_hash = _identity_sha256(identity) if identity is not None else None
+    return _receipt_key_from_identity_hash(gate, v8c_frozen_design_commit, identity_hash)
 
 
 def _receipt_path(
@@ -256,6 +286,23 @@ def read_gate_consumption_receipt(state_root: str | os.PathLike[str], receipt_ke
         raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_AUTHORIZATION_IDENTITY_HASH_INVALID")
     if not isinstance(parsed["consumed_at_utc"], str) or not parsed["consumed_at_utc"]:
         raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_TIMESTAMP_INVALID")
+
+    # Not merely internally self-consistent field-by-field: the requested
+    # ``receipt_key`` (the filename this receipt was located at) must be
+    # exactly the canonical key the receipt's OWN safe content (repository,
+    # gate, design commit, authorization identity hash) derives. A well-
+    # formed receipt copied to -- or fabricated at -- an arbitrary/wrong
+    # 64-hex filename fails this recomputation and BLOCKs, even though
+    # every individual field independently validates.
+    try:
+        recomputed_key = _receipt_key_from_identity_hash(
+            parsed["gate"], parsed["v8c_frozen_design_commit"], identity_hash
+        )
+    except V8CHumanGateConsumptionBlocked as error:
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_KEY_CONTENT_MISMATCH") from error
+    if recomputed_key != receipt_key:
+        raise V8CHumanGateConsumptionBlocked("V8C_HUMAN_GATE_RECEIPT_KEY_CONTENT_MISMATCH")
+
     return dict(parsed)
 
 
@@ -329,9 +376,7 @@ def consume_gate_once(
         "v8c_frozen_design_commit": v8c_frozen_design_commit,
         "per_authorization_gate": gate in PER_AUTHORIZATION_GATES,
         "authorization_identity_sha256": (
-            hashlib.sha256(authorization_identity.encode("utf-8")).hexdigest()
-            if authorization_identity is not None
-            else None
+            _identity_sha256(authorization_identity) if authorization_identity is not None else None
         ),
         "consumed_at_utc": _timestamp_text(_utc_timestamp(clock() if callable(clock) else clock)),
     }
