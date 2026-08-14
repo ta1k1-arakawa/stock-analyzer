@@ -73,6 +73,8 @@ V8C_PREFREEZE_AUDIT_GIT_PATH = "V8C_PREFREEZE_PRESERVATION_RECHECK.md"
 V8C_PREFREEZE_AUDIT_BLOB_SHA = "ec9054caf94898948879b599196c055e480d2e52"
 
 V8D_T1C_PRESERVATION_GATE = "HUMAN_V8D_T1C_PRESERVATION_PRIVATE_VERIFICATION_GATE"
+V8D_AUTHORIZATION_PREFIX = "V8D_HUMAN_AUTHORIZE_T1C_PRESERVATION_VERIFY_AT_"
+V8D_AUTHORIZATION_SEPARATOR = "_FOR_"
 V8D_RECEIPT_SCHEMA_VERSION = "V8D_T1C_PRESERVATION_GATE_RECEIPT_V1"
 V8D_RECEIPT_ARTIFACT_ROLE = "T1C_PRESERVATION_PRIVATE_GATE_RECEIPT"
 V8D_RECEIPT_CONSUMPTION_BOUNDARY = "IMMEDIATELY_BEFORE_FIRST_PRIVATE_BYTE_READ"
@@ -148,11 +150,31 @@ def authorization_identity_sha256(authorization_identity: str) -> str:
     return hashlib.sha256(authorization_identity.encode("utf-8")).hexdigest()
 
 
+def validate_authorization_identity(
+    authorization_identity: str,
+    reviewed_design_candidate_commit: str = V8D_FROZEN_DESIGN_COMMIT,
+    authorized_allocation_artifact_self_hash: str = "16e3c2b026e4aaf4382d88e5bce25c2a52f0bb7ebbc03838679c3c6e84daaf7c",
+) -> None:
+    """Require the exact frozen authorization grammar before any receipt use."""
+    design = _require_hex(reviewed_design_candidate_commit, 40, "V8D_DESIGN_COMMIT_INVALID")
+    allocation_hash = _require_hex(authorized_allocation_artifact_self_hash, 64, "V8D_ALLOCATION_HASH_INVALID")
+    if not isinstance(authorization_identity, str) or not authorization_identity:
+        raise V8DT1CPreservationBlocked("V8D_AUTHORIZATION_GRAMMAR_MISMATCH")
+    expected = V8D_AUTHORIZATION_PREFIX + design + V8D_AUTHORIZATION_SEPARATOR + allocation_hash
+    if authorization_identity != expected:
+        raise V8DT1CPreservationBlocked("V8D_AUTHORIZATION_GRAMMAR_MISMATCH")
+
+
 def compute_receipt_key(
     authorization_identity: str,
     reviewed_design_candidate_commit: str = V8D_FROZEN_DESIGN_COMMIT,
     authorized_allocation_artifact_self_hash: str = "16e3c2b026e4aaf4382d88e5bce25c2a52f0bb7ebbc03838679c3c6e84daaf7c",
 ) -> str:
+    validate_authorization_identity(
+        authorization_identity,
+        reviewed_design_candidate_commit,
+        authorized_allocation_artifact_self_hash,
+    )
     design = _require_hex(reviewed_design_candidate_commit, 40, "V8D_DESIGN_COMMIT_INVALID")
     allocation_hash = _require_hex(authorized_allocation_artifact_self_hash, 64, "V8D_ALLOCATION_HASH_INVALID")
     identity_hash = authorization_identity_sha256(authorization_identity)
@@ -253,6 +275,11 @@ def consume_gate_once(
     The caller must invoke this immediately before its first private-byte
     read.  There is intentionally no reset or deletion function.
     """
+    validate_authorization_identity(
+        authorization_identity,
+        reviewed_design_candidate_commit,
+        authorized_allocation_artifact_self_hash,
+    )
     receipt_key = compute_receipt_key(
         authorization_identity,
         reviewed_design_candidate_commit,
@@ -623,10 +650,21 @@ def _execute_with_dependencies(
     private_reader: Callable[[Path], bytes],
     gate_consumer: Callable[..., Mapping[str, Any]],
     clock: Callable[[], datetime],
+    reviewed_design_candidate_commit: str = V8D_FROZEN_DESIGN_COMMIT,
+    authorized_allocation_artifact_self_hash: str = "16e3c2b026e4aaf4382d88e5bce25c2a52f0bb7ebbc03838679c3c6e84daaf7c",
 ) -> dict[str, Any]:
     """Private DI boundary for synthetic/local tests only."""
     preflight = _validate_public_preflight(public_preflight())
-    receipt_key = compute_receipt_key(authorization_identity)
+    validate_authorization_identity(
+        authorization_identity,
+        reviewed_design_candidate_commit,
+        authorized_allocation_artifact_self_hash,
+    )
+    receipt_key = compute_receipt_key(
+        authorization_identity,
+        reviewed_design_candidate_commit,
+        authorized_allocation_artifact_self_hash,
+    )
     state, output, allocation_path, manifest_path = _prepare_execution_paths(
         state_root=state_root,
         output_path=output_path,
@@ -637,7 +675,13 @@ def _execute_with_dependencies(
     )
     # This is the exact boundary: no private reader is called before this
     # durable receipt succeeds.  A later failure leaves the receipt intact.
-    gate_consumer(state, authorization_identity, clock=clock)
+    gate_consumer(
+        state,
+        authorization_identity,
+        clock=clock,
+        reviewed_design_candidate_commit=reviewed_design_candidate_commit,
+        authorized_allocation_artifact_self_hash=authorized_allocation_artifact_self_hash,
+    )
     try:
         allocation_raw = private_reader(allocation_path)
         manifest_raw = private_reader(manifest_path)
@@ -690,4 +734,5 @@ __all__ = [
     "consume_gate_once",
     "read_gate_receipt",
     "resolve_and_verify_t1c_preservation",
+    "validate_authorization_identity",
 ]

@@ -12,7 +12,14 @@ from src import v8c_t1c_allocation as allocation
 from src import v8d_t1c_preservation as preservation
 
 
-SYNTHETIC_AUTHORIZATION = "SYNTHETIC-ONLY-AUTHORIZATION-NOT-REAL"
+SYNTHETIC_DESIGN = "2" * 40
+SYNTHETIC_ALLOCATION_HASH = "3" * 64
+SYNTHETIC_AUTHORIZATION = (
+    preservation.V8D_AUTHORIZATION_PREFIX
+    + SYNTHETIC_DESIGN
+    + preservation.V8D_AUTHORIZATION_SEPARATOR
+    + SYNTHETIC_ALLOCATION_HASH
+)
 SYNTHETIC_HEAD = "1" * 40
 SYNTHETIC_IMPL = "b" * 40
 SYNTHETIC_MANIFEST_SHA = "c" * 64
@@ -108,6 +115,52 @@ def _public_preflight():
     }
 
 
+def _synthetic_receipt_key():
+    return preservation.compute_receipt_key(
+        SYNTHETIC_AUTHORIZATION,
+        SYNTHETIC_DESIGN,
+        SYNTHETIC_ALLOCATION_HASH,
+    )
+
+
+def _consume_synthetic(state_root):
+    return preservation.consume_gate_once(
+        state_root,
+        SYNTHETIC_AUTHORIZATION,
+        clock=_clock,
+        reviewed_design_candidate_commit=SYNTHETIC_DESIGN,
+        authorized_allocation_artifact_self_hash=SYNTHETIC_ALLOCATION_HASH,
+    )
+
+
+def test_synthetic_authorization_grammar_passes():
+    preservation.validate_authorization_identity(
+        SYNTHETIC_AUTHORIZATION,
+        SYNTHETIC_DESIGN,
+        SYNTHETIC_ALLOCATION_HASH,
+    )
+
+
+@pytest.mark.parametrize(
+    "authorization_identity",
+    [
+        "NONEMPTY-BUT-ARBITRARY",
+        preservation.V8D_AUTHORIZATION_PREFIX + ("4" * 40) + preservation.V8D_AUTHORIZATION_SEPARATOR + SYNTHETIC_ALLOCATION_HASH,
+        preservation.V8D_AUTHORIZATION_PREFIX + SYNTHETIC_DESIGN + preservation.V8D_AUTHORIZATION_SEPARATOR + ("4" * 64),
+        " " + SYNTHETIC_AUTHORIZATION,
+        SYNTHETIC_AUTHORIZATION + " ",
+    ],
+)
+def test_authorization_grammar_variants_block(authorization_identity):
+    with pytest.raises(preservation.V8DT1CPreservationBlocked) as excinfo:
+        preservation.validate_authorization_identity(
+            authorization_identity,
+            SYNTHETIC_DESIGN,
+            SYNTHETIC_ALLOCATION_HASH,
+        )
+    assert excinfo.value.reason == "V8D_AUTHORIZATION_GRAMMAR_MISMATCH"
+
+
 def test_authorization_hash_and_receipt_key_are_exact_and_deterministic():
     expected_identity_hash = hashlib.sha256(SYNTHETIC_AUTHORIZATION.encode("utf-8")).hexdigest()
     assert preservation.authorization_identity_sha256(SYNTHETIC_AUTHORIZATION) == expected_identity_hash
@@ -115,28 +168,28 @@ def test_authorization_hash_and_receipt_key_are_exact_and_deterministic():
         (
             "ta1k1-arakawa/stock-analyzer",
             preservation.V8D_T1C_PRESERVATION_GATE,
-            preservation.V8D_FROZEN_DESIGN_COMMIT,
+            SYNTHETIC_DESIGN,
             expected_identity_hash,
-            "16e3c2b026e4aaf4382d88e5bce25c2a52f0bb7ebbc03838679c3c6e84daaf7c",
+            SYNTHETIC_ALLOCATION_HASH,
         )
     )
     expected_key = hashlib.sha256(expected_material.encode("utf-8")).hexdigest()
-    assert preservation.compute_receipt_key(SYNTHETIC_AUTHORIZATION) == expected_key
-    assert preservation.compute_receipt_key(SYNTHETIC_AUTHORIZATION) == expected_key
+    assert _synthetic_receipt_key() == expected_key
+    assert _synthetic_receipt_key() == expected_key
 
 
 def test_receipt_has_exact_fields_and_raw_identity_is_not_persisted(tmp_path):
-    receipt = preservation.consume_gate_once(tmp_path, SYNTHETIC_AUTHORIZATION, clock=_clock)
+    receipt = _consume_synthetic(tmp_path)
     assert set(receipt) == set(preservation.V8D_RECEIPT_FIELDS)
-    key = preservation.compute_receipt_key(SYNTHETIC_AUTHORIZATION)
+    key = _synthetic_receipt_key()
     raw = (tmp_path / f"{key}.json").read_bytes()
     assert SYNTHETIC_AUTHORIZATION.encode("utf-8") not in raw
     assert set(preservation.read_gate_receipt(tmp_path, key)) == set(preservation.V8D_RECEIPT_FIELDS)
 
 
 def test_receipt_extra_or_missing_field_blocks(tmp_path):
-    preservation.consume_gate_once(tmp_path, SYNTHETIC_AUTHORIZATION, clock=_clock)
-    key = preservation.compute_receipt_key(SYNTHETIC_AUTHORIZATION)
+    _consume_synthetic(tmp_path)
+    key = _synthetic_receipt_key()
     path = tmp_path / f"{key}.json"
     data = json.loads(path.read_text())
     data["extra"] = True
@@ -147,9 +200,9 @@ def test_receipt_extra_or_missing_field_blocks(tmp_path):
 
 
 def test_duplicate_receipt_blocks(tmp_path):
-    preservation.consume_gate_once(tmp_path, SYNTHETIC_AUTHORIZATION, clock=_clock)
+    _consume_synthetic(tmp_path)
     with pytest.raises(preservation.V8DT1CPreservationBlocked) as excinfo:
-        preservation.consume_gate_once(tmp_path, SYNTHETIC_AUTHORIZATION, clock=_clock)
+        _consume_synthetic(tmp_path)
     assert excinfo.value.reason == "V8D_GATE_ALREADY_CONSUMED"
 
 
@@ -196,9 +249,55 @@ def test_execution_consumes_synthetic_gate_before_first_private_read(tmp_path):
             private_reader=lambda path: reads.append(path) or path.read_bytes(),
             gate_consumer=preservation.consume_gate_once,
             clock=_clock,
+            reviewed_design_candidate_commit=SYNTHETIC_DESIGN,
+            authorized_allocation_artifact_self_hash=SYNTHETIC_ALLOCATION_HASH,
         )
     assert len(reads) == 2
     assert list((tmp_path / "state").glob("*.json"))
+
+
+def test_authorization_mismatch_blocks_before_receipt_and_private_reader(tmp_path):
+    allocation_path = tmp_path / "allocation.json"
+    manifest_path = tmp_path / "manifest.json"
+    allocation_path.write_bytes(b"synthetic allocation")
+    manifest_path.write_bytes(b"synthetic manifest")
+    private_reads = 0
+    receipt_count = 0
+
+    def count_receipt(*args, **kwargs):
+        nonlocal receipt_count
+        receipt_count += 1
+        return {}
+
+    def count_private_read(path):
+        nonlocal private_reads
+        private_reads += 1
+        return path.read_bytes()
+
+    wrong_authorization = (
+        preservation.V8D_AUTHORIZATION_PREFIX
+        + ("4" * 40)
+        + preservation.V8D_AUTHORIZATION_SEPARATOR
+        + SYNTHETIC_ALLOCATION_HASH
+    )
+    with pytest.raises(preservation.V8DT1CPreservationBlocked) as excinfo:
+        preservation._execute_with_dependencies(
+            authorization_identity=wrong_authorization,
+            state_root=tmp_path / "state",
+            output_path=tmp_path / "result.json",
+            allocation_artifact_path=allocation_path,
+            partition_manifest_path=manifest_path,
+            repository_root=tmp_path / "repo",
+            public_preflight=_public_preflight,
+            private_reader=count_private_read,
+            gate_consumer=count_receipt,
+            clock=_clock,
+            reviewed_design_candidate_commit=SYNTHETIC_DESIGN,
+            authorized_allocation_artifact_self_hash=SYNTHETIC_ALLOCATION_HASH,
+        )
+    assert excinfo.value.reason == "V8D_AUTHORIZATION_GRAMMAR_MISMATCH"
+    assert receipt_count == 0
+    assert private_reads == 0
 
 
 def test_malformed_private_artifact_blocks():
