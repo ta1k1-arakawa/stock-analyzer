@@ -1684,3 +1684,235 @@ def test_bound_production_files_now_include_human_gate_consumption_module():
     assert "src/v8d_human_gate_consumption.py" in v8d_production_provenance.BOUND_PRODUCTION_FILES
     for path in v8d_production_provenance.BOUND_PRODUCTION_FILES:
         assert (REPO_ROOT / path).is_file(), path
+
+
+# ===========================================================================
+# V8D_PROD_HIGH_1B_AUDIT_REVIEW_BINDING_NOT_REDERIVED
+#
+# src.v8d_audit.derive_reviewed_implementation_commit / verify_dossier_
+# production / verify_aggregate_production: the independent verifier must
+# mechanically derive the sole authoritative reviewed-implementation
+# commit through the HIGH-1A provenance chain -- never merely compare
+# against a caller-supplied expectation. verify_dossier/verify_aggregate
+# remain the synthetic/internal-testing path used throughout this file
+# and carry no production authority on their own.
+# ===========================================================================
+
+
+def test_derive_reviewed_implementation_commit_accepts_no_commit_parameter():
+    """The API accepts no caller-supplied "reviewed implementation
+    commit"/expectation of any kind: only injectable seams for *how* each
+    HIGH-1A provenance step is performed (for synthetic testing), never
+    *what* commit the result is."""
+    import inspect
+
+    params = set(inspect.signature(v8d_audit.derive_reviewed_implementation_commit).parameters)
+    assert "reviewed_implementation_commit" not in params
+    assert "expected_reviewed_implementation_commit" not in params
+
+    assert "expected_reviewed_implementation_commit" not in set(
+        inspect.signature(v8d_audit.verify_dossier_production).parameters
+    )
+    assert "expected_reviewed_implementation_commit" not in set(
+        inspect.signature(v8d_audit.verify_aggregate_production).parameters
+    )
+
+
+def test_production_verification_against_real_repo_fails_closed_missing_review_artifact():
+    """The real V8D_PRODUCTION_IMPLEMENTATION_REVIEW.json does not exist in
+    this repository yet -- production audit verification must fail closed
+    today, exactly like HIGH-1A/HIGH-1B's own equivalent tests, using the
+    same real-HEAD injection to avoid environmental HEAD/origin flakiness
+    while a development checkout is being edited."""
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.derive_reviewed_implementation_commit(REPO_ROOT, git_commit_resolver=_real_head)
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING"
+
+
+def test_verify_dossier_production_against_real_repo_fails_closed(tmp_path):
+    result = _success_artifacts(tmp_path)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier_production(
+            result["dossier_paths"][0], gate_receipt_state_root=_gate_root(tmp_path),
+            repository_root=REPO_ROOT, git_commit_resolver=_real_head,
+        )
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING"
+
+
+def test_verify_aggregate_production_against_real_repo_fails_closed(tmp_path):
+    result = _success_artifacts(tmp_path)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_aggregate_production(
+            result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=_gate_root(tmp_path),
+            repository_root=REPO_ROOT, git_commit_resolver=_real_head,
+        )
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING"
+
+
+def test_production_verification_blocks_on_malformed_review_json(tmp_path):
+    repo, head = _repo_with_raw_file(
+        tmp_path, "prod_malformed", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, b"{not valid json"
+    )
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.derive_reviewed_implementation_commit(
+            repo, git_commit_resolver=lambda: head,
+            frozen_design_object_verifier=lambda: None,
+            design_freeze_approval_verifier=lambda head_: None,
+        )
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_INVALID_JSON"
+
+
+def test_production_verification_blocks_on_non_pass_review_binding(tmp_path):
+    payload = json.loads(_valid_review_json("a" * 40))
+    payload["review_result"] = "FAIL"
+    repo, head = _repo_with_raw_file(
+        tmp_path, "prod_not_pass", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, json.dumps(payload).encode()
+    )
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.derive_reviewed_implementation_commit(
+            repo, git_commit_resolver=lambda: head,
+            frozen_design_object_verifier=lambda: None,
+            design_freeze_approval_verifier=lambda head_: None,
+        )
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_NOT_PASS"
+
+
+def test_production_verification_blocks_on_not_approved_review_binding(tmp_path):
+    payload = json.loads(_valid_review_json("a" * 40))
+    payload["approval_status"] = "PENDING"
+    repo, head = _repo_with_raw_file(
+        tmp_path, "prod_not_approved", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, json.dumps(payload).encode()
+    )
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.derive_reviewed_implementation_commit(
+            repo, git_commit_resolver=lambda: head,
+            frozen_design_object_verifier=lambda: None,
+            design_freeze_approval_verifier=lambda head_: None,
+        )
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_NOT_APPROVED"
+
+
+def test_verify_dossier_and_aggregate_production_pass_with_valid_synthetic_high1a_binding(tmp_path):
+    repo, reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
+    gate_root = tmp_path / "gate-state"
+    gate_binding = _consume_gate(gate_root, stage="T1C_TRANSPORT_READINESS", reviewed_commit=reviewed_commit)
+    result = readiness.execute_transport_readiness_probe(
+        stage="T1C_TRANSPORT_READINESS",
+        request_factory=lambda coordinate: _plan("T1C_TRANSPORT_READINESS", coordinate, lambda: "ok"),
+        audit_root=tmp_path / "audit", reviewed_implementation_commit=reviewed_commit, gate_binding=gate_binding,
+        sleep_fn=lambda _seconds: None,
+    )
+    injected_kwargs = dict(
+        repository_root=repo, git_commit_resolver=lambda: head_commit,
+        frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda head_: None,
+        reviewed_implementation_binder=lambda head_: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head_),
+    )
+    dossier_checked = v8d_audit.verify_dossier_production(
+        result["dossier_paths"][0], gate_receipt_state_root=gate_root, **injected_kwargs
+    )
+    assert dossier_checked["reviewed_production_implementation_commit"] == reviewed_commit
+    aggregate_checked = v8d_audit.verify_aggregate_production(
+        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root, **injected_kwargs
+    )
+    assert aggregate_checked["result"] == "PASS"
+
+
+def test_production_verification_blocks_self_consistent_arbitrary_sha_tamper(tmp_path):
+    """The central regression for this finding: rewrite receipt, every
+    dossier, and the aggregate to the SAME arbitrary 40-hex SHA, with
+    every integrity hash (dossier self-hash, gate_receipt_bytes_sha256,
+    aggregate self-hash/artifact hash) correctly recomputed to match -- a
+    fully self-consistent forgery. The old synthetic-path verify_dossier/
+    verify_aggregate still accepts this when the caller supplies (or
+    omits) a matching expectation, proving the tamper is undetectable by
+    hash-consistency checks alone. The production entrypoints must still
+    BLOCK, because the mechanically derived commit from the real HIGH-1A
+    chain disagrees with the tampered value."""
+    repo, reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
+    gate_root = tmp_path / "gate-state"
+
+    gate_binding = _consume_gate(gate_root, stage="T1C_TRANSPORT_READINESS", reviewed_commit=reviewed_commit)
+    result = readiness.execute_transport_readiness_probe(
+        stage="T1C_TRANSPORT_READINESS",
+        request_factory=lambda coordinate: _plan("T1C_TRANSPORT_READINESS", coordinate, lambda: "ok"),
+        audit_root=tmp_path / "audit", reviewed_implementation_commit=reviewed_commit, gate_binding=gate_binding,
+        sleep_fn=lambda _seconds: None,
+    )
+
+    injected_kwargs = dict(
+        repository_root=repo, git_commit_resolver=lambda: head_commit,
+        frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda head_: None,
+        reviewed_implementation_binder=lambda head_: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head_),
+    )
+    # Sanity: the genuine, untampered evidence set verifies fine in
+    # production before any tampering below.
+    assert v8d_audit.verify_aggregate_production(
+        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root, **injected_kwargs
+    )["result"] == "PASS"
+
+    arbitrary_sha = "f" * 40
+    assert arbitrary_sha != reviewed_commit
+
+    receipt_path = gate_root / (gate_binding["gate_receipt_key_sha256"] + ".json")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["reviewed_production_implementation_commit"] = arbitrary_sha
+    receipt_raw = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    receipt_path.write_bytes(receipt_raw)
+    new_receipt_bytes_sha256 = hashlib.sha256(receipt_raw).hexdigest()
+
+    for dossier_path in result["dossier_paths"]:
+        _rehashed_dossier(dossier_path, lambda value: value.update({
+            "reviewed_production_implementation_commit": arbitrary_sha,
+            "gate_receipt_bytes_sha256": new_receipt_bytes_sha256,
+        }))
+
+    aggregate_path = Path(result["aggregate_path"])
+    aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    aggregate["reviewed_production_implementation_commit"] = arbitrary_sha
+    dossier_hashes = [json.loads(Path(p).read_text(encoding="utf-8"))["audit_artifact_self_hash"] for p in result["dossier_paths"]]
+    aggregate["audit_artifact_self_hash"] = canonical_sha256(sorted(dossier_hashes))
+    aggregate["aggregate_self_hash"] = canonical_sha256({k: v for k, v in aggregate.items() if k != "aggregate_self_hash"})
+    aggregate_path.write_bytes(canonical_json_bytes(aggregate))
+
+    # The fully self-consistent forgery still satisfies the SYNTHETIC path
+    # when the caller supplies the matching (also-tampered) expectation.
+    resynced = v8d_audit.verify_aggregate(
+        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root,
+        expected_reviewed_implementation_commit=arbitrary_sha,
+    )
+    assert resynced["result"] == "PASS"
+    assert v8d_audit.verify_dossier(
+        result["dossier_paths"][0], gate_receipt_state_root=gate_root,
+        expected_reviewed_implementation_commit=arbitrary_sha,
+    )["reviewed_production_implementation_commit"] == arbitrary_sha
+
+    # But the PRODUCTION entrypoints must BLOCK: the mechanically derived
+    # commit is `reviewed_commit`, never the tampered `arbitrary_sha`.
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier_production(
+            result["dossier_paths"][0], gate_receipt_state_root=gate_root, **injected_kwargs
+        )
+    assert excinfo.value.reason == "V8D_DOSSIER_IMPLEMENTATION_BINDING_MISMATCH"
+
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_aggregate_production(
+            result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root, **injected_kwargs
+        )
+    assert excinfo.value.reason == "V8D_AGGREGATE_IMPLEMENTATION_MISMATCH"
+
+
+def test_existing_gate_receipt_tamper_tests_still_use_synthetic_path_unaffected(tmp_path):
+    """Structural note: every gate-receipt tamper test added for HIGH-1B
+    (tests 19-22 and neighbors above) calls the unchanged ``verify_
+    dossier``/``verify_aggregate`` synthetic path directly and continues
+    to pass unmodified -- this module adds new production entrypoints
+    without altering that existing behavior. This is exercised implicitly
+    by every test above; this test just pins the specific reason codes
+    those checks still raise, as a regression guard against accidental
+    modification of the pre-existing synthetic-path logic."""
+    result = _success_artifacts(tmp_path)
+    dossier = result["dossier_paths"][0]
+    _rehashed_dossier(dossier, lambda value: value.update({"gate_receipt_bytes_sha256": "2" * 64}))
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path))
+    assert excinfo.value.reason == "V8D_DOSSIER_GATE_RECEIPT_BYTES_MISMATCH"
