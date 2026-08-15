@@ -3,12 +3,14 @@ from __future__ import annotations
 import errno
 import json
 import socket
+import subprocess
 import urllib.error
 from pathlib import Path
 
 import pytest
 
-from src import v8d_audit, v8d_historical_acquisition as acquisition, v8d_readiness as readiness
+from src import v8d_audit, v8d_git_provenance, v8d_historical_acquisition as acquisition
+from src import v8d_production_provenance, v8d_readiness as readiness
 from src.v7_yahoo_collector import V7YahooCollectorBlocked
 from src.v8d_transport import (
     BACKOFF_SECONDS,
@@ -561,3 +563,386 @@ def test_forged_concrete_metadata_is_rejected(tmp_path):
     _rehashed_dossier(path, lambda value: value["attempts"][0].update({"concrete_exception_type": "HTTPError"}))
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
         v8d_audit.verify_dossier(path, expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
+
+
+# ===========================================================================
+# V8D_PROD_HIGH_1A_REVIEWED_IMPLEMENTATION_BINDING
+#
+# src.v8d_git_provenance / src.v8d_production_provenance: fail-closed V8D
+# Git provenance and future independent-production-review binding. A
+# caller-supplied arbitrary 40-hex SHA must never, by itself, be sufficient
+# evidence that a V8D production implementation was independently
+# reviewed -- the real V8D_PRODUCTION_IMPLEMENTATION_REVIEW.json does not
+# exist in this repository yet, so every positive test below uses a
+# synthetic temporary Git repository. Human-gate receipt binding is
+# explicitly out of scope for this subtask.
+# ===========================================================================
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _real_head() -> str:
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], capture_output=True, check=True, text=True
+    ).stdout.strip()
+
+
+def _git_config_commit(repo: Path, message: str) -> str:
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.email=a@b.c", "-c", "user.name=x", "commit", "-q", "-m", message],
+        check=True,
+    )
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, check=True, text=True
+    ).stdout.strip()
+
+
+def _repo_with_raw_file(tmp_path: Path, name: str, relative_path: str, raw_bytes: bytes) -> tuple[Path, str]:
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    path = repo / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw_bytes)
+    head = _git_config_commit(repo, "synthetic")
+    return repo, head
+
+
+def _valid_review_json(reviewed_commit: str) -> bytes:
+    return json.dumps(
+        {
+            "schema_version": v8d_production_provenance.IMPLEMENTATION_REVIEW_SCHEMA_VERSION,
+            "study": v8d_production_provenance.STUDY_NAME,
+            "artifact_role": v8d_production_provenance.IMPLEMENTATION_REVIEW_ARTIFACT_ROLE,
+            "reviewed_implementation_git_commit": reviewed_commit,
+            "review_result": "PASS",
+            "approval_status": "APPROVED",
+        }
+    ).encode()
+
+
+def _build_bound_file_repo(tmp_path: Path, *, mutate_file: str | None, reviewed_commit_override: str | None = None):
+    """A synthetic two-commit repository: commit 1 is the "reviewed"
+    implementation state (every BOUND_PRODUCTION_FILES path present);
+    commit 2 is the current "verified HEAD" state, carrying the review
+    artifact plus either an identical or a mutated bound file."""
+    repo = tmp_path / "bound_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    base_content = {
+        path: ("# " + path + " v1\n").encode() for path in v8d_production_provenance.BOUND_PRODUCTION_FILES
+    }
+    for relative_path, content in base_content.items():
+        file_path = repo / relative_path
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_bytes(content)
+    reviewed_commit = _git_config_commit(repo, "reviewed implementation")
+
+    if mutate_file is not None:
+        (repo / mutate_file).write_bytes(base_content[mutate_file] + b"# mutated\n")
+    else:
+        (repo / "UNRELATED_DOC.md").write_text("docs-only change, no bound blob drift")
+
+    review_path = repo / v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH
+    review_path.write_bytes(_valid_review_json(reviewed_commit_override or reviewed_commit))
+    head_commit = _git_config_commit(repo, "current verified HEAD state")
+    return repo, reviewed_commit, head_commit
+
+
+# --- Frozen object binding --------------------------------------------------
+
+
+def test_v8d_frozen_object_constants_match_task():
+    assert v8d_production_provenance.EXPECTED_V8D_FROZEN_DESIGN_COMMIT == "eda657cde2383718d986c4c4bfaae794784fe04d"
+    assert (
+        v8d_production_provenance.EXPECTED_V8D_DESIGN_DRAFT_BLOB_AT_FROZEN_COMMIT
+        == "9577a88c7bf46483b941aec3301c6064d9734c1f"
+    )
+    assert v8d_production_provenance.EXPECTED_V8D_DESIGN_FREEZE_APPROVAL_BLOB == "67e3e1ab1e252b5c8f7583eb0605ec0333e487f6"
+
+
+def test_verify_frozen_design_object_passes_against_real_repository():
+    v8d_production_provenance.verify_frozen_design_object(REPO_ROOT)
+
+
+def test_verify_frozen_design_object_blocks_on_blob_mismatch(monkeypatch):
+    # Required test 9: frozen design blob mismatch -> BLOCK.
+    monkeypatch.setattr(v8d_production_provenance, "EXPECTED_V8D_DESIGN_DRAFT_BLOB_AT_FROZEN_COMMIT", "0" * 40)
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_frozen_design_object(REPO_ROOT)
+    assert excinfo.value.reason == "V8D_FROZEN_DESIGN_OBJECT_MUTATED"
+
+
+def test_verify_design_freeze_approval_blob_passes_against_real_head():
+    blob = v8d_production_provenance.verify_design_freeze_approval_blob(REPO_ROOT, _real_head())
+    assert blob == v8d_production_provenance.EXPECTED_V8D_DESIGN_FREEZE_APPROVAL_BLOB
+
+
+def test_verify_design_freeze_approval_blob_blocks_on_mismatch(monkeypatch):
+    # Required test 10: freeze approval blob mismatch -> BLOCK.
+    monkeypatch.setattr(v8d_production_provenance, "EXPECTED_V8D_DESIGN_FREEZE_APPROVAL_BLOB", "0" * 40)
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_design_freeze_approval_blob(REPO_ROOT, _real_head())
+    assert excinfo.value.reason == "V8D_DESIGN_FREEZE_APPROVAL_BLOB_MUTATED"
+
+
+def test_verify_design_freeze_approval_blob_missing_file_fails_closed(tmp_path):
+    repo = tmp_path / "no_approval"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "x.txt").write_text("x")
+    head = _git_config_commit(repo, "init")
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_design_freeze_approval_blob(repo, head)
+    assert excinfo.value.reason == "V8D_DESIGN_FREEZE_APPROVAL_MISSING"
+
+
+def test_bound_production_files_all_exist_at_head():
+    """Every file this module binds review to must actually exist -- a
+    typo'd path would silently make ``verify_reviewed_implementation_
+    binding`` vacuously trivial for that file."""
+    for path in v8d_production_provenance.BOUND_PRODUCTION_FILES:
+        assert (REPO_ROOT / path).is_file(), path
+
+
+# --- Required test 1: missing review artifact -> BLOCK ----------------------
+
+
+def test_verify_reviewed_implementation_binding_missing_fails_closed():
+    """The real V8D_PRODUCTION_IMPLEMENTATION_REVIEW.json does not exist in
+    this repository -- this must fail closed today."""
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_reviewed_implementation_binding(REPO_ROOT, _real_head())
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING"
+
+
+# --- Required tests 2-8: malformed/duplicate/extra/missing/wrong-value ------
+
+
+def test_verify_reviewed_implementation_binding_malformed_json_blocks(tmp_path):
+    repo, head = _repo_with_raw_file(
+        tmp_path, "malformed", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, b"{not valid json"
+    )
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_reviewed_implementation_binding(repo, head)
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_INVALID_JSON"
+
+
+def test_verify_reviewed_implementation_binding_duplicate_key_blocks(tmp_path):
+    raw = (
+        b'{"schema_version": "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_V1", '
+        b'"schema_version": "DUPLICATE", '
+        b'"study": "V8D_HISTORICAL_RESEARCH", '
+        b'"artifact_role": "PRODUCTION_IMPLEMENTATION_REVIEW", '
+        b'"reviewed_implementation_git_commit": "' + b"a" * 40 + b'", '
+        b'"review_result": "PASS", "approval_status": "APPROVED"}'
+    )
+    repo, head = _repo_with_raw_file(tmp_path, "dup_key", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, raw)
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_reviewed_implementation_binding(repo, head)
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_DUPLICATE_KEY"
+
+
+def test_verify_reviewed_implementation_binding_extra_field_blocks(tmp_path):
+    payload = json.loads(_valid_review_json("a" * 40))
+    payload["unexpected_extra_field"] = "x"
+    repo, head = _repo_with_raw_file(
+        tmp_path, "extra_field", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, json.dumps(payload).encode()
+    )
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_reviewed_implementation_binding(repo, head)
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_SCHEMA_INVALID"
+
+
+@pytest.mark.parametrize("missing_field", v8d_production_provenance.IMPLEMENTATION_REVIEW_FIELDS)
+def test_verify_reviewed_implementation_binding_missing_field_blocks(tmp_path, missing_field):
+    payload = json.loads(_valid_review_json("a" * 40))
+    del payload[missing_field]
+    repo, head = _repo_with_raw_file(
+        tmp_path, "missing_field_" + missing_field, v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH,
+        json.dumps(payload).encode(),
+    )
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_reviewed_implementation_binding(repo, head)
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_SCHEMA_INVALID"
+
+
+def test_verify_reviewed_implementation_binding_review_result_not_pass_blocks(tmp_path):
+    payload = json.loads(_valid_review_json("a" * 40))
+    payload["review_result"] = "FAIL"
+    repo, head = _repo_with_raw_file(
+        tmp_path, "not_pass", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, json.dumps(payload).encode()
+    )
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_reviewed_implementation_binding(repo, head)
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_NOT_PASS"
+
+
+def test_verify_reviewed_implementation_binding_approval_status_not_approved_blocks(tmp_path):
+    payload = json.loads(_valid_review_json("a" * 40))
+    payload["approval_status"] = "PENDING"
+    repo, head = _repo_with_raw_file(
+        tmp_path, "not_approved", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, json.dumps(payload).encode()
+    )
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_reviewed_implementation_binding(repo, head)
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_NOT_APPROVED"
+
+
+def test_verify_reviewed_implementation_binding_invalid_commit_blocks(tmp_path):
+    payload = json.loads(_valid_review_json("a" * 40))
+    payload["reviewed_implementation_git_commit"] = "not-a-valid-sha"
+    repo, head = _repo_with_raw_file(
+        tmp_path, "invalid_commit", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, json.dumps(payload).encode()
+    )
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_reviewed_implementation_binding(repo, head)
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_COMMIT_INVALID"
+
+
+# --- Required test 11: bound file blob drift -> BLOCK ------------------------
+
+
+def test_verify_reviewed_implementation_binding_bound_file_drift_blocks(tmp_path):
+    mutated_path = v8d_production_provenance.BOUND_PRODUCTION_FILES[0]
+    repo, reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=mutated_path)
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_reviewed_implementation_binding(repo, head_commit)
+    assert excinfo.value.reason == "V8D_REVIEWED_IMPLEMENTATION_BLOB_DRIFT:" + mutated_path
+
+
+# --- Required test 12: all bound blobs identical + valid artifact -> PASS ----
+
+
+def test_verify_reviewed_implementation_binding_passes_when_blobs_identical(tmp_path):
+    repo, reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
+    result = v8d_production_provenance.verify_reviewed_implementation_binding(repo, head_commit)
+    assert result["reviewed_implementation_git_commit"] == reviewed_commit
+    assert result["verified_head"] == head_commit
+    assert result["bound_files_verified"] == len(v8d_production_provenance.BOUND_PRODUCTION_FILES)
+
+
+# --- Required test 13: an arbitrary caller-provided SHA is not authority ----
+
+
+def test_arbitrary_sha_without_committed_review_artifact_cannot_substitute(tmp_path):
+    """The API accepts no caller-supplied "reviewed implementation commit"
+    parameter at all: only `repository_root` and `verified_head`. Naming an
+    arbitrary, syntactically valid 40-hex SHA inside a forged review
+    artifact -- one that was never actually committed as that reviewed
+    state -- still BLOCKs, because the bound files can't be resolved at a
+    commit that does not exist in this repository's history."""
+    import inspect
+
+    signature = inspect.signature(v8d_production_provenance.verify_reviewed_implementation_binding)
+    assert list(signature.parameters) == ["repository_root", "verified_head"]
+
+    arbitrary_unrelated_sha = "b" * 40
+    repo, reviewed_commit, head_commit = _build_bound_file_repo(
+        tmp_path, mutate_file=None, reviewed_commit_override=arbitrary_unrelated_sha
+    )
+    assert arbitrary_unrelated_sha != reviewed_commit
+    with pytest.raises(v8d_production_provenance.V8DProductionProvenanceBlocked) as excinfo:
+        v8d_production_provenance.verify_reviewed_implementation_binding(repo, head_commit)
+    assert excinfo.value.reason.startswith("V8D_BOUND_FILE_MISSING_AT_REVIEWED_COMMIT:")
+
+
+# --- Required tests 14-16: v8d_git_provenance branch/origin/HEAD binding ----
+
+
+def _init_bogus_git_repo(root: Path, *, files: dict[str, bytes], origin_url: str | None) -> str:
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    if origin_url is not None:
+        subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin_url], check=True)
+    for relative_path, content in files.items():
+        path = root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    return _git_config_commit(root, "bogus")
+
+
+CANONICAL_ORIGIN_URL = "https://github.com/ta1k1-arakawa/stock-analyzer.git"
+
+
+def test_v8d_production_branch_is_its_own_branch_not_v8c_or_v8b():
+    assert v8d_git_provenance.PRODUCTION_BRANCH == "v8d-transport-audit-design"
+    assert v8d_git_provenance.PRODUCTION_BRANCH not in (
+        "v8c-transport-resilience-implementation",
+        "v8b-allocation-authority-acquisition-implementation",
+    )
+
+
+def test_wrong_repository_origin_blocks(tmp_path):
+    # Required test 14: wrong repository/origin identity -> BLOCK.
+    bogus = tmp_path / "wrong_repo"
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(
+        bogus, files={"README.md": b"hello"}, origin_url="https://github.com/someone-else/unrelated-repo.git"
+    )
+    subprocess.run(
+        ["git", "-C", str(bogus), "update-ref", "refs/remotes/origin/" + v8d_git_provenance.PRODUCTION_BRANCH, commit],
+        check=True,
+    )
+    with pytest.raises(v8d_git_provenance.V8DGitProvenanceBlocked) as excinfo:
+        v8d_git_provenance.resolve_verified_v8d_production_git_commit(bogus)
+    assert excinfo.value.reason == "PRODUCTION_GIT_ORIGIN_IDENTITY_MISMATCH"
+
+
+def test_dirty_worktree_blocks(tmp_path):
+    # Required test 15: dirty production worktree -> BLOCK.
+    bogus = tmp_path / "dirty"
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(bogus, files={"README.md": b"hello"}, origin_url=CANONICAL_ORIGIN_URL)
+    subprocess.run(
+        ["git", "-C", str(bogus), "update-ref", "refs/remotes/origin/" + v8d_git_provenance.PRODUCTION_BRANCH, commit],
+        check=True,
+    )
+    (bogus / "dirty.txt").write_text("uncommitted")
+    with pytest.raises(v8d_git_provenance.V8DGitProvenanceBlocked) as excinfo:
+        v8d_git_provenance.resolve_verified_v8d_production_git_commit(bogus)
+    assert excinfo.value.reason == "PRODUCTION_GIT_WORKTREE_DIRTY"
+
+
+def test_head_not_equal_to_origin_ref_blocks(tmp_path):
+    # Required test 16: HEAD != origin/v8d-transport-audit-design -> BLOCK.
+    bogus = tmp_path / "diverged"
+    bogus.mkdir()
+    commit1 = _init_bogus_git_repo(bogus, files={"README.md": b"hello"}, origin_url=CANONICAL_ORIGIN_URL)
+    (bogus / "second.txt").write_text("second commit")
+    second_commit = _git_config_commit(bogus, "second")
+    assert second_commit != commit1
+    subprocess.run(
+        ["git", "-C", str(bogus), "update-ref", "refs/remotes/origin/" + v8d_git_provenance.PRODUCTION_BRANCH, commit1],
+        check=True,
+    )
+    with pytest.raises(v8d_git_provenance.V8DGitProvenanceBlocked) as excinfo:
+        v8d_git_provenance.resolve_verified_v8d_production_git_commit(bogus)
+    assert excinfo.value.reason == "PRODUCTION_GIT_HEAD_NOT_ORIGIN"
+
+
+def test_canonical_intended_origin_reaches_and_passes_full_resolution(tmp_path):
+    bogus = tmp_path / "canonical_pass"
+    bogus.mkdir()
+    commit = _init_bogus_git_repo(bogus, files={"README.md": b"hello"}, origin_url=CANONICAL_ORIGIN_URL)
+    subprocess.run(
+        ["git", "-C", str(bogus), "update-ref", "refs/remotes/origin/" + v8d_git_provenance.PRODUCTION_BRANCH, commit],
+        check=True,
+    )
+    assert v8d_git_provenance.resolve_verified_v8d_production_git_commit(bogus) == commit
+
+
+def test_v8d_git_provenance_module_never_invokes_git_fetch(monkeypatch):
+    calls = []
+    real_run = subprocess.run
+
+    def spy_run(args, **kwargs):
+        calls.append(list(args))
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(v8d_git_provenance.subprocess, "run", spy_run)
+    try:
+        v8d_git_provenance.resolve_verified_v8d_production_git_commit(REPO_ROOT)
+    except v8d_git_provenance.V8DGitProvenanceBlocked:
+        pass
+    assert not any("fetch" in call for call in calls)
