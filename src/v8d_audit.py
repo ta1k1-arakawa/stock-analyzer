@@ -240,6 +240,8 @@ def verify_dossier(path: str | Path, *, expected_reviewed_implementation_commit:
     if stage in READINESS_STAGES:
         if dossier["sentinel_indices"] != list(SENTINEL_INDICES) or dossier["window_start"] != SENTINEL_START or dossier["window_end_exclusive"] != SENTINEL_END_EXCLUSIVE:
             raise V8DAuditVerificationBlocked("V8D_DOSSIER_SENTINEL_BINDING_INVALID")
+        if dossier["logical_coordinate"] not in SENTINEL_INDICES:
+            raise V8DAuditVerificationBlocked("V8D_DOSSIER_SENTINEL_COORDINATE_INVALID")
     elif dossier["sentinel_indices"] != []:
         raise V8DAuditVerificationBlocked("V8D_DOSSIER_ACQUISITION_SENTINEL_INVALID")
     attempts = dossier["attempts"]
@@ -320,6 +322,10 @@ def verify_aggregate(aggregate_path: str | Path, dossier_paths: Sequence[str | P
         raise V8DAuditVerificationBlocked("V8D_AGGREGATE_BLOCK_MISMATCH")
     if any(dossier["window_start"] != aggregate["window_start"] or dossier["window_end_exclusive"] != aggregate["window_end_exclusive"] or dossier["sentinel_indices"] != aggregate["sentinel_indices"] for dossier in dossiers):
         raise V8DAuditVerificationBlocked("V8D_AGGREGATE_WINDOW_BINDING_MISMATCH")
+    if aggregate["logical_stage"] in READINESS_STAGES:
+        coordinates = [dossier["logical_coordinate"] for dossier in dossiers]
+        if len(dossiers) != 3 or len(set(coordinates)) != 3 or sorted(coordinates) != list(SENTINEL_INDICES):
+            raise V8DAuditVerificationBlocked("V8D_AGGREGATE_SENTINEL_COORDINATE_SET_INVALID")
     artifact_hash = canonical_sha256(sorted(dossier["audit_artifact_self_hash"] for dossier in dossiers))
     if aggregate["audit_artifact_self_hash"] != artifact_hash:
         raise V8DAuditVerificationBlocked("V8D_AGGREGATE_ARTIFACT_HASH_MISMATCH")

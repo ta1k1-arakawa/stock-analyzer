@@ -400,6 +400,15 @@ def _rehashed_dossier(path: Path, mutate):
     path.write_bytes(canonical_json_bytes(value))
 
 
+def _rehashed_aggregate(result):
+    aggregate_path = Path(result["aggregate_path"])
+    aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    dossier_hashes = [json.loads(Path(path).read_text(encoding="utf-8"))["audit_artifact_self_hash"] for path in result["dossier_paths"]]
+    aggregate["audit_artifact_self_hash"] = canonical_sha256(sorted(dossier_hashes))
+    aggregate["aggregate_self_hash"] = canonical_sha256({key: item for key, item in aggregate.items() if key != "aggregate_self_hash"})
+    aggregate_path.write_bytes(canonical_json_bytes(aggregate))
+
+
 def _success_artifacts(tmp_path):
     result = readiness.execute_transport_readiness_probe(
         stage="T1C_TRANSPORT_READINESS",
@@ -490,6 +499,33 @@ def test_wrong_readiness_sentinel_window_and_logical_stage_bindings_are_rejected
     _rehashed_dossier(dossier, lambda value: value.update({"sentinel_indices": [0, 1, 2]}))
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
         v8d_audit.verify_dossier(dossier, expected_stage="T1C_TRANSPORT_READINESS")
+
+
+def test_readiness_dossier_coordinate_outside_exact_sentinel_set_is_rejected(tmp_path):
+    result = _success_artifacts(tmp_path)
+    dossier = result["dossier_paths"][0]
+    _rehashed_dossier(dossier, lambda value: value.update({"logical_coordinate": 1}))
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
+        v8d_audit.verify_dossier(dossier, expected_stage="T1C_TRANSPORT_READINESS")
+
+
+def test_readiness_aggregate_rederives_exact_coordinate_set_from_dossiers(tmp_path):
+    result = _success_artifacts(tmp_path)
+    _rehashed_dossier(result["dossier_paths"][1], lambda value: value.update({"logical_coordinate": 0}))
+    _rehashed_aggregate(result)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
+        v8d_audit.verify_aggregate(
+            result["aggregate_path"], result["dossier_paths"], expected_stage="T1C_TRANSPORT_READINESS"
+        )
+
+
+def test_readiness_aggregate_accepts_exact_coordinate_set_in_any_dossier_order(tmp_path):
+    result = _success_artifacts(tmp_path)
+    checked = v8d_audit.verify_aggregate(
+        result["aggregate_path"], list(reversed(result["dossier_paths"])),
+        expected_stage="T1C_TRANSPORT_READINESS",
+    )
+    assert checked["result"] == "PASS"
 
 
 def test_public_aggregate_and_private_dossier_never_store_raw_url_or_exception_message(tmp_path):
