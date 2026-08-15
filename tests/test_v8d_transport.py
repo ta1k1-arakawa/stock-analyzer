@@ -14,7 +14,11 @@ import pytest
 
 from src import v8d_audit, v8d_authority_bridge, v8d_git_provenance, v8d_historical_acquisition as acquisition
 from src import v8d_human_gate_consumption as gate_consumption
-from src import v8d_production_provenance, v8d_readiness as readiness
+from src import (
+    v8d_production_provenance,
+    v8d_readiness as readiness,
+    v8d_readiness_audit_verification as readiness_audit_verification,
+)
 from src import v8_partition
 from src.v7_yahoo_collector import V7YahooCollectorBlocked
 from src.v8d_transport import (
@@ -482,6 +486,227 @@ def _success_artifacts(tmp_path, *, stage="T1C_TRANSPORT_READINESS"):
         sleep_fn=lambda _seconds: None,
     )
     return result
+
+
+def _success_readiness_receipt(tmp_path, *, logical_stage="T1C_TRANSPORT_READINESS"):
+    gate_root = _gate_root(tmp_path)
+    gate_binding = _consume_gate(gate_root, stage=logical_stage)
+    audit_root = tmp_path / "readiness-audit"
+    result = readiness.execute_transport_readiness_probe(
+        stage=logical_stage,
+        request_factory=lambda coordinate: _plan(logical_stage, coordinate, lambda: "ok"),
+        audit_root=audit_root, reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        gate_binding=gate_binding, sleep_fn=lambda _seconds: None,
+    )
+    receipt_root = tmp_path / "receipt-state"
+    receipt = readiness_audit_verification._write_synthetic_receipt_for_tests(
+        logical_stage=logical_stage, aggregate_path=result["aggregate_path"],
+        dossier_paths=result["dossier_paths"], audit_root=audit_root, receipt_root=receipt_root,
+        aggregate_verifier=v8d_audit.verify_aggregate, dossier_verifier=v8d_audit.verify_dossier,
+        gate_root=gate_root,
+    )
+    return {
+        "result": result, "receipt": receipt, "gate_root": gate_root,
+        "audit_root": audit_root, "receipt_root": receipt_root,
+    }
+
+
+def _patch_synthetic_production_reader(monkeypatch, artifacts, *, logical_stage):
+    if logical_stage == "T1C_TRANSPORT_READINESS":
+        receipt_path_name = "t1c-readiness-audit-verification.json"
+        reader = readiness_audit_verification.require_t1c_readiness_audit_verification_pass
+    else:
+        receipt_path_name = "t2-readiness-audit-verification.json"
+        reader = readiness_audit_verification.require_t2_readiness_audit_verification_pass
+    monkeypatch.setattr(readiness_audit_verification, "CANONICAL_PRODUCTION_AUDIT_ROOT", artifacts["audit_root"])
+    monkeypatch.setattr(readiness_audit_verification, "CANONICAL_CONSUMPTION_STATE_ROOT", artifacts["gate_root"])
+    monkeypatch.setattr(
+        readiness_audit_verification, "CANONICAL_READINESS_AUDIT_VERIFICATION_ROOT", artifacts["receipt_root"]
+    )
+    monkeypatch.setattr(
+        readiness_audit_verification,
+        "T1C_RECEIPT_PATH",
+        artifacts["receipt_root"] / "t1c-readiness-audit-verification.json",
+    )
+    monkeypatch.setattr(
+        readiness_audit_verification,
+        "T2_RECEIPT_PATH",
+        artifacts["receipt_root"] / "t2-readiness-audit-verification.json",
+    )
+    monkeypatch.setattr(readiness_audit_verification, "verify_aggregate_production", v8d_audit.verify_aggregate)
+    monkeypatch.setattr(readiness_audit_verification, "verify_dossier_production", v8d_audit.verify_dossier)
+    return reader, artifacts["receipt_root"] / receipt_path_name
+
+
+def test_canonical_readiness_receipts_are_stage_specific_and_privacy_safe(tmp_path):
+    for logical_stage in ("T1C_TRANSPORT_READINESS", "T2_TRANSPORT_READINESS"):
+        artifacts = _success_readiness_receipt(tmp_path / logical_stage, logical_stage=logical_stage)
+        receipt = artifacts["receipt"]
+        assert set(receipt) == set(readiness_audit_verification.RECEIPT_FIELDS)
+        assert receipt["logical_stage"] == logical_stage
+        receipt_bytes = (artifacts["receipt_root"] / f"{'t1c' if logical_stage.startswith('T1C') else 't2'}-readiness-audit-verification.json").read_bytes()
+        assert SAFE_URL.encode() not in receipt_bytes
+        assert str(tmp_path).encode() not in receipt_bytes
+        assert b"request_fingerprint" not in receipt_bytes
+
+
+def test_canonical_readiness_production_api_has_only_locators_or_no_arguments():
+    for name in (
+        "record_t1c_readiness_audit_verification",
+        "record_t2_readiness_audit_verification",
+    ):
+        parameters = inspect.signature(getattr(readiness_audit_verification, name)).parameters
+        assert set(parameters) == {"aggregate_path", "dossier_paths"}
+        assert "request_factory" not in parameters
+        assert "audit_root" not in parameters
+    for name in (
+        "require_t1c_readiness_audit_verification_pass",
+        "require_t2_readiness_audit_verification_pass",
+    ):
+        assert inspect.signature(getattr(readiness_audit_verification, name)).parameters == {}
+
+
+def test_synthetic_receipt_helper_cannot_consume_gate_and_reader_reverifies_audit(tmp_path, monkeypatch):
+    artifacts = _success_readiness_receipt(tmp_path)
+    reader, receipt_path = _patch_synthetic_production_reader(
+        monkeypatch, artifacts, logical_stage="T1C_TRANSPORT_READINESS"
+    )
+    assert reader()["verification_result"] == "PASS"
+
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["aggregate_artifact_self_hash"] = "f" * 64
+    receipt["receipt_self_hash"] = canonical_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_self_hash"}
+    )
+    receipt_path.write_bytes(canonical_json_bytes(receipt))
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        reader()
+
+
+def test_receipt_reader_rejects_self_dossier_gate_and_implementation_binding_tamper(tmp_path, monkeypatch):
+    artifacts = _success_readiness_receipt(tmp_path)
+    reader, receipt_path = _patch_synthetic_production_reader(
+        monkeypatch, artifacts, logical_stage="T1C_TRANSPORT_READINESS"
+    )
+    original = receipt_path.read_bytes()
+    for field, value in (
+        ("reviewed_production_implementation_commit", "b" * 40),
+        ("gate_receipt_key_sha256", "c" * 64),
+    ):
+        receipt = json.loads(original.decode("utf-8"))
+        receipt[field] = value
+        receipt["receipt_self_hash"] = canonical_sha256(
+            {key: item for key, item in receipt.items() if key != "receipt_self_hash"}
+        )
+        receipt_path.write_bytes(canonical_json_bytes(receipt))
+        with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+            reader()
+    receipt_path.write_bytes(original)
+    dossier = Path(artifacts["result"]["dossier_paths"][0])
+    _rehashed_dossier(dossier, lambda value: value.update({"logical_stage": "T2_TRANSPORT_READINESS"}))
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        reader()
+
+
+def test_receipt_validation_rejects_duplicate_json_and_sentinel_binding(tmp_path):
+    artifacts = _success_readiness_receipt(tmp_path)
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._strict_json_object(
+            b'{"schema_version":1,"schema_version":2}',
+            invalid_reason="invalid", duplicate_reason="duplicate",
+        )
+    aggregate = json.loads(Path(artifacts["result"]["aggregate_path"]).read_text(encoding="utf-8"))
+    aggregate["sentinel_pass_count"] = 2
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._require_readiness_pass(aggregate, "T1C_TRANSPORT_READINESS")
+
+
+def test_t1c_receipt_never_satisfies_t2_reader(tmp_path, monkeypatch):
+    artifacts = _success_readiness_receipt(tmp_path)
+    _, t1_receipt_path = _patch_synthetic_production_reader(
+        monkeypatch, artifacts, logical_stage="T1C_TRANSPORT_READINESS"
+    )
+    t2_receipt_path = artifacts["receipt_root"] / "t2-readiness-audit-verification.json"
+    t2_receipt_path.write_bytes(t1_receipt_path.read_bytes())
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification.require_t2_readiness_audit_verification_pass()
+
+
+def test_receipt_rejects_stage_mismatch_and_missing_or_extra_fields(tmp_path):
+    artifacts = _success_readiness_receipt(tmp_path)
+    receipt = dict(artifacts["receipt"])
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._validate_receipt(
+            receipt, expected_verification_stage=readiness_audit_verification.T2_VERIFICATION_STAGE
+        )
+    for mutation in (
+        lambda value: value.update({"extra": True}),
+        lambda value: value.pop("study"),
+    ):
+        malformed = dict(receipt)
+        mutation(malformed)
+        with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+            readiness_audit_verification._validate_receipt(
+                malformed, expected_verification_stage=readiness_audit_verification.T1C_VERIFICATION_STAGE
+            )
+
+
+def test_receipt_writer_blocks_aggregate_failure_sentinel_mismatch_and_wrong_dossiers(tmp_path):
+    result = _success_artifacts(tmp_path)
+    artifacts = {
+        "result": result,
+        "audit_root": tmp_path,
+        "gate_root": _gate_root(tmp_path),
+    }
+    aggregate_path = Path(result["aggregate_path"])
+    aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    aggregate["result"] = "BLOCK"
+    aggregate["aggregate_self_hash"] = canonical_sha256(
+        {key: value for key, value in aggregate.items() if key != "aggregate_self_hash"}
+    )
+    aggregate_path.write_bytes(canonical_json_bytes(aggregate))
+    receipt_path = tmp_path / "receipts" / "t1c-readiness-audit-verification.json"
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._write_synthetic_receipt_for_tests(
+            logical_stage="T1C_TRANSPORT_READINESS", aggregate_path=aggregate_path,
+            dossier_paths=result["dossier_paths"], audit_root=artifacts["audit_root"],
+            receipt_root=receipt_path.parent, aggregate_verifier=v8d_audit.verify_aggregate,
+            dossier_verifier=v8d_audit.verify_dossier, gate_root=artifacts["gate_root"],
+        )
+    assert not receipt_path.exists()
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._write_synthetic_receipt_for_tests(
+            logical_stage="T1C_TRANSPORT_READINESS", aggregate_path=aggregate_path,
+            dossier_paths=result["dossier_paths"][:2], audit_root=artifacts["audit_root"],
+            receipt_root=receipt_path.parent, aggregate_verifier=v8d_audit.verify_aggregate,
+            dossier_verifier=v8d_audit.verify_dossier, gate_root=artifacts["gate_root"],
+        )
+
+
+def test_receipt_writer_rejects_outside_root_and_symlink_substitution(tmp_path):
+    artifacts = _success_readiness_receipt(tmp_path)
+    aggregate = Path(artifacts["result"]["aggregate_path"])
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(aggregate.read_bytes())
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._write_synthetic_receipt_for_tests(
+            logical_stage="T1C_TRANSPORT_READINESS", aggregate_path=outside,
+            dossier_paths=artifacts["result"]["dossier_paths"], audit_root=artifacts["audit_root"],
+            receipt_root=tmp_path / "outside-receipts", aggregate_verifier=v8d_audit.verify_aggregate,
+            dossier_verifier=v8d_audit.verify_dossier, gate_root=artifacts["gate_root"],
+        )
+    link = artifacts["audit_root"] / "aggregate-link.json"
+    try:
+        link.symlink_to(aggregate)
+    except (OSError, NotImplementedError):
+        return
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._write_synthetic_receipt_for_tests(
+            logical_stage="T1C_TRANSPORT_READINESS", aggregate_path=link,
+            dossier_paths=artifacts["result"]["dossier_paths"], audit_root=artifacts["audit_root"],
+            receipt_root=tmp_path / "link-receipts", aggregate_verifier=v8d_audit.verify_aggregate,
+            dossier_verifier=v8d_audit.verify_dossier, gate_root=artifacts["gate_root"],
+        )
 
 
 def test_malformed_or_tampered_audit_and_missing_attempt_are_rejected(tmp_path):
