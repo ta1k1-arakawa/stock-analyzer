@@ -285,6 +285,12 @@ def _read_selective_t0_sentinels(partition_manifest_path: str | Path) -> tuple[s
 def execute_transport_readiness_probe(*, stage: str, request_factory: Callable[[int], V8DRequestPlan],
                                       audit_root: str | Path, reviewed_implementation_commit: str,
                                       gate_binding: Any, sleep_fn: Callable[[float], None]) -> dict[str, Any]:
+    """Run transport against an already-created binding for synthetic tests.
+
+    This helper intentionally has no gate-consumption capability.  Callers
+    must provide a prebuilt binding; only the fixed production core may call
+    ``consume_gate_and_bind``.
+    """
     if stage not in READINESS_STAGES:
         raise V8DReadinessBlocked("V8D_READINESS_STAGE_INVALID")
     try:
@@ -369,102 +375,70 @@ def _execute_production_transport_readiness(
     *,
     stage: str,
     human_authorization_identity: str,
-    request_factory: Callable[[int], V8DRequestPlan] | None = None,
-    audit_root: str | Path | None = None,
-    partition_manifest_path: str | Path | None = None,
-    repository_root: str | Path = CANONICAL_REPOSITORY_ROOT,
-    consumption_state_root: str | Path = CANONICAL_CONSUMPTION_STATE_ROOT,
-    git_commit_resolver: Callable[[], str] | None = None,
-    frozen_design_object_verifier: Callable[[], None] | None = None,
-    design_freeze_approval_verifier: Callable[[str], None] | None = None,
-    reviewed_implementation_binder: Callable[[str], Any] | None = None,
-    authority_prerequisite_checker: Callable[[str, str, str], Mapping[str, Any]] | None = None,
-    anchor_reader: Callable[[str], Mapping[str, Any]] | None = None,
-    selective_sentinel_resolver: Callable[[str | Path], tuple[str, str, tuple[str, ...]]] | None = None,
-    opener: Callable[[Any], Any] = default_trusted_yahoo_opener,
-    sleep_fn: Callable[[float], None] = time.sleep,
-    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    partition_manifest_path: str | Path,
 ) -> dict[str, Any]:
-    """Internal production flow plus a clearly synthetic test seam.
+    """The fixed V8D production readiness flow.
 
-    A caller-provided request factory is accepted only for the old
-    transport-only synthetic tests, where no private manifest path is
-    supplied. The public production wrappers never pass one.
+    This function is intentionally the only gate-consuming readiness core,
+    and it has no request, provenance, authority, opener, clock, or state
+    injection seams. Synthetic tests use ``execute_transport_readiness_probe``
+    with a prebuilt synthetic gate binding instead.
     """
     if stage not in READINESS_STAGES:
         raise V8DReadinessBlocked("V8D_READINESS_STAGE_INVALID")
     if not isinstance(human_authorization_identity, str) or not human_authorization_identity:
         raise V8DReadinessBlocked("V8D_READINESS_HUMAN_AUTHORIZATION_IDENTITY_REQUIRED")
 
-    resolver = git_commit_resolver or (lambda: resolve_verified_v8d_production_git_commit(repository_root))
     try:
-        verified_head = resolver()
+        verified_head = resolve_verified_v8d_production_git_commit(CANONICAL_REPOSITORY_ROOT)
     except V8DGitProvenanceBlocked as error:
         raise _wrap(error) from error
 
-    frozen_verifier = frozen_design_object_verifier or (lambda: verify_frozen_design_object(repository_root))
-    approval_verifier = design_freeze_approval_verifier or (lambda head: verify_design_freeze_approval_blob(repository_root, head))
     try:
-        frozen_verifier()
-        approval_verifier(verified_head)
+        verify_frozen_design_object(CANONICAL_REPOSITORY_ROOT)
+        verify_design_freeze_approval_blob(CANONICAL_REPOSITORY_ROOT, verified_head)
     except V8DProductionProvenanceBlocked as error:
         raise _wrap(error) from error
 
-    binder = reviewed_implementation_binder or (lambda head: verify_reviewed_implementation_binding(repository_root, head))
     try:
-        review_binding = binder(verified_head)
+        review_binding = verify_reviewed_implementation_binding(CANONICAL_REPOSITORY_ROOT, verified_head)
     except V8DProductionProvenanceBlocked as error:
         raise _wrap(error) from error
     reviewed_commit = review_binding["reviewed_implementation_git_commit"]
 
-    synthetic_mode = request_factory is not None and partition_manifest_path is None
-    if request_factory is not None and partition_manifest_path is not None:
-        raise V8DReadinessBlocked("V8D_READINESS_SYNTHETIC_FACTORY_NOT_PRODUCTION")
-
-    if not synthetic_mode:
-        try:
-            authority_prerequisites = dict(
-                (authority_prerequisite_checker or (lambda s, h, r: _verify_readiness_authority(
-                    s, h, r, repository_root, anchor_reader=anchor_reader
-                )))(stage, verified_head, reviewed_commit)
-            )
-        except V8DReadinessBlocked:
-            raise
-        except (V8DProductionProvenanceBlocked, V8DGitProvenanceBlocked) as error:
-            raise _wrap(error) from error
-        except Exception as error:  # noqa: BLE001 - every unmet prerequisite BLOCKs
-            raise V8DReadinessBlocked(
-                getattr(error, "reason", "V8D_READINESS_AUTHORITY_PREREQUISITES_BLOCKED")
-            ) from error
-
-        try:
-            manifest_sha, manifest_implementation, sentinels = (
-                selective_sentinel_resolver or _read_selective_t0_sentinels
-            )(partition_manifest_path)
-        except V8DReadinessBlocked:
-            raise
-        except Exception as error:  # noqa: BLE001 - private input failures BLOCK
-            raise V8DReadinessBlocked("V8D_PARTITION_MANIFEST_SELECTIVE_READ_FAILED") from error
-        if (
-            manifest_sha != authority_prerequisites["authorized_partition_manifest_sha256"]
-            or manifest_sha != EXPECTED_V8_PARTITION_MANIFEST_SHA256
-            or manifest_implementation != authority_prerequisites["authorized_partition_implementation_git_commit"]
-            or manifest_implementation != EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT
-            or len(sentinels) != len(SENTINEL_INDICES)
-        ):
-            raise V8DReadinessBlocked("V8D_READINESS_PARTITION_PROVENANCE_MISMATCH")
-        request_factory = _frozen_request_factory(stage, sentinels, opener=opener)
-    else:
-        authority_prerequisites = {"synthetic": True}
+    try:
+        authority_prerequisites = _verify_readiness_authority(
+            stage, verified_head, reviewed_commit, CANONICAL_REPOSITORY_ROOT
+        )
+        manifest_sha, manifest_implementation, sentinels = _read_selective_t0_sentinels(
+            partition_manifest_path
+        )
+    except V8DReadinessBlocked:
+        raise
+    except (V8DProductionProvenanceBlocked, V8DGitProvenanceBlocked) as error:
+        raise _wrap(error) from error
+    except Exception as error:  # noqa: BLE001 - private input failures BLOCK
+        raise V8DReadinessBlocked(
+            getattr(error, "reason", "V8D_READINESS_AUTHORITY_PREREQUISITES_BLOCKED")
+        ) from error
+    if (
+        manifest_sha != authority_prerequisites["authorized_partition_manifest_sha256"]
+        or manifest_sha != EXPECTED_V8_PARTITION_MANIFEST_SHA256
+        or manifest_implementation != authority_prerequisites["authorized_partition_implementation_git_commit"]
+        or manifest_implementation != EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT
+        or len(sentinels) != len(SENTINEL_INDICES)
+    ):
+        raise V8DReadinessBlocked("V8D_READINESS_PARTITION_PROVENANCE_MISMATCH")
+    request_factory = _frozen_request_factory(stage, sentinels)
 
     try:
         binding = consume_gate_and_bind(
-            consumption_state_root,
+            CANONICAL_CONSUMPTION_STATE_ROOT,
             logical_stage=stage,
             v8d_frozen_design_commit=EXPECTED_V8D_FROZEN_DESIGN_COMMIT,
             reviewed_production_implementation_commit=reviewed_commit,
             raw_authorization_identity=human_authorization_identity,
-            clock=clock,
+            clock=lambda: datetime.now(timezone.utc),
         )
     except V8DHumanGateConsumptionBlocked as error:
         raise V8DReadinessBlocked(error.reason) from error
@@ -479,10 +453,10 @@ def _execute_production_transport_readiness(
     return execute_transport_readiness_probe(
         stage=stage,
         request_factory=request_factory,
-        audit_root=audit_root or CANONICAL_PRODUCTION_AUDIT_ROOT,
+        audit_root=CANONICAL_PRODUCTION_AUDIT_ROOT,
         reviewed_implementation_commit=reviewed_commit,
         gate_binding=gate_binding,
-        sleep_fn=sleep_fn,
+        sleep_fn=time.sleep,
     )
 
 
@@ -493,7 +467,6 @@ def execute_t1c_transport_readiness_production(
     return _execute_production_transport_readiness(
         stage="T1C_TRANSPORT_READINESS", human_authorization_identity=human_authorization_identity,
         partition_manifest_path=partition_manifest_path,
-        audit_root=CANONICAL_PRODUCTION_AUDIT_ROOT,
     )
 
 
@@ -504,7 +477,6 @@ def execute_t2_transport_readiness_production(
     return _execute_production_transport_readiness(
         stage="T2_TRANSPORT_READINESS", human_authorization_identity=human_authorization_identity,
         partition_manifest_path=partition_manifest_path,
-        audit_root=CANONICAL_PRODUCTION_AUDIT_ROOT,
     )
 
 

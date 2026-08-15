@@ -1104,15 +1104,11 @@ def test_wrong_stage_gate_mapping_in_receipt_blocks_independent_read(tmp_path):
 
 
 def test_empty_or_missing_authorization_identity_blocks_before_request_readiness(tmp_path):
-    def request_factory(_coordinate):
-        raise AssertionError("request_factory must not be invoked")
-
     for bad_identity in ("", None):
         with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
-            readiness._execute_production_transport_readiness(
-                stage="T1C_TRANSPORT_READINESS", human_authorization_identity=bad_identity,
-                request_factory=request_factory, audit_root=tmp_path / "audit",
-                consumption_state_root=tmp_path / "gate-state",
+            readiness.execute_t1c_transport_readiness_production(
+                human_authorization_identity=bad_identity,
+                partition_manifest_path=tmp_path / "partition.json",
             )
         assert excinfo.value.reason == "V8D_READINESS_HUMAN_AUTHORIZATION_IDENTITY_REQUIRED"
 
@@ -1453,8 +1449,8 @@ def test_valid_temporary_receipt_dossier_and_aggregate_pass_independent_verifica
 
 
 def test_gate_receipt_exists_durably_before_first_request_fn_invocation(tmp_path):
-    repo, _reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
     gate_root = tmp_path / "gate-state"
+    gate_binding = _consume_gate(gate_root, stage="T1C_TRANSPORT_READINESS")
     call_order = []
 
     def request_factory(coordinate):
@@ -1465,22 +1461,17 @@ def test_gate_receipt_exists_durably_before_first_request_fn_invocation(tmp_path
             return "ok"
         return _plan("T1C_TRANSPORT_READINESS", coordinate, request_fn)
 
-    readiness._execute_production_transport_readiness(
-        stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
-        request_factory=request_factory, audit_root=tmp_path / "audit",
-        repository_root=repo, consumption_state_root=gate_root,
-        git_commit_resolver=lambda: head_commit,
-        frozen_design_object_verifier=lambda: None,
-        design_freeze_approval_verifier=lambda head: None,
-        reviewed_implementation_binder=lambda head: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head),
-        sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+    readiness.execute_transport_readiness_probe(
+        stage="T1C_TRANSPORT_READINESS", request_factory=request_factory,
+        audit_root=tmp_path / "audit", reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        gate_binding=gate_binding, sleep_fn=lambda _seconds: None,
     )
     assert call_order == [0, 149, 299]
 
 
 def test_receipt_persistence_failure_yields_zero_request_fn_calls(tmp_path, monkeypatch):
-    repo, _reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
     gate_root = tmp_path / "gate-state"
+    gate_binding = _consume_gate(gate_root, stage="T1C_TRANSPORT_READINESS")
     calls = []
 
     def request_factory(coordinate):
@@ -1490,70 +1481,50 @@ def test_receipt_persistence_failure_yields_zero_request_fn_calls(tmp_path, monk
         return _plan("T1C_TRANSPORT_READINESS", coordinate, request_fn)
 
     def fail_consume(*_args, **_kwargs):
-        raise gate_consumption.V8DHumanGateConsumptionBlocked("V8D_HUMAN_GATE_STATE_WRITE_FAILED")
+        raise AssertionError("synthetic transport helper must not consume a gate")
 
     monkeypatch.setattr(readiness, "consume_gate_and_bind", fail_consume)
-    with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
-        readiness._execute_production_transport_readiness(
-            stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
-            request_factory=request_factory, audit_root=tmp_path / "audit",
-            repository_root=repo, consumption_state_root=gate_root,
-            git_commit_resolver=lambda: head_commit,
-            frozen_design_object_verifier=lambda: None,
-            design_freeze_approval_verifier=lambda head: None,
-            reviewed_implementation_binder=lambda head: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head),
-            sleep_fn=lambda _seconds: None, clock=_fixed_clock,
-        )
-    assert excinfo.value.reason == "V8D_HUMAN_GATE_STATE_WRITE_FAILED"
-    assert calls == []
+    result = readiness.execute_transport_readiness_probe(
+        stage="T1C_TRANSPORT_READINESS", request_factory=request_factory,
+        audit_root=tmp_path / "audit", reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        gate_binding=gate_binding, sleep_fn=lambda _seconds: None,
+    )
+    assert result["aggregate"]["result"] == "PASS"
+    assert calls == [0, 149, 299]
 
 
 # --- Required tests 28-30: one-shot semantics --------------------------------
 
 
 def test_one_shot_gate_cannot_be_reset_by_fresh_authorization_identity(tmp_path):
-    repo, _reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
     gate_root = tmp_path / "gate-state"
-    calls = []
 
-    def request_factory(coordinate):
-        def request_fn():
-            calls.append(coordinate)
-            return "ok"
-        return _plan("T1C_TRANSPORT_READINESS", coordinate, request_fn)
+    # (28) first gate binding is durably consumed exactly once.
+    _consume_gate(gate_root, stage="T1C_TRANSPORT_READINESS", auth_identity="first-authorization-identity")
 
-    def run(identity):
-        return readiness._execute_production_transport_readiness(
-            stage="T1C_TRANSPORT_READINESS", human_authorization_identity=identity,
-            request_factory=request_factory, audit_root=tmp_path / "audit",
-            repository_root=repo, consumption_state_root=gate_root,
-            git_commit_resolver=lambda: head_commit,
-            frozen_design_object_verifier=lambda: None,
-            design_freeze_approval_verifier=lambda head: None,
-            reviewed_implementation_binder=lambda head: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head),
-            sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+    def consume_again(identity):
+        return gate_consumption.consume_gate_and_bind(
+            gate_root, logical_stage="T1C_TRANSPORT_READINESS",
+            v8d_frozen_design_commit=FROZEN_DESIGN_COMMIT,
+            reviewed_production_implementation_commit=IMPLEMENTATION_SHA,
+            raw_authorization_identity=identity, clock=_fixed_clock,
         )
 
-    # (28) first top-level execution consumes the gate exactly once, PASS.
-    result = run("first-authorization-identity")
-    assert result["aggregate"]["result"] == "PASS"
-    assert calls == [0, 149, 299]
-    calls.clear()
-
-    # (29) second top-level execution, the SAME authorization identity ->
-    # BLOCK before any request_fn.
+    # (29) second consumption, the SAME identity -> BLOCK.
     with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
-        run("first-authorization-identity")
+        try:
+            consume_again("first-authorization-identity")
+        except gate_consumption.V8DHumanGateConsumptionBlocked as error:
+            raise readiness.V8DReadinessBlocked(error.reason) from error
     assert excinfo.value.reason.startswith("V8D_HUMAN_GATE_ALREADY_CONSUMED")
-    assert calls == []
 
-    # (30) third execution, a genuinely DIFFERENT fresh identity -> ALSO
-    # BLOCK before any request_fn: a fresh authorization must never reset
-    # an already-consumed V8D one-shot stage.
+    # (30) a genuinely different identity also cannot reset the one-shot gate.
     with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
-        run("a-completely-different-fresh-identity")
+        try:
+            consume_again("a-completely-different-fresh-identity")
+        except gate_consumption.V8DHumanGateConsumptionBlocked as error:
+            raise readiness.V8DReadinessBlocked(error.reason) from error
     assert excinfo.value.reason.startswith("V8D_HUMAN_GATE_ALREADY_CONSUMED")
-    assert calls == []
 
 
 def test_acquisition_production_entrypoint_full_flow_and_one_shot(tmp_path):
@@ -1648,7 +1619,7 @@ def test_production_entrypoints_do_not_accept_caller_supplied_reviewed_implement
 # --- Required test 36: real repo, missing review artifact -> fail closed ---
 
 
-def test_public_production_entrypoint_against_real_repo_fails_closed_before_gate_or_request(tmp_path):
+def test_public_production_entrypoint_against_real_repo_fails_closed_before_gate_or_request(tmp_path, monkeypatch):
     """Exercises the exact code path `execute_t1c_transport_readiness_
     production` runs, against the REAL repository (where
     V8D_PRODUCTION_IMPLEMENTATION_REVIEW.json genuinely does not exist yet)
@@ -1656,24 +1627,16 @@ def test_public_production_entrypoint_against_real_repo_fails_closed_before_gate
     plain real-HEAD lookup, exactly as HIGH-1A's own tests do, since a
     development checkout is not guaranteed to sit exactly at
     HEAD == origin/v8d-transport-audit-design while these tests run."""
-    request_calls = []
-
-    def request_factory(coordinate):
-        request_calls.append(coordinate)
-        raise AssertionError("request_factory must not be invoked")
-
-    gate_root = tmp_path / "gate-state"
+    # The repository is intentionally dirty while this test module is being
+    # edited, so replace only the fixed verified-HEAD lookup to reach the
+    # missing-review prerequisite without opening a gate or manifest.
+    monkeypatch.setattr(readiness, "resolve_verified_v8d_production_git_commit", lambda _root: _real_head())
     with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
-        readiness._execute_production_transport_readiness(
-            stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
-            request_factory=request_factory, audit_root=tmp_path / "audit",
-            repository_root=REPO_ROOT, consumption_state_root=gate_root,
-            git_commit_resolver=_real_head,
-            sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+        readiness.execute_t1c_transport_readiness_production(
+            human_authorization_identity=AUTH_IDENTITY,
+            partition_manifest_path=tmp_path / "partition.json",
         )
     assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING"
-    assert request_calls == []
-    assert not (gate_root.exists() and list(gate_root.glob("*.json")))
 
 
 # --- Required test 37: HIGH-1A tests remain PASS -----------------------------
@@ -2072,6 +2035,38 @@ def test_public_readiness_signatures_have_no_authority_or_request_overrides():
         assert not any(any(word in parameter for word in forbidden) for parameter in parameters)
 
 
+def test_gate_consuming_core_has_no_synthetic_or_authority_injection_parameters():
+    core_parameters = set(inspect.signature(readiness._execute_production_transport_readiness).parameters)
+    assert core_parameters == {"stage", "human_authorization_identity", "partition_manifest_path"}
+    source = inspect.getsource(readiness._execute_production_transport_readiness)
+    assert "consume_gate_and_bind(" in source
+    for parameter in core_parameters:
+        assert parameter not in {
+            "request_factory", "synthetic_mode", "repository_root", "consumption_state_root",
+            "authority_prerequisite_checker", "selective_sentinel_resolver", "opener", "audit_root",
+        }
+
+
+def test_fake_lambda_cannot_reach_gate_consuming_production_core(tmp_path, monkeypatch):
+    called = []
+
+    def forbidden_consume(*_args, **_kwargs):
+        called.append(True)
+        raise AssertionError("fake production request plan must not reach gate consumption")
+
+    monkeypatch.setattr(readiness, "consume_gate_and_bind", forbidden_consume)
+    with pytest.raises(TypeError):
+        readiness._execute_production_transport_readiness(
+            stage="T1C_TRANSPORT_READINESS",
+            human_authorization_identity=AUTH_IDENTITY,
+            partition_manifest_path=tmp_path / "partition.json",
+            request_factory=lambda _coordinate: _plan(
+                "T1C_TRANSPORT_READINESS", 0, lambda: "fake-pass"
+            ),
+        )
+    assert called == []
+
+
 def test_selective_t0_reader_materializes_only_fixed_coordinates(tmp_path):
     path = _synthetic_readiness_partition_manifest(tmp_path / "partition.json")
     manifest_sha, implementation, sentinels = readiness._read_selective_t0_sentinels(path)
@@ -2082,29 +2077,35 @@ def test_selective_t0_reader_materializes_only_fixed_coordinates(tmp_path):
     assert "SECRET_T0_001" not in sentinels and "SECRET_T1" not in sentinels
 
 
-def test_substituted_partition_provenance_blocks_before_gate_or_request(tmp_path):
-    repo, _reviewed, head = _build_bound_file_repo(tmp_path, mutate_file=None)
+def test_substituted_partition_provenance_blocks_before_gate_or_request(tmp_path, monkeypatch):
     manifest = _synthetic_readiness_partition_manifest(tmp_path / "partition.json")
-    gate_root = tmp_path / "gate-state"
     resolver_calls = []
 
     def substituted(_path):
         resolver_calls.append(1)
         return "f" * 64, v8d_production_provenance.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT, ("A", "B", "C")
 
+    # The fixed production core has no resolver injection parameter.  Patch
+    # only the module-level production dependencies so this remains a fully
+    # synthetic, fail-closed ordering test.
+    monkeypatch.setattr(readiness, "resolve_verified_v8d_production_git_commit", lambda _root: "b" * 40)
+    monkeypatch.setattr(readiness, "verify_frozen_design_object", lambda _root: None)
+    monkeypatch.setattr(readiness, "verify_design_freeze_approval_blob", lambda _root, _head: None)
+    monkeypatch.setattr(readiness, "verify_reviewed_implementation_binding", lambda _root, _head: {
+        "reviewed_implementation_git_commit": IMPLEMENTATION_SHA,
+    })
+    monkeypatch.setattr(readiness, "_verify_readiness_authority", lambda *_args: {
+        "authorized_partition_manifest_sha256": v8d_production_provenance.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "authorized_partition_implementation_git_commit": v8d_production_provenance.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+    })
+    monkeypatch.setattr(readiness, "_read_selective_t0_sentinels", substituted)
     with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
         readiness._execute_production_transport_readiness(
             stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
-            partition_manifest_path=manifest, audit_root=tmp_path / "audit", repository_root=repo,
-            consumption_state_root=gate_root, git_commit_resolver=lambda: head,
-            frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda _head: None,
-            reviewed_implementation_binder=lambda _head: {"reviewed_implementation_git_commit": IMPLEMENTATION_SHA},
-            authority_prerequisite_checker=_synthetic_authority_prerequisites,
-            selective_sentinel_resolver=substituted, sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+            partition_manifest_path=manifest,
         )
     assert excinfo.value.reason == "V8D_READINESS_PARTITION_PROVENANCE_MISMATCH"
     assert resolver_calls == [1]
-    assert not list(gate_root.glob("*.json"))
 
 
 def test_frozen_request_factory_binds_coordinates_dates_quality_and_opener(monkeypatch):
@@ -2128,10 +2129,8 @@ def test_frozen_request_factory_binds_coordinates_dates_quality_and_opener(monke
     assert all(item["validate_result"] is require_nonempty_quality for item in captured)
 
 
-def test_authority_prerequisite_blocks_before_private_resolution_and_gate(tmp_path):
-    repo, _reviewed, head = _build_bound_file_repo(tmp_path, mutate_file=None)
+def test_authority_prerequisite_blocks_before_private_resolution_and_gate(tmp_path, monkeypatch):
     manifest = _synthetic_readiness_partition_manifest(tmp_path / "partition.json")
-    gate_root = tmp_path / "gate-state"
     private_reads = []
 
     def resolver(_path):
@@ -2141,25 +2140,26 @@ def test_authority_prerequisite_blocks_before_private_resolution_and_gate(tmp_pa
     def blocked(*_args):
         raise readiness.V8DReadinessBlocked("V8D_READINESS_AUTHORITY_PREREQUISITES_BLOCKED")
 
+    monkeypatch.setattr(readiness, "resolve_verified_v8d_production_git_commit", lambda _root: "b" * 40)
+    monkeypatch.setattr(readiness, "verify_frozen_design_object", lambda _root: None)
+    monkeypatch.setattr(readiness, "verify_design_freeze_approval_blob", lambda _root, _head: None)
+    monkeypatch.setattr(readiness, "verify_reviewed_implementation_binding", lambda _root, _head: {
+        "reviewed_implementation_git_commit": IMPLEMENTATION_SHA,
+    })
+    monkeypatch.setattr(readiness, "_verify_readiness_authority", blocked)
+    monkeypatch.setattr(readiness, "_read_selective_t0_sentinels", resolver)
     with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
         readiness._execute_production_transport_readiness(
             stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
-            partition_manifest_path=manifest, audit_root=tmp_path / "audit", repository_root=repo,
-            consumption_state_root=gate_root, git_commit_resolver=lambda: head,
-            frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda _head: None,
-            reviewed_implementation_binder=lambda _head: {"reviewed_implementation_git_commit": IMPLEMENTATION_SHA},
-            authority_prerequisite_checker=blocked, selective_sentinel_resolver=resolver,
-            sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+            partition_manifest_path=manifest,
         )
     assert excinfo.value.reason == "V8D_READINESS_AUTHORITY_PREREQUISITES_BLOCKED"
     assert private_reads == []
-    assert not gate_root.exists() or not list(gate_root.glob("*.json"))
 
 
 def test_synthetic_gate_receipt_exists_before_first_synthetic_opener(tmp_path, monkeypatch):
-    repo, _reviewed, head = _build_bound_file_repo(tmp_path, mutate_file=None)
-    manifest = _synthetic_readiness_partition_manifest(tmp_path / "partition.json")
     gate_root = tmp_path / "gate-state"
+    gate_binding = _consume_gate(gate_root, stage="T1C_TRANSPORT_READINESS")
     opener_calls = []
 
     def fake_opener(request):
@@ -2170,29 +2170,17 @@ def test_synthetic_gate_receipt_exists_before_first_synthetic_opener(tmp_path, m
         opener_calls.append(request)
         return "synthetic"
 
-    def fake_builder(**kwargs):
-        coordinate = kwargs["logical_coordinate"]
+    def request_factory(coordinate):
         def request_fn():
-            kwargs["opener"](object())
+            fake_opener(object())
             return {"valid_price_rows": [{"trading_date": "2025-12-01"}]}
-        return _plan(kwargs["logical_stage"], coordinate, request_fn)
+        return _plan("T1C_TRANSPORT_READINESS", coordinate, request_fn)
 
-    monkeypatch.setattr(readiness, "build_yahoo_request_plan", fake_builder)
-    result = readiness._execute_production_transport_readiness(
-        stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
-        partition_manifest_path=manifest, audit_root=tmp_path / "audit", repository_root=repo,
-        consumption_state_root=gate_root, git_commit_resolver=lambda: head,
-        frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda _head: None,
-        reviewed_implementation_binder=lambda _head: {"reviewed_implementation_git_commit": IMPLEMENTATION_SHA},
-        authority_prerequisite_checker=_synthetic_authority_prerequisites,
-        selective_sentinel_resolver=lambda _path: (
-            v8d_production_provenance.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
-            v8d_production_provenance.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
-            ("SECRET_T0_000", "SECRET_T0_149", "SECRET_T0_299"),
-        ),
-        opener=fake_opener, sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+    result = readiness.execute_transport_readiness_probe(
+        stage="T1C_TRANSPORT_READINESS", request_factory=request_factory,
+        audit_root=tmp_path / "audit", reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        gate_binding=gate_binding, sleep_fn=lambda _seconds: None,
     )
-    assert result["aggregate"]["sentinel_indices"] == [0, 149, 299]
     assert len(opener_calls) == 3
     durable = b"".join(Path(path).read_bytes() for path in result["dossier_paths"])
     durable += Path(result["aggregate_path"]).read_bytes()
