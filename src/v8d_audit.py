@@ -459,29 +459,75 @@ def verify_aggregate(aggregate_path: str | Path, dossier_paths: Sequence[str | P
 
 # ---------------------------------------------------------------------------
 # Reviewed-implementation binding: mechanical derivation for production
-# verification (V8D_PROD_HIGH_1B_AUDIT_REVIEW_BINDING_NOT_REDERIVED)
+# verification (V8D_PROD_HIGH_1B_AUDIT_REVIEW_BINDING_NOT_REDERIVED /
+# V8D_PROD_HIGH_1B_REMOVE_PRODUCTION_AUTHORITY_INJECTION_SEAMS)
+#
+# `derive_reviewed_implementation_commit` -- the PRODUCTION derivation --
+# takes no parameters whatsoever: it always resolves the canonical V8D
+# repository root and always calls the real HIGH-1A provenance functions
+# (`resolve_verified_v8d_production_git_commit`, `verify_frozen_design_
+# object`, `verify_design_freeze_approval_blob`, `verify_reviewed_
+# implementation_binding`) directly against it. There is no caller
+# parameter -- not a repository root, not a Git resolver, not a
+# verification-step override -- through which any caller (production or
+# otherwise) could substitute a different repository or make an arbitrary
+# SHA authoritative. This closes the prior version of this fix, which
+# exposed exactly such override seams on the public production functions
+# themselves.
+#
+# `_derive_reviewed_implementation_commit_via_synthetic_repository_for_
+# tests_only` is a distinct, unexported, underscore-prefixed internal
+# helper that exercises the *same* three-step verification logic against
+# an explicitly supplied (normally synthetic/temporary) repository and
+# injectable provenance steps. It exists solely so tests can prove the
+# derivation logic itself is correct without needing real production Git
+# state -- it is never called by `verify_dossier_production`/`verify_
+# aggregate_production`, is not part of `__all__`, and cannot be reached
+# from any production code path.
 # ---------------------------------------------------------------------------
 
 
-def derive_reviewed_implementation_commit(
-    repository_root: str | Path = CANONICAL_REPOSITORY_ROOT,
+def derive_reviewed_implementation_commit() -> str:
+    """The sole production reviewed-implementation derivation. Accepts NO
+    parameters: always walks verified V8D Git HEAD -> frozen design
+    verification -> freeze approval verification -> `src.v8d_production_
+    provenance.verify_reviewed_implementation_binding`, every step bound
+    to the canonical `CANONICAL_REPOSITORY_ROOT` with no override. Against
+    the real repository, this fails closed today because
+    `V8D_PRODUCTION_IMPLEMENTATION_REVIEW.json` does not exist yet."""
+    try:
+        verified_head = resolve_verified_v8d_production_git_commit(CANONICAL_REPOSITORY_ROOT)
+    except V8DGitProvenanceBlocked as error:
+        raise V8DAuditVerificationBlocked(error.reason) from error
+
+    try:
+        verify_frozen_design_object(CANONICAL_REPOSITORY_ROOT)
+        verify_design_freeze_approval_blob(CANONICAL_REPOSITORY_ROOT, verified_head)
+    except V8DProductionProvenanceBlocked as error:
+        raise V8DAuditVerificationBlocked(error.reason) from error
+
+    try:
+        review_binding = verify_reviewed_implementation_binding(CANONICAL_REPOSITORY_ROOT, verified_head)
+    except V8DProductionProvenanceBlocked as error:
+        raise V8DAuditVerificationBlocked(error.reason) from error
+    return review_binding["reviewed_implementation_git_commit"]
+
+
+def _derive_reviewed_implementation_commit_via_synthetic_repository_for_tests_only(
+    repository_root: str | Path,
     *,
     git_commit_resolver: Callable[[], str] | None = None,
     frozen_design_object_verifier: Callable[[], None] | None = None,
     design_freeze_approval_verifier: Callable[[str], None] | None = None,
     reviewed_implementation_binder: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> str:
-    """Mechanically derive the sole authoritative reviewed-implementation
-    commit through the HIGH-1A provenance chain: verified V8D Git HEAD ->
-    frozen design verification -> freeze approval verification ->
-    `src.v8d_production_provenance.verify_reviewed_implementation_binding`.
-    There is no parameter through which a caller can substitute an
-    arbitrary SHA for this derivation -- the four injectable seams
-    override *how* each step is performed (for synthetic testing against a
-    temporary repository), never *what* commit the result is. Against the
-    real repository with default arguments, this fails closed today
-    because `V8D_PRODUCTION_IMPLEMENTATION_REVIEW.json` does not exist yet.
-    """
+    """TEST-ONLY. Exercises the exact same three-step derivation logic as
+    `derive_reviewed_implementation_commit`, but against a caller-supplied
+    (normally synthetic/temporary) repository and injectable provenance
+    steps, so tests can prove the derivation's *logic* -- including its
+    tamper-detection behavior -- without real production Git state. Not
+    exported; never called by any production entrypoint; must never be
+    used to establish production authority."""
     resolver = git_commit_resolver or (lambda: resolve_verified_v8d_production_git_commit(repository_root))
     try:
         verified_head = resolver()
@@ -508,26 +554,18 @@ def verify_dossier_production(
     path: str | Path,
     *,
     gate_receipt_state_root: str | Path,
-    repository_root: str | Path = CANONICAL_REPOSITORY_ROOT,
     expected_stage: str | None = None,
-    git_commit_resolver: Callable[[], str] | None = None,
-    frozen_design_object_verifier: Callable[[], None] | None = None,
-    design_freeze_approval_verifier: Callable[[str], None] | None = None,
-    reviewed_implementation_binder: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """The production dossier verification entrypoint. Unlike
-    ``verify_dossier``, this accepts no caller-supplied reviewed-
-    implementation commit at all: it derives the sole authoritative commit
-    via `derive_reviewed_implementation_commit` and requires the dossier
-    to match it exactly, so a self-consistent tamper of receipt, dossier,
-    and every integrity hash to a shared arbitrary SHA still BLOCKs."""
-    reviewed_commit = derive_reviewed_implementation_commit(
-        repository_root,
-        git_commit_resolver=git_commit_resolver,
-        frozen_design_object_verifier=frozen_design_object_verifier,
-        design_freeze_approval_verifier=design_freeze_approval_verifier,
-        reviewed_implementation_binder=reviewed_implementation_binder,
-    )
+    """The production dossier verification entrypoint. Accepts only
+    ``gate_receipt_state_root`` (where gate receipts live -- unrelated to
+    reviewed-implementation authority) and ``expected_stage``. There is no
+    parameter capable of replacing the repository, Git resolver, or any
+    provenance-verification step: it derives the sole authoritative commit
+    via `derive_reviewed_implementation_commit` -- always against the real
+    canonical repository -- and requires the dossier to match it exactly,
+    so a self-consistent tamper of receipt, dossier, and every integrity
+    hash to a shared arbitrary SHA still BLOCKs."""
+    reviewed_commit = derive_reviewed_implementation_commit()
     return verify_dossier(
         path, gate_receipt_state_root=gate_receipt_state_root,
         expected_reviewed_implementation_commit=reviewed_commit, expected_stage=expected_stage,
@@ -539,24 +577,13 @@ def verify_aggregate_production(
     dossier_paths: Sequence[str | Path],
     *,
     gate_receipt_state_root: str | Path,
-    repository_root: str | Path = CANONICAL_REPOSITORY_ROOT,
     expected_stage: str | None = None,
-    git_commit_resolver: Callable[[], str] | None = None,
-    frozen_design_object_verifier: Callable[[], None] | None = None,
-    design_freeze_approval_verifier: Callable[[str], None] | None = None,
-    reviewed_implementation_binder: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The production aggregate verification entrypoint. See
-    ``verify_dossier_production`` -- the same mechanical derivation, never
-    a caller-supplied commit, applies here and to every underlying
-    dossier it verifies."""
-    reviewed_commit = derive_reviewed_implementation_commit(
-        repository_root,
-        git_commit_resolver=git_commit_resolver,
-        frozen_design_object_verifier=frozen_design_object_verifier,
-        design_freeze_approval_verifier=design_freeze_approval_verifier,
-        reviewed_implementation_binder=reviewed_implementation_binder,
-    )
+    ``verify_dossier_production`` -- the same zero-seam mechanical
+    derivation, never a caller-supplied commit or repository, applies here
+    and to every underlying dossier it verifies."""
+    reviewed_commit = derive_reviewed_implementation_commit()
     return verify_aggregate(
         aggregate_path, dossier_paths, gate_receipt_state_root=gate_receipt_state_root,
         expected_reviewed_implementation_commit=reviewed_commit, expected_stage=expected_stage,

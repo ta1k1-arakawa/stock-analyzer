@@ -1687,112 +1687,149 @@ def test_bound_production_files_now_include_human_gate_consumption_module():
 
 
 # ===========================================================================
-# V8D_PROD_HIGH_1B_AUDIT_REVIEW_BINDING_NOT_REDERIVED
+# V8D_PROD_HIGH_1B_AUDIT_REVIEW_BINDING_NOT_REDERIVED /
+# V8D_PROD_HIGH_1B_REMOVE_PRODUCTION_AUTHORITY_INJECTION_SEAMS
 #
 # src.v8d_audit.derive_reviewed_implementation_commit / verify_dossier_
-# production / verify_aggregate_production: the independent verifier must
-# mechanically derive the sole authoritative reviewed-implementation
-# commit through the HIGH-1A provenance chain -- never merely compare
-# against a caller-supplied expectation. verify_dossier/verify_aggregate
-# remain the synthetic/internal-testing path used throughout this file
-# and carry no production authority on their own.
+# production / verify_aggregate_production: the independent PRODUCTION
+# verifier must mechanically derive the sole authoritative reviewed-
+# implementation commit through the HIGH-1A provenance chain -- always
+# against the real canonical V8D repository, with NO caller parameter
+# capable of substituting a different repository, Git resolver, or
+# verification step. verify_dossier/verify_aggregate (unmodified) remain
+# the synthetic/internal-testing path used throughout this file and carry
+# no production authority on their own. Synthetic-repository testing of
+# the derivation *logic* itself goes through the distinct, unexported,
+# underscore-prefixed `_derive_reviewed_implementation_commit_via_
+# synthetic_repository_for_tests_only` -- never through the production
+# functions, which cannot be pointed at a synthetic repository at all.
 # ===========================================================================
 
 
-def test_derive_reviewed_implementation_commit_accepts_no_commit_parameter():
-    """The API accepts no caller-supplied "reviewed implementation
-    commit"/expectation of any kind: only injectable seams for *how* each
-    HIGH-1A provenance step is performed (for synthetic testing), never
-    *what* commit the result is."""
+def _derive_synthetic(repo, head, **overrides):
+    return v8d_audit._derive_reviewed_implementation_commit_via_synthetic_repository_for_tests_only(
+        repo, git_commit_resolver=lambda: head, **overrides
+    )
+
+
+def test_production_api_exposes_no_authority_replacement_parameters():
+    """Required test 1: inspect production API signatures -- neither
+    `derive_reviewed_implementation_commit` nor `verify_dossier_
+    production`/`verify_aggregate_production` accepts a repository root,
+    Git resolver, or any provenance-verification-step override. The only
+    parameters on the two verification entrypoints are the gate-receipt
+    lookup root (unrelated to reviewed-implementation authority) and an
+    optional expected-stage filter."""
     import inspect
 
-    params = set(inspect.signature(v8d_audit.derive_reviewed_implementation_commit).parameters)
-    assert "reviewed_implementation_commit" not in params
-    assert "expected_reviewed_implementation_commit" not in params
+    forbidden = {
+        "repository_root", "git_commit_resolver", "frozen_design_object_verifier",
+        "design_freeze_approval_verifier", "reviewed_implementation_binder",
+        "reviewed_implementation_commit", "expected_reviewed_implementation_commit",
+    }
 
-    assert "expected_reviewed_implementation_commit" not in set(
-        inspect.signature(v8d_audit.verify_dossier_production).parameters
-    )
-    assert "expected_reviewed_implementation_commit" not in set(
-        inspect.signature(v8d_audit.verify_aggregate_production).parameters
+    assert list(inspect.signature(v8d_audit.derive_reviewed_implementation_commit).parameters) == []
+
+    dossier_params = set(inspect.signature(v8d_audit.verify_dossier_production).parameters)
+    assert dossier_params == {"path", "gate_receipt_state_root", "expected_stage"}
+    assert not (dossier_params & forbidden)
+
+    aggregate_params = set(inspect.signature(v8d_audit.verify_aggregate_production).parameters)
+    assert aggregate_params == {"aggregate_path", "dossier_paths", "gate_receipt_state_root", "expected_stage"}
+    assert not (aggregate_params & forbidden)
+
+
+def test_synthetic_helper_is_not_exported_and_unreachable_from_production_api():
+    """Required test 4/5 (part 1): the synthetic/internal derivation
+    helper is a distinct function from the production one, is not part of
+    the public API, and the production functions have no way to reach it
+    or any equivalent override."""
+    assert "_derive_reviewed_implementation_commit_via_synthetic_repository_for_tests_only" not in v8d_audit.__all__
+    assert hasattr(v8d_audit, "_derive_reviewed_implementation_commit_via_synthetic_repository_for_tests_only")
+    assert (
+        v8d_audit._derive_reviewed_implementation_commit_via_synthetic_repository_for_tests_only
+        is not v8d_audit.derive_reviewed_implementation_commit
     )
 
 
 def test_production_verification_against_real_repo_fails_closed_missing_review_artifact():
-    """The real V8D_PRODUCTION_IMPLEMENTATION_REVIEW.json does not exist in
-    this repository yet -- production audit verification must fail closed
-    today, exactly like HIGH-1A/HIGH-1B's own equivalent tests, using the
-    same real-HEAD injection to avoid environmental HEAD/origin flakiness
-    while a development checkout is being edited."""
-    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
-        v8d_audit.derive_reviewed_implementation_commit(REPO_ROOT, git_commit_resolver=_real_head)
-    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING"
+    """Required test 2. The real V8D_PRODUCTION_IMPLEMENTATION_REVIEW.json
+    does not exist in this repository yet -- production audit
+    verification must fail closed today. `derive_reviewed_implementation_
+    commit` takes no repository/resolver parameter at all, so this
+    necessarily runs against the actual repository this test executes in;
+    it may legitimately BLOCK on a different, earlier provenance reason
+    (e.g. a dirty worktree mid-edit, or HEAD not yet equal to origin)
+    rather than specifically the missing-artifact reason, exactly like
+    HIGH-1A's own `resolve_verified_v8d_production_git_commit` tests
+    against the live repository -- either outcome proves the required
+    fail-closed property; a bare PASS would be the only failure."""
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
+        v8d_audit.derive_reviewed_implementation_commit()
 
 
 def test_verify_dossier_production_against_real_repo_fails_closed(tmp_path):
     result = _success_artifacts(tmp_path)
-    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
         v8d_audit.verify_dossier_production(
             result["dossier_paths"][0], gate_receipt_state_root=_gate_root(tmp_path),
-            repository_root=REPO_ROOT, git_commit_resolver=_real_head,
         )
-    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING"
 
 
 def test_verify_aggregate_production_against_real_repo_fails_closed(tmp_path):
     result = _success_artifacts(tmp_path)
-    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
         v8d_audit.verify_aggregate_production(
             result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=_gate_root(tmp_path),
-            repository_root=REPO_ROOT, git_commit_resolver=_real_head,
         )
-    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING"
 
 
-def test_production_verification_blocks_on_malformed_review_json(tmp_path):
+def test_synthetic_derivation_blocks_on_malformed_review_json(tmp_path):
+    """Required test 2 (malformed/non-PASS review binding), exercised
+    through the synthetic/internal derivation helper against a temporary
+    repository -- the production function itself cannot be pointed at a
+    synthetic repository (required test 5), so its logic is proven here
+    and the production entrypoint's use of that same logic is proven by
+    the earlier real-repo tests plus the source-level fact that `derive_
+    reviewed_implementation_commit` calls the identical three real
+    HIGH-1A functions with zero indirection."""
     repo, head = _repo_with_raw_file(
         tmp_path, "prod_malformed", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, b"{not valid json"
     )
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
-        v8d_audit.derive_reviewed_implementation_commit(
-            repo, git_commit_resolver=lambda: head,
-            frozen_design_object_verifier=lambda: None,
-            design_freeze_approval_verifier=lambda head_: None,
-        )
+        _derive_synthetic(repo, head, frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda head_: None)
     assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_INVALID_JSON"
 
 
-def test_production_verification_blocks_on_non_pass_review_binding(tmp_path):
+def test_synthetic_derivation_blocks_on_non_pass_review_binding(tmp_path):
     payload = json.loads(_valid_review_json("a" * 40))
     payload["review_result"] = "FAIL"
     repo, head = _repo_with_raw_file(
         tmp_path, "prod_not_pass", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, json.dumps(payload).encode()
     )
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
-        v8d_audit.derive_reviewed_implementation_commit(
-            repo, git_commit_resolver=lambda: head,
-            frozen_design_object_verifier=lambda: None,
-            design_freeze_approval_verifier=lambda head_: None,
-        )
+        _derive_synthetic(repo, head, frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda head_: None)
     assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_NOT_PASS"
 
 
-def test_production_verification_blocks_on_not_approved_review_binding(tmp_path):
+def test_synthetic_derivation_blocks_on_not_approved_review_binding(tmp_path):
     payload = json.loads(_valid_review_json("a" * 40))
     payload["approval_status"] = "PENDING"
     repo, head = _repo_with_raw_file(
         tmp_path, "prod_not_approved", v8d_production_provenance.IMPLEMENTATION_REVIEW_GIT_PATH, json.dumps(payload).encode()
     )
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
-        v8d_audit.derive_reviewed_implementation_commit(
-            repo, git_commit_resolver=lambda: head,
-            frozen_design_object_verifier=lambda: None,
-            design_freeze_approval_verifier=lambda head_: None,
-        )
+        _derive_synthetic(repo, head, frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda head_: None)
     assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_NOT_APPROVED"
 
 
-def test_verify_dossier_and_aggregate_production_pass_with_valid_synthetic_high1a_binding(tmp_path):
+def test_synthetic_helper_validates_synthetic_repo_and_matches_valid_evidence(tmp_path):
+    """Required test 4: the synthetic/internal helper validates a
+    synthetic repository end to end, producing the same commit that a
+    genuine, untampered dossier/aggregate/receipt evidence set (built
+    against that same synthetic reviewed commit) independently carries --
+    proving the derivation logic and the gate/dossier/aggregate wiring
+    agree with each other, without needing real production Git state."""
     repo, reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
     gate_root = tmp_path / "gate-state"
     gate_binding = _consume_gate(gate_root, stage="T1C_TRANSPORT_READINESS", reviewed_commit=reviewed_commit)
@@ -1802,32 +1839,76 @@ def test_verify_dossier_and_aggregate_production_pass_with_valid_synthetic_high1
         audit_root=tmp_path / "audit", reviewed_implementation_commit=reviewed_commit, gate_binding=gate_binding,
         sleep_fn=lambda _seconds: None,
     )
-    injected_kwargs = dict(
-        repository_root=repo, git_commit_resolver=lambda: head_commit,
-        frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda head_: None,
+
+    derived = _derive_synthetic(
+        repo, head_commit, frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda head_: None,
         reviewed_implementation_binder=lambda head_: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head_),
     )
-    dossier_checked = v8d_audit.verify_dossier_production(
-        result["dossier_paths"][0], gate_receipt_state_root=gate_root, **injected_kwargs
+    assert derived == reviewed_commit
+
+    # The unchanged synthetic/internal verify_dossier/verify_aggregate
+    # path, given that same mechanically-derived commit as its strict
+    # expectation, independently PASSes -- proving the genuine evidence
+    # set and the derivation agree.
+    dossier_checked = v8d_audit.verify_dossier(
+        result["dossier_paths"][0], gate_receipt_state_root=gate_root, expected_reviewed_implementation_commit=derived,
     )
     assert dossier_checked["reviewed_production_implementation_commit"] == reviewed_commit
-    aggregate_checked = v8d_audit.verify_aggregate_production(
-        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root, **injected_kwargs
+    aggregate_checked = v8d_audit.verify_aggregate(
+        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root,
+        expected_reviewed_implementation_commit=derived,
     )
     assert aggregate_checked["result"] == "PASS"
 
 
+def test_production_path_cannot_point_at_synthetic_repository(tmp_path):
+    """Required test 5: even a fully valid, self-consistent synthetic
+    evidence set -- dossier, aggregate, and gate receipt all genuinely
+    bound to the correct synthetic reviewed commit, verified above to
+    independently PASS the synthetic path -- still BLOCKs when checked
+    through the true zero-seam production entrypoints, because those
+    entrypoints only ever consult the real canonical repository and can
+    never be redirected to the synthetic one."""
+    repo, reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
+    gate_root = tmp_path / "gate-state"
+    gate_binding = _consume_gate(gate_root, stage="T1C_TRANSPORT_READINESS", reviewed_commit=reviewed_commit)
+    result = readiness.execute_transport_readiness_probe(
+        stage="T1C_TRANSPORT_READINESS",
+        request_factory=lambda coordinate: _plan("T1C_TRANSPORT_READINESS", coordinate, lambda: "ok"),
+        audit_root=tmp_path / "audit", reviewed_implementation_commit=reviewed_commit, gate_binding=gate_binding,
+        sleep_fn=lambda _seconds: None,
+    )
+    # Sanity per test above: this exact evidence set is genuinely valid
+    # against the synthetic repository via the synthetic path.
+    assert v8d_audit.verify_aggregate(
+        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root,
+        expected_reviewed_implementation_commit=reviewed_commit,
+    )["result"] == "PASS"
+
+    # The production entrypoints accept no way to name `repo`/`head_commit`
+    # at all -- they can only ever consult the real repository, where the
+    # review artifact does not exist, so they BLOCK regardless of how
+    # valid the synthetic evidence is.
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
+        v8d_audit.verify_dossier_production(result["dossier_paths"][0], gate_receipt_state_root=gate_root)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
+        v8d_audit.verify_aggregate_production(result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root)
+
+
 def test_production_verification_blocks_self_consistent_arbitrary_sha_tamper(tmp_path):
-    """The central regression for this finding: rewrite receipt, every
-    dossier, and the aggregate to the SAME arbitrary 40-hex SHA, with
-    every integrity hash (dossier self-hash, gate_receipt_bytes_sha256,
-    aggregate self-hash/artifact hash) correctly recomputed to match -- a
-    fully self-consistent forgery. The old synthetic-path verify_dossier/
-    verify_aggregate still accepts this when the caller supplies (or
-    omits) a matching expectation, proving the tamper is undetectable by
-    hash-consistency checks alone. The production entrypoints must still
-    BLOCK, because the mechanically derived commit from the real HIGH-1A
-    chain disagrees with the tampered value."""
+    """Required test 3, the central regression for this finding: rewrite
+    receipt, every dossier, and the aggregate to the SAME arbitrary 40-hex
+    SHA, with every integrity hash (dossier self-hash, gate_receipt_
+    bytes_sha256, aggregate self-hash/artifact hash) correctly recomputed
+    to match -- a fully self-consistent forgery. The old synthetic-path
+    verify_dossier/verify_aggregate still accepts this when the caller
+    supplies the matching (also-tampered) expectation, proving the tamper
+    is undetectable by hash-consistency checks alone. Mechanical
+    derivation via the synthetic helper -- standing in for what the
+    zero-seam production entrypoints always compute against the real
+    repository -- still yields the genuine `reviewed_commit`, so a
+    verify_dossier/verify_aggregate call pinned to that mechanically
+    derived (not caller-invented) expectation still BLOCKs the tamper."""
     repo, reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
     gate_root = tmp_path / "gate-state"
 
@@ -1839,16 +1920,12 @@ def test_production_verification_blocks_self_consistent_arbitrary_sha_tamper(tmp
         sleep_fn=lambda _seconds: None,
     )
 
-    injected_kwargs = dict(
-        repository_root=repo, git_commit_resolver=lambda: head_commit,
+    derive_kwargs = dict(
         frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda head_: None,
         reviewed_implementation_binder=lambda head_: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head_),
     )
-    # Sanity: the genuine, untampered evidence set verifies fine in
-    # production before any tampering below.
-    assert v8d_audit.verify_aggregate_production(
-        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root, **injected_kwargs
-    )["result"] == "PASS"
+    derived_before_tamper = _derive_synthetic(repo, head_commit, **derive_kwargs)
+    assert derived_before_tamper == reviewed_commit
 
     arbitrary_sha = "f" * 40
     assert arbitrary_sha != reviewed_commit
@@ -1886,19 +1963,39 @@ def test_production_verification_blocks_self_consistent_arbitrary_sha_tamper(tmp
         expected_reviewed_implementation_commit=arbitrary_sha,
     )["reviewed_production_implementation_commit"] == arbitrary_sha
 
-    # But the PRODUCTION entrypoints must BLOCK: the mechanically derived
-    # commit is `reviewed_commit`, never the tampered `arbitrary_sha`.
+    # Mechanical re-derivation against the (unmodified) synthetic
+    # repository still yields the genuine `reviewed_commit`, never the
+    # tampered value -- the repository/review artifact was never touched,
+    # only the transport/gate evidence was forged.
+    derived_after_tamper = _derive_synthetic(repo, head_commit, **derive_kwargs)
+    assert derived_after_tamper == reviewed_commit
+    assert derived_after_tamper != arbitrary_sha
+
+    # Pinned to that mechanically derived expectation -- exactly what the
+    # zero-seam production entrypoints always compute against the real
+    # repository -- both dossier and aggregate verification BLOCK.
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
-        v8d_audit.verify_dossier_production(
-            result["dossier_paths"][0], gate_receipt_state_root=gate_root, **injected_kwargs
+        v8d_audit.verify_dossier(
+            result["dossier_paths"][0], gate_receipt_state_root=gate_root,
+            expected_reviewed_implementation_commit=derived_after_tamper,
         )
     assert excinfo.value.reason == "V8D_DOSSIER_IMPLEMENTATION_BINDING_MISMATCH"
 
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
-        v8d_audit.verify_aggregate_production(
-            result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root, **injected_kwargs
+        v8d_audit.verify_aggregate(
+            result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root,
+            expected_reviewed_implementation_commit=derived_after_tamper,
         )
     assert excinfo.value.reason == "V8D_AGGREGATE_IMPLEMENTATION_MISMATCH"
+
+    # And the true zero-seam production entrypoints -- which cannot be
+    # pointed at this synthetic repository at all -- BLOCK too, for the
+    # unrelated but equally fail-closed reason that the real review
+    # artifact does not exist.
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
+        v8d_audit.verify_dossier_production(result["dossier_paths"][0], gate_receipt_state_root=gate_root)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
+        v8d_audit.verify_aggregate_production(result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root)
 
 
 def test_existing_gate_receipt_tamper_tests_still_use_synthetic_path_unaffected(tmp_path):
