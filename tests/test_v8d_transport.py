@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import inspect
 import json
 import socket
 import subprocess
@@ -14,6 +15,7 @@ import pytest
 from src import v8d_audit, v8d_git_provenance, v8d_historical_acquisition as acquisition
 from src import v8d_human_gate_consumption as gate_consumption
 from src import v8d_production_provenance, v8d_readiness as readiness
+from src import v8_partition
 from src.v7_yahoo_collector import V7YahooCollectorBlocked
 from src.v8d_transport import (
     BACKOFF_SECONDS,
@@ -34,6 +36,7 @@ from src.v8d_transport import (
     execute_v8d_stage,
     make_request_fingerprint,
     origin_guard_evidence,
+    require_nonempty_quality,
     sha256_url,
 )
 
@@ -2013,3 +2016,185 @@ def test_existing_gate_receipt_tamper_tests_still_use_synthetic_path_unaffected(
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
         v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path))
     assert excinfo.value.reason == "V8D_DOSSIER_GATE_RECEIPT_BYTES_MISMATCH"
+
+
+# ===========================================================================
+# V8D_PROD_HIGH_1C_AUTHORITATIVE_READINESS_REQUEST_PLAN
+# ===========================================================================
+
+
+def _synthetic_readiness_partition_manifest(path: Path) -> Path:
+    t0 = [f"SECRET_T0_{index:03d}" for index in range(300)]
+    blocks = {"T0": t0, "T1": ["SECRET_T1"], "T2": ["SECRET_T2"], "T3": ["SECRET_T3"], "T_spare": ["SECRET_SPARE"]}
+    manifest = {field: None for field in v8_partition.MANIFEST_FIELDS}
+    manifest.update({
+        "schema_version": v8_partition.SCHEMA_VERSION,
+        "study_name": v8_partition.STUDY_NAME,
+        "design_commit": v8_partition.DESIGN_COMMIT,
+        "source_snapshot_semantics": v8_partition.SOURCE_SNAPSHOT_SEMANTICS,
+        "source_snapshot_clarification_commit": v8_partition.SOURCE_SNAPSHOT_CLARIFICATION_COMMIT,
+        "partition_implementation_git_commit": v8d_production_provenance.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "source_url": "https://www.jpx.co.jp/synthetic",
+        "source_host": "www.jpx.co.jp",
+        "source_reproduction_status": "PASS",
+        "t0_reproduction_status": "PASS",
+        "block_assignments": blocks,
+        "manifest_sha256": "",
+    })
+    manifest["manifest_sha256"] = v8_partition.canonical_sha256(
+        {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    )
+    path.write_bytes(v8_partition.canonical_json_bytes(manifest))
+    return path
+
+
+def _synthetic_authority_prerequisites(stage, head, reviewed):
+    return {
+        "trusted_partition_anchor_blob_sha": v8d_production_provenance.EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA,
+        "authorized_partition_manifest_sha256": v8d_production_provenance.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "authorized_partition_implementation_git_commit": v8d_production_provenance.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "authorization_status": "AUTHORIZED",
+        "logical_stage": stage,
+    }
+
+
+def test_public_readiness_signatures_have_no_authority_or_request_overrides():
+    forbidden = {
+        "request_factory", "sentinel", "coordinate", "date", "window", "provider", "host",
+        "quality", "reviewed_implementation_commit", "audit_root", "opener", "sleep_fn", "clock",
+    }
+    for function in (
+        readiness.execute_t1c_transport_readiness_production,
+        readiness.execute_t2_transport_readiness_production,
+    ):
+        parameters = set(inspect.signature(function).parameters)
+        assert parameters == {"human_authorization_identity", "partition_manifest_path"}
+        assert not any(any(word in parameter for word in forbidden) for parameter in parameters)
+
+
+def test_selective_t0_reader_materializes_only_fixed_coordinates(tmp_path):
+    path = _synthetic_readiness_partition_manifest(tmp_path / "partition.json")
+    manifest_sha, implementation, sentinels = readiness._read_selective_t0_sentinels(path)
+    assert len(manifest_sha) == 64
+    assert implementation == v8d_production_provenance.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT
+    assert sentinels == ("SECRET_T0_000", "SECRET_T0_149", "SECRET_T0_299")
+    assert len(sentinels) == 3
+    assert "SECRET_T0_001" not in sentinels and "SECRET_T1" not in sentinels
+
+
+def test_substituted_partition_provenance_blocks_before_gate_or_request(tmp_path):
+    repo, _reviewed, head = _build_bound_file_repo(tmp_path, mutate_file=None)
+    manifest = _synthetic_readiness_partition_manifest(tmp_path / "partition.json")
+    gate_root = tmp_path / "gate-state"
+    resolver_calls = []
+
+    def substituted(_path):
+        resolver_calls.append(1)
+        return "f" * 64, v8d_production_provenance.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT, ("A", "B", "C")
+
+    with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
+        readiness._execute_production_transport_readiness(
+            stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
+            partition_manifest_path=manifest, audit_root=tmp_path / "audit", repository_root=repo,
+            consumption_state_root=gate_root, git_commit_resolver=lambda: head,
+            frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda _head: None,
+            reviewed_implementation_binder=lambda _head: {"reviewed_implementation_git_commit": IMPLEMENTATION_SHA},
+            authority_prerequisite_checker=_synthetic_authority_prerequisites,
+            selective_sentinel_resolver=substituted, sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+        )
+    assert excinfo.value.reason == "V8D_READINESS_PARTITION_PROVENANCE_MISMATCH"
+    assert resolver_calls == [1]
+    assert not list(gate_root.glob("*.json"))
+
+
+def test_frozen_request_factory_binds_coordinates_dates_quality_and_opener(monkeypatch):
+    captured = []
+
+    def fake_builder(**kwargs):
+        captured.append(kwargs)
+        return _plan(kwargs["logical_stage"], kwargs["logical_coordinate"], lambda: "ok")
+
+    monkeypatch.setattr(readiness, "build_yahoo_request_plan", fake_builder)
+    opener = lambda _request: "synthetic-response"
+    factory = readiness._frozen_request_factory(
+        "T2_TRANSPORT_READINESS", ("S0", "S149", "S299"), opener=opener
+    )
+    for coordinate in (0, 149, 299):
+        factory(coordinate)
+    assert [item["logical_coordinate"] for item in captured] == [0, 149, 299]
+    assert all(item["request_start"] == "2025-12-01" for item in captured)
+    assert all(item["request_end_exclusive"] == "2025-12-08" for item in captured)
+    assert all(item["opener"] is opener for item in captured)
+    assert all(item["validate_result"] is require_nonempty_quality for item in captured)
+
+
+def test_authority_prerequisite_blocks_before_private_resolution_and_gate(tmp_path):
+    repo, _reviewed, head = _build_bound_file_repo(tmp_path, mutate_file=None)
+    manifest = _synthetic_readiness_partition_manifest(tmp_path / "partition.json")
+    gate_root = tmp_path / "gate-state"
+    private_reads = []
+
+    def resolver(_path):
+        private_reads.append(1)
+        raise AssertionError("private manifest must not be read")
+
+    def blocked(*_args):
+        raise readiness.V8DReadinessBlocked("V8D_READINESS_AUTHORITY_PREREQUISITES_BLOCKED")
+
+    with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
+        readiness._execute_production_transport_readiness(
+            stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
+            partition_manifest_path=manifest, audit_root=tmp_path / "audit", repository_root=repo,
+            consumption_state_root=gate_root, git_commit_resolver=lambda: head,
+            frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda _head: None,
+            reviewed_implementation_binder=lambda _head: {"reviewed_implementation_git_commit": IMPLEMENTATION_SHA},
+            authority_prerequisite_checker=blocked, selective_sentinel_resolver=resolver,
+            sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+        )
+    assert excinfo.value.reason == "V8D_READINESS_AUTHORITY_PREREQUISITES_BLOCKED"
+    assert private_reads == []
+    assert not gate_root.exists() or not list(gate_root.glob("*.json"))
+
+
+def test_synthetic_gate_receipt_exists_before_first_synthetic_opener(tmp_path, monkeypatch):
+    repo, _reviewed, head = _build_bound_file_repo(tmp_path, mutate_file=None)
+    manifest = _synthetic_readiness_partition_manifest(tmp_path / "partition.json")
+    gate_root = tmp_path / "gate-state"
+    opener_calls = []
+
+    def fake_opener(request):
+        key = gate_consumption.compute_receipt_key(
+            gate_consumption.GATE_T1C_TRANSPORT_READINESS, FROZEN_DESIGN_COMMIT
+        )
+        assert (gate_root / (key + ".json")).exists()
+        opener_calls.append(request)
+        return "synthetic"
+
+    def fake_builder(**kwargs):
+        coordinate = kwargs["logical_coordinate"]
+        def request_fn():
+            kwargs["opener"](object())
+            return {"valid_price_rows": [{"trading_date": "2025-12-01"}]}
+        return _plan(kwargs["logical_stage"], coordinate, request_fn)
+
+    monkeypatch.setattr(readiness, "build_yahoo_request_plan", fake_builder)
+    result = readiness._execute_production_transport_readiness(
+        stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
+        partition_manifest_path=manifest, audit_root=tmp_path / "audit", repository_root=repo,
+        consumption_state_root=gate_root, git_commit_resolver=lambda: head,
+        frozen_design_object_verifier=lambda: None, design_freeze_approval_verifier=lambda _head: None,
+        reviewed_implementation_binder=lambda _head: {"reviewed_implementation_git_commit": IMPLEMENTATION_SHA},
+        authority_prerequisite_checker=_synthetic_authority_prerequisites,
+        selective_sentinel_resolver=lambda _path: (
+            v8d_production_provenance.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+            v8d_production_provenance.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+            ("SECRET_T0_000", "SECRET_T0_149", "SECRET_T0_299"),
+        ),
+        opener=fake_opener, sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+    )
+    assert result["aggregate"]["sentinel_indices"] == [0, 149, 299]
+    assert len(opener_calls) == 3
+    durable = b"".join(Path(path).read_bytes() for path in result["dossier_paths"])
+    durable += Path(result["aggregate_path"]).read_bytes()
+    assert b"SECRET_T0_" not in durable
+    assert b"query1.finance.yahoo.com" not in durable

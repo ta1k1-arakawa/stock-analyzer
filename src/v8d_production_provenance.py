@@ -31,6 +31,11 @@ fails closed today, by construction, exactly as
 `V8C_PRODUCTION_IMPLEMENTATION_REVIEW.json` does for V8C. Human-gate
 receipt binding is explicitly out of scope for this subtask (a separate
 follow-up subtask, `V8D_PROD_HIGH_1B`).
+
+The readiness consumer also uses this module for the original immutable V8
+partition anchor. That is V8 provenance, not V8C study authority: its exact
+Git blob and exact frozen manifest/implementation bindings are verified here
+before any private partition bytes are read.
 """
 
 from __future__ import annotations
@@ -67,6 +72,24 @@ IMPLEMENTATION_REVIEW_FIELDS = (
     "reviewed_implementation_git_commit",
     "review_result",
     "approval_status",
+)
+
+# --- Original immutable V8 authority used by the fixed V8D T0 probe ---------
+
+V8_DESIGN_COMMIT = "c414d3191cba356734d7ed08bdf1abc7d51fc384"
+EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA = "61faade0625139cec3fb61216ab2f97f572a7028"
+EXPECTED_V8_PARTITION_MANIFEST_SHA256 = "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62"
+EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT = "36cbed941050e728f7f96ce2af505e81175cc02c"
+TRUSTED_PARTITION_ANCHOR_GIT_PATH = "V8_TRUSTED_PARTITION.json"
+TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION = "V8_TRUSTED_PARTITION_V1"
+TRUSTED_PARTITION_ANCHOR_FIELDS = (
+    "schema_version",
+    "study_name",
+    "design_commit",
+    "authorization_status",
+    "authorized_partition_manifest_sha256",
+    "authorized_partition_implementation_git_commit",
+    "authorization_note",
 )
 
 # Every production-relevant V8D source file that must be byte-for-byte
@@ -169,6 +192,44 @@ def verify_design_freeze_approval_blob(repository_root, verified_head: str) -> s
     return blob
 
 
+def read_and_verify_v8_trusted_partition_anchor(repository_root, verified_head: str) -> dict[str, Any]:
+    """Verify the original V8 trust anchor from the verified Git HEAD.
+
+    The blob is checked against its independent frozen SHA before its JSON is
+    interpreted. The returned object contains only public provenance and
+    hashes; it never contains a partition assignment or ticker identity.
+    """
+    commit = require_git_commit(verified_head, "TRUSTED_PARTITION_ANCHOR_HEAD_INVALID")
+    try:
+        blob = resolve_git_blob(repository_root, commit, TRUSTED_PARTITION_ANCHOR_GIT_PATH)
+    except V8DGitProvenanceBlocked as error:
+        raise _wrap_git_provenance_error(error, "TRUSTED_PARTITION_ANCHOR_MISSING") from error
+    if blob != EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA:
+        raise V8DProductionProvenanceBlocked("V8_TRUSTED_PARTITION_BLOB_MUTATED")
+    try:
+        raw = read_git_object_bytes(repository_root, commit, TRUSTED_PARTITION_ANCHOR_GIT_PATH)
+    except V8DGitProvenanceBlocked as error:
+        raise _wrap_git_provenance_error(error, "TRUSTED_PARTITION_ANCHOR_MISSING") from error
+    anchor = _strict_json_object(
+        raw,
+        invalid_reason="TRUSTED_PARTITION_ANCHOR_INVALID_JSON",
+        duplicate_reason="TRUSTED_PARTITION_ANCHOR_DUPLICATE_KEY",
+    )
+    if set(anchor) != set(TRUSTED_PARTITION_ANCHOR_FIELDS):
+        raise V8DProductionProvenanceBlocked("TRUSTED_PARTITION_ANCHOR_SCHEMA_INVALID")
+    if anchor["schema_version"] != TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION:
+        raise V8DProductionProvenanceBlocked("TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION_MISMATCH")
+    if anchor["design_commit"] != V8_DESIGN_COMMIT:
+        raise V8DProductionProvenanceBlocked("TRUSTED_PARTITION_ANCHOR_DESIGN_COMMIT_MISMATCH")
+    if anchor["authorization_status"] != "AUTHORIZED":
+        raise V8DProductionProvenanceBlocked("TRUSTED_PARTITION_NOT_AUTHORIZED")
+    if anchor["authorized_partition_manifest_sha256"] != EXPECTED_V8_PARTITION_MANIFEST_SHA256:
+        raise V8DProductionProvenanceBlocked("TRUSTED_PARTITION_MANIFEST_SHA_MISMATCH")
+    if anchor["authorized_partition_implementation_git_commit"] != EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT:
+        raise V8DProductionProvenanceBlocked("TRUSTED_PARTITION_IMPLEMENTATION_GIT_COMMIT_MISMATCH")
+    return dict(anchor)
+
+
 # ---------------------------------------------------------------------------
 # Reviewed-implementation binding (future INDEPENDENT_V8D_PRODUCTION_
 # IMPLEMENTATION_REVIEW artifact -- does not exist in this repository yet,
@@ -239,8 +300,16 @@ __all__ = [
     "IMPLEMENTATION_REVIEW_GIT_PATH",
     "IMPLEMENTATION_REVIEW_SCHEMA_VERSION",
     "STUDY_NAME",
+    "EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT",
+    "EXPECTED_V8_PARTITION_MANIFEST_SHA256",
+    "EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA",
+    "TRUSTED_PARTITION_ANCHOR_FIELDS",
+    "TRUSTED_PARTITION_ANCHOR_GIT_PATH",
+    "TRUSTED_PARTITION_ANCHOR_SCHEMA_VERSION",
+    "V8_DESIGN_COMMIT",
     "V8DProductionProvenanceBlocked",
     "verify_design_freeze_approval_blob",
     "verify_frozen_design_object",
     "verify_reviewed_implementation_binding",
+    "read_and_verify_v8_trusted_partition_anchor",
 ]
