@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from src import v8d_audit, v8d_git_provenance, v8d_historical_acquisition as acquisition
+from src import v8d_audit, v8d_authority_bridge, v8d_git_provenance, v8d_historical_acquisition as acquisition
 from src import v8d_human_gate_consumption as gate_consumption
 from src import v8d_production_provenance, v8d_readiness as readiness
 from src import v8_partition
@@ -2021,6 +2021,245 @@ def _synthetic_authority_prerequisites(stage, head, reviewed):
     }
 
 
+def _synthetic_authority_bridge_document(logical_block: str) -> dict:
+    if logical_block == "T1C":
+        return {
+            "schema_version": v8d_authority_bridge.T1C_BRIDGE_SCHEMA,
+            "study": v8d_authority_bridge.STUDY,
+            "artifact_role": "T1C_ALLOCATION_AUTHORITY_BRIDGE",
+            "logical_block": "T1C",
+            "v8d_frozen_design_commit": v8d_authority_bridge.FROZEN_DESIGN_COMMIT,
+            "source_v8c_terminal_commit": "d18368c1ec1c26d752ea5862115ab9f4315d1780",
+            "source_v8c_trust_pin_git_commit": v8d_authority_bridge.V8C_TRUST_PIN_COMMIT,
+            "source_v8c_trust_pin_git_blob_sha": v8d_authority_bridge.V8C_TRUST_PIN_BLOB,
+            "authorized_allocation_artifact_self_hash": v8d_authority_bridge.T1C_ALLOCATION_SELF_HASH,
+            "t1c_ticker_count": 300,
+            "t1c_ticker_list_sha256": v8d_authority_bridge.T1C_TICKER_LIST_SHA256,
+            "parent_v8_partition_manifest_sha256": v8d_authority_bridge.V8_PARTITION_MANIFEST_SHA256,
+            "parent_v8_partition_implementation_commit": v8d_authority_bridge.V8_PARTITION_IMPLEMENTATION_COMMIT,
+            "parent_t_spare_ticker_list_sha256": v8d_authority_bridge.T1C_PARENT_SPARE_LIST_SHA256,
+            "preservation_recheck_git_commit": v8d_authority_bridge.T1C_PRESERVATION_COMMIT,
+            "preservation_recheck_git_blob_sha": v8d_authority_bridge.T1C_PRESERVATION_BLOB,
+            "preservation_recheck_result": "PASS",
+            "human_gate": f"V8D_HUMAN_AUTHORIZE_T1C_AUTHORITY_BRIDGE_AT_{v8d_authority_bridge.FROZEN_DESIGN_COMMIT}_FOR_{v8d_authority_bridge.T1C_ALLOCATION_SELF_HASH}",
+            "authorization_status": "AUTHORIZED",
+            "authorization_note": "synthetic safe authority bridge note",
+        }
+    if logical_block == "T2":
+        return {
+            "schema_version": v8d_authority_bridge.T2_BRIDGE_SCHEMA,
+            "study": v8d_authority_bridge.STUDY,
+            "artifact_role": "T2_AUTHORITY_BRIDGE",
+            "logical_block": "T2",
+            "v8d_frozen_design_commit": v8d_authority_bridge.FROZEN_DESIGN_COMMIT,
+            "source_authority": "ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY",
+            "v8_trust_anchor_git_identity": v8d_authority_bridge.V8_TRUST_ANCHOR_BLOB,
+            "authorized_parent_v8_partition_manifest_sha256": v8d_authority_bridge.V8_PARTITION_MANIFEST_SHA256,
+            "parent_v8_partition_implementation_commit": v8d_authority_bridge.V8_PARTITION_IMPLEMENTATION_COMMIT,
+            "expected_t2_ticker_count": 300,
+            "expected_t2_ticker_list_sha256": v8d_authority_bridge.T2_TICKER_LIST_SHA256,
+            "preservation_recheck_git_commit": v8d_authority_bridge.T2_PRESERVATION_COMMIT,
+            "preservation_recheck_git_blob_sha": v8d_authority_bridge.T2_PRESERVATION_BLOB,
+            "preservation_recheck_result": "PASS",
+            "human_gate": f"V8D_HUMAN_AUTHORIZE_T2_AUTHORITY_BRIDGE_AT_{v8d_authority_bridge.FROZEN_DESIGN_COMMIT}_FOR_{v8d_authority_bridge.T2_TICKER_LIST_SHA256}",
+            "authorization_status": "AUTHORIZED",
+            "authorization_note": "synthetic safe authority bridge note",
+        }
+    raise AssertionError(logical_block)
+
+
+def _build_synthetic_authority_bridge_repo(tmp_path: Path, logical_block: str, *, bridge_overrides=None,
+                                           bridge_remove=None, bridge_extra=None, review_overrides=None,
+                                           include_bridge=True, include_review=True):
+    repo = tmp_path / f"authority_{logical_block}"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    bridge_path = Path(v8d_authority_bridge.T1C_BRIDGE_PATH if logical_block == "T1C" else v8d_authority_bridge.T2_BRIDGE_PATH)
+    review_path = Path(v8d_authority_bridge.T1C_REVIEW_PATH if logical_block == "T1C" else v8d_authority_bridge.T2_REVIEW_PATH)
+    if include_bridge:
+        bridge = _synthetic_authority_bridge_document(logical_block)
+        bridge.update(bridge_overrides or {})
+        for key in bridge_remove or ():
+            bridge.pop(key, None)
+        bridge.update(bridge_extra or {})
+        bridge_file = repo / bridge_path
+        bridge_file.parent.mkdir(parents=True, exist_ok=True)
+        bridge_file.write_text(json.dumps(bridge, separators=(",", ":")), encoding="utf-8")
+    else:
+        (repo / "README.md").write_text("no bridge", encoding="utf-8")
+    reviewed_commit = _git_config_commit(repo, "synthetic reviewed bridge")
+    bridge_blob = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", f"{reviewed_commit}:{bridge_path.as_posix()}"], text=True
+    ).strip() if include_bridge else "0" * 40
+    if include_review:
+        review = {
+            "schema_version": v8d_authority_bridge.REVIEW_SCHEMA,
+            "study": v8d_authority_bridge.STUDY,
+            "artifact_role": v8d_authority_bridge.REVIEW_ROLE,
+            "logical_block": logical_block,
+            "reviewed_bridge_git_commit": reviewed_commit,
+            "reviewed_bridge_git_blob_sha": bridge_blob,
+            "review_result": "PASS",
+        }
+        review.update(review_overrides or {})
+        review_file = repo / review_path
+        review_file.parent.mkdir(parents=True, exist_ok=True)
+        review_file.write_text(json.dumps(review, separators=(",", ":")), encoding="utf-8")
+        verified_head = _git_config_commit(repo, "synthetic bridge review")
+    else:
+        verified_head = reviewed_commit
+    return repo, verified_head, reviewed_commit, bridge_blob
+
+
+@pytest.mark.parametrize("logical_block,stage", [("T1C", "T1C_TRANSPORT_READINESS"), ("T2", "T2_TRANSPORT_READINESS")])
+def test_valid_stage_specific_authority_bridge_and_review_pass_synthetic_git(tmp_path, logical_block, stage):
+    repo, head, reviewed_commit, reviewed_blob = _build_synthetic_authority_bridge_repo(tmp_path, logical_block)
+    result = v8d_authority_bridge.verify_stage_authority_bridge(repo, head, stage)
+    assert result["logical_block"] == logical_block
+    assert result["reviewed_bridge_git_commit"] == reviewed_commit
+    assert result["reviewed_bridge_git_blob_sha"] == reviewed_blob
+
+
+def test_t1c_and_t2_bridges_are_not_interchangeable(tmp_path):
+    t1c_repo, t1c_head, _reviewed, _blob = _build_synthetic_authority_bridge_repo(tmp_path, "T1C")
+    with pytest.raises(v8d_authority_bridge.V8DAuthorityBridgeBlocked):
+        v8d_authority_bridge.verify_stage_authority_bridge(t1c_repo, t1c_head, "T2_TRANSPORT_READINESS")
+
+    t2_repo, t2_head, _reviewed, _blob = _build_synthetic_authority_bridge_repo(tmp_path, "T2")
+    with pytest.raises(v8d_authority_bridge.V8DAuthorityBridgeBlocked):
+        v8d_authority_bridge.verify_stage_authority_bridge(t2_repo, t2_head, "T1C_TRANSPORT_READINESS")
+
+
+@pytest.mark.parametrize("logical_block,stage", [("T1C", "T1C_TRANSPORT_READINESS"), ("T2", "T2_TRANSPORT_READINESS")])
+def test_valid_synthetic_bridge_reaches_private_resolution_step(tmp_path, monkeypatch, logical_block, stage):
+    repo, head, _reviewed, _blob = _build_synthetic_authority_bridge_repo(tmp_path, logical_block)
+    manifest = _synthetic_readiness_partition_manifest(tmp_path / f"{logical_block}-partition.json")
+    private_resolution_calls = []
+
+    monkeypatch.setattr(readiness, "resolve_verified_v8d_production_git_commit", lambda _root: "b" * 40)
+    monkeypatch.setattr(readiness, "verify_frozen_design_object", lambda _root: None)
+    monkeypatch.setattr(readiness, "verify_design_freeze_approval_blob", lambda _root, _head: None)
+    monkeypatch.setattr(readiness, "verify_reviewed_implementation_binding", lambda _root, _head: {
+        "reviewed_implementation_git_commit": IMPLEMENTATION_SHA,
+    })
+    monkeypatch.setattr(readiness, "_verify_readiness_authority", lambda *args: _synthetic_authority_prerequisites(*args[:3]))
+    monkeypatch.setattr(
+        readiness, "verify_stage_authority_bridge",
+        lambda _root, _head, actual_stage: v8d_authority_bridge.verify_stage_authority_bridge(repo, head, actual_stage),
+    )
+
+    def private_resolver(_path):
+        private_resolution_calls.append(True)
+        raise readiness.V8DReadinessBlocked("SYNTHETIC_PRIVATE_RESOLUTION_REACHED")
+
+    monkeypatch.setattr(readiness, "_read_selective_t0_sentinels", private_resolver)
+    with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
+        readiness._execute_production_transport_readiness(
+            stage=stage, human_authorization_identity=AUTH_IDENTITY,
+            partition_manifest_path=manifest,
+        )
+    assert excinfo.value.reason == "SYNTHETIC_PRIVATE_RESOLUTION_REACHED"
+    assert private_resolution_calls == [True]
+
+
+@pytest.mark.parametrize("stage", ["T1C_TRANSPORT_READINESS", "T2_TRANSPORT_READINESS"])
+def test_missing_production_stage_bridge_blocks_before_private_resolution_or_gate(tmp_path, monkeypatch, stage):
+    manifest = _synthetic_readiness_partition_manifest(tmp_path / "partition.json")
+    private_reads = []
+    gate_calls = []
+
+    monkeypatch.setattr(readiness, "resolve_verified_v8d_production_git_commit", lambda _root: "b" * 40)
+    monkeypatch.setattr(readiness, "verify_frozen_design_object", lambda _root: None)
+    monkeypatch.setattr(readiness, "verify_design_freeze_approval_blob", lambda _root, _head: None)
+    monkeypatch.setattr(readiness, "verify_reviewed_implementation_binding", lambda _root, _head: {
+        "reviewed_implementation_git_commit": IMPLEMENTATION_SHA,
+    })
+    monkeypatch.setattr(readiness, "_verify_readiness_authority", lambda *_args: _synthetic_authority_prerequisites(
+        *_args[:3]
+    ))
+    def blocked_bridge(*_args):
+        raise readiness.V8DReadinessBlocked("V8D_AUTHORITY_BRIDGE_MISSING")
+
+    monkeypatch.setattr(
+        readiness, "verify_stage_authority_bridge", blocked_bridge,
+    )
+    monkeypatch.setattr(readiness, "_read_selective_t0_sentinels", lambda _path: private_reads.append(True))
+    monkeypatch.setattr(readiness, "consume_gate_and_bind", lambda *_args, **_kwargs: gate_calls.append(True))
+
+    with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
+        readiness._execute_production_transport_readiness(
+            stage=stage, human_authorization_identity=AUTH_IDENTITY,
+            partition_manifest_path=manifest,
+        )
+    assert excinfo.value.reason == "V8D_AUTHORITY_BRIDGE_MISSING"
+    assert private_reads == []
+    assert gate_calls == []
+
+
+@pytest.mark.parametrize("logical_block,stage", [("T1C", "T1C_TRANSPORT_READINESS"), ("T2", "T2_TRANSPORT_READINESS")])
+def test_stage_specific_bridge_missing_blocks_before_private_resolution(tmp_path, logical_block, stage):
+    repo, head, _reviewed, _blob = _build_synthetic_authority_bridge_repo(
+        tmp_path, logical_block, include_bridge=False, include_review=False
+    )
+    with pytest.raises(v8d_authority_bridge.V8DAuthorityBridgeBlocked):
+        v8d_authority_bridge.verify_stage_authority_bridge(repo, head, stage)
+
+
+@pytest.mark.parametrize("field", ["schema_version", "logical_block", "preservation_recheck_result", "authorization_status", "human_gate"])
+def test_t1c_bridge_frozen_binding_tamper_blocks(tmp_path, field):
+    repo, head, _reviewed, _blob = _build_synthetic_authority_bridge_repo(
+        tmp_path, "T1C", bridge_overrides={field: "tampered"}
+    )
+    with pytest.raises(v8d_authority_bridge.V8DAuthorityBridgeBlocked):
+        v8d_authority_bridge.verify_stage_authority_bridge(repo, head, "T1C_TRANSPORT_READINESS")
+
+
+@pytest.mark.parametrize("field", ["source_authority", "v8_trust_anchor_git_identity", "preservation_recheck_git_commit", "preservation_recheck_git_blob_sha", "human_gate"])
+def test_t2_bridge_frozen_binding_tamper_blocks(tmp_path, field):
+    repo, head, _reviewed, _blob = _build_synthetic_authority_bridge_repo(
+        tmp_path, "T2", bridge_overrides={field: "tampered"}
+    )
+    with pytest.raises(v8d_authority_bridge.V8DAuthorityBridgeBlocked):
+        v8d_authority_bridge.verify_stage_authority_bridge(repo, head, "T2_TRANSPORT_READINESS")
+
+
+@pytest.mark.parametrize("override", [
+    {"review_result": "BLOCK"},
+    {"logical_block": "T2"},
+    {"reviewed_bridge_git_commit": "f" * 40},
+    {"reviewed_bridge_git_blob_sha": "f" * 40},
+])
+def test_independent_bridge_review_mismatch_blocks(tmp_path, override):
+    repo, head, _reviewed, _blob = _build_synthetic_authority_bridge_repo(
+        tmp_path, "T1C", review_overrides=override
+    )
+    with pytest.raises(v8d_authority_bridge.V8DAuthorityBridgeBlocked):
+        v8d_authority_bridge.verify_stage_authority_bridge(repo, head, "T1C_TRANSPORT_READINESS")
+
+
+@pytest.mark.parametrize("variant", ["extra", "duplicate"])
+def test_independent_bridge_review_duplicate_and_extra_fields_block(tmp_path, variant):
+    repo, head, _reviewed, _blob = _build_synthetic_authority_bridge_repo(tmp_path, "T1C")
+    review_path = repo / v8d_authority_bridge.T1C_REVIEW_PATH
+    if variant == "extra":
+        raw = review_path.read_text(encoding="utf-8")
+        review_path.write_text(raw[:-1] + ',"extra":true}', encoding="utf-8")
+    else:
+        review_path.write_text('{"schema_version":"x","schema_version":"y"}', encoding="utf-8")
+    _git_config_commit(repo, "extra review field")
+    new_head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    with pytest.raises(v8d_authority_bridge.V8DAuthorityBridgeBlocked):
+        v8d_authority_bridge.verify_stage_authority_bridge(repo, new_head, "T1C_TRANSPORT_READINESS")
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"bridge_remove": ["human_gate"]},
+    {"bridge_extra": {"unexpected": True}},
+])
+def test_authority_bridge_exact_field_set_blocks_missing_or_extra(tmp_path, kwargs):
+    repo, head, _reviewed, _blob = _build_synthetic_authority_bridge_repo(tmp_path, "T2", **kwargs)
+    with pytest.raises(v8d_authority_bridge.V8DAuthorityBridgeBlocked):
+        v8d_authority_bridge.verify_stage_authority_bridge(repo, head, "T2_TRANSPORT_READINESS")
 def test_public_readiness_signatures_have_no_authority_or_request_overrides():
     forbidden = {
         "request_factory", "sentinel", "coordinate", "date", "window", "provider", "host",
@@ -2098,6 +2337,7 @@ def test_substituted_partition_provenance_blocks_before_gate_or_request(tmp_path
         "authorized_partition_manifest_sha256": v8d_production_provenance.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
         "authorized_partition_implementation_git_commit": v8d_production_provenance.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
     })
+    monkeypatch.setattr(readiness, "verify_stage_authority_bridge", lambda *_args: {"review_result": "PASS"})
     monkeypatch.setattr(readiness, "_read_selective_t0_sentinels", substituted)
     with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
         readiness._execute_production_transport_readiness(

@@ -51,6 +51,7 @@ from src.v8d_production_provenance import (
     verify_frozen_design_object,
     verify_reviewed_implementation_binding,
 )
+from src.v8d_authority_bridge import V8DAuthorityBridgeBlocked, verify_stage_authority_bridge
 from src.v8d_transport import (
     DurableV8DAuditStore,
     READINESS_STAGES,
@@ -410,12 +411,13 @@ def _execute_production_transport_readiness(
         authority_prerequisites = _verify_readiness_authority(
             stage, verified_head, reviewed_commit, CANONICAL_REPOSITORY_ROOT
         )
+        verify_stage_authority_bridge(CANONICAL_REPOSITORY_ROOT, verified_head, stage)
         manifest_sha, manifest_implementation, sentinels = _read_selective_t0_sentinels(
             partition_manifest_path
         )
     except V8DReadinessBlocked:
         raise
-    except (V8DProductionProvenanceBlocked, V8DGitProvenanceBlocked) as error:
+    except (V8DAuthorityBridgeBlocked, V8DProductionProvenanceBlocked, V8DGitProvenanceBlocked) as error:
         raise _wrap(error) from error
     except Exception as error:  # noqa: BLE001 - private input failures BLOCK
         raise V8DReadinessBlocked(
