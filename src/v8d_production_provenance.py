@@ -81,6 +81,7 @@ BOUND_PRODUCTION_FILES: tuple[str, ...] = (
     "src/v8d_readiness.py",
     "src/v8d_historical_acquisition.py",
     "src/v8d_audit.py",
+    "src/v8d_human_gate_consumption.py",
 )
 
 

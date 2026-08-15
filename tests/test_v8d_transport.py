@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import socket
 import subprocess
 import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from src import v8d_audit, v8d_git_provenance, v8d_historical_acquisition as acquisition
+from src import v8d_human_gate_consumption as gate_consumption
 from src import v8d_production_provenance, v8d_readiness as readiness
 from src.v7_yahoo_collector import V7YahooCollectorBlocked
 from src.v8d_transport import (
@@ -37,12 +40,41 @@ from src.v8d_transport import (
 
 IMPLEMENTATION_SHA = "a" * 40
 SAFE_URL = "https://query1.finance.yahoo.com/synthetic"
+AUTH_IDENTITY = "synthetic-authorization-identity"
 
 
 def _raise(error: BaseException):
     def call():
         raise error
     return call
+
+
+def _fixed_clock():
+    return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def _gate_root(tmp_path: Path) -> Path:
+    return tmp_path / "gate-state"
+
+
+def _consume_gate(root: Path, *, stage: str, reviewed_commit: str = IMPLEMENTATION_SHA,
+                  auth_identity: str = AUTH_IDENTITY,
+                  frozen_design_commit: str = FROZEN_DESIGN_COMMIT) -> dict[str, str]:
+    """Durably consume the exact gate for ``stage`` under ``root`` (a
+    per-test synthetic gate-receipt state root -- never production state)
+    and return the plain 4-field mapping shape `execute_v8d_stage`/
+    `attempt_with_frozen_retry` require."""
+    binding = gate_consumption.consume_gate_and_bind(
+        root, logical_stage=stage, v8d_frozen_design_commit=frozen_design_commit,
+        reviewed_production_implementation_commit=reviewed_commit,
+        raw_authorization_identity=auth_identity, clock=_fixed_clock,
+    )
+    return {
+        "human_gate": binding.human_gate,
+        "gate_receipt_key_sha256": binding.gate_receipt_key_sha256,
+        "gate_receipt_bytes_sha256": binding.gate_receipt_bytes_sha256,
+        "authorization_identity_sha256": binding.authorization_identity_sha256,
+    }
 
 
 def _plan(stage: str, coordinate: int, request_fn, *, start="2025-12-01", end="2025-12-08") -> V8DRequestPlan:
@@ -83,14 +115,17 @@ def _context(stage="T1C_RAW_ACQUISITION", coordinate=0):
 def _single_attempt(tmp_path, fn, *, stage="T1C_RAW_ACQUISITION"):
     store = DurableV8DAuditStore(tmp_path)
     dossier_id = store.new_id()
-    return attempt_with_frozen_retry(
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage=stage)
+    result = attempt_with_frozen_retry(
         fn,
         store=store,
         dossier_id=dossier_id,
         context=_context(stage),
         reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        gate_binding=gate_binding,
         sleep_fn=lambda _seconds: None,
-    ), store, dossier_id
+    )
+    return result, store, dossier_id
 
 
 @pytest.mark.parametrize("status", [408, 425, 429, 500, 502, 503, 504])
@@ -106,7 +141,9 @@ def test_every_frozen_retryable_http_status_is_retried_and_audited(tmp_path, sta
         _single_attempt(tmp_path, request)
     assert len(calls) == 3
     dossier = next(tmp_path.glob("dossier-*.json"))
-    checked = v8d_audit.verify_dossier(dossier, expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
+    checked = v8d_audit.verify_dossier(
+        dossier, gate_receipt_state_root=_gate_root(tmp_path), expected_reviewed_implementation_commit=IMPLEMENTATION_SHA
+    )
     assert [record["classification"] for record in checked["attempts"]] == [f"HTTP_{status}"] * 3
     assert [record["retryable"] for record in checked["attempts"]] == [True, True, True]
 
@@ -123,7 +160,10 @@ def test_every_frozen_nonretryable_http_status_stops_after_one_attempt(tmp_path,
     with pytest.raises(urllib.error.HTTPError):
         _single_attempt(tmp_path, request)
     assert len(calls) == 1
-    checked = v8d_audit.verify_dossier(next(tmp_path.glob("dossier-*.json")), expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
+    checked = v8d_audit.verify_dossier(
+        next(tmp_path.glob("dossier-*.json")), gate_receipt_state_root=_gate_root(tmp_path),
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+    )
     assert checked["attempts"][0]["classification"] == f"HTTP_{status}"
     assert checked["attempts"][0]["retryable"] is False
 
@@ -133,7 +173,10 @@ def test_success_without_retry_persists_before_return_and_verifies(tmp_path):
     value, audit = result
     assert value == {"synthetic": "success"}
     assert audit["attempts"] == 1
-    checked = v8d_audit.verify_dossier(store._path(dossier_id), expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
+    checked = v8d_audit.verify_dossier(
+        store._path(dossier_id), gate_receipt_state_root=_gate_root(tmp_path),
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+    )
     assert checked["attempts"][0]["terminal_state"] == "SUCCESS"
 
 
@@ -149,13 +192,17 @@ def test_429_then_success_sleeps_only_after_durable_failure(tmp_path):
 
     store = DurableV8DAuditStore(tmp_path)
     dossier_id = store.new_id()
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage="T1C_RAW_ACQUISITION")
     value, audit = attempt_with_frozen_retry(
         request, store=store, dossier_id=dossier_id, context=_context(),
-        reviewed_implementation_commit=IMPLEMENTATION_SHA, sleep_fn=sleeps.append,
+        reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding, sleep_fn=sleeps.append,
     )
     assert value == "ok" and audit["attempts"] == 2
     assert sleeps == [float(BACKOFF_SECONDS[0])]
-    checked = v8d_audit.verify_dossier(store._path(dossier_id), expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
+    checked = v8d_audit.verify_dossier(
+        store._path(dossier_id), gate_receipt_state_root=_gate_root(tmp_path),
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+    )
     assert [item["classification"] for item in checked["attempts"]] == ["HTTP_429", "SUCCESS"]
 
 
@@ -208,13 +255,17 @@ def test_v7_request_path_uses_the_durable_v8d_wrapper_with_a_fake_opener(tmp_pat
             opener=fake_opener,
         )
 
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage="T1C_RAW_ACQUISITION")
     result = acquisition.execute_raw_acquisition_transport(
         stage="T1C_RAW_ACQUISITION", request_factory=factory, audit_root=tmp_path,
-        reviewed_implementation_commit=IMPLEMENTATION_SHA, request_start="2020-01-01",
+        reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding, request_start="2020-01-01",
         request_end_exclusive="2020-01-08", request_count=1, sleep_fn=lambda _seconds: None,
     )
     assert opener_calls == [1]
-    dossier = v8d_audit.verify_dossier(result["dossier_paths"][0], expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
+    dossier = v8d_audit.verify_dossier(
+        result["dossier_paths"][0], gate_receipt_state_root=_gate_root(tmp_path),
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+    )
     assert dossier["attempts"][0]["classification"] == "HTTP_400"
 
 
@@ -262,14 +313,15 @@ def test_readiness_end_to_end_success_and_independent_aggregate_verification(tmp
             return {"valid_price_rows": 1}
         return _plan("T1C_TRANSPORT_READINESS", coordinate, request)
 
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage="T1C_TRANSPORT_READINESS")
     result = readiness.execute_transport_readiness_probe(
         stage="T1C_TRANSPORT_READINESS", request_factory=factory, audit_root=tmp_path,
-        reviewed_implementation_commit=IMPLEMENTATION_SHA, sleep_fn=lambda _seconds: None,
+        reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding, sleep_fn=lambda _seconds: None,
     )
     assert result["aggregate"]["result"] == "PASS"
     assert calls == [0, 149, 299]
     checked = v8d_audit.verify_aggregate(
-        result["aggregate_path"], result["dossier_paths"],
+        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=_gate_root(tmp_path),
         expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
         expected_stage="T1C_TRANSPORT_READINESS",
     )
@@ -282,14 +334,15 @@ def test_acquisition_end_to_end_block_retains_all_terminal_evidence(tmp_path):
     def factory(coordinate):
         return _plan("T2_RAW_ACQUISITION", coordinate, _raise(V7YahooCollectorBlocked(reasons[coordinate])))
 
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage="T2_RAW_ACQUISITION")
     result = acquisition.execute_raw_acquisition_transport(
         stage="T2_RAW_ACQUISITION", request_factory=factory, audit_root=tmp_path,
-        reviewed_implementation_commit=IMPLEMENTATION_SHA, request_start="2020-01-01",
+        reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding, request_start="2020-01-01",
         request_end_exclusive="2020-01-08", request_count=3, sleep_fn=lambda _seconds: None,
     )
     assert result["aggregate"]["result"] == "BLOCK"
     checked = v8d_audit.verify_aggregate(
-        result["aggregate_path"], result["dossier_paths"],
+        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=_gate_root(tmp_path),
         expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
         expected_stage="T2_RAW_ACQUISITION",
     )
@@ -307,9 +360,10 @@ def test_retry_exhaustion_has_three_attempts_and_two_backoffs(tmp_path):
 
     with pytest.raises(TimeoutError):
         store = DurableV8DAuditStore(tmp_path)
+        gate_binding = _consume_gate(_gate_root(tmp_path), stage="T1C_RAW_ACQUISITION")
         attempt_with_frozen_retry(
             request, store=store, dossier_id=store.new_id(), context=_context(),
-            reviewed_implementation_commit=IMPLEMENTATION_SHA, sleep_fn=sleeps.append,
+            reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding, sleep_fn=sleeps.append,
         )
     assert len(calls) == 3 and sleeps == [5.0, 30.0]
 
@@ -318,6 +372,7 @@ def test_retry_exhaustion_has_three_attempts_and_two_backoffs(tmp_path):
 def test_audit_write_failure_prevents_retry_or_success_return(tmp_path, monkeypatch, return_success):
     calls, sleeps = [], []
     store = DurableV8DAuditStore(tmp_path)
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage="T1C_RAW_ACQUISITION")
 
     def request():
         calls.append(1)
@@ -332,7 +387,7 @@ def test_audit_write_failure_prevents_retry_or_success_return(tmp_path, monkeypa
     with pytest.raises(V8DAuditPersistenceBlocked):
         attempt_with_frozen_retry(
             request, store=store, dossier_id=store.new_id(), context=_context(),
-            reviewed_implementation_commit=IMPLEMENTATION_SHA, sleep_fn=sleeps.append,
+            reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding, sleep_fn=sleeps.append,
         )
     assert calls == [1]
     assert sleeps == []
@@ -355,9 +410,11 @@ def test_failed_attempt_audit_is_durable_before_next_request(tmp_path):
             return super().write_attempt(*args, **kwargs)
 
     store = OrderedStore(tmp_path)
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage="T1C_RAW_ACQUISITION")
     attempt_with_frozen_retry(
         request, store=store, dossier_id=store.new_id(), context=_context(),
-        reviewed_implementation_commit=IMPLEMENTATION_SHA, sleep_fn=lambda _seconds: order.append("sleep"),
+        reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding,
+        sleep_fn=lambda _seconds: order.append("sleep"),
     )
     assert order == ["request", "persist", "sleep", "request", "success", "persist"]
 
@@ -366,10 +423,10 @@ def test_audit_persistence_failure_stops_readiness_before_next_opener_and_publis
     calls = []
     original = DurableV8DAuditStore.write_attempt
 
-    def fail_on_second_coordinate(self, dossier_id, context, reviewed_commit, record):
+    def fail_on_second_coordinate(self, dossier_id, context, reviewed_commit, gate_binding, record):
         if context.logical_coordinate == 149:
             raise V8DAuditPersistenceBlocked()
-        return original(self, dossier_id, context, reviewed_commit, record)
+        return original(self, dossier_id, context, reviewed_commit, gate_binding, record)
 
     monkeypatch.setattr(DurableV8DAuditStore, "write_attempt", fail_on_second_coordinate)
 
@@ -379,10 +436,11 @@ def test_audit_persistence_failure_stops_readiness_before_next_opener_and_publis
             return "ok"
         return _plan("T1C_TRANSPORT_READINESS", coordinate, request)
 
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage="T1C_TRANSPORT_READINESS")
     with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
         readiness.execute_transport_readiness_probe(
             stage="T1C_TRANSPORT_READINESS", request_factory=factory, audit_root=tmp_path,
-            reviewed_implementation_commit=IMPLEMENTATION_SHA, sleep_fn=lambda _seconds: None,
+            reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding, sleep_fn=lambda _seconds: None,
         )
     assert excinfo.value.reason == "V8D_AUDIT_PERSISTENCE_FAILED"
     assert calls == [0, 149]
@@ -411,11 +469,13 @@ def _rehashed_aggregate(result):
     aggregate_path.write_bytes(canonical_json_bytes(aggregate))
 
 
-def _success_artifacts(tmp_path):
+def _success_artifacts(tmp_path, *, stage="T1C_TRANSPORT_READINESS"):
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage=stage)
     result = readiness.execute_transport_readiness_probe(
-        stage="T1C_TRANSPORT_READINESS",
-        request_factory=lambda coordinate: _plan("T1C_TRANSPORT_READINESS", coordinate, lambda: "ok"),
+        stage=stage,
+        request_factory=lambda coordinate: _plan(stage, coordinate, lambda: "ok"),
         audit_root=tmp_path, reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        gate_binding=gate_binding,
         sleep_fn=lambda _seconds: None,
     )
     return result
@@ -426,7 +486,7 @@ def test_malformed_or_tampered_audit_and_missing_attempt_are_rejected(tmp_path):
     dossier = result["dossier_paths"][0]
     _tamper_dossier(dossier, lambda value: value["attempts"][0].update({"classification": "HTTP_400"}))
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
-        v8d_audit.verify_dossier(dossier, expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
+        v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path), expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
 
     retry_root = tmp_path / "retry"
     retry_root.mkdir()
@@ -440,14 +500,15 @@ def test_malformed_or_tampered_audit_and_missing_attempt_are_rejected(tmp_path):
 
     store = DurableV8DAuditStore(retry_root)
     dossier_id = store.new_id()
+    gate_binding = _consume_gate(_gate_root(retry_root), stage="T1C_RAW_ACQUISITION")
     attempt_with_frozen_retry(
         retry_then_success, store=store, dossier_id=dossier_id, context=_context(),
-        reviewed_implementation_commit=IMPLEMENTATION_SHA, sleep_fn=lambda _seconds: None,
+        reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding, sleep_fn=lambda _seconds: None,
     )
     path = store._path(dossier_id)
     _rehashed_dossier(path, lambda value: value["attempts"].pop(0))
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
-        v8d_audit.verify_dossier(path, expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
+        v8d_audit.verify_dossier(path, gate_receipt_state_root=_gate_root(retry_root), expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
 
 
 @pytest.mark.parametrize("field,value", [
@@ -460,7 +521,7 @@ def test_provenance_binding_tampering_is_rejected(tmp_path, field, value):
     dossier = result["dossier_paths"][0]
     _rehashed_dossier(dossier, lambda record: record.update({field: value}))
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
-        v8d_audit.verify_dossier(dossier, expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
+        v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path), expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
 
 
 @pytest.mark.parametrize("field", ["request_fingerprint", "request_url_sha256"])
@@ -475,14 +536,15 @@ def test_request_binding_tampering_across_retries_is_rejected(tmp_path, field):
 
     store = DurableV8DAuditStore(tmp_path)
     dossier_id = store.new_id()
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage="T1C_RAW_ACQUISITION")
     attempt_with_frozen_retry(
         request, store=store, dossier_id=dossier_id, context=_context(),
-        reviewed_implementation_commit=IMPLEMENTATION_SHA, sleep_fn=lambda _seconds: None,
+        reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding, sleep_fn=lambda _seconds: None,
     )
     path = store._path(dossier_id)
     _rehashed_dossier(path, lambda value: value["attempts"][1].update({field: "e" * 64}))
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
-        v8d_audit.verify_dossier(path, expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
+        v8d_audit.verify_dossier(path, gate_receipt_state_root=_gate_root(tmp_path), expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
 
 
 def test_aggregate_tampering_is_rejected_even_when_dossiers_are_intact(tmp_path):
@@ -492,7 +554,10 @@ def test_aggregate_tampering_is_rejected_even_when_dossiers_are_intact(tmp_path)
     value["result"] = "BLOCK"
     aggregate_path.write_bytes(canonical_json_bytes(value))
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
-        v8d_audit.verify_aggregate(aggregate_path, result["dossier_paths"], expected_stage="T1C_TRANSPORT_READINESS")
+        v8d_audit.verify_aggregate(
+            aggregate_path, result["dossier_paths"], gate_receipt_state_root=_gate_root(tmp_path),
+            expected_stage="T1C_TRANSPORT_READINESS",
+        )
 
 
 def test_wrong_readiness_sentinel_window_and_logical_stage_bindings_are_rejected(tmp_path):
@@ -500,7 +565,7 @@ def test_wrong_readiness_sentinel_window_and_logical_stage_bindings_are_rejected
     dossier = result["dossier_paths"][0]
     _rehashed_dossier(dossier, lambda value: value.update({"sentinel_indices": [0, 1, 2]}))
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
-        v8d_audit.verify_dossier(dossier, expected_stage="T1C_TRANSPORT_READINESS")
+        v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path), expected_stage="T1C_TRANSPORT_READINESS")
 
 
 def test_readiness_dossier_coordinate_outside_exact_sentinel_set_is_rejected(tmp_path):
@@ -508,7 +573,7 @@ def test_readiness_dossier_coordinate_outside_exact_sentinel_set_is_rejected(tmp
     dossier = result["dossier_paths"][0]
     _rehashed_dossier(dossier, lambda value: value.update({"logical_coordinate": 1}))
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
-        v8d_audit.verify_dossier(dossier, expected_stage="T1C_TRANSPORT_READINESS")
+        v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path), expected_stage="T1C_TRANSPORT_READINESS")
 
 
 def test_readiness_aggregate_rederives_exact_coordinate_set_from_dossiers(tmp_path):
@@ -517,14 +582,15 @@ def test_readiness_aggregate_rederives_exact_coordinate_set_from_dossiers(tmp_pa
     _rehashed_aggregate(result)
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
         v8d_audit.verify_aggregate(
-            result["aggregate_path"], result["dossier_paths"], expected_stage="T1C_TRANSPORT_READINESS"
+            result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=_gate_root(tmp_path),
+            expected_stage="T1C_TRANSPORT_READINESS",
         )
 
 
 def test_readiness_aggregate_accepts_exact_coordinate_set_in_any_dossier_order(tmp_path):
     result = _success_artifacts(tmp_path)
     checked = v8d_audit.verify_aggregate(
-        result["aggregate_path"], list(reversed(result["dossier_paths"])),
+        result["aggregate_path"], list(reversed(result["dossier_paths"])), gate_receipt_state_root=_gate_root(tmp_path),
         expected_stage="T1C_TRANSPORT_READINESS",
     )
     assert checked["result"] == "PASS"
@@ -536,10 +602,11 @@ def test_public_aggregate_and_private_dossier_never_store_raw_url_or_exception_m
     def request():
         raise ValueError(secret)
 
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage="T1C_RAW_ACQUISITION")
     result = acquisition.execute_raw_acquisition_transport(
         stage="T1C_RAW_ACQUISITION",
         request_factory=lambda coordinate: _plan("T1C_RAW_ACQUISITION", coordinate, request, start="2020-01-01", end="2020-01-08"),
-        audit_root=tmp_path, reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        audit_root=tmp_path, reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding,
         request_start="2020-01-01", request_end_exclusive="2020-01-08", request_count=1,
         sleep_fn=lambda _seconds: None,
     )
@@ -548,21 +615,23 @@ def test_public_aggregate_and_private_dossier_never_store_raw_url_or_exception_m
     assert secret.encode() not in aggregate_raw and secret.encode() not in dossier_raw
     assert SAFE_URL.encode() not in aggregate_raw and SAFE_URL.encode() not in dossier_raw
     assert b"request_fingerprint" not in aggregate_raw
+    assert AUTH_IDENTITY.encode() not in aggregate_raw and AUTH_IDENTITY.encode() not in dossier_raw
 
 
 def test_forged_concrete_metadata_is_rejected(tmp_path):
     store = DurableV8DAuditStore(tmp_path)
     dossier_id = store.new_id()
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage="T1C_RAW_ACQUISITION")
     with pytest.raises(TimeoutError):
         attempt_with_frozen_retry(
             lambda: (_ for _ in ()).throw(TimeoutError("x")), store=store, dossier_id=dossier_id,
-            context=_context(), reviewed_implementation_commit=IMPLEMENTATION_SHA,
+            context=_context(), reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding,
             sleep_fn=lambda _seconds: None,
         )
     path = store._path(dossier_id)
     _rehashed_dossier(path, lambda value: value["attempts"][0].update({"concrete_exception_type": "HTTPError"}))
     with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
-        v8d_audit.verify_dossier(path, expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
+        v8d_audit.verify_dossier(path, gate_receipt_state_root=_gate_root(tmp_path), expected_reviewed_implementation_commit=IMPLEMENTATION_SHA)
 
 
 # ===========================================================================
@@ -946,3 +1015,672 @@ def test_v8d_git_provenance_module_never_invokes_git_fetch(monkeypatch):
     except v8d_git_provenance.V8DGitProvenanceBlocked:
         pass
     assert not any("fetch" in call for call in calls)
+
+
+# ===========================================================================
+# V8D_PROD_HIGH_1B_GATE_CONSUMPTION_RECEIPT_BINDING
+#
+# src.v8d_human_gate_consumption: durable, fail-closed, one-shot receipts
+# for the four Yahoo-request-bearing V8D human gates. src.v8d_transport /
+# src.v8d_audit: every private dossier now carries an exact safe gate
+# binding, and the independent verifier never trusts a dossier's own
+# claims -- it independently locates and re-validates the real durable
+# receipt. src.v8d_readiness / src.v8d_historical_acquisition: the new
+# production entrypoints derive authority only from HIGH-1A provenance
+# plus real one-shot gate consumption -- never from a caller-supplied
+# reviewed_implementation_commit. No real human gate is consumed anywhere
+# in this test module; every gate-state root is a per-test tmp_path.
+# ===========================================================================
+
+
+def _valid_receipt_payload(*, stage="T1C_TRANSPORT_READINESS", reviewed_commit=IMPLEMENTATION_SHA,
+                           frozen_design_commit=FROZEN_DESIGN_COMMIT, auth_hash="0" * 64):
+    return {
+        "schema_version": gate_consumption.SCHEMA_VERSION,
+        "study": gate_consumption.STUDY_NAME,
+        "repository": gate_consumption.REPOSITORY_IDENTITY,
+        "gate": gate_consumption.STAGE_GATE[stage],
+        "logical_stage": stage,
+        "v8d_frozen_design_commit": frozen_design_commit,
+        "reviewed_production_implementation_commit": reviewed_commit,
+        "authorization_identity_sha256": auth_hash,
+        "consumed": True,
+        "consumption_count": 1,
+        "consumption_boundary": gate_consumption.CONSUMPTION_BOUNDARY,
+        "consumed_at_utc": "2026-01-01T00:00:00Z",
+    }
+
+
+def _write_receipt(root: Path, *, stage="T1C_TRANSPORT_READINESS", payload=None) -> tuple[Path, str]:
+    root.mkdir(parents=True, exist_ok=True)
+    key = gate_consumption.compute_receipt_key(gate_consumption.STAGE_GATE[stage], FROZEN_DESIGN_COMMIT)
+    body = payload if payload is not None else _valid_receipt_payload(stage=stage)
+    path = root / (key + ".json")
+    path.write_bytes(json.dumps(body).encode())
+    return path, key
+
+
+# --- Required test 1: all four exact stage->gate mappings -------------------
+
+
+def test_all_four_stage_gate_mappings_are_exact():
+    assert gate_consumption.STAGE_GATE == {
+        "T1C_TRANSPORT_READINESS": "T1C_TRANSPORT_READINESS_HUMAN_GATE",
+        "T1C_RAW_ACQUISITION": "T1C_RAW_ACQUISITION_HUMAN_GATE",
+        "T2_TRANSPORT_READINESS": "T2_TRANSPORT_READINESS_HUMAN_GATE",
+        "T2_RAW_ACQUISITION": "T2_RAW_ACQUISITION_HUMAN_GATE",
+    }
+    assert len(gate_consumption.KNOWN_GATES) == 4 and len(set(gate_consumption.KNOWN_GATES)) == 4
+
+
+# --- Required test 2: wrong stage/gate mapping -> BLOCK ----------------------
+
+
+def test_wrong_stage_gate_mapping_blocks_at_transport_layer(tmp_path):
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage="T1C_TRANSPORT_READINESS")
+    store = DurableV8DAuditStore(tmp_path)
+    with pytest.raises(V8DTransportBlocked) as excinfo:
+        attempt_with_frozen_retry(
+            lambda: "ok", store=store, dossier_id=store.new_id(), context=_context("T1C_RAW_ACQUISITION"),
+            reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding, sleep_fn=lambda _s: None,
+        )
+    assert excinfo.value.reason == "V8D_GATE_BINDING_STAGE_MISMATCH"
+
+
+def test_wrong_stage_gate_mapping_in_receipt_blocks_independent_read(tmp_path):
+    root = tmp_path / "gate-state"
+    payload = _valid_receipt_payload(stage="T1C_TRANSPORT_READINESS")
+    payload["gate"] = gate_consumption.GATE_T2_RAW_ACQUISITION
+    path, key = _write_receipt(root, stage="T1C_TRANSPORT_READINESS", payload=payload)
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(root, key)
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_STAGE_GATE_MISMATCH"
+
+
+# --- Required test 3: empty/missing raw authorization identity -> BLOCK -----
+
+
+def test_empty_or_missing_authorization_identity_blocks_before_request_readiness(tmp_path):
+    def request_factory(_coordinate):
+        raise AssertionError("request_factory must not be invoked")
+
+    for bad_identity in ("", None):
+        with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
+            readiness._execute_production_transport_readiness(
+                stage="T1C_TRANSPORT_READINESS", human_authorization_identity=bad_identity,
+                request_factory=request_factory, audit_root=tmp_path / "audit",
+                consumption_state_root=tmp_path / "gate-state",
+            )
+        assert excinfo.value.reason == "V8D_READINESS_HUMAN_AUTHORIZATION_IDENTITY_REQUIRED"
+
+
+def test_empty_or_missing_authorization_identity_blocks_before_request_acquisition(tmp_path):
+    def request_factory(_coordinate):
+        raise AssertionError("request_factory must not be invoked")
+
+    for bad_identity in ("", None):
+        with pytest.raises(acquisition.V8DAcquisitionBlocked) as excinfo:
+            acquisition._execute_production_raw_acquisition(
+                stage="T1C_RAW_ACQUISITION", human_authorization_identity=bad_identity,
+                request_factory=request_factory, audit_root=tmp_path / "audit",
+                request_start="2020-01-01", request_end_exclusive="2020-01-08", request_count=1,
+                consumption_state_root=tmp_path / "gate-state",
+            )
+        assert excinfo.value.reason == "V8D_ACQUISITION_HUMAN_AUTHORIZATION_IDENTITY_REQUIRED"
+
+
+# --- Required tests 4-5: raw identity never persisted; hash is correct ------
+
+
+def test_raw_authorization_identity_never_appears_in_durable_artifacts(tmp_path):
+    secret_identity = "SUPER-SECRET-RAW-AUTH-IDENTITY-NOT-A-HASH"
+    gate_root = _gate_root(tmp_path)
+    gate_binding = _consume_gate(gate_root, stage="T1C_TRANSPORT_READINESS", auth_identity=secret_identity)
+    result = readiness.execute_transport_readiness_probe(
+        stage="T1C_TRANSPORT_READINESS",
+        request_factory=lambda coordinate: _plan("T1C_TRANSPORT_READINESS", coordinate, lambda: "ok"),
+        audit_root=tmp_path, reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding,
+        sleep_fn=lambda _seconds: None,
+    )
+    receipt_path = gate_root / (gate_binding["gate_receipt_key_sha256"] + ".json")
+    receipt_raw = receipt_path.read_bytes()
+    aggregate_raw = Path(result["aggregate_path"]).read_bytes()
+    dossier_raw_all = b"".join(Path(p).read_bytes() for p in result["dossier_paths"])
+    assert secret_identity.encode() not in receipt_raw
+    assert secret_identity.encode() not in aggregate_raw
+    assert secret_identity.encode() not in dossier_raw_all
+
+
+def test_authorization_identity_sha256_is_correct(tmp_path):
+    identity = "check-this-exact-identity"
+    binding = gate_consumption.consume_gate_and_bind(
+        _gate_root(tmp_path), logical_stage="T1C_TRANSPORT_READINESS", v8d_frozen_design_commit=FROZEN_DESIGN_COMMIT,
+        reviewed_production_implementation_commit=IMPLEMENTATION_SHA, raw_authorization_identity=identity,
+        clock=_fixed_clock,
+    )
+    assert binding.authorization_identity_sha256 == hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+# --- Required test 6: receipt exact schema ----------------------------------
+
+
+def test_receipt_exact_schema_enforced():
+    assert gate_consumption.RECEIPT_FIELDS == (
+        "schema_version", "study", "repository", "gate", "logical_stage",
+        "v8d_frozen_design_commit", "reviewed_production_implementation_commit",
+        "authorization_identity_sha256", "consumed", "consumption_count",
+        "consumption_boundary", "consumed_at_utc",
+    )
+
+
+# --- Required test 7: duplicate receipt JSON key -----------------------------
+
+
+def test_duplicate_receipt_json_key_blocks(tmp_path):
+    root = tmp_path / "gate-state"
+    root.mkdir()
+    key = gate_consumption.compute_receipt_key(gate_consumption.GATE_T1C_TRANSPORT_READINESS, FROZEN_DESIGN_COMMIT)
+    raw = (
+        b'{"schema_version": "' + gate_consumption.SCHEMA_VERSION.encode() + b'", '
+        b'"schema_version": "DUPLICATE", "study": "x", "repository": "y"}'
+    )
+    (root / (key + ".json")).write_bytes(raw)
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(root, key)
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_DUPLICATE_KEY"
+
+
+# --- Required test 8: missing receipt field ----------------------------------
+
+
+@pytest.mark.parametrize("missing_field", gate_consumption.RECEIPT_FIELDS)
+def test_missing_receipt_field_blocks(tmp_path, missing_field):
+    root = tmp_path / "gate-state"
+    payload = _valid_receipt_payload()
+    del payload[missing_field]
+    _, key = _write_receipt(root, payload=payload)
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(root, key)
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_SCHEMA_INVALID"
+
+
+# --- Required test 9: extra receipt field ------------------------------------
+
+
+def test_extra_receipt_field_blocks(tmp_path):
+    root = tmp_path / "gate-state"
+    payload = _valid_receipt_payload()
+    payload["unexpected_extra_field"] = "x"
+    _, key = _write_receipt(root, payload=payload)
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(root, key)
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_SCHEMA_INVALID"
+
+
+# --- Required test 10: consumed != true --------------------------------------
+
+
+def test_consumed_flag_not_true_blocks(tmp_path):
+    root = tmp_path / "gate-state"
+    payload = _valid_receipt_payload()
+    payload["consumed"] = False
+    _, key = _write_receipt(root, payload=payload)
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(root, key)
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_CONSUMED_FLAG_INVALID"
+
+
+# --- Required test 11: consumption_count != 1 --------------------------------
+
+
+def test_consumption_count_not_one_blocks(tmp_path):
+    root = tmp_path / "gate-state"
+    payload = _valid_receipt_payload()
+    payload["consumption_count"] = 2
+    _, key = _write_receipt(root, payload=payload)
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(root, key)
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_CONSUMPTION_COUNT_INVALID"
+
+
+# --- Required test 12: wrong consumption_boundary ----------------------------
+
+
+def test_wrong_consumption_boundary_blocks(tmp_path):
+    root = tmp_path / "gate-state"
+    payload = _valid_receipt_payload()
+    payload["consumption_boundary"] = "SOMETIME_LATER"
+    _, key = _write_receipt(root, payload=payload)
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(root, key)
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_CONSUMPTION_BOUNDARY_INVALID"
+
+
+# --- Required test 13: wrong frozen design commit ----------------------------
+
+
+def test_wrong_frozen_design_commit_in_receipt_blocks(tmp_path):
+    root = tmp_path / "gate-state"
+    binding = gate_consumption.consume_gate_and_bind(
+        root, logical_stage="T1C_TRANSPORT_READINESS", v8d_frozen_design_commit=FROZEN_DESIGN_COMMIT,
+        reviewed_production_implementation_commit=IMPLEMENTATION_SHA, raw_authorization_identity=AUTH_IDENTITY,
+        clock=_fixed_clock,
+    )
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(
+            root, binding.gate_receipt_key_sha256, expected_gate=binding.human_gate,
+            expected_v8d_frozen_design_commit="9" * 40,
+        )
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_DESIGN_COMMIT_MISMATCH"
+
+
+# --- Required test 14: wrong reviewed implementation commit -----------------
+
+
+def test_dossier_reviewed_implementation_commit_disagreeing_with_receipt_blocks(tmp_path):
+    result = _success_artifacts(tmp_path)
+    dossier = result["dossier_paths"][0]
+    _rehashed_dossier(dossier, lambda value: value.update({"reviewed_production_implementation_commit": "9" * 40}))
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path))
+    assert excinfo.value.reason == "V8D_DOSSIER_GATE_RECEIPT_IMPLEMENTATION_MISMATCH"
+
+
+# --- Required test 15: wrong logical stage -----------------------------------
+
+
+def test_dossier_wrong_logical_stage_blocks(tmp_path):
+    result = _success_artifacts(tmp_path)
+    dossier = result["dossier_paths"][0]
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path), expected_stage="T2_TRANSPORT_READINESS")
+    assert excinfo.value.reason == "V8D_DOSSIER_STAGE_INVALID"
+
+
+# --- Required test 16: wrong human gate --------------------------------------
+
+
+def test_dossier_wrong_human_gate_blocks(tmp_path):
+    result = _success_artifacts(tmp_path)
+    dossier = result["dossier_paths"][0]
+    _rehashed_dossier(dossier, lambda value: value.update({"human_gate": gate_consumption.GATE_T2_RAW_ACQUISITION}))
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path))
+    assert excinfo.value.reason == "V8D_DOSSIER_HUMAN_GATE_MISMATCH"
+
+
+# --- Required test 17: receipt under wrong key -------------------------------
+
+
+def test_receipt_stored_under_wrong_key_blocks(tmp_path):
+    root = tmp_path / "gate-state"
+    binding = gate_consumption.consume_gate_and_bind(
+        root, logical_stage="T1C_TRANSPORT_READINESS", v8d_frozen_design_commit=FROZEN_DESIGN_COMMIT,
+        reviewed_production_implementation_commit=IMPLEMENTATION_SHA, raw_authorization_identity=AUTH_IDENTITY,
+        clock=_fixed_clock,
+    )
+    real_path = root / (binding.gate_receipt_key_sha256 + ".json")
+    wrong_key = "0" * 64
+    (root / (wrong_key + ".json")).write_bytes(real_path.read_bytes())
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(root, wrong_key)
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_KEY_CONTENT_MISMATCH"
+
+
+# --- Required test 18: missing receipt ---------------------------------------
+
+
+def test_missing_receipt_blocks(tmp_path):
+    root = tmp_path / "gate-state"
+    root.mkdir()
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(root, "0" * 64)
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_MISSING"
+
+
+def test_verify_dossier_without_gate_receipt_state_root_blocks(tmp_path):
+    result = _success_artifacts(tmp_path)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(result["dossier_paths"][0])
+    assert excinfo.value.reason == "V8D_GATE_RECEIPT_STATE_ROOT_REQUIRED"
+
+
+def test_verify_aggregate_without_gate_receipt_state_root_blocks(tmp_path):
+    result = _success_artifacts(tmp_path)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_aggregate(result["aggregate_path"], result["dossier_paths"])
+    assert excinfo.value.reason == "V8D_GATE_RECEIPT_STATE_ROOT_REQUIRED"
+
+
+# --- Required test 19: tamper receipt bytes ----------------------------------
+
+
+def test_tampering_receipt_bytes_after_creation_blocks_on_bytes_hash(tmp_path):
+    result = _success_artifacts(tmp_path)
+    dossier_path = result["dossier_paths"][0]
+    dossier = json.loads(Path(dossier_path).read_text(encoding="utf-8"))
+    receipt_path = _gate_root(tmp_path) / (dossier["gate_receipt_key_sha256"] + ".json")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    # A byte-level tamper that keeps every semantic field individually
+    # valid (the receipt's own timestamp) still changes the exact raw
+    # bytes, so the independently recomputed byte-hash must disagree.
+    receipt["consumed_at_utc"] = "2099-01-01T00:00:00Z"
+    receipt_path.write_bytes((json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode())
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(dossier_path, gate_receipt_state_root=_gate_root(tmp_path))
+    assert excinfo.value.reason == "V8D_DOSSIER_GATE_RECEIPT_BYTES_MISMATCH"
+
+
+# --- Required tests 20-22: dossier gate-binding tampering survives rehash ---
+
+
+def test_tampering_dossier_gate_receipt_key_after_rehash_blocks(tmp_path):
+    result = _success_artifacts(tmp_path)
+    dossier = result["dossier_paths"][0]
+    _rehashed_dossier(dossier, lambda value: value.update({"gate_receipt_key_sha256": "1" * 64}))
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path))
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_MISSING"
+
+
+def test_tampering_dossier_gate_receipt_bytes_hash_after_rehash_blocks(tmp_path):
+    result = _success_artifacts(tmp_path)
+    dossier = result["dossier_paths"][0]
+    _rehashed_dossier(dossier, lambda value: value.update({"gate_receipt_bytes_sha256": "2" * 64}))
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path))
+    assert excinfo.value.reason == "V8D_DOSSIER_GATE_RECEIPT_BYTES_MISMATCH"
+
+
+def test_tampering_dossier_authorization_identity_hash_after_rehash_blocks(tmp_path):
+    result = _success_artifacts(tmp_path)
+    dossier = result["dossier_paths"][0]
+    _rehashed_dossier(dossier, lambda value: value.update({"authorization_identity_sha256": "3" * 64}))
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(dossier, gate_receipt_state_root=_gate_root(tmp_path))
+    assert excinfo.value.reason == "V8D_DOSSIER_GATE_RECEIPT_AUTHORIZATION_MISMATCH"
+
+
+# --- Required tests 23-25: aggregate agreement / mixed receipts / PASS ------
+
+
+def test_all_dossiers_in_one_aggregate_bind_same_receipt(tmp_path):
+    result = _success_artifacts(tmp_path)
+    dossiers = [json.loads(Path(p).read_text(encoding="utf-8")) for p in result["dossier_paths"]]
+    keys = {d["gate_receipt_key_sha256"] for d in dossiers}
+    assert len(keys) == 1
+    checked = v8d_audit.verify_aggregate(
+        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=_gate_root(tmp_path)
+    )
+    assert checked["result"] == "PASS"
+
+
+def test_mixing_dossiers_from_two_different_stage_receipts_blocks(tmp_path):
+    shared_gate_root = tmp_path / "gate-state"
+    result_t1c = readiness.execute_transport_readiness_probe(
+        stage="T1C_TRANSPORT_READINESS",
+        request_factory=lambda coordinate: _plan("T1C_TRANSPORT_READINESS", coordinate, lambda: "ok"),
+        audit_root=tmp_path / "t1c", reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        gate_binding=_consume_gate(shared_gate_root, stage="T1C_TRANSPORT_READINESS"),
+        sleep_fn=lambda _seconds: None,
+    )
+    result_t2 = readiness.execute_transport_readiness_probe(
+        stage="T2_TRANSPORT_READINESS",
+        request_factory=lambda coordinate: _plan("T2_TRANSPORT_READINESS", coordinate, lambda: "ok"),
+        audit_root=tmp_path / "t2", reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        gate_binding=_consume_gate(shared_gate_root, stage="T2_TRANSPORT_READINESS"),
+        sleep_fn=lambda _seconds: None,
+    )
+    mixed_dossier_paths = result_t1c["dossier_paths"][:2] + [result_t2["dossier_paths"][0]]
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked):
+        v8d_audit.verify_aggregate(result_t1c["aggregate_path"], mixed_dossier_paths, gate_receipt_state_root=shared_gate_root)
+
+
+def test_valid_temporary_receipt_dossier_and_aggregate_pass_independent_verification(tmp_path):
+    # Required test 25.
+    result = _success_artifacts(tmp_path)
+    checked = v8d_audit.verify_aggregate(
+        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=_gate_root(tmp_path),
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA, expected_stage="T1C_TRANSPORT_READINESS",
+    )
+    assert checked["result"] == "PASS"
+
+
+# --- Required tests 26-27: durable ordering ----------------------------------
+
+
+def test_gate_receipt_exists_durably_before_first_request_fn_invocation(tmp_path):
+    repo, _reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
+    gate_root = tmp_path / "gate-state"
+    call_order = []
+
+    def request_factory(coordinate):
+        def request_fn():
+            key = gate_consumption.compute_receipt_key(gate_consumption.GATE_T1C_TRANSPORT_READINESS, FROZEN_DESIGN_COMMIT)
+            assert (gate_root / (key + ".json")).exists()
+            call_order.append(coordinate)
+            return "ok"
+        return _plan("T1C_TRANSPORT_READINESS", coordinate, request_fn)
+
+    readiness._execute_production_transport_readiness(
+        stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
+        request_factory=request_factory, audit_root=tmp_path / "audit",
+        repository_root=repo, consumption_state_root=gate_root,
+        git_commit_resolver=lambda: head_commit,
+        frozen_design_object_verifier=lambda: None,
+        design_freeze_approval_verifier=lambda head: None,
+        reviewed_implementation_binder=lambda head: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head),
+        sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+    )
+    assert call_order == [0, 149, 299]
+
+
+def test_receipt_persistence_failure_yields_zero_request_fn_calls(tmp_path, monkeypatch):
+    repo, _reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
+    gate_root = tmp_path / "gate-state"
+    calls = []
+
+    def request_factory(coordinate):
+        def request_fn():
+            calls.append(coordinate)
+            return "ok"
+        return _plan("T1C_TRANSPORT_READINESS", coordinate, request_fn)
+
+    def fail_consume(*_args, **_kwargs):
+        raise gate_consumption.V8DHumanGateConsumptionBlocked("V8D_HUMAN_GATE_STATE_WRITE_FAILED")
+
+    monkeypatch.setattr(readiness, "consume_gate_and_bind", fail_consume)
+    with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
+        readiness._execute_production_transport_readiness(
+            stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
+            request_factory=request_factory, audit_root=tmp_path / "audit",
+            repository_root=repo, consumption_state_root=gate_root,
+            git_commit_resolver=lambda: head_commit,
+            frozen_design_object_verifier=lambda: None,
+            design_freeze_approval_verifier=lambda head: None,
+            reviewed_implementation_binder=lambda head: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head),
+            sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+        )
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_STATE_WRITE_FAILED"
+    assert calls == []
+
+
+# --- Required tests 28-30: one-shot semantics --------------------------------
+
+
+def test_one_shot_gate_cannot_be_reset_by_fresh_authorization_identity(tmp_path):
+    repo, _reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
+    gate_root = tmp_path / "gate-state"
+    calls = []
+
+    def request_factory(coordinate):
+        def request_fn():
+            calls.append(coordinate)
+            return "ok"
+        return _plan("T1C_TRANSPORT_READINESS", coordinate, request_fn)
+
+    def run(identity):
+        return readiness._execute_production_transport_readiness(
+            stage="T1C_TRANSPORT_READINESS", human_authorization_identity=identity,
+            request_factory=request_factory, audit_root=tmp_path / "audit",
+            repository_root=repo, consumption_state_root=gate_root,
+            git_commit_resolver=lambda: head_commit,
+            frozen_design_object_verifier=lambda: None,
+            design_freeze_approval_verifier=lambda head: None,
+            reviewed_implementation_binder=lambda head: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head),
+            sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+        )
+
+    # (28) first top-level execution consumes the gate exactly once, PASS.
+    result = run("first-authorization-identity")
+    assert result["aggregate"]["result"] == "PASS"
+    assert calls == [0, 149, 299]
+    calls.clear()
+
+    # (29) second top-level execution, the SAME authorization identity ->
+    # BLOCK before any request_fn.
+    with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
+        run("first-authorization-identity")
+    assert excinfo.value.reason.startswith("V8D_HUMAN_GATE_ALREADY_CONSUMED")
+    assert calls == []
+
+    # (30) third execution, a genuinely DIFFERENT fresh identity -> ALSO
+    # BLOCK before any request_fn: a fresh authorization must never reset
+    # an already-consumed V8D one-shot stage.
+    with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
+        run("a-completely-different-fresh-identity")
+    assert excinfo.value.reason.startswith("V8D_HUMAN_GATE_ALREADY_CONSUMED")
+    assert calls == []
+
+
+def test_acquisition_production_entrypoint_full_flow_and_one_shot(tmp_path):
+    repo, _reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
+    gate_root = tmp_path / "gate-state"
+    calls = []
+
+    def request_factory(coordinate):
+        def request_fn():
+            calls.append(coordinate)
+            return "ok"
+        return _plan("T1C_RAW_ACQUISITION", coordinate, request_fn, start="2020-01-01", end="2020-01-08")
+
+    def run(identity):
+        return acquisition._execute_production_raw_acquisition(
+            stage="T1C_RAW_ACQUISITION", human_authorization_identity=identity,
+            request_factory=request_factory, audit_root=tmp_path / "audit",
+            request_start="2020-01-01", request_end_exclusive="2020-01-08", request_count=2,
+            repository_root=repo, consumption_state_root=gate_root,
+            git_commit_resolver=lambda: head_commit,
+            frozen_design_object_verifier=lambda: None,
+            design_freeze_approval_verifier=lambda head: None,
+            reviewed_implementation_binder=lambda head: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head),
+            sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+        )
+
+    result = run("acquisition-identity-1")
+    assert result["aggregate"]["result"] == "PASS"
+    assert calls == [0, 1]
+    checked = v8d_audit.verify_aggregate(
+        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root,
+        expected_stage="T1C_RAW_ACQUISITION",
+    )
+    assert checked["result"] == "PASS"
+
+    calls.clear()
+    with pytest.raises(acquisition.V8DAcquisitionBlocked) as excinfo:
+        run("acquisition-identity-1")
+    assert excinfo.value.reason.startswith("V8D_HUMAN_GATE_ALREADY_CONSUMED")
+    assert calls == []
+
+
+# --- Required tests 31-33: a receipt from one stage cannot authorize another
+
+
+@pytest.mark.parametrize("granted_stage,attempted_stage", [
+    ("T1C_TRANSPORT_READINESS", "T1C_RAW_ACQUISITION"),
+    ("T1C_TRANSPORT_READINESS", "T2_TRANSPORT_READINESS"),
+    ("T1C_RAW_ACQUISITION", "T1C_TRANSPORT_READINESS"),
+    ("T2_TRANSPORT_READINESS", "T2_RAW_ACQUISITION"),
+    ("T2_RAW_ACQUISITION", "T2_TRANSPORT_READINESS"),
+])
+def test_a_stage_gate_receipt_cannot_authorize_a_different_stage(tmp_path, granted_stage, attempted_stage):
+    gate_binding = _consume_gate(_gate_root(tmp_path), stage=granted_stage)
+    store = DurableV8DAuditStore(tmp_path)
+    with pytest.raises(V8DTransportBlocked) as excinfo:
+        attempt_with_frozen_retry(
+            lambda: "ok", store=store, dossier_id=store.new_id(), context=_context(attempted_stage),
+            reviewed_implementation_commit=IMPLEMENTATION_SHA, gate_binding=gate_binding, sleep_fn=lambda _s: None,
+        )
+    assert excinfo.value.reason == "V8D_GATE_BINDING_STAGE_MISMATCH"
+
+
+# --- Required test 34: no receipt reset/delete API ---------------------------
+
+
+def test_no_receipt_reset_or_delete_api_exists():
+    forbidden_substrings = ("delete", "reset", "remove", "clear", "revoke")
+    public_names = [name for name in dir(gate_consumption) if not name.startswith("_")]
+    for name in public_names:
+        lowered = name.lower()
+        assert not any(word in lowered for word in forbidden_substrings), name
+
+
+# --- Required test 35: no caller-controlled reviewed_implementation_commit -
+
+
+def test_production_entrypoints_do_not_accept_caller_supplied_reviewed_implementation_commit():
+    import inspect
+
+    for fn in (
+        readiness.execute_t1c_transport_readiness_production,
+        readiness.execute_t2_transport_readiness_production,
+        acquisition.execute_t1c_raw_acquisition_production,
+        acquisition.execute_t2_raw_acquisition_production,
+    ):
+        params = set(inspect.signature(fn).parameters)
+        assert "reviewed_implementation_commit" not in params
+        assert "human_authorization_identity" in params
+
+
+# --- Required test 36: real repo, missing review artifact -> fail closed ---
+
+
+def test_public_production_entrypoint_against_real_repo_fails_closed_before_gate_or_request(tmp_path):
+    """Exercises the exact code path `execute_t1c_transport_readiness_
+    production` runs, against the REAL repository (where
+    V8D_PRODUCTION_IMPLEMENTATION_REVIEW.json genuinely does not exist yet)
+    -- with only the branch/origin-bound git resolver seam swapped for a
+    plain real-HEAD lookup, exactly as HIGH-1A's own tests do, since a
+    development checkout is not guaranteed to sit exactly at
+    HEAD == origin/v8d-transport-audit-design while these tests run."""
+    request_calls = []
+
+    def request_factory(coordinate):
+        request_calls.append(coordinate)
+        raise AssertionError("request_factory must not be invoked")
+
+    gate_root = tmp_path / "gate-state"
+    with pytest.raises(readiness.V8DReadinessBlocked) as excinfo:
+        readiness._execute_production_transport_readiness(
+            stage="T1C_TRANSPORT_READINESS", human_authorization_identity=AUTH_IDENTITY,
+            request_factory=request_factory, audit_root=tmp_path / "audit",
+            repository_root=REPO_ROOT, consumption_state_root=gate_root,
+            git_commit_resolver=_real_head,
+            sleep_fn=lambda _seconds: None, clock=_fixed_clock,
+        )
+    assert excinfo.value.reason == "V8D_PRODUCTION_IMPLEMENTATION_REVIEW_MISSING"
+    assert request_calls == []
+    assert not (gate_root.exists() and list(gate_root.glob("*.json")))
+
+
+# --- Required test 37: HIGH-1A tests remain PASS -----------------------------
+#
+# Structural: every V8D_PROD_HIGH_1A_REVIEWED_IMPLEMENTATION_BINDING test
+# function above this section is kept byte-for-byte unmodified, so running
+# this module continues to exercise and pass them unchanged.
+
+
+def test_bound_production_files_now_include_human_gate_consumption_module():
+    assert "src/v8d_human_gate_consumption.py" in v8d_production_provenance.BOUND_PRODUCTION_FILES
+    for path in v8d_production_provenance.BOUND_PRODUCTION_FILES:
+        assert (REPO_ROOT / path).is_file(), path

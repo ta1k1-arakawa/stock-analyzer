@@ -1,4 +1,18 @@
-"""Independent read-only verification for V8D transport artifacts."""
+"""Independent read-only verification for V8D transport artifacts.
+
+`V8D_TRANSPORT_AUDIT_SUCCESSOR_DESIGN_DRAFT.md` (independent transport-audit
+verifier). This module never trusts a producer's own claims about gate
+consumption: for every dossier, it independently locates the real durable
+gate-consumption receipt under an explicitly supplied ``gate_receipt_state_
+root`` (`src.v8d_human_gate_consumption.read_gate_consumption_receipt_with_
+bytes_hash`, which itself strictly parses the receipt with duplicate-key
+rejection and mechanically recomputes its own deterministic key), and
+requires the dossier's claimed ``gate_receipt_bytes_sha256``/
+``authorization_identity_sha256``/``reviewed_production_implementation_
+commit`` to agree exactly with the receipt actually read back from disk.
+Absence of receipt evidence -- including a caller who omits
+``gate_receipt_state_root`` entirely -- is never treated as PASS.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +24,11 @@ import urllib.error
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from src.v8d_human_gate_consumption import (
+    STAGE_GATE,
+    V8DHumanGateConsumptionBlocked,
+    read_gate_consumption_receipt_with_bytes_hash,
+)
 from src.v8d_transport import (
     ACQUISITION_STAGES,
     ALL_STAGES,
@@ -49,6 +68,7 @@ _ATTEMPT_FIELDS = frozenset({
 })
 _DOSSIER_FIELDS = frozenset({
     "schema_version", "study", "frozen_design_commit", "reviewed_production_implementation_commit",
+    "human_gate", "gate_receipt_key_sha256", "gate_receipt_bytes_sha256", "authorization_identity_sha256",
     "canonical_parser_classifier_commit", "canonical_parser_classifier_blob", "logical_stage", "logical_block",
     "logical_coordinate", "window_start", "window_end_exclusive", "sentinel_indices", "attempts",
     "audit_artifact_self_hash",
@@ -217,8 +237,11 @@ def _derive_transport_classification(record: Mapping[str, Any]) -> tuple[str, bo
     return "UNKNOWN_FAIL_CLOSED_NONRETRYABLE", False
 
 
-def verify_dossier(path: str | Path, *, expected_reviewed_implementation_commit: str | None = None,
+def verify_dossier(path: str | Path, *, gate_receipt_state_root: str | Path | None = None,
+                   expected_reviewed_implementation_commit: str | None = None,
                    expected_stage: str | None = None) -> dict[str, Any]:
+    if gate_receipt_state_root is None:
+        raise V8DAuditVerificationBlocked("V8D_GATE_RECEIPT_STATE_ROOT_REQUIRED")
     dossier = _read_json(path)
     if set(dossier) != _DOSSIER_FIELDS:
         raise V8DAuditVerificationBlocked("V8D_DOSSIER_SCHEMA_INVALID")
@@ -234,6 +257,29 @@ def verify_dossier(path: str | Path, *, expected_reviewed_implementation_commit:
     stage = dossier["logical_stage"]
     if stage not in ALL_STAGES or (expected_stage is not None and stage != expected_stage):
         raise V8DAuditVerificationBlocked("V8D_DOSSIER_STAGE_INVALID")
+    expected_gate = STAGE_GATE.get(stage)
+    if expected_gate is None or dossier["human_gate"] != expected_gate:
+        raise V8DAuditVerificationBlocked("V8D_DOSSIER_HUMAN_GATE_MISMATCH")
+    _require_hex(dossier["gate_receipt_key_sha256"], 64, "V8D_DOSSIER_GATE_RECEIPT_KEY_INVALID")
+    _require_hex(dossier["gate_receipt_bytes_sha256"], 64, "V8D_DOSSIER_GATE_RECEIPT_BYTES_HASH_INVALID")
+    _require_hex(dossier["authorization_identity_sha256"], 64, "V8D_DOSSIER_AUTHORIZATION_IDENTITY_HASH_INVALID")
+    # Independent gate-receipt verification: never trust the dossier's own
+    # claimed hashes -- re-derive them from the real durable receipt.
+    try:
+        receipt, receipt_bytes_sha256 = read_gate_consumption_receipt_with_bytes_hash(
+            gate_receipt_state_root, dossier["gate_receipt_key_sha256"],
+            expected_gate=expected_gate, expected_v8d_frozen_design_commit=FROZEN_DESIGN_COMMIT,
+        )
+    except V8DHumanGateConsumptionBlocked as error:
+        raise V8DAuditVerificationBlocked(error.reason) from error
+    if receipt_bytes_sha256 != dossier["gate_receipt_bytes_sha256"]:
+        raise V8DAuditVerificationBlocked("V8D_DOSSIER_GATE_RECEIPT_BYTES_MISMATCH")
+    if receipt["authorization_identity_sha256"] != dossier["authorization_identity_sha256"]:
+        raise V8DAuditVerificationBlocked("V8D_DOSSIER_GATE_RECEIPT_AUTHORIZATION_MISMATCH")
+    if receipt["reviewed_production_implementation_commit"] != dossier["reviewed_production_implementation_commit"]:
+        raise V8DAuditVerificationBlocked("V8D_DOSSIER_GATE_RECEIPT_IMPLEMENTATION_MISMATCH")
+    if receipt["logical_stage"] != stage:
+        raise V8DAuditVerificationBlocked("V8D_DOSSIER_GATE_RECEIPT_STAGE_MISMATCH")
     expected_block = "T1C" if stage.startswith("T1C") else "T2"
     if dossier["logical_block"] != expected_block or type(dossier["logical_coordinate"]) is not int or dossier["logical_coordinate"] < 0:
         raise V8DAuditVerificationBlocked("V8D_DOSSIER_LOGICAL_BINDING_INVALID")
@@ -290,8 +336,11 @@ def _histogram(values: Iterable[str]) -> dict[str, int]:
 
 
 def verify_aggregate(aggregate_path: str | Path, dossier_paths: Sequence[str | Path], *,
+                     gate_receipt_state_root: str | Path | None = None,
                      expected_reviewed_implementation_commit: str | None = None,
                      expected_stage: str | None = None) -> dict[str, Any]:
+    if gate_receipt_state_root is None:
+        raise V8DAuditVerificationBlocked("V8D_GATE_RECEIPT_STATE_ROOT_REQUIRED")
     aggregate = _read_json(aggregate_path)
     if set(aggregate) != _AGGREGATE_FIELDS:
         raise V8DAuditVerificationBlocked("V8D_AGGREGATE_SCHEMA_INVALID")
@@ -315,11 +364,28 @@ def verify_aggregate(aggregate_path: str | Path, dossier_paths: Sequence[str | P
     _require_hex(aggregate["reviewed_production_implementation_commit"], 40, "V8D_AGGREGATE_IMPLEMENTATION_SHA_INVALID")
     if expected_reviewed_implementation_commit is not None and aggregate["reviewed_production_implementation_commit"] != expected_reviewed_implementation_commit:
         raise V8DAuditVerificationBlocked("V8D_AGGREGATE_IMPLEMENTATION_MISMATCH")
-    dossiers = [verify_dossier(path, expected_reviewed_implementation_commit=aggregate["reviewed_production_implementation_commit"], expected_stage=aggregate["logical_stage"]) for path in dossier_paths]
+    dossiers = [
+        verify_dossier(
+            path, gate_receipt_state_root=gate_receipt_state_root,
+            expected_reviewed_implementation_commit=aggregate["reviewed_production_implementation_commit"],
+            expected_stage=aggregate["logical_stage"],
+        )
+        for path in dossier_paths
+    ]
     if len(dossiers) != aggregate["audit_artifact_count"] or not dossiers:
         raise V8DAuditVerificationBlocked("V8D_AGGREGATE_DOSSIER_COUNT_MISMATCH")
     if any(dossier["logical_block"] != aggregate["logical_block"] for dossier in dossiers):
         raise V8DAuditVerificationBlocked("V8D_AGGREGATE_BLOCK_MISMATCH")
+    # Every dossier in one aggregate must bind the exact same gate receipt --
+    # a receipt from a different stage/gate/authorization/implementation
+    # execution must never be mixed into a single published aggregate.
+    reference = dossiers[0]
+    for key in (
+        "human_gate", "gate_receipt_key_sha256", "gate_receipt_bytes_sha256",
+        "authorization_identity_sha256", "reviewed_production_implementation_commit",
+    ):
+        if any(dossier[key] != reference[key] for dossier in dossiers):
+            raise V8DAuditVerificationBlocked("V8D_AGGREGATE_GATE_BINDING_MISMATCH")
     if any(dossier["window_start"] != aggregate["window_start"] or dossier["window_end_exclusive"] != aggregate["window_end_exclusive"] or dossier["sentinel_indices"] != aggregate["sentinel_indices"] for dossier in dossiers):
         raise V8DAuditVerificationBlocked("V8D_AGGREGATE_WINDOW_BINDING_MISMATCH")
     if aggregate["logical_stage"] in READINESS_STAGES:

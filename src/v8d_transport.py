@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, TypeVar
 
 from src.v7_yahoo_collector import V7YahooCollectorBlocked, build_chart_request, fetch_chart_once
+from src.v8d_human_gate_consumption import STAGE_GATE as _GATE_STAGE_MAP
 
 
 STUDY = "V8D_HISTORICAL_RESEARCH"
@@ -113,6 +114,35 @@ def _require_hex(value: object, length: int, reason: str) -> str:
     if not isinstance(value, str) or not pattern.fullmatch(value):
         raise V8DTransportBlocked(reason)
     return value
+
+
+_GATE_BINDING_FIELDS = frozenset({
+    "human_gate", "gate_receipt_key_sha256", "gate_receipt_bytes_sha256", "authorization_identity_sha256",
+})
+
+
+def _require_gate_binding(gate_binding: Mapping[str, Any], *, stage: str) -> dict[str, str]:
+    """Structural validation only: this transport layer deliberately does
+    not consume a human gate and does not know how a binding was produced
+    -- it only requires the exact safe shape `src.v8d_human_gate_
+    consumption.V8DGateReceiptBinding` publishes, and that the bound
+    ``human_gate`` is the frozen gate for ``stage`` (never any other
+    stage/gate combination). The actual gate-consumption/receipt evidence
+    is independently re-verified later by `src.v8d_audit`, which never
+    trusts these dossier fields on their own."""
+    if not isinstance(gate_binding, Mapping) or set(gate_binding) != _GATE_BINDING_FIELDS:
+        raise V8DTransportBlocked("V8D_GATE_BINDING_SCHEMA_INVALID")
+    human_gate = gate_binding["human_gate"]
+    if not isinstance(human_gate, str) or human_gate not in _GATE_STAGE_MAP.values():
+        raise V8DTransportBlocked("V8D_GATE_BINDING_HUMAN_GATE_INVALID")
+    if _GATE_STAGE_MAP.get(stage) != human_gate:
+        raise V8DTransportBlocked("V8D_GATE_BINDING_STAGE_MISMATCH")
+    return {
+        "human_gate": human_gate,
+        "gate_receipt_key_sha256": _require_hex(gate_binding["gate_receipt_key_sha256"], 64, "V8D_GATE_BINDING_HASH_INVALID"),
+        "gate_receipt_bytes_sha256": _require_hex(gate_binding["gate_receipt_bytes_sha256"], 64, "V8D_GATE_BINDING_HASH_INVALID"),
+        "authorization_identity_sha256": _require_hex(gate_binding["authorization_identity_sha256"], 64, "V8D_GATE_BINDING_HASH_INVALID"),
+    }
 
 
 class V8DTransportBlocked(RuntimeError):
@@ -544,8 +574,9 @@ class DurableV8DAuditStore:
         return value
 
     def write_attempt(self, dossier_id: str, context: V8DRequestContext, reviewed_commit: str,
-                      record: Mapping[str, Any]) -> dict[str, Any]:
+                      gate_binding: Mapping[str, Any], record: Mapping[str, Any]) -> dict[str, Any]:
         reviewed_commit = _require_hex(reviewed_commit, 40, "V8D_REVIEWED_IMPLEMENTATION_COMMIT_INVALID")
+        gate_fields = _require_gate_binding(gate_binding, stage=context.logical_stage)
         if set(record) != _ATTEMPT_FIELDS:
             raise V8DAuditPersistenceBlocked("V8D_ATTEMPT_SCHEMA_INVALID")
         if record["request_fingerprint"] != context.request_fingerprint or record["request_url_sha256"] != context.request_url_sha256:
@@ -559,12 +590,18 @@ class DurableV8DAuditStore:
                 raise V8DAuditPersistenceBlocked("V8D_AUDIT_SELF_HASH_INVALID")
             if dossier.get("reviewed_production_implementation_commit") != reviewed_commit:
                 raise V8DAuditPersistenceBlocked("V8D_AUDIT_IMPLEMENTATION_BINDING_MISMATCH")
+            if any(dossier.get(key) != value for key, value in gate_fields.items()):
+                raise V8DAuditPersistenceBlocked("V8D_AUDIT_GATE_BINDING_MISMATCH")
         else:
             dossier = {
                 "schema_version": "V8D_PRIVATE_TRANSPORT_AUDIT_V1",
                 "study": STUDY,
                 "frozen_design_commit": FROZEN_DESIGN_COMMIT,
                 "reviewed_production_implementation_commit": reviewed_commit,
+                "human_gate": gate_fields["human_gate"],
+                "gate_receipt_key_sha256": gate_fields["gate_receipt_key_sha256"],
+                "gate_receipt_bytes_sha256": gate_fields["gate_receipt_bytes_sha256"],
+                "authorization_identity_sha256": gate_fields["authorization_identity_sha256"],
                 "canonical_parser_classifier_commit": CANONICAL_PARSER_CLASSIFIER_COMMIT,
                 "canonical_parser_classifier_blob": CANONICAL_PARSER_CLASSIFIER_BLOB,
                 "logical_stage": context.logical_stage,
@@ -611,9 +648,19 @@ def _metadata_for_success() -> dict[str, Any]:
 def attempt_with_frozen_retry(attempt_fn: Callable[[], T], *, store: DurableV8DAuditStore,
                               dossier_id: str, context: V8DRequestContext,
                               reviewed_implementation_commit: str,
+                              gate_binding: Mapping[str, Any],
                               sleep_fn: Callable[[float], None] = time.sleep) -> tuple[T, dict[str, Any]]:
-    """Run one logical request; persist each attempt before any transition."""
+    """Run one logical request; persist each attempt before any transition.
+
+    ``gate_binding`` must be the exact safe binding produced by a real,
+    already-successful `src.v8d_human_gate_consumption.consume_gate_and_
+    bind` call for this stage -- never a plain caller-constructed mapping
+    invented to look right. This function only checks its shape; the
+    actual gate-consumption/receipt evidence is independently re-verified
+    later by `src.v8d_audit`.
+    """
     reviewed_implementation_commit = _require_hex(reviewed_implementation_commit, 40, "V8D_REVIEWED_IMPLEMENTATION_COMMIT_INVALID")
+    _require_gate_binding(gate_binding, stage=context.logical_stage)
     for attempt_number in range(1, MAXIMUM_ATTEMPTS + 1):
         try:
             result = attempt_fn()
@@ -625,7 +672,7 @@ def attempt_with_frozen_retry(attempt_fn: Callable[[], T], *, store: DurableV8DA
                 _classification_metadata(error, classification),
                 "TERMINAL_FAILURE" if terminal else "RETRYABLE_FAILURE",
             )
-            stored = store.write_attempt(dossier_id, context, reviewed_implementation_commit, record)
+            stored = store.write_attempt(dossier_id, context, reviewed_implementation_commit, gate_binding, record)
             try:
                 setattr(error, "v8d_dossier_id", dossier_id)
                 setattr(error, "v8d_audit_artifact_self_hash", stored["audit_artifact_self_hash"])
@@ -637,7 +684,7 @@ def attempt_with_frozen_retry(attempt_fn: Callable[[], T], *, store: DurableV8DA
             continue
         else:
             record = _attempt_record(context, attempt_number, "SUCCESS", None, _metadata_for_success(), "SUCCESS")
-            stored = store.write_attempt(dossier_id, context, reviewed_implementation_commit, record)
+            stored = store.write_attempt(dossier_id, context, reviewed_implementation_commit, gate_binding, record)
             return result, {
                 "dossier_id": dossier_id,
                 "attempts": attempt_number,
@@ -649,16 +696,22 @@ def attempt_with_frozen_retry(attempt_fn: Callable[[], T], *, store: DurableV8DA
 
 def execute_v8d_stage(*, stage: str, request_factory: Callable[[int], V8DRequestPlan],
                       store: DurableV8DAuditStore, reviewed_implementation_commit: str,
+                      gate_binding: Mapping[str, Any],
                       window_start: str, window_end_exclusive: str, request_count: int,
                       sleep_fn: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """Execute a synthetic-injectable readiness/acquisition catch path.
 
     The request factory may close over private production state, but only the
     integer logical coordinate and hashes enter the durable/public artifacts.
+
+    ``gate_binding`` is applied identically to every dossier produced by
+    this one stage execution (every logical coordinate shares the exact
+    same already-consumed gate receipt) -- see `attempt_with_frozen_retry`.
     """
     if stage not in ALL_STAGES:
         raise V8DTransportBlocked("V8D_LOGICAL_STAGE_INVALID")
     _require_hex(reviewed_implementation_commit, 40, "V8D_REVIEWED_IMPLEMENTATION_COMMIT_INVALID")
+    _require_gate_binding(gate_binding, stage=stage)
     if type(request_count) is not int or request_count <= 0:
         raise V8DTransportBlocked("V8D_REQUEST_COUNT_INVALID")
     if stage in READINESS_STAGES and request_count != len(SENTINEL_INDICES):
@@ -695,6 +748,7 @@ def execute_v8d_stage(*, stage: str, request_factory: Callable[[int], V8DRequest
                 dossier_id=dossier_id,
                 context=context,
                 reviewed_implementation_commit=reviewed_implementation_commit,
+                gate_binding=gate_binding,
                 sleep_fn=sleep_fn,
             )
         except V8DAuditPersistenceBlocked:
