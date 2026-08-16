@@ -345,6 +345,11 @@ def test_frozen_runtime_exception_classification_uses_no_message_heuristics(erro
     })
 
 
+def test_urlerror_connection_reset_classification_remains_retryable():
+    error = urllib.error.URLError(ConnectionResetError(errno.ECONNRESET, "reset text"))
+    assert classify_transport_exception(error) == ("CONNECTION_RESET", True)
+
+
 @pytest.mark.parametrize(
     "reason,expected",
     [
@@ -600,6 +605,147 @@ def _success_artifacts(tmp_path, *, stage="T1C_TRANSPORT_READINESS"):
         sleep_fn=lambda _seconds: None,
     )
     return result
+
+
+def _plain_os_error(errno_value):
+    plain_os_error_type = type("OSError", (OSError,), {})
+    return plain_os_error_type(errno_value, "synthetic reset")
+
+
+def _verify_durable_error(tmp_path, error):
+    with pytest.raises(BaseException):
+        _single_attempt(tmp_path, _raise(error))
+    return v8d_audit.verify_dossier(
+        next(tmp_path.glob("dossier-*.json")), gate_receipt_state_root=_gate_root(tmp_path),
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+    )
+
+
+def test_urlerror_connection_reset_durable_e2e_verifies(tmp_path):
+    checked = _verify_durable_error(
+        tmp_path, urllib.error.URLError(ConnectionResetError(errno.ECONNRESET, "synthetic reset")),
+    )
+    assert checked["attempts"][-1]["classification"] == "CONNECTION_RESET"
+    assert checked["attempts"][-1]["retryable"] is True
+
+
+def test_urlerror_connection_reset_then_success_durable_e2e_verifies(tmp_path):
+    calls = []
+
+    def request():
+        calls.append(1)
+        if len(calls) == 1:
+            raise urllib.error.URLError(ConnectionResetError(errno.ECONNRESET, "synthetic reset"))
+        return "ok"
+
+    result, store, dossier_id = _single_attempt(tmp_path, request)
+    assert result[0] == "ok"
+    checked = v8d_audit.verify_dossier(
+        store._path(dossier_id), gate_receipt_state_root=_gate_root(tmp_path),
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+    )
+    assert [item["classification"] for item in checked["attempts"]] == ["CONNECTION_RESET", "SUCCESS"]
+
+
+def test_urlerror_oserror_connection_reset_durable_e2e_verifies(tmp_path):
+    checked = _verify_durable_error(
+        tmp_path, urllib.error.URLError(_plain_os_error(errno.ECONNRESET)),
+    )
+    assert checked["attempts"][-1]["classification"] == "CONNECTION_RESET"
+
+
+def test_direct_connection_reset_durable_e2e_verifies(tmp_path):
+    checked = _verify_durable_error(
+        tmp_path, ConnectionResetError(errno.ECONNRESET, "synthetic reset"),
+    )
+    assert checked["attempts"][-1]["classification"] == "CONNECTION_RESET"
+
+
+def test_direct_oserror_connection_reset_durable_e2e_verifies(tmp_path):
+    checked = _verify_durable_error(tmp_path, _plain_os_error(errno.ECONNRESET))
+    assert checked["attempts"][-1]["classification"] == "CONNECTION_RESET"
+
+
+@pytest.mark.parametrize(
+    "error_factory,expected",
+    [
+        (lambda: urllib.error.URLError(TimeoutError("synthetic timeout")), "NETWORK_TIMEOUT"),
+        (lambda: urllib.error.URLError(socket.gaierror(socket.EAI_AGAIN, "synthetic temporary dns")), "TEMPORARY_DNS_FAILURE"),
+        (lambda: urllib.error.URLError(socket.gaierror(getattr(socket, "EAI_NONAME", -2), "synthetic permanent dns")), "UNKNOWN_FAIL_CLOSED_NONRETRYABLE"),
+        (lambda: urllib.error.URLError(ValueError("synthetic unknown")), "UNKNOWN_FAIL_CLOSED_NONRETRYABLE"),
+    ],
+)
+def test_urlerror_non_reset_verifier_classification_matrix(tmp_path, error_factory, expected):
+    checked = _verify_durable_error(tmp_path, error_factory())
+    assert checked["attempts"][-1]["classification"] == expected
+    assert checked["attempts"][-1]["retryable"] is (expected in {
+        "NETWORK_TIMEOUT", "TEMPORARY_DNS_FAILURE",
+    })
+
+
+def test_rehashed_urlerror_errno_reset_with_unsupported_reason_blocks(tmp_path):
+    result = _success_artifacts(tmp_path)
+    dossier = result["dossier_paths"][0]
+
+    def forge_unsupported_reason(value):
+        value["attempts"][0].update({
+            "classification": "CONNECTION_RESET",
+            "retryable": True,
+            "concrete_exception_type": "URLError",
+            "http_code": None,
+            "reason_type": "ValueError",
+            "errno": errno.ECONNRESET,
+            "named_condition": None,
+            "detector_evidence": None,
+        })
+
+    _rehashed_dossier(dossier, forge_unsupported_reason)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(
+            dossier, gate_receipt_state_root=_gate_root(tmp_path),
+            expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        )
+    assert excinfo.value.reason == "V8D_DOSSIER_CLASSIFICATION_MISMATCH"
+
+
+def test_rehashed_inconsistent_direct_reset_metadata_blocks(tmp_path):
+    result = _success_artifacts(tmp_path)
+    dossier = result["dossier_paths"][0]
+
+    def forge_inconsistent_reset(value):
+        value["attempts"][0].update({
+            "classification": "CONNECTION_RESET",
+            "retryable": True,
+            "concrete_exception_type": "ConnectionResetError",
+            "http_code": None,
+            "reason_type": "URLError",
+            "errno": errno.ECONNRESET,
+            "named_condition": None,
+            "detector_evidence": None,
+        })
+
+    _rehashed_dossier(dossier, forge_inconsistent_reset)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(
+            dossier, gate_receipt_state_root=_gate_root(tmp_path),
+            expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        )
+    assert excinfo.value.reason == "V8D_RESET_METADATA_INVALID"
+
+
+def test_production_and_synthetic_verifiers_share_urlerror_reset_semantics(monkeypatch, tmp_path):
+    error = urllib.error.URLError(ConnectionResetError(errno.ECONNRESET, "synthetic reset"))
+    with pytest.raises(urllib.error.URLError):
+        _single_attempt(tmp_path, _raise(error))
+    dossier = next(tmp_path.glob("dossier-*.json"))
+    receipt_root = _gate_root(tmp_path)
+    synthetic = v8d_audit.verify_dossier(
+        dossier, gate_receipt_state_root=receipt_root,
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+    )
+    monkeypatch.setattr(v8d_audit, "derive_reviewed_implementation_commit", lambda: IMPLEMENTATION_SHA)
+    production = v8d_audit.verify_dossier_production(dossier, gate_receipt_state_root=receipt_root)
+    assert synthetic["attempts"][0]["classification"] == production["attempts"][0]["classification"] == "CONNECTION_RESET"
 
 
 def test_aggregate_blocks_when_rehashed_dossier_has_unexhausted_retryable_terminal(tmp_path):

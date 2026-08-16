@@ -246,10 +246,6 @@ def _derive_transport_classification(record: Mapping[str, Any]) -> tuple[str, bo
         if reason_type != concrete or observed_errno is not None:
             raise V8DAuditVerificationBlocked("V8D_TIMEOUT_METADATA_INVALID")
         return "NETWORK_TIMEOUT", True
-    if concrete == "ConnectionResetError" or observed_errno == errno.ECONNRESET:
-        if reason_type != concrete:
-            raise V8DAuditVerificationBlocked("V8D_RESET_METADATA_INVALID")
-        return "CONNECTION_RESET", True
     if concrete == "URLError":
         if reason_type in {"TimeoutError", "socket.timeout"}:
             return "NETWORK_TIMEOUT", True
@@ -260,6 +256,14 @@ def _derive_transport_classification(record: Mapping[str, Any]) -> tuple[str, bo
         if reason_type in {"ConnectionResetError", "OSError"} and observed_errno == errno.ECONNRESET:
             return "CONNECTION_RESET", True
         return "UNKNOWN_FAIL_CLOSED_NONRETRYABLE", False
+    if concrete == "ConnectionResetError":
+        if reason_type != concrete:
+            raise V8DAuditVerificationBlocked("V8D_RESET_METADATA_INVALID")
+        return "CONNECTION_RESET", True
+    if concrete == "OSError" and observed_errno == errno.ECONNRESET:
+        if reason_type != concrete:
+            raise V8DAuditVerificationBlocked("V8D_RESET_METADATA_INVALID")
+        return "CONNECTION_RESET", True
     if concrete == "gaierror":
         if reason_type != concrete:
             raise V8DAuditVerificationBlocked("V8D_DNS_METADATA_INVALID")
