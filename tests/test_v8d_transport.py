@@ -1472,6 +1472,67 @@ def _write_receipt(root: Path, *, stage="T1C_TRANSPORT_READINESS", payload=None)
     return path, key
 
 
+@pytest.mark.parametrize("timestamp", [
+    "2026-01-01T00:00:00Z",
+    "2026-01-01T00:00:00.123456Z",
+])
+def test_gate_receipt_accepts_canonical_utc_timestamps(tmp_path, timestamp):
+    payload = _valid_receipt_payload()
+    payload["consumed_at_utc"] = timestamp
+    root = tmp_path / "gate-state"
+    _path, key = _write_receipt(root, payload=payload)
+    assert gate_consumption.read_gate_consumption_receipt(root, key)["consumed_at_utc"] == timestamp
+
+
+def test_consume_gate_writer_timestamp_remains_canonical_and_readable(tmp_path):
+    root = _gate_root(tmp_path)
+    binding = _consume_gate(root, stage="T1C_TRANSPORT_READINESS")
+    receipt = gate_consumption.read_gate_consumption_receipt(
+        root, binding["gate_receipt_key_sha256"],
+        expected_gate=gate_consumption.GATE_T1C_TRANSPORT_READINESS,
+        expected_v8d_frozen_design_commit=FROZEN_DESIGN_COMMIT,
+    )
+    assert receipt["consumed_at_utc"] == "2026-01-01T00:00:00Z"
+
+
+@pytest.mark.parametrize("timestamp", [
+    "",
+    "not-a-timestamp",
+    "2026-01-01T00:00:00+00:00",
+    "2026-01-01T00:00:00+01:00",
+    "2026-01-01T00:00:00",
+    "2026-01-01T00:00:00z",
+    "2026-01-01 00:00:00Z",
+    "2026-01-01T00:00:00.1Z",
+    "2026-01-01T00:00:00.12345Z",
+    "2026-01-01T00:00:00.1234567Z",
+    "2026-02-29T00:00:00Z",
+    " 2026-01-01T00:00:00Z",
+    "2026-01-01T00:00:00Z ",
+    "2026-01-01T00:00:00Ztrailing",
+])
+def test_gate_receipt_rejects_noncanonical_or_invalid_utc_timestamps(tmp_path, timestamp):
+    payload = _valid_receipt_payload()
+    payload["consumed_at_utc"] = timestamp
+    root = tmp_path / "gate-state"
+    _path, key = _write_receipt(root, payload=payload)
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(root, key)
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_TIMESTAMP_INVALID"
+
+
+def test_tampered_gate_receipt_timestamp_blocks_through_normal_read_path(tmp_path):
+    root = _gate_root(tmp_path)
+    binding = _consume_gate(root, stage="T1C_TRANSPORT_READINESS")
+    path = root / (binding["gate_receipt_key_sha256"] + ".json")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["consumed_at_utc"] = "2026-01-01T00:00:00+00:00"
+    path.write_bytes(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    with pytest.raises(gate_consumption.V8DHumanGateConsumptionBlocked) as excinfo:
+        gate_consumption.read_gate_consumption_receipt(root, binding["gate_receipt_key_sha256"])
+    assert excinfo.value.reason == "V8D_HUMAN_GATE_RECEIPT_TIMESTAMP_INVALID"
+
+
 # --- Required test 1: all four exact stage->gate mappings -------------------
 
 

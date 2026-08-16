@@ -34,6 +34,7 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -262,8 +263,7 @@ def _parse_and_validate_receipt_bytes(raw: bytes) -> tuple[dict[str, Any], str]:
         raise V8DHumanGateConsumptionBlocked("V8D_HUMAN_GATE_RECEIPT_CONSUMPTION_COUNT_INVALID")
     if parsed["consumption_boundary"] != CONSUMPTION_BOUNDARY:
         raise V8DHumanGateConsumptionBlocked("V8D_HUMAN_GATE_RECEIPT_CONSUMPTION_BOUNDARY_INVALID")
-    if not isinstance(parsed["consumed_at_utc"], str) or not parsed["consumed_at_utc"]:
-        raise V8DHumanGateConsumptionBlocked("V8D_HUMAN_GATE_RECEIPT_TIMESTAMP_INVALID")
+    _require_canonical_utc_timestamp(parsed["consumed_at_utc"])
 
     recomputed_key = compute_receipt_key(parsed["gate"], parsed["v8d_frozen_design_commit"])
     return dict(parsed), recomputed_key
@@ -336,6 +336,24 @@ def _utc_timestamp(value: Any) -> datetime:
 
 def _timestamp_text(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+_CANONICAL_UTC_TIMESTAMP = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{6})?Z$"
+)
+
+
+def _require_canonical_utc_timestamp(value: object) -> str:
+    if not isinstance(value, str) or not _CANONICAL_UTC_TIMESTAMP.fullmatch(value):
+        raise V8DHumanGateConsumptionBlocked("V8D_HUMAN_GATE_RECEIPT_TIMESTAMP_INVALID")
+    try:
+        format_string = "%Y-%m-%dT%H:%M:%S.%fZ" if "." in value else "%Y-%m-%dT%H:%M:%SZ"
+        parsed = datetime.strptime(value, format_string).replace(tzinfo=timezone.utc)
+    except ValueError as error:
+        raise V8DHumanGateConsumptionBlocked("V8D_HUMAN_GATE_RECEIPT_TIMESTAMP_INVALID") from error
+    if _timestamp_text(parsed) != value:
+        raise V8DHumanGateConsumptionBlocked("V8D_HUMAN_GATE_RECEIPT_TIMESTAMP_INVALID")
+    return value
 
 
 def consume_gate_and_bind(
