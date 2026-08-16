@@ -613,6 +613,115 @@ def test_production_execution_binding_result_mismatch_blocks(binding_result, agg
         )
 
 
+def _publication_receipt_fixture():
+    return readiness_audit_verification._build_receipt(
+        verification_stage=readiness_audit_verification.T1C_VERIFICATION_STAGE,
+        logical_stage="T1C_TRANSPORT_READINESS",
+        aggregate_filename="aggregate-test.json",
+        aggregate={
+            "reviewed_production_implementation_commit": IMPLEMENTATION_SHA,
+            "aggregate_self_hash": "a" * 64,
+        },
+        dossier_bindings=[
+            {"filename": f"dossier-{coordinate}.json", "audit_artifact_self_hash": str(index) * 64}
+            for index, coordinate in enumerate((0, 149, 299), start=1)
+        ],
+        gate_binding={
+            "gate_receipt_key_sha256": "1" * 64,
+            "gate_receipt_bytes_sha256": "2" * 64,
+            "authorization_identity_sha256": "3" * 64,
+        },
+    )
+
+
+def test_readiness_receipt_publication_absent_and_identical_existing_are_idempotent(tmp_path):
+    receipt = _publication_receipt_fixture()
+    destination = tmp_path / "t1c-readiness-audit-verification.json"
+    assert readiness_audit_verification._persist_receipt(receipt, destination) == receipt
+    assert readiness_audit_verification._persist_receipt(receipt, destination) == receipt
+    assert readiness_audit_verification._validate_receipt(
+        json.loads(destination.read_text(encoding="utf-8")),
+        expected_verification_stage=readiness_audit_verification.T1C_VERIFICATION_STAGE,
+    ) == receipt
+
+
+def test_readiness_receipt_publication_conflicting_or_malformed_existing_blocks(tmp_path):
+    receipt = _publication_receipt_fixture()
+    destination = tmp_path / "t1c-readiness-audit-verification.json"
+    conflicting = dict(receipt)
+    conflicting["aggregate_filename"] = "other-aggregate.json"
+    conflicting["receipt_self_hash"] = canonical_sha256(
+        {key: value for key, value in conflicting.items() if key != "receipt_self_hash"}
+    )
+    destination.write_bytes(canonical_json_bytes(conflicting))
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._persist_receipt(receipt, destination)
+
+    destination.write_bytes(b"not-json")
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._persist_receipt(receipt, destination)
+
+
+def test_readiness_receipt_publication_symlink_blocks(tmp_path):
+    receipt = _publication_receipt_fixture()
+    destination = tmp_path / "t1c-readiness-audit-verification.json"
+    target = tmp_path / "target.json"
+    target.write_bytes(canonical_json_bytes(receipt))
+    try:
+        destination.symlink_to(target)
+    except (OSError, NotImplementedError):
+        return
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._persist_receipt(receipt, destination)
+
+
+@pytest.mark.parametrize("winner_conflicts", [False, True])
+def test_readiness_receipt_publication_race_rechecks_exclusive_winner(tmp_path, monkeypatch, winner_conflicts):
+    receipt = _publication_receipt_fixture()
+    destination = tmp_path / "t1c-readiness-audit-verification.json"
+    winner = dict(receipt)
+    if winner_conflicts:
+        winner["aggregate_filename"] = "race-winner.json"
+        winner["receipt_self_hash"] = canonical_sha256(
+            {key: value for key, value in winner.items() if key != "receipt_self_hash"}
+        )
+
+    def race_link(_staging, actual_destination):
+        Path(actual_destination).write_bytes(canonical_json_bytes(winner))
+        raise FileExistsError
+
+    monkeypatch.setattr(readiness_audit_verification.os, "link", race_link)
+    if winner_conflicts:
+        with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+            readiness_audit_verification._persist_receipt(receipt, destination)
+    else:
+        assert readiness_audit_verification._persist_receipt(receipt, destination) == receipt
+    assert destination.read_bytes() == canonical_json_bytes(winner)
+    assert not list(tmp_path.glob("*.staging-*"))
+
+
+def test_readiness_receipt_publication_never_uses_replace_and_cleans_failed_stage(tmp_path, monkeypatch):
+    receipt = _publication_receipt_fixture()
+    destination = tmp_path / "t1c-readiness-audit-verification.json"
+
+    def forbidden_replace(*_args, **_kwargs):
+        raise AssertionError("receipt publication must not use os.replace")
+
+    monkeypatch.setattr(readiness_audit_verification.os, "replace", forbidden_replace)
+    assert readiness_audit_verification._persist_receipt(receipt, destination) == receipt
+
+    destination.unlink()
+
+    def failed_link(*_args, **_kwargs):
+        raise OSError("synthetic publication failure")
+
+    monkeypatch.setattr(readiness_audit_verification.os, "link", failed_link)
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._persist_receipt(receipt, destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob("*.staging-*"))
+
+
 def test_canonical_readiness_receipts_are_stage_specific_and_privacy_safe(tmp_path):
     for logical_stage in ("T1C_TRANSPORT_READINESS", "T2_TRANSPORT_READINESS"):
         artifacts = _success_readiness_receipt(tmp_path / logical_stage, logical_stage=logical_stage)

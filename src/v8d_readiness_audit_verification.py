@@ -423,18 +423,23 @@ def _validate_receipt(receipt: Mapping[str, Any], *, expected_verification_stage
 
 
 def _persist_receipt(receipt: dict[str, Any], destination: Path) -> dict[str, Any]:
+    def existing_or_conflict() -> dict[str, Any]:
+        if destination.is_symlink():
+            raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_AUDIT_RECEIPT_PATH_INVALID")
+        existing = _validate_receipt(
+            _read_json_file(destination, label="RECEIPT"),
+            expected_verification_stage=receipt["verification_stage"],
+        )
+        if existing != receipt:
+            raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_AUDIT_RECEIPT_CONFLICT")
+        return existing
+
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.is_symlink():
             raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_AUDIT_RECEIPT_PATH_INVALID")
         if destination.exists():
-            existing = _validate_receipt(
-                _read_json_file(destination, label="RECEIPT"),
-                expected_verification_stage=receipt["verification_stage"],
-            )
-            if existing != receipt:
-                raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_AUDIT_RECEIPT_CONFLICT")
-            return existing
+            return existing_or_conflict()
         fd, temporary_name = tempfile.mkstemp(prefix=destination.name + ".staging-", dir=str(destination.parent))
         temporary = Path(temporary_name)
         try:
@@ -442,13 +447,17 @@ def _persist_receipt(receipt: dict[str, Any], destination: Path) -> dict[str, An
                 stream.write((json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
                 stream.flush()
                 os.fsync(stream.fileno())
-            if destination.exists() or destination.is_symlink():
-                raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_AUDIT_RECEIPT_CONFLICT")
-            os.replace(str(temporary), str(destination))
+            try:
+                os.link(str(temporary), str(destination))
+            except FileExistsError:
+                # A winner appeared after the initial inspection.  Read the
+                # actual destination and accept it only if it is the exact
+                # same strictly valid receipt; never overwrite the winner.
+                return existing_or_conflict()
+            return existing_or_conflict()
         finally:
             if temporary.exists():
                 temporary.unlink()
-        return receipt
     except V8DReadinessAuditVerificationBlocked:
         raise
     except (OSError, TypeError, ValueError) as error:
