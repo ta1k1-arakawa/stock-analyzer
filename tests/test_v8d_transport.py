@@ -14,6 +14,7 @@ import pytest
 
 from src import v8d_audit, v8d_authority_bridge, v8d_git_provenance, v8d_historical_acquisition as acquisition
 from src import v8d_human_gate_consumption as gate_consumption
+from src import v8d_acquisition_engine as acquisition_engine
 from src import (
     v8d_production_provenance,
     v8d_readiness as readiness,
@@ -2408,6 +2409,80 @@ def test_bound_production_files_now_include_human_gate_consumption_module():
     assert "src/v8d_human_gate_consumption.py" in v8d_production_provenance.BOUND_PRODUCTION_FILES
     for path in v8d_production_provenance.BOUND_PRODUCTION_FILES:
         assert (REPO_ROOT / path).is_file(), path
+
+
+def test_authoritative_acquisition_public_signatures_are_fixed():
+    assert set(inspect.signature(acquisition.execute_t1c_raw_acquisition_production).parameters) == {
+        "human_authorization_identity", "partition_manifest_path", "t1c_allocation_artifact_path", "output_root",
+    }
+    assert set(inspect.signature(acquisition.execute_t2_raw_acquisition_production).parameters) == {
+        "human_authorization_identity", "partition_manifest_path", "output_root",
+    }
+    assert "src/v8d_acquisition_engine.py" in v8d_production_provenance.BOUND_PRODUCTION_FILES
+
+
+def test_authoritative_acquisition_fixed_window_count_and_quality_policy():
+    assert acquisition_engine.REQUEST_START == "2016-04-01"
+    assert acquisition_engine.REQUEST_END_EXCLUSIVE == "2026-01-01"
+    assert acquisition_engine.REQUEST_COUNT == 300
+    assert acquisition_engine._dq_metadata() == {
+        "policy_name": "POLICY_V8B_Q2_F1_C1_UNIFORM_RETURNED_ROW_QUALITY_GATE",
+        "invalid_fraction_numerator": 1,
+        "invalid_fraction_denominator": 252,
+        "max_consecutive_invalid_returned_rows": 1,
+        "full_p_hist_check_required": True,
+        "test_years": list(range(2018, 2026)),
+        "expected_calendar_missing_dates_treated_as_malformed": False,
+        "threshold_exceedance_action": "BLOCK_WHOLE_ACQUISITION",
+    }
+
+
+def test_authoritative_acquisition_quality_gate_uses_exact_integer_and_consecutive_rules():
+    valid_row = {"trading_date": "2018-01-02"}
+    acquisition_engine._require_dq({"valid_price_rows": [valid_row], "invalid_price_rows": []})
+    with pytest.raises(V8DNamedFailure) as excinfo:
+        acquisition_engine._require_dq({
+            "valid_price_rows": [valid_row],
+            "invalid_price_rows": [{"trading_date": "2018-01-01"}, {"trading_date": "2018-01-03"}],
+        })
+    assert excinfo.value.condition == "DATA_QUALITY_GATE_FAILURE"
+
+
+def test_authoritative_acquisition_binding_is_safe_and_stage_bound(tmp_path):
+    aggregate = {"aggregate_self_hash": "a" * 64, "result": "PASS"}
+    aggregate_path = tmp_path / "aggregate-safe.json"
+    aggregate_path.write_bytes(canonical_json_bytes(aggregate))
+    dossier_path = tmp_path / "dossier-safe.json"
+    dossier_path.write_bytes(canonical_json_bytes({
+        "audit_artifact_self_hash": "b" * 64,
+        "logical_coordinate": 0,
+    }))
+    binding = acquisition_engine._safe_binding(
+        "T1C_RAW_ACQUISITION", IMPLEMENTATION_SHA,
+        {
+            "gate_receipt_key_sha256": "c" * 64,
+            "gate_receipt_bytes_sha256": "d" * 64,
+            "authorization_identity_sha256": "e" * 64,
+        },
+        {"aggregate": aggregate, "aggregate_path": aggregate_path, "dossier_paths": [dossier_path]},
+        acquisition_engine.T1C_LIST_SHA256,
+    )
+    assert binding["logical_stage"] == "T1C_RAW_ACQUISITION"
+    assert binding["membership_list_sha256"] == acquisition_engine.T1C_LIST_SHA256
+    assert binding["execution_result"] == "PASS"
+    assert binding["binding_self_hash"] == canonical_sha256({k: v for k, v in binding.items() if k != "binding_self_hash"})
+    serialized = json.dumps(binding, sort_keys=True)
+    assert "ticker" not in serialized.lower()
+    assert str(tmp_path) not in serialized
+
+
+def test_authoritative_acquisition_publication_is_exclusive(tmp_path):
+    destination = tmp_path / "bundle.json"
+    acquisition_engine._exclusive_publish_file(destination, b"first")
+    assert destination.read_bytes() == b"first"
+    with pytest.raises(acquisition_engine.V8DAcquisitionEngineBlocked):
+        acquisition_engine._exclusive_publish_file(destination, b"second")
+    assert destination.read_bytes() == b"first"
 
 
 # ===========================================================================

@@ -165,27 +165,40 @@ def _execute_production_raw_acquisition(
 
 
 def execute_t1c_raw_acquisition_production(
-    *, human_authorization_identity: str, request_factory: Callable[[int], V8DRequestPlan], audit_root: str | Path,
-    request_start: str, request_end_exclusive: str, request_count: int,
+    *, human_authorization_identity: str, partition_manifest_path: str | Path,
+    t1c_allocation_artifact_path: str | Path, output_root: str | Path,
 ) -> dict[str, Any]:
-    """Sole production entrypoint for `T1C_RAW_ACQUISITION_HUMAN_GATE`."""
-    return _execute_production_raw_acquisition(
-        stage="T1C_RAW_ACQUISITION", human_authorization_identity=human_authorization_identity,
-        request_factory=request_factory, audit_root=audit_root,
-        request_start=request_start, request_end_exclusive=request_end_exclusive, request_count=request_count,
-    )
+    """Fixed production entrypoint for the T1C raw-acquisition stage."""
+    from src.v8d_acquisition_engine import V8DAcquisitionEngineBlocked, _execute_fixed_production_acquisition
+
+    try:
+        return _execute_fixed_production_acquisition(
+            stage="T1C_RAW_ACQUISITION",
+            human_authorization_identity=human_authorization_identity,
+            partition_manifest_path=partition_manifest_path,
+            t1c_allocation_artifact_path=t1c_allocation_artifact_path,
+            output_root=output_root,
+        )
+    except V8DAcquisitionEngineBlocked as error:
+        raise V8DAcquisitionBlocked(error.reason) from error
 
 
 def execute_t2_raw_acquisition_production(
-    *, human_authorization_identity: str, request_factory: Callable[[int], V8DRequestPlan], audit_root: str | Path,
-    request_start: str, request_end_exclusive: str, request_count: int,
+    *, human_authorization_identity: str, partition_manifest_path: str | Path,
+    output_root: str | Path,
 ) -> dict[str, Any]:
-    """Sole production entrypoint for `T2_RAW_ACQUISITION_HUMAN_GATE`."""
-    return _execute_production_raw_acquisition(
-        stage="T2_RAW_ACQUISITION", human_authorization_identity=human_authorization_identity,
-        request_factory=request_factory, audit_root=audit_root,
-        request_start=request_start, request_end_exclusive=request_end_exclusive, request_count=request_count,
-    )
+    """Fixed production entrypoint for the T2 raw-acquisition stage."""
+    from src.v8d_acquisition_engine import V8DAcquisitionEngineBlocked, _execute_fixed_production_acquisition
+
+    try:
+        return _execute_fixed_production_acquisition(
+            stage="T2_RAW_ACQUISITION",
+            human_authorization_identity=human_authorization_identity,
+            partition_manifest_path=partition_manifest_path,
+            output_root=output_root,
+        )
+    except V8DAcquisitionEngineBlocked as error:
+        raise V8DAcquisitionBlocked(error.reason) from error
 
 
 def synthetic_request_plan(*, stage: str, coordinate: int, request_start: str,
