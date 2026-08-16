@@ -82,6 +82,10 @@ T1C_SLICE_END = 600
 ACQUISITION_MANIFEST_SCHEMA = "V8D_RAW_ACQUISITION_BUNDLE_V1"
 PRODUCTION_BINDING_SCHEMA = "V8D_PRODUCTION_RAW_ACQUISITION_EXECUTION_BINDING_V1"
 PRODUCTION_BINDING_ROOT = CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8d-acquisition-production-execution-state"
+PRODUCTION_BINDING_FILENAMES = frozenset({
+    "t1c-raw-acquisition-execution-binding.json",
+    "t2-raw-acquisition-execution-binding.json",
+})
 
 
 class V8DAcquisitionEngineBlocked(RuntimeError):
@@ -254,6 +258,14 @@ def _canonical_rows(parsed_values: Sequence[Mapping[str, Any]]) -> list[dict[str
 
 
 def _exclusive_publish_file(destination: Path, payload: bytes) -> None:
+    destination = Path(destination)
+    try:
+        canonical_destination = destination.resolve(strict=False)
+        canonical_root = PRODUCTION_BINDING_ROOT.resolve(strict=False)
+    except OSError as error:
+        _block("V8D_ACQUISITION_PUBLICATION_PATH_INVALID", error)
+    if canonical_destination.parent == canonical_root and canonical_destination.name in PRODUCTION_BINDING_FILENAMES:
+        _block("V8D_ACQUISITION_PRODUCTION_BINDING_PUBLICATION_SEAM_BLOCKED")
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = destination.parent / f"{destination.name}.staging-{os.urandom(8).hex()}"
     try:
@@ -475,7 +487,29 @@ def _execute_fixed_production_acquisition(
         binding_path = PRODUCTION_BINDING_ROOT / (
             ("t1c" if stage.startswith("T1C") else "t2") + "-raw-acquisition-execution-binding.json"
         )
-        _exclusive_publish_file(binding_path, canonical_json_bytes(binding_body))
+        binding_payload = canonical_json_bytes(binding_body)
+        binding_staging: Path | None = None
+        try:
+            binding_path.parent.mkdir(parents=True, exist_ok=True)
+            if binding_path.is_symlink() or binding_path.exists():
+                raise FileExistsError
+            binding_staging = binding_path.parent / (binding_path.name + ".staging-" + os.urandom(8).hex())
+            with open(binding_staging, "xb") as stream:
+                stream.write(binding_payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(str(binding_staging), str(binding_path))
+        except FileExistsError as error:
+            _block("V8D_ACQUISITION_PRODUCTION_BINDING_ALREADY_PUBLISHED", error)
+        except OSError as error:
+            _block("V8D_ACQUISITION_PRODUCTION_BINDING_ATOMIC_PUBLISH_FAILED", error)
+        finally:
+            if binding_staging is not None:
+                try:
+                    if binding_staging.exists():
+                        binding_staging.unlink()
+                except OSError:
+                    pass
         try:
             return _build_bundle(stage=stage, block="T1C" if stage.startswith("T1C") else "T2", output_root=out, staging_root=staging, tickers=tickers, captured=captured, execution=execution, reviewed_commit=reviewed_commit, gate=gate, membership_hash=T1C_LIST_SHA256 if stage.startswith("T1C") else T2_LIST_SHA256)
         except Exception:

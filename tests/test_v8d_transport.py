@@ -2382,6 +2382,8 @@ def test_generic_raw_transport_requires_an_already_supplied_gate_binding(tmp_pat
 def test_generic_raw_transport_does_not_consume_a_gate(tmp_path, monkeypatch):
     gate_root = _gate_root(tmp_path)
     gate_binding = _consume_gate(gate_root, stage="T1C_RAW_ACQUISITION")
+    canonical_binding_root = tmp_path / "canonical-binding-state"
+    monkeypatch.setattr(acquisition_engine, "PRODUCTION_BINDING_ROOT", canonical_binding_root)
 
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("generic transport must not consume a gate")
@@ -2399,6 +2401,7 @@ def test_generic_raw_transport_does_not_consume_a_gate(tmp_path, monkeypatch):
         sleep_fn=lambda _seconds: None,
     )
     assert result["aggregate"]["result"] == "PASS"
+    assert not canonical_binding_root.exists()
 
 
 # --- Required test 36: real repo, missing review artifact -> fail closed ---
@@ -2493,6 +2496,7 @@ def test_fixed_core_synthetic_binding_boundary_is_stage_bound_and_private_safe(t
     dossier_path = tmp_path / "dossier-safe.json"
     dossier_path.write_bytes(canonical_json_bytes(dossier))
     execution = {"aggregate": aggregate, "aggregate_path": aggregate_path, "dossier_paths": [dossier_path]}
+    real_build_bundle = acquisition_engine._build_bundle
     tickers = tuple(f"SYNTH-{index}" for index in range(acquisition_engine.REQUEST_COUNT))
 
     monkeypatch.setattr(acquisition_engine, "PRODUCTION_BINDING_ROOT", tmp_path / "binding-state")
@@ -2550,6 +2554,23 @@ def test_fixed_core_synthetic_binding_boundary_is_stage_bound_and_private_safe(t
         stage="T2_RAW_ACQUISITION", human_authorization_identity="synthetic-identity",
         partition_manifest_path=tmp_path / "partition.json", output_root=tmp_path / "output-t2",
     )
+    blocked_aggregate_body = {"result": "BLOCK"}
+    blocked_aggregate = dict(blocked_aggregate_body)
+    blocked_aggregate["aggregate_self_hash"] = canonical_sha256(blocked_aggregate_body)
+    blocked_execution = {"aggregate": blocked_aggregate, "aggregate_path": aggregate_path, "dossier_paths": [dossier_path]}
+    monkeypatch.setattr(acquisition_engine, "PRODUCTION_BINDING_ROOT", tmp_path / "binding-state-block")
+    monkeypatch.setattr(acquisition_engine, "execute_v8d_stage", lambda **_kwargs: blocked_execution)
+    monkeypatch.setattr(acquisition_engine, "_build_bundle", real_build_bundle)
+    with pytest.raises(acquisition_engine.V8DAcquisitionEngineBlocked) as excinfo:
+        acquisition_engine._execute_fixed_production_acquisition(
+            stage="T2_RAW_ACQUISITION", human_authorization_identity="synthetic-identity",
+            partition_manifest_path=tmp_path / "partition.json", output_root=tmp_path / "output-block",
+        )
+    assert excinfo.value.reason == "V8D_ACQUISITION_TRANSPORT_BLOCK"
+    blocked_binding = json.loads(
+        (tmp_path / "binding-state-block" / "t2-raw-acquisition-execution-binding.json").read_text(encoding="utf-8")
+    )
+    assert blocked_binding["execution_result"] == "BLOCK"
     assert t1c_result["result"] == t2_result["result"] == "PASS"
     t1c_binding_path = tmp_path / "binding-state" / "t1c-raw-acquisition-execution-binding.json"
     t2_binding_path = tmp_path / "binding-state" / "t2-raw-acquisition-execution-binding.json"
@@ -2572,6 +2593,18 @@ def test_authoritative_acquisition_publication_is_exclusive(tmp_path):
     with pytest.raises(acquisition_engine.V8DAcquisitionEngineBlocked):
         acquisition_engine._exclusive_publish_file(destination, b"second")
     assert destination.read_bytes() == b"first"
+
+
+@pytest.mark.parametrize("filename", sorted(acquisition_engine.PRODUCTION_BINDING_FILENAMES))
+def test_generic_writer_blocks_canonical_production_binding_destinations(tmp_path, monkeypatch, filename):
+    canonical_root = tmp_path / "canonical-binding-state"
+    monkeypatch.setattr(acquisition_engine, "PRODUCTION_BINDING_ROOT", canonical_root)
+    destination = canonical_root / filename
+    with pytest.raises(acquisition_engine.V8DAcquisitionEngineBlocked) as excinfo:
+        acquisition_engine._exclusive_publish_file(destination, b"crafted-binding-bytes")
+    assert excinfo.value.reason == "V8D_ACQUISITION_PRODUCTION_BINDING_PUBLICATION_SEAM_BLOCKED"
+    assert not destination.exists()
+    assert not canonical_root.exists()
 
 
 # ===========================================================================
