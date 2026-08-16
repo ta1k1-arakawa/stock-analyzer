@@ -1873,16 +1873,13 @@ def test_empty_or_missing_authorization_identity_blocks_before_request_readiness
 
 
 def test_empty_or_missing_authorization_identity_blocks_before_request_acquisition(tmp_path):
-    def request_factory(_coordinate):
-        raise AssertionError("request_factory must not be invoked")
-
     for bad_identity in ("", None):
         with pytest.raises(acquisition.V8DAcquisitionBlocked) as excinfo:
-            acquisition._execute_production_raw_acquisition(
-                stage="T1C_RAW_ACQUISITION", human_authorization_identity=bad_identity,
-                request_factory=request_factory, audit_root=tmp_path / "audit",
-                request_start="2020-01-01", request_end_exclusive="2020-01-08", request_count=1,
-                consumption_state_root=tmp_path / "gate-state",
+            acquisition.execute_t1c_raw_acquisition_production(
+                human_authorization_identity=bad_identity,
+                partition_manifest_path=tmp_path / "partition.json",
+                t1c_allocation_artifact_path=tmp_path / "allocation.json",
+                output_root=tmp_path / "output",
             )
         assert excinfo.value.reason == "V8D_ACQUISITION_HUMAN_AUTHORIZATION_IDENTITY_REQUIRED"
 
@@ -2286,44 +2283,28 @@ def test_one_shot_gate_cannot_be_reset_by_fresh_authorization_identity(tmp_path)
     assert excinfo.value.reason.startswith("V8D_HUMAN_GATE_ALREADY_CONSUMED")
 
 
-def test_acquisition_production_entrypoint_full_flow_and_one_shot(tmp_path):
-    repo, _reviewed_commit, head_commit = _build_bound_file_repo(tmp_path, mutate_file=None)
-    gate_root = tmp_path / "gate-state"
-    calls = []
+def test_acquisition_production_entrypoint_delegates_only_to_fixed_engine(tmp_path, monkeypatch):
+    calls = {}
 
-    def request_factory(coordinate):
-        def request_fn():
-            calls.append(coordinate)
-            return "ok"
-        return _plan("T1C_RAW_ACQUISITION", coordinate, request_fn, start="2020-01-01", end="2020-01-08")
+    def fixed_engine(**kwargs):
+        calls.update(kwargs)
+        return {"result": "synthetic-fixed-engine-test"}
 
-    def run(identity):
-        return acquisition._execute_production_raw_acquisition(
-            stage="T1C_RAW_ACQUISITION", human_authorization_identity=identity,
-            request_factory=request_factory, audit_root=tmp_path / "audit",
-            request_start="2020-01-01", request_end_exclusive="2020-01-08", request_count=2,
-            repository_root=repo, consumption_state_root=gate_root,
-            git_commit_resolver=lambda: head_commit,
-            frozen_design_object_verifier=lambda: None,
-            design_freeze_approval_verifier=lambda head: None,
-            reviewed_implementation_binder=lambda head: v8d_production_provenance.verify_reviewed_implementation_binding(repo, head),
-            sleep_fn=lambda _seconds: None, clock=_fixed_clock,
-        )
-
-    result = run("acquisition-identity-1")
-    assert result["aggregate"]["result"] == "PASS"
-    assert calls == [0, 1]
-    checked = v8d_audit.verify_aggregate(
-        result["aggregate_path"], result["dossier_paths"], gate_receipt_state_root=gate_root,
-        expected_stage="T1C_RAW_ACQUISITION",
+    monkeypatch.setattr(acquisition_engine, "_execute_fixed_production_acquisition", fixed_engine)
+    result = acquisition.execute_t1c_raw_acquisition_production(
+        human_authorization_identity="synthetic-identity",
+        partition_manifest_path=tmp_path / "partition.json",
+        t1c_allocation_artifact_path=tmp_path / "allocation.json",
+        output_root=tmp_path / "output",
     )
-    assert checked["result"] == "PASS"
-
-    calls.clear()
-    with pytest.raises(acquisition.V8DAcquisitionBlocked) as excinfo:
-        run("acquisition-identity-1")
-    assert excinfo.value.reason.startswith("V8D_HUMAN_GATE_ALREADY_CONSUMED")
-    assert calls == []
+    assert result["result"] == "synthetic-fixed-engine-test"
+    assert calls == {
+        "stage": "T1C_RAW_ACQUISITION",
+        "human_authorization_identity": "synthetic-identity",
+        "partition_manifest_path": tmp_path / "partition.json",
+        "t1c_allocation_artifact_path": tmp_path / "allocation.json",
+        "output_root": tmp_path / "output",
+    }
 
 
 # --- Required tests 31-33: a receipt from one stage cannot authorize another
@@ -2364,15 +2345,60 @@ def test_no_receipt_reset_or_delete_api_exists():
 def test_production_entrypoints_do_not_accept_caller_supplied_reviewed_implementation_commit():
     import inspect
 
-    for fn in (
-        readiness.execute_t1c_transport_readiness_production,
-        readiness.execute_t2_transport_readiness_production,
-        acquisition.execute_t1c_raw_acquisition_production,
-        acquisition.execute_t2_raw_acquisition_production,
-    ):
+    for fn in (readiness.execute_t1c_transport_readiness_production, readiness.execute_t2_transport_readiness_production):
         params = set(inspect.signature(fn).parameters)
         assert "reviewed_implementation_commit" not in params
         assert "human_authorization_identity" in params
+    assert set(inspect.signature(acquisition.execute_t1c_raw_acquisition_production).parameters) == {
+        "human_authorization_identity", "partition_manifest_path", "t1c_allocation_artifact_path", "output_root",
+    }
+    assert set(inspect.signature(acquisition.execute_t2_raw_acquisition_production).parameters) == {
+        "human_authorization_identity", "partition_manifest_path", "output_root",
+    }
+
+
+def test_legacy_injectable_raw_acquisition_gate_path_is_removed():
+    source = inspect.getsource(acquisition)
+    assert not hasattr(acquisition, "_execute_production_raw_acquisition")
+    assert "_execute_production_raw_acquisition" not in source
+    assert "consume_gate_and_bind" not in source
+
+
+def test_generic_raw_transport_requires_an_already_supplied_gate_binding(tmp_path):
+    with pytest.raises(acquisition.V8DAcquisitionBlocked):
+        acquisition.execute_raw_acquisition_transport(
+            stage="T1C_RAW_ACQUISITION",
+            request_factory=lambda _coordinate: _plan("T1C_RAW_ACQUISITION", 0, lambda: "ok"),
+            audit_root=tmp_path / "audit",
+            reviewed_implementation_commit=IMPLEMENTATION_SHA,
+            gate_binding={},
+            request_start="2025-12-01",
+            request_end_exclusive="2025-12-08",
+            request_count=1,
+            sleep_fn=lambda _seconds: None,
+        )
+
+
+def test_generic_raw_transport_does_not_consume_a_gate(tmp_path, monkeypatch):
+    gate_root = _gate_root(tmp_path)
+    gate_binding = _consume_gate(gate_root, stage="T1C_RAW_ACQUISITION")
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("generic transport must not consume a gate")
+
+    monkeypatch.setattr(gate_consumption, "consume_gate_and_bind", fail_if_called)
+    result = acquisition.execute_raw_acquisition_transport(
+        stage="T1C_RAW_ACQUISITION",
+        request_factory=lambda _coordinate: _plan("T1C_RAW_ACQUISITION", 0, lambda: "ok"),
+        audit_root=tmp_path / "audit",
+        reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        gate_binding=gate_binding,
+        request_start="2025-12-01",
+        request_end_exclusive="2025-12-08",
+        request_count=1,
+        sleep_fn=lambda _seconds: None,
+    )
+    assert result["aggregate"]["result"] == "PASS"
 
 
 # --- Required test 36: real repo, missing review artifact -> fail closed ---
