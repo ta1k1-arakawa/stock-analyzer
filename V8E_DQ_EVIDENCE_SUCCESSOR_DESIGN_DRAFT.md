@@ -295,8 +295,17 @@ storage key; a copied receipt under another key is BLOCK.
 After durable publication, the exact receipt bytes may be independently
 hashed as `gate_receipt_bytes_sha256`. That byte hash is external to the
 receipt and is not a replacement for receipt validation. Publication remains
-flush/fsync, atomic, exclusive, and no-overwrite; a collision is idempotent
-only for the exact same strictly valid receipt and otherwise BLOCK.
+flush/fsync, atomic, exclusive, and no-overwrite. If the deterministic receipt
+destination already exists, a second consumption attempt MUST BLOCK, even
+when the existing receipt bytes are identical and strictly valid. Existing
+receipt bytes may be read and independently validated for read-only review or
+provenance purposes only. Such read-only validation MUST NOT make another
+consume operation succeed and MUST NOT authorize another private-byte read.
+No reset, deletion, replay, or reuse of the same authorization identity is
+allowed. A failure or crash after durable receipt consumption does not restore
+authority. A later private preservation verification requires a genuinely
+fresh explicit human authorization under the frozen V8E rules; it is not
+recovery or idempotent replay of the consumed identity.
 
 The V8E T1C preservation artifact and independent review use the corresponding
 current-study bindings:
