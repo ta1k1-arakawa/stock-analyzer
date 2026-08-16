@@ -341,11 +341,38 @@ human_gate=V8E_HUMAN_AUTHORIZE_T1C_AUTHORITY_BRIDGE_AT_
             + "_FOR_"
             + authorized_allocation_artifact_self_hash
 
-V8E_T2_PREFREEZE_PRESERVATION_RECHECK_V1
-study=V8E_HISTORICAL_RESEARCH
-reviewed_v8e_design_candidate_commit
-preservation_recheck_result=PASS
+```
 
+The exact V8E T2 prefreeze artifact contract is:
+
+```text
+study=V8E_HISTORICAL_RESEARCH
+document_type=T2_PREFREEZE_PRESERVATION_RECHECK_AUDIT_RECORD
+reviewed_v8e_design_candidate_commit=<exact reviewed V8E candidate SHA>
+checkpoint=V8E_T2_PREFREEZE_PRESERVATION_RECHECK
+recheck_1=before_V8E_design_freeze
+
+T2_real_data_acquired=false
+T2_opened=false
+T2_research_access_count=0
+T2_features_observed=false
+T2_outcomes_observed=false
+T2_membership_reassigned=false
+universe_definition_compatible=true
+partition_algorithm_compatible=true
+data_quality_policy_unchanged=true
+
+v8_trusted_partition_git_blob=61faade0625139cec3fb61216ab2f97f572a7028
+original_v8_partition_manifest_sha256=0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62
+parent_v8_partition_implementation_commit=36cbed941050e728f7f96ce2af505e81175cc02c
+t2_count=300
+t2_ticker_list_sha256=e7578db7202dcb6407d7bcd98d6365fc65f22e30aa05467313a347f9cc3d6500
+
+T2_PREFREEZE_PRESERVATION_RECHECK=PASS
+OVERALL_RESULT=PASS
+```
+
+```text
 V8E_T2_AUTHORITY_BRIDGE_V1
 study=V8E_HISTORICAL_RESEARCH
 artifact_role=T2_AUTHORITY_BRIDGE
@@ -356,15 +383,34 @@ human_gate=V8E_HUMAN_AUTHORIZE_T2_AUTHORITY_BRIDGE_AT_
             + expected_t2_ticker_list_sha256
 ```
 
+The T2 prefreeze artifact above is not a new schema version. No
+`V8E_T2_PREFREEZE_PRESERVATION_RECHECK_V1` schema is invented; this is the
+actual inherited V8D audit-record contract with only the current-study fields
+mechanically rebound to V8E. The exact nine preservation conditions, safe
+original V8 provenance values, T2 count, T2 list hash, and PASS result remain
+unchanged. No required condition or evidence may be absent: absence is not
+PASS and any missing, extra, malformed, duplicated, or mismatched field is
+BLOCK.
+
+The independent V8E T2 prefreeze review must resolve the exact committed
+artifact and exact artifact blob, validate this complete record, and require
+the same `reviewed_v8e_design_candidate_commit`. It must independently verify
+the safe original provenance and all nine conditions; producer-declared PASS
+alone is never authority.
+
 The T1C and T2 bridges retain the exact original V8 authority/provenance
 values, exact inherited membership hashes and counts, and safe preservation
 artifact commit/blob bindings; only the current V8E candidate/frozen design,
 study, namespace, and fresh V8E gate literals are rebound. The T2 prefreeze
 and later point-of-use checks remain distinct and neither authorizes the other.
-All V8E readiness, acquisition, transport-audit, artifact-verification, and
-research-opening receipts follow the same rule: current-study V8E namespace
-and exact V8E design binding, inherited schema semantics, and fresh V8E gate;
-historical source identifiers remain byte-for-byte historical values.
+The T2 prefreeze record is safe committed/audit/provenance evidence only. It
+does not inspect private T2 identities or raw data, does not satisfy the later
+T2 point-of-use preservation checkpoint, and does not authorize readiness,
+acquisition, or research opening. All V8E readiness, acquisition,
+transport-audit, artifact-verification, and research-opening receipts follow
+the same rule: current-study V8E namespace and exact V8E design binding,
+inherited schema semantics, and fresh V8E gate; historical source identifiers
+remain byte-for-byte historical values.
 
 ## 4. V8E DQ failure evidence model
 
