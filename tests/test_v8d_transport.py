@@ -2474,30 +2474,93 @@ def test_authoritative_acquisition_quality_gate_uses_exact_integer_and_consecuti
     assert excinfo.value.condition == "DATA_QUALITY_GATE_FAILURE"
 
 
-def test_authoritative_acquisition_binding_is_safe_and_stage_bound(tmp_path):
-    aggregate = {"aggregate_self_hash": "a" * 64, "result": "PASS"}
+def test_production_binding_helpers_are_not_module_level_callables():
+    assert not hasattr(acquisition_engine, "_safe_binding")
+    assert not hasattr(acquisition_engine, "_publish_production_binding")
+
+
+def test_fixed_core_synthetic_binding_boundary_is_stage_bound_and_private_safe(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    aggregate_body = {"result": "PASS"}
+    aggregate = dict(aggregate_body)
+    aggregate["aggregate_self_hash"] = canonical_sha256(aggregate_body)
     aggregate_path = tmp_path / "aggregate-safe.json"
     aggregate_path.write_bytes(canonical_json_bytes(aggregate))
+    dossier_body = {"logical_coordinate": 0}
+    dossier = dict(dossier_body)
+    dossier["audit_artifact_self_hash"] = canonical_sha256(dossier_body)
     dossier_path = tmp_path / "dossier-safe.json"
-    dossier_path.write_bytes(canonical_json_bytes({
-        "audit_artifact_self_hash": "b" * 64,
-        "logical_coordinate": 0,
-    }))
-    binding = acquisition_engine._safe_binding(
-        "T1C_RAW_ACQUISITION", IMPLEMENTATION_SHA,
-        {
-            "gate_receipt_key_sha256": "c" * 64,
-            "gate_receipt_bytes_sha256": "d" * 64,
-            "authorization_identity_sha256": "e" * 64,
-        },
-        {"aggregate": aggregate, "aggregate_path": aggregate_path, "dossier_paths": [dossier_path]},
-        acquisition_engine.T1C_LIST_SHA256,
+    dossier_path.write_bytes(canonical_json_bytes(dossier))
+    execution = {"aggregate": aggregate, "aggregate_path": aggregate_path, "dossier_paths": [dossier_path]}
+    tickers = tuple(f"SYNTH-{index}" for index in range(acquisition_engine.REQUEST_COUNT))
+
+    monkeypatch.setattr(acquisition_engine, "PRODUCTION_BINDING_ROOT", tmp_path / "binding-state")
+    monkeypatch.setattr(acquisition_engine, "resolve_verified_v8d_production_git_commit", lambda _root: "f" * 40)
+    monkeypatch.setattr(acquisition_engine, "verify_frozen_design_object", lambda _root: None)
+    monkeypatch.setattr(acquisition_engine, "verify_design_freeze_approval_blob", lambda _root, _head: None)
+    monkeypatch.setattr(
+        acquisition_engine, "verify_reviewed_implementation_binding",
+        lambda _root, _head: {"reviewed_implementation_git_commit": IMPLEMENTATION_SHA},
     )
-    assert binding["logical_stage"] == "T1C_RAW_ACQUISITION"
-    assert binding["membership_list_sha256"] == acquisition_engine.T1C_LIST_SHA256
-    assert binding["execution_result"] == "PASS"
-    assert binding["binding_self_hash"] == canonical_sha256({k: v for k, v in binding.items() if k != "binding_self_hash"})
-    serialized = json.dumps(binding, sort_keys=True)
+    monkeypatch.setattr(acquisition_engine, "verify_stage_authority_bridge", lambda *_args: {})
+    monkeypatch.setattr(acquisition_engine, "require_t1c_readiness_audit_verification_pass", lambda: {})
+    monkeypatch.setattr(acquisition_engine, "require_t2_readiness_audit_verification_pass", lambda: {})
+    monkeypatch.setattr(acquisition_engine, "require_t2_point_of_use_preservation_review_pass", lambda: {})
+    monkeypatch.setattr(acquisition_engine, "require_gate_not_yet_consumed", lambda *_args: None)
+    monkeypatch.setattr(
+        acquisition_engine, "read_and_verify_v8_trusted_partition_anchor",
+        lambda *_args: {
+            "authorized_partition_manifest_sha256": acquisition_engine.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+            "authorized_partition_implementation_git_commit": acquisition_engine.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        },
+    )
+    monkeypatch.setattr(acquisition_engine, "require_absolute_output_path_outside_repository", lambda value, _root: Path(value))
+    monkeypatch.setattr(acquisition_engine, "_strict_private_file", lambda value, _label: Path(value))
+    monkeypatch.setattr(acquisition_engine, "_read_and_validate_partition", lambda _path, _block: ({}, tickers))
+    monkeypatch.setattr(acquisition_engine, "_validate_t1c_allocation", lambda _path, _manifest: tickers)
+    monkeypatch.setattr(
+        acquisition_engine, "consume_gate_and_bind",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            human_gate="synthetic-gate",
+            gate_receipt_key_sha256="c" * 64,
+            gate_receipt_bytes_sha256="d" * 64,
+            authorization_identity_sha256="e" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        acquisition_engine, "build_yahoo_request_plan",
+        lambda **kwargs: _plan(kwargs["logical_stage"], kwargs["logical_coordinate"], lambda: "ok"),
+    )
+    monkeypatch.setattr(acquisition_engine, "execute_v8d_stage", lambda **_kwargs: execution)
+    monkeypatch.setattr(acquisition_engine, "_build_bundle", lambda **_kwargs: {"result": "PASS"})
+
+    t1c_result = acquisition_engine._execute_fixed_production_acquisition(
+        stage="T1C_RAW_ACQUISITION", human_authorization_identity="synthetic-identity",
+        partition_manifest_path=tmp_path / "partition.json",
+        t1c_allocation_artifact_path=tmp_path / "allocation.json", output_root=tmp_path / "output-t1c",
+    )
+    with pytest.raises(acquisition_engine.V8DAcquisitionEngineBlocked):
+        acquisition_engine._execute_fixed_production_acquisition(
+            stage="T1C_RAW_ACQUISITION", human_authorization_identity="synthetic-identity",
+            partition_manifest_path=tmp_path / "partition.json",
+            t1c_allocation_artifact_path=tmp_path / "allocation.json", output_root=tmp_path / "output-t1c-second",
+        )
+    t2_result = acquisition_engine._execute_fixed_production_acquisition(
+        stage="T2_RAW_ACQUISITION", human_authorization_identity="synthetic-identity",
+        partition_manifest_path=tmp_path / "partition.json", output_root=tmp_path / "output-t2",
+    )
+    assert t1c_result["result"] == t2_result["result"] == "PASS"
+    t1c_binding_path = tmp_path / "binding-state" / "t1c-raw-acquisition-execution-binding.json"
+    t2_binding_path = tmp_path / "binding-state" / "t2-raw-acquisition-execution-binding.json"
+    assert t1c_binding_path.is_file() and t2_binding_path.is_file()
+    t1c_binding = json.loads(t1c_binding_path.read_text(encoding="utf-8"))
+    t2_binding = json.loads(t2_binding_path.read_text(encoding="utf-8"))
+    assert t1c_binding["logical_stage"] == "T1C_RAW_ACQUISITION"
+    assert t2_binding["logical_stage"] == "T2_RAW_ACQUISITION"
+    assert t1c_binding["binding_self_hash"] == canonical_sha256({k: v for k, v in t1c_binding.items() if k != "binding_self_hash"})
+    assert t2_binding["binding_self_hash"] == canonical_sha256({k: v for k, v in t2_binding.items() if k != "binding_self_hash"})
+    serialized = json.dumps(t1c_binding, sort_keys=True) + json.dumps(t2_binding, sort_keys=True)
     assert "ticker" not in serialized.lower()
     assert str(tmp_path) not in serialized
 

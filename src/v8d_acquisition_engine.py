@@ -276,51 +276,6 @@ def _exclusive_publish_file(destination: Path, payload: bytes) -> None:
             pass
 
 
-def _safe_binding(stage: str, reviewed_commit: str, gate: Mapping[str, Any], execution: Mapping[str, Any], membership_hash: str) -> dict[str, Any]:
-    aggregate_path = Path(execution["aggregate_path"])
-    aggregate = execution["aggregate"]
-    dossier_bindings = []
-    for path_value in execution["dossier_paths"]:
-        path = Path(path_value)
-        raw = path.read_bytes()
-        dossier = json.loads(raw.decode("utf-8"))
-        dossier_bindings.append({
-            "filename": path.name,
-            "audit_artifact_self_hash": dossier["audit_artifact_self_hash"],
-            "logical_coordinate": dossier["logical_coordinate"],
-        })
-    body: dict[str, Any] = {
-        "schema_version": PRODUCTION_BINDING_SCHEMA,
-        "study": "V8D_HISTORICAL_RESEARCH",
-        "artifact_role": "V8D_RAW_ACQUISITION_PRODUCTION_EXECUTION_BINDING",
-        "logical_stage": stage,
-        "frozen_design_commit": EXPECTED_V8D_FROZEN_DESIGN_COMMIT,
-        "reviewed_production_implementation_commit": reviewed_commit,
-        "membership_count": REQUEST_COUNT,
-        "membership_list_sha256": membership_hash,
-        "request_start": REQUEST_START,
-        "request_end_exclusive": REQUEST_END_EXCLUSIVE,
-        "request_count": REQUEST_COUNT,
-        "aggregate_filename": aggregate_path.name,
-        "aggregate_artifact_self_hash": aggregate["aggregate_self_hash"],
-        "dossier_bindings": dossier_bindings,
-        "gate_receipt_key_sha256": gate["gate_receipt_key_sha256"],
-        "gate_receipt_bytes_sha256": gate["gate_receipt_bytes_sha256"],
-        "authorization_identity_sha256": gate["authorization_identity_sha256"],
-        "execution_result": aggregate["result"],
-    }
-    body["binding_self_hash"] = canonical_sha256(body)
-    return body
-
-
-def _publish_production_binding(stage: str, binding: Mapping[str, Any]) -> Path:
-    path = PRODUCTION_BINDING_ROOT / (
-        ("t1c" if stage.startswith("T1C") else "t2") + "-raw-acquisition-execution-binding.json"
-    )
-    _exclusive_publish_file(path, canonical_json_bytes(binding))
-    return path
-
-
 def _build_bundle(
     *, stage: str, block: str, output_root: Path, staging_root: Path, tickers: tuple[str, ...], captured: Mapping[int, tuple[bytes, Mapping[str, Any]]],
     execution: Mapping[str, Any], reviewed_commit: str, gate: Mapping[str, Any], membership_hash: str,
@@ -472,8 +427,55 @@ def _execute_fixed_production_acquisition(
             return plans[coordinate]
         audit_root = CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8d-acquisition-transport-audit-state" / ("t1c" if stage.startswith("T1C") else "t2")
         execution = execute_v8d_stage(stage=stage, request_factory=request_factory, store=DurableV8DAuditStore(audit_root), reviewed_implementation_commit=reviewed_commit, gate_binding=gate, window_start=REQUEST_START, window_end_exclusive=REQUEST_END_EXCLUSIVE, request_count=REQUEST_COUNT)
-        binding_body = _safe_binding(stage, reviewed_commit, gate, execution, T1C_LIST_SHA256 if stage.startswith("T1C") else T2_LIST_SHA256)
-        _publish_production_binding(stage, binding_body)
+        # This binding is deliberately constructed in the fixed production
+        # scope, after the durable gate binding and fixed V8D execution exist.
+        # There is no module-level constructor or publisher that synthetic
+        # callers can invoke with look-alike evidence.
+        aggregate_path = Path(execution["aggregate_path"])
+        aggregate = execution["aggregate"]
+        if aggregate.get("result") not in {"PASS", "BLOCK"}:
+            _block("V8D_ACQUISITION_PRODUCTION_BINDING_RESULT_INVALID")
+        aggregate_hash = aggregate.get("aggregate_self_hash")
+        if aggregate_hash != canonical_sha256({key: value for key, value in aggregate.items() if key != "aggregate_self_hash"}):
+            _block("V8D_ACQUISITION_PRODUCTION_BINDING_AGGREGATE_HASH_INVALID")
+        dossier_bindings = []
+        for path_value in execution["dossier_paths"]:
+            path = Path(path_value)
+            raw = path.read_bytes()
+            dossier = json.loads(raw.decode("utf-8"))
+            dossier_hash = dossier.get("audit_artifact_self_hash")
+            if dossier_hash != canonical_sha256({key: value for key, value in dossier.items() if key != "audit_artifact_self_hash"}):
+                _block("V8D_ACQUISITION_PRODUCTION_BINDING_DOSSIER_HASH_INVALID")
+            dossier_bindings.append({
+                "filename": path.name,
+                "audit_artifact_self_hash": dossier_hash,
+                "logical_coordinate": dossier["logical_coordinate"],
+            })
+        binding_body: dict[str, Any] = {
+            "schema_version": PRODUCTION_BINDING_SCHEMA,
+            "study": "V8D_HISTORICAL_RESEARCH",
+            "artifact_role": "V8D_RAW_ACQUISITION_PRODUCTION_EXECUTION_BINDING",
+            "logical_stage": stage,
+            "frozen_design_commit": EXPECTED_V8D_FROZEN_DESIGN_COMMIT,
+            "reviewed_production_implementation_commit": reviewed_commit,
+            "membership_count": REQUEST_COUNT,
+            "membership_list_sha256": T1C_LIST_SHA256 if stage.startswith("T1C") else T2_LIST_SHA256,
+            "request_start": REQUEST_START,
+            "request_end_exclusive": REQUEST_END_EXCLUSIVE,
+            "request_count": REQUEST_COUNT,
+            "aggregate_filename": aggregate_path.name,
+            "aggregate_artifact_self_hash": aggregate_hash,
+            "dossier_bindings": dossier_bindings,
+            "gate_receipt_key_sha256": gate["gate_receipt_key_sha256"],
+            "gate_receipt_bytes_sha256": gate["gate_receipt_bytes_sha256"],
+            "authorization_identity_sha256": gate["authorization_identity_sha256"],
+            "execution_result": aggregate["result"],
+        }
+        binding_body["binding_self_hash"] = canonical_sha256(binding_body)
+        binding_path = PRODUCTION_BINDING_ROOT / (
+            ("t1c" if stage.startswith("T1C") else "t2") + "-raw-acquisition-execution-binding.json"
+        )
+        _exclusive_publish_file(binding_path, canonical_json_bytes(binding_body))
         try:
             return _build_bundle(stage=stage, block="T1C" if stage.startswith("T1C") else "T2", output_root=out, staging_root=staging, tickers=tickers, captured=captured, execution=execution, reviewed_commit=reviewed_commit, gate=gate, membership_hash=T1C_LIST_SHA256 if stage.startswith("T1C") else T2_LIST_SHA256)
         except Exception:
