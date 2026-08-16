@@ -18,6 +18,7 @@ from src import (
     v8d_production_provenance,
     v8d_readiness as readiness,
     v8d_readiness_audit_verification as readiness_audit_verification,
+    v8d_t2_point_of_use_preservation as t2_point_of_use,
 )
 from src import v8_partition
 from src.v7_yahoo_collector import V7YahooCollectorBlocked
@@ -3183,3 +3184,363 @@ def test_synthetic_gate_receipt_exists_before_first_synthetic_opener(tmp_path, m
     durable += Path(result["aggregate_path"]).read_bytes()
     assert b"SECRET_T0_" not in durable
     assert b"query1.finance.yahoo.com" not in durable
+
+
+# ---------------------------------------------------------------------------
+# V8D T2 point-of-use preservation contract (synthetic safe evidence only)
+# ---------------------------------------------------------------------------
+
+
+def _t2_point_of_use_dependencies(tmp_path: Path, **overrides):
+    repo = tmp_path / "synthetic-repo"
+    safe_conditions = {
+        "T2_real_data_acquired": False,
+        "T2_opened": False,
+        "T2_research_access_count": 0,
+        "T2_features_observed": False,
+        "T2_outcomes_observed": False,
+        "T2_membership_reassigned": False,
+        "universe_definition_compatible": True,
+        "partition_algorithm_compatible": True,
+        "data_quality_policy_unchanged": True,
+    }
+    anchor = {
+        "authorization_status": "AUTHORIZED",
+        "authorized_partition_manifest_sha256": v8d_production_provenance.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "authorized_partition_implementation_git_commit": v8d_production_provenance.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+    }
+    deps = {
+        "git_commit_resolver": lambda: "b" * 40,
+        "frozen_design_verifier": lambda _root: None,
+        "freeze_approval_verifier": lambda _root, _head: v8d_production_provenance.EXPECTED_V8D_DESIGN_FREEZE_APPROVAL_BLOB,
+        "reviewed_implementation_binder": lambda _root, _head: {
+            "reviewed_implementation_git_commit": IMPLEMENTATION_SHA,
+        },
+        "anchor_reader": lambda _root, _head: anchor,
+        "authority_bridge_verifier": lambda _root, _head, _stage: {
+            "logical_block": "T2",
+            "review_result": "PASS",
+        },
+        "readiness_reader": lambda: {
+            "verification_stage": t2_point_of_use.READINESS_VERIFICATION_STAGE,
+            "logical_stage": t2_point_of_use.READINESS_LOGICAL_STAGE,
+            "verification_result": "PASS",
+            "frozen_design_commit": t2_point_of_use.FROZEN_DESIGN_COMMIT,
+            "receipt_self_hash": "a" * 64,
+        },
+        "gate_consumption_checker": lambda _root, _gate, _design: False,
+        "consumption_state_root": tmp_path / "synthetic-gate-state",
+        "state_conditions_reader": lambda _root, _head: safe_conditions,
+        "prefreeze_blob_resolver": lambda _root, _commit, _path: t2_point_of_use.PREFREEZE_PRESERVATION_BLOB,
+        "prefreeze_ancestor_checker": lambda _root, _ancestor, _descendant, _reason: None,
+    }
+    deps.update(overrides)
+    return repo, deps
+
+
+def _derive_synthetic_t2_point_of_use(tmp_path: Path, **overrides):
+    repo, deps = _t2_point_of_use_dependencies(tmp_path, **overrides)
+    return t2_point_of_use._derive_t2_point_of_use_preservation_with_dependencies(repo, **deps)
+
+
+def _review_document(*, commit="c" * 40, blob="d" * 40):
+    return {
+        "schema_version": t2_point_of_use.POINT_OF_USE_REVIEW_SCHEMA_VERSION,
+        "study": t2_point_of_use.STUDY,
+        "artifact_role": t2_point_of_use.POINT_OF_USE_REVIEW_ROLE,
+        "checkpoint": t2_point_of_use.POINT_OF_USE_REVIEW_CHECKPOINT,
+        "v8d_frozen_design_commit": t2_point_of_use.FROZEN_DESIGN_COMMIT,
+        "reviewed_recheck_git_commit": commit,
+        "reviewed_recheck_git_blob_sha": blob,
+        "review_result": "PASS",
+    }
+
+
+def _synthetic_review_pass(tmp_path: Path, **dependency_overrides):
+    repo, deps = _t2_point_of_use_dependencies(tmp_path, **dependency_overrides)
+    _head, artifact = t2_point_of_use._derive_t2_point_of_use_preservation_with_dependencies(repo, **deps)
+    artifact_bytes = json.dumps(artifact, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    review = _review_document()
+    review_deps = {
+        "dependencies": deps,
+        "review_reader": lambda _root, _head: review,
+        "artifact_blob_resolver": lambda _root, _commit, _path: review["reviewed_recheck_git_blob_sha"],
+        "artifact_reader": lambda _root, _commit, _path: artifact_bytes,
+        "ancestor_checker": lambda _root, _ancestor, _descendant, _reason: None,
+    }
+    return repo, review_deps, artifact, artifact_bytes
+
+
+def test_t2_point_of_use_valid_synthetic_safe_evidence_has_exact_contract(tmp_path):
+    _head, artifact = _derive_synthetic_t2_point_of_use(tmp_path)
+    assert set(artifact) == set(t2_point_of_use.POINT_OF_USE_ARTIFACT_FIELDS)
+    assert artifact["t2_count"] == 300
+    assert artifact["t2_ticker_list_sha256"] == t2_point_of_use.T2_TICKER_LIST_SHA256
+    assert artifact["point_of_use_preservation_result"] == "PASS"
+    assert not (tmp_path / "synthetic-repo" / t2_point_of_use.POINT_OF_USE_ARTIFACT_PATH).exists()
+
+
+def test_t2_point_of_use_does_not_read_private_manifest_or_access_network(tmp_path):
+    accesses = []
+
+    def safe_state(_root, _head):
+        accesses.append("V8_STATE.json")
+        return {
+            "T2_real_data_acquired": False,
+            "T2_opened": False,
+            "T2_research_access_count": 0,
+            "T2_features_observed": False,
+            "T2_outcomes_observed": False,
+            "T2_membership_reassigned": False,
+            "universe_definition_compatible": True,
+            "partition_algorithm_compatible": True,
+            "data_quality_policy_unchanged": True,
+        }
+
+    _derive_synthetic_t2_point_of_use(tmp_path, state_conditions_reader=safe_state)
+    assert accesses == ["V8_STATE.json"]
+
+
+def test_t2_point_of_use_missing_readiness_blocks(tmp_path):
+    def blocked():
+        raise t2_point_of_use.V8DT2PointOfUsePreservationBlocked("missing readiness")
+
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        _derive_synthetic_t2_point_of_use(tmp_path, readiness_reader=blocked)
+
+
+@pytest.mark.parametrize("bridge", [
+    {"logical_block": "T1C", "review_result": "PASS"},
+    {"logical_block": "T2", "review_result": "BLOCK"},
+])
+def test_t2_point_of_use_wrong_authority_bridge_or_review_blocks(tmp_path, bridge):
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        _derive_synthetic_t2_point_of_use(
+            tmp_path, authority_bridge_verifier=lambda *_args: bridge,
+        )
+
+
+def test_t2_point_of_use_wrong_prefreeze_binding_blocks(tmp_path):
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        _derive_synthetic_t2_point_of_use(
+            tmp_path, prefreeze_blob_resolver=lambda *_args: "0" * 40,
+        )
+
+
+def test_t2_point_of_use_wrong_prefreeze_review_result_or_design_blocks(tmp_path):
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        _derive_synthetic_t2_point_of_use(
+            tmp_path, freeze_approval_verifier=lambda *_args: "0" * 40,
+        )
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        _derive_synthetic_t2_point_of_use(
+            tmp_path, frozen_design_verifier=lambda _root: (_ for _ in ()).throw(
+                v8d_production_provenance.V8DProductionProvenanceBlocked("wrong design")
+            ),
+        )
+
+
+@pytest.mark.parametrize("field,value", [
+    ("T2_real_data_acquired", True),
+    ("T2_opened", True),
+    ("T2_research_access_count", 1),
+    ("T2_features_observed", True),
+    ("T2_outcomes_observed", True),
+    ("T2_membership_reassigned", True),
+    ("universe_definition_compatible", False),
+    ("partition_algorithm_compatible", False),
+    ("data_quality_policy_unchanged", False),
+])
+def test_t2_point_of_use_any_frozen_condition_wrong_blocks(tmp_path, field, value):
+    conditions = {
+        "T2_real_data_acquired": False,
+        "T2_opened": False,
+        "T2_research_access_count": 0,
+        "T2_features_observed": False,
+        "T2_outcomes_observed": False,
+        "T2_membership_reassigned": False,
+        "universe_definition_compatible": True,
+        "partition_algorithm_compatible": True,
+        "data_quality_policy_unchanged": True,
+    }
+    conditions[field] = value
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        _derive_synthetic_t2_point_of_use(tmp_path, state_conditions_reader=lambda *_args: conditions)
+
+
+def test_t2_point_of_use_gate_already_consumed_blocks(tmp_path):
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        _derive_synthetic_t2_point_of_use(tmp_path, gate_consumption_checker=lambda *_args: True)
+
+
+@pytest.mark.parametrize("wrong_anchor_field,wrong_value", [
+    ("authorization_status", "BLOCK"),
+    ("authorized_partition_manifest_sha256", "0" * 64),
+    ("authorized_partition_implementation_git_commit", "0" * 40),
+])
+def test_t2_point_of_use_wrong_anchor_and_reviewed_implementation_block(
+    tmp_path, wrong_anchor_field, wrong_value,
+):
+    wrong_anchor = {
+        "authorization_status": "AUTHORIZED",
+        "authorized_partition_manifest_sha256": v8d_production_provenance.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "authorized_partition_implementation_git_commit": v8d_production_provenance.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+    }
+    wrong_anchor[wrong_anchor_field] = wrong_value
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        _derive_synthetic_t2_point_of_use(tmp_path, anchor_reader=lambda *_args: wrong_anchor)
+    if wrong_anchor_field != "authorization_status":
+        return
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        _derive_synthetic_t2_point_of_use(
+            tmp_path,
+            reviewed_implementation_binder=lambda *_args: {"reviewed_implementation_git_commit": "not-a-commit"},
+        )
+
+
+def test_t2_point_of_use_t1c_evidence_cannot_satisfy_t2(tmp_path):
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        _derive_synthetic_t2_point_of_use(
+            tmp_path,
+            readiness_reader=lambda: {
+                "verification_stage": "READ_ONLY_T1C_READINESS_TRANSPORT_AUDIT_VERIFICATION",
+                "logical_stage": "T1C_TRANSPORT_READINESS",
+                "verification_result": "PASS",
+                "frozen_design_commit": t2_point_of_use.FROZEN_DESIGN_COMMIT,
+                "receipt_self_hash": "a" * 64,
+            },
+        )
+
+
+def test_t2_point_of_use_public_signatures_have_no_override_parameters():
+    assert not inspect.signature(t2_point_of_use.resolve_and_recheck_t2_point_of_use_preservation).parameters
+    assert not inspect.signature(t2_point_of_use.derive_t2_point_of_use_preservation_artifact).parameters
+    assert not inspect.signature(t2_point_of_use.require_t2_point_of_use_preservation_review_pass).parameters
+
+
+@pytest.mark.parametrize("mutator", [
+    lambda artifact: artifact.pop("t2_count"),
+    lambda artifact: artifact.update({"extra": True}),
+])
+def test_t2_point_of_use_artifact_schema_is_strict(tmp_path, mutator):
+    _head, artifact = _derive_synthetic_t2_point_of_use(tmp_path)
+    mutator(artifact)
+    raw = json.dumps(artifact, sort_keys=True).encode("utf-8")
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._validate_preservation_artifact(raw)
+
+
+def test_t2_point_of_use_artifact_duplicate_key_blocks(tmp_path):
+    _head, artifact = _derive_synthetic_t2_point_of_use(tmp_path)
+    first = json.dumps({"schema_version": artifact["schema_version"]})[1:-1]
+    duplicate = first + "," + first + "," + json.dumps({key: value for key, value in artifact.items() if key != "schema_version"})[1:-1]
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._validate_preservation_artifact(("{" + duplicate + "}").encode("utf-8"))
+
+
+@pytest.mark.parametrize("field,value", [("t2_count", 299), ("t2_ticker_list_sha256", "0" * 64)])
+def test_t2_point_of_use_wrong_t2_count_or_list_hash_blocks(tmp_path, field, value):
+    _head, artifact = _derive_synthetic_t2_point_of_use(tmp_path)
+    artifact[field] = value
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._validate_preservation_artifact(json.dumps(artifact).encode("utf-8"))
+
+
+def test_t2_point_of_use_review_pass_resolves_exact_artifact_commit_and_blob(tmp_path):
+    repo, review_deps, artifact, _artifact_bytes = _synthetic_review_pass(tmp_path)
+    result = t2_point_of_use._require_t2_point_of_use_preservation_review_pass_with_dependencies(
+        repo, **review_deps,
+    )
+    assert result["review_result"] == "PASS"
+    assert result["preservation_artifact"] == artifact
+    assert result["reviewed_recheck_git_commit"] == "c" * 40
+    assert result["reviewed_recheck_git_blob_sha"] == "d" * 40
+
+
+def test_t2_point_of_use_missing_review_blocks(tmp_path):
+    repo, deps = _t2_point_of_use_dependencies(tmp_path)
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._require_t2_point_of_use_preservation_review_pass_with_dependencies(
+            repo,
+            dependencies=deps,
+            review_reader=lambda *_args: (_ for _ in ()).throw(
+                t2_point_of_use.V8DT2PointOfUsePreservationBlocked("missing review")
+            ),
+            artifact_blob_resolver=lambda *_args: "d" * 40,
+            artifact_reader=lambda *_args: b"{}",
+            ancestor_checker=lambda *_args: None,
+        )
+
+
+@pytest.mark.parametrize("review_mutation", [
+    lambda review: review.pop("review_result"),
+    lambda review: review.update({"extra": True}),
+    lambda review: review.update({"review_result": "BLOCK"}),
+])
+def test_t2_point_of_use_review_schema_and_pass_are_strict(tmp_path, review_mutation, monkeypatch):
+    _repo, _deps = _t2_point_of_use_dependencies(tmp_path)
+    review = _review_document()
+    review_mutation(review)
+    monkeypatch.setattr(
+        t2_point_of_use, "read_git_object_bytes",
+        lambda *_args: json.dumps(review).encode("utf-8"),
+    )
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._read_review_artifact(_repo, "b" * 40)
+
+
+def test_t2_point_of_use_review_duplicate_key_blocks(monkeypatch, tmp_path):
+    review = _review_document()
+    raw = json.dumps(review, sort_keys=True)[1:-1]
+    duplicate = raw + ',"review_result":"PASS"'
+    monkeypatch.setattr(t2_point_of_use, "read_git_object_bytes", lambda *_args: ("{" + duplicate + "}").encode())
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._read_review_artifact(tmp_path / "repo", "b" * 40)
+
+
+def test_t2_point_of_use_wrong_review_blob_or_tampered_artifact_blocks(tmp_path):
+    repo, deps = _t2_point_of_use_dependencies(tmp_path)
+    _head, artifact = t2_point_of_use._derive_t2_point_of_use_preservation_with_dependencies(repo, **deps)
+    artifact_bytes = json.dumps(artifact).encode("utf-8")
+    review = _review_document(blob="e" * 40)
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._require_t2_point_of_use_preservation_review_pass_with_dependencies(
+            repo, dependencies=deps, review_reader=lambda *_args: review,
+            artifact_blob_resolver=lambda *_args: "d" * 40,
+            artifact_reader=lambda *_args: artifact_bytes,
+            ancestor_checker=lambda *_args: None,
+        )
+    review = _review_document()
+    tampered = dict(artifact)
+    tampered["t2_count"] = 299
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._require_t2_point_of_use_preservation_review_pass_with_dependencies(
+            repo, dependencies=deps, review_reader=lambda *_args: review,
+            artifact_blob_resolver=lambda *_args: "d" * 40,
+            artifact_reader=lambda *_args: json.dumps(tampered).encode("utf-8"),
+            ancestor_checker=lambda *_args: None,
+        )
+
+
+def test_t2_point_of_use_wrong_reviewed_commit_blocks(tmp_path):
+    repo, review_deps, _artifact, _bytes = _synthetic_review_pass(tmp_path)
+    def wrong_ancestor(_root, _ancestor, _descendant, _reason):
+        raise v8d_git_provenance.V8DGitProvenanceBlocked("wrong reviewed commit")
+    review_deps["ancestor_checker"] = wrong_ancestor
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._require_t2_point_of_use_preservation_review_pass_with_dependencies(
+            repo, **review_deps,
+        )
+
+
+def test_t2_point_of_use_review_blocks_after_acquisition_gate_consumption(tmp_path):
+    calls = {"count": 0}
+    def consumed_after_first(_root, _gate, _design):
+        calls["count"] += 1
+        return calls["count"] > 1
+    repo, review_deps, _artifact, _bytes = _synthetic_review_pass(tmp_path)
+    review_deps["dependencies"]["gate_consumption_checker"] = consumed_after_first
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._require_t2_point_of_use_preservation_review_pass_with_dependencies(
+            repo, **review_deps,
+        )
