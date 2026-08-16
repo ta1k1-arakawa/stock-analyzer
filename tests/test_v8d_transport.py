@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import errno
+import builtins
 import hashlib
 import inspect
 import json
+import os
 import socket
 import subprocess
 import urllib.error
@@ -2605,6 +2607,166 @@ def test_generic_writer_blocks_canonical_production_binding_destinations(tmp_pat
     assert excinfo.value.reason == "V8D_ACQUISITION_PRODUCTION_BINDING_PUBLICATION_SEAM_BLOCKED"
     assert not destination.exists()
     assert not canonical_root.exists()
+
+
+def _bundle_inputs(tmp_path: Path, *, block: str = "T1C"):
+    staging_root = tmp_path / "bundle-staging"
+    output_root = tmp_path / "bundle-output"
+    staging_root.mkdir(parents=True)
+    tickers = tuple(f"SYNTH-{index:04d}" for index in range(acquisition_engine.REQUEST_COUNT))
+    captured = {}
+    for coordinate, ticker in enumerate(tickers):
+        row = {
+            "ticker": ticker,
+            "trading_date": f"2020-01-{coordinate % 28 + 1:02d}",
+            "raw_open": 1.0,
+            "raw_high": 2.0,
+            "raw_low": 0.5,
+            "raw_close": 1.5,
+            "adj_close": 1.5,
+            "raw_volume": 100,
+        }
+        captured[coordinate] = (f"payload-{coordinate}".encode(), {"valid_price_rows": [row], "invalid_price_rows": [], "canonical_split_events": []})
+    aggregate_body = {"result": "PASS", "total_request_attempts": 300, "retry_count": 0}
+    aggregate = dict(aggregate_body)
+    aggregate["aggregate_self_hash"] = canonical_sha256(aggregate_body)
+    aggregate_path = tmp_path / "aggregate-safe.json"
+    aggregate_path.write_bytes(canonical_json_bytes(aggregate))
+    execution = {"aggregate": aggregate, "aggregate_path": aggregate_path, "dossier_paths": []}
+    gate = {
+        "gate_receipt_key_sha256": "a" * 64,
+        "gate_receipt_bytes_sha256": "b" * 64,
+        "authorization_identity_sha256": "c" * 64,
+    }
+    return {
+        "stage": f"{block}_RAW_ACQUISITION",
+        "block": block,
+        "output_root": output_root,
+        "staging_root": staging_root,
+        "tickers": tickers,
+        "captured": captured,
+        "execution": execution,
+        "reviewed_commit": IMPLEMENTATION_SHA,
+        "gate": gate,
+        "membership_hash": "d" * 64,
+    }
+
+
+def _build_test_bundle(tmp_path: Path, **kwargs):
+    values = _bundle_inputs(tmp_path, **kwargs)
+    result = acquisition_engine._build_bundle(**values)
+    return values, result
+
+
+def test_bundle_builds_complete_fsynced_staging_then_one_directory_handoff(tmp_path, monkeypatch):
+    fsync_calls = []
+    rename_calls = []
+    real_rename = acquisition_engine.os.rename
+    monkeypatch.setattr(acquisition_engine.os, "fsync", lambda descriptor: fsync_calls.append(descriptor))
+
+    def observe_rename(source, destination):
+        source_path = Path(source)
+        rename_calls.append((source_path, Path(destination)))
+        assert len(list((source_path / "raw").glob("payload-*.bin"))) == acquisition_engine.REQUEST_COUNT
+        assert (source_path / "V8D_ACQUISITION_MANIFEST.json").is_file()
+        return real_rename(source, destination)
+
+    monkeypatch.setattr(acquisition_engine.os, "rename", observe_rename)
+    values, result = _build_test_bundle(tmp_path)
+    final_root = values["output_root"] / "T1C_RAW_ACQUISITION"
+    assert len(rename_calls) == 1
+    assert len(fsync_calls) >= acquisition_engine.REQUEST_COUNT + 1
+    assert final_root.is_dir()
+    assert len(list((final_root / "raw").glob("payload-*.bin"))) == acquisition_engine.REQUEST_COUNT
+    assert (final_root / "V8D_ACQUISITION_MANIFEST.json").is_file()
+    assert not values["staging_root"].exists()
+    assert result["result"] == "PASS"
+    assert "os.replace" not in inspect.getsource(acquisition_engine._build_bundle)
+
+
+def test_bundle_raw_write_failure_never_publishes_final_bundle(tmp_path, monkeypatch):
+    values = _bundle_inputs(tmp_path)
+    real_open = builtins.open
+
+    def fail_first_raw(path, *args, **kwargs):
+        if Path(path).name == "payload-0000.bin":
+            raise OSError("synthetic raw write failure")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fail_first_raw)
+    with pytest.raises(OSError):
+        acquisition_engine._build_bundle(**values)
+    assert not (values["output_root"] / "T1C_RAW_ACQUISITION").exists()
+
+
+def test_bundle_manifest_write_failure_never_publishes_final_bundle(tmp_path, monkeypatch):
+    values = _bundle_inputs(tmp_path)
+    real_writer = acquisition_engine._exclusive_publish_file
+
+    def fail_manifest(destination, payload):
+        if Path(destination).name == "V8D_ACQUISITION_MANIFEST.json":
+            raise OSError("synthetic manifest write failure")
+        return real_writer(destination, payload)
+
+    monkeypatch.setattr(acquisition_engine, "_exclusive_publish_file", fail_manifest)
+    with pytest.raises(OSError):
+        acquisition_engine._build_bundle(**values)
+    assert not (values["output_root"] / "T1C_RAW_ACQUISITION").exists()
+
+
+def test_bundle_directory_publication_failure_never_publishes_final_bundle(tmp_path, monkeypatch):
+    values = _bundle_inputs(tmp_path)
+    monkeypatch.setattr(acquisition_engine.os, "rename", lambda *_args: (_ for _ in ()).throw(OSError("synthetic publish failure")))
+    with pytest.raises(acquisition_engine.V8DAcquisitionEngineBlocked) as excinfo:
+        acquisition_engine._build_bundle(**values)
+    assert excinfo.value.reason == "V8D_ACQUISITION_BUNDLE_ATOMIC_PUBLISH_FAILED"
+    assert not (values["output_root"] / "T1C_RAW_ACQUISITION").exists()
+
+
+def test_bundle_existing_destination_and_symlink_are_not_overwritten(tmp_path):
+    values = _bundle_inputs(tmp_path)
+    final_root = values["output_root"] / "T1C_RAW_ACQUISITION"
+    final_root.mkdir(parents=True)
+    sentinel = final_root / "sentinel"
+    sentinel.write_bytes(b"original")
+    with pytest.raises(acquisition_engine.V8DAcquisitionEngineBlocked) as excinfo:
+        acquisition_engine._build_bundle(**values)
+    assert excinfo.value.reason == "V8D_ACQUISITION_BUNDLE_ALREADY_EXISTS"
+    assert sentinel.read_bytes() == b"original"
+
+    symlink_values = _bundle_inputs(tmp_path / "symlink-case")
+    symlink_final = symlink_values["output_root"] / "T1C_RAW_ACQUISITION"
+    symlink_final.parent.mkdir(parents=True, exist_ok=True)
+    target = symlink_values["output_root"] / "target"
+    target.mkdir()
+    try:
+        os.symlink(target, symlink_final, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation is unavailable in this environment")
+    with pytest.raises(acquisition_engine.V8DAcquisitionEngineBlocked) as excinfo:
+        acquisition_engine._build_bundle(**symlink_values)
+    assert excinfo.value.reason == "V8D_ACQUISITION_BUNDLE_ALREADY_EXISTS"
+    assert target.is_dir()
+
+
+def test_bundle_t1c_and_t2_publication_locations_are_distinct(tmp_path):
+    t1c_values, _ = _build_test_bundle(tmp_path / "t1c", block="T1C")
+    t2_values, _ = _build_test_bundle(tmp_path / "t2", block="T2")
+    assert (t1c_values["output_root"] / "T1C_RAW_ACQUISITION").is_dir()
+    assert (t2_values["output_root"] / "T2_RAW_ACQUISITION").is_dir()
+    assert t1c_values["output_root"] != t2_values["output_root"]
+
+
+def test_second_bundle_publication_cannot_overwrite_first_bundle(tmp_path):
+    first_values, _ = _build_test_bundle(tmp_path / "first")
+    final_root = first_values["output_root"] / "T1C_RAW_ACQUISITION"
+    original_manifest = (final_root / "V8D_ACQUISITION_MANIFEST.json").read_bytes()
+    second_values = _bundle_inputs(tmp_path / "second")
+    second_values["output_root"] = first_values["output_root"]
+    with pytest.raises(acquisition_engine.V8DAcquisitionEngineBlocked) as excinfo:
+        acquisition_engine._build_bundle(**second_values)
+    assert excinfo.value.reason == "V8D_ACQUISITION_BUNDLE_ALREADY_EXISTS"
+    assert (final_root / "V8D_ACQUISITION_MANIFEST.json").read_bytes() == original_manifest
 
 
 # ===========================================================================

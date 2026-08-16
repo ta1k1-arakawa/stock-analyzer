@@ -302,7 +302,10 @@ def _build_bundle(
     for coordinate, ticker in enumerate(tickers):
         raw_bytes, parsed = captured[coordinate]
         raw_path = raw_dir / f"payload-{coordinate:04d}.bin"
-        raw_path.write_bytes(raw_bytes)
+        with open(raw_path, "xb") as stream:
+            stream.write(raw_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
         rows = parsed.get("valid_price_rows", [])
         splits = parsed.get("canonical_split_events", [])
         all_rows.extend(rows)
@@ -365,22 +368,15 @@ def _build_bundle(
     }
     manifest["manifest_self_hash"] = canonical_sha256(manifest)
     _exclusive_publish_file(staging_root / "V8D_ACQUISITION_MANIFEST.json", canonical_json_bytes(manifest))
+    output_root.mkdir(parents=True, exist_ok=True)
     final_root = output_root / ("T1C_RAW_ACQUISITION" if block == "T1C" else "T2_RAW_ACQUISITION")
     if final_root.exists() or final_root.is_symlink():
         _block("V8D_ACQUISITION_BUNDLE_ALREADY_EXISTS")
-    final_created = False
     try:
-        os.mkdir(final_root)
-        final_created = True
-        os.rename(str(staging_root / "raw"), str(final_root / "raw"))
-        os.rename(str(staging_root / "V8D_ACQUISITION_MANIFEST.json"), str(final_root / "V8D_ACQUISITION_MANIFEST.json"))
+        os.rename(str(staging_root), str(final_root))
+    except FileExistsError as error:
+        _block("V8D_ACQUISITION_BUNDLE_ALREADY_EXISTS", error)
     except OSError as error:
-        try:
-            if final_created and final_root.exists() and final_root.is_dir():
-                import shutil
-                shutil.rmtree(final_root, ignore_errors=True)
-        except OSError:
-            pass
         _block("V8D_ACQUISITION_BUNDLE_ATOMIC_PUBLISH_FAILED", error)
     return {key: value for key, value in manifest.items() if key != "payload_manifest"}
 
