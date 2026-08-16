@@ -3544,3 +3544,150 @@ def test_t2_point_of_use_review_blocks_after_acquisition_gate_consumption(tmp_pa
         t2_point_of_use._require_t2_point_of_use_preservation_review_pass_with_dependencies(
             repo, **review_deps,
         )
+
+
+def _actual_v8_state_for_t2_test():
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    raw = v8d_git_provenance.read_git_object_bytes(Path.cwd(), head, "V8_STATE.json")
+    return head, json.loads(raw.decode("utf-8"))
+
+
+def _state_reader_from_mapping(state):
+    raw = json.dumps(state, separators=(",", ":")).encode("utf-8")
+    return lambda _root, _head, _path: raw
+
+
+def test_t2_point_of_use_derives_all_conditions_from_real_v8_state_schema():
+    head, _state = _actual_v8_state_for_t2_test()
+    conditions = t2_point_of_use._derive_conditions_from_v8_state(
+        Path.cwd(), head, v8d_git_provenance.read_git_object_bytes,
+    )
+    assert conditions == {
+        "T2_real_data_acquired": False,
+        "T2_opened": False,
+        "T2_research_access_count": 0,
+        "T2_features_observed": False,
+        "T2_outcomes_observed": False,
+        "T2_membership_reassigned": False,
+        "universe_definition_compatible": True,
+        "partition_algorithm_compatible": True,
+        "data_quality_policy_unchanged": True,
+    }
+
+
+def test_t2_point_of_use_does_not_require_legacy_anchor_state_exposure_field():
+    head, state = _actual_v8_state_for_t2_test()
+    assert "block_assignments_exposed" not in state["trusted_partition_anchor_state"]
+    conditions = t2_point_of_use._derive_conditions_from_v8_state(
+        Path.cwd(), head, _state_reader_from_mapping(state),
+    )
+    assert conditions["T2_features_observed"] is False
+
+
+def test_t2_point_of_use_production_prerequisite_chain_precedes_safe_state(tmp_path):
+    events = []
+    repo, deps = _t2_point_of_use_dependencies(tmp_path)
+    deps["authority_bridge_verifier"] = lambda *_args: (
+        events.append("authority_bridge")
+        or {"logical_block": "T2", "review_result": "PASS"}
+    )
+    deps["readiness_reader"] = lambda: (
+        events.append("readiness")
+        or {
+            "verification_stage": t2_point_of_use.READINESS_VERIFICATION_STAGE,
+            "logical_stage": t2_point_of_use.READINESS_LOGICAL_STAGE,
+            "verification_result": "PASS",
+            "frozen_design_commit": t2_point_of_use.FROZEN_DESIGN_COMMIT,
+            "receipt_self_hash": "a" * 64,
+        }
+    )
+    deps["gate_consumption_checker"] = lambda *_args: (events.append("gate"), False)[1]
+    deps["prefreeze_blob_resolver"] = lambda *_args: (
+        events.append("prefreeze"), t2_point_of_use.PREFREEZE_PRESERVATION_BLOB
+    )[1]
+    deps["prefreeze_ancestor_checker"] = lambda *_args: events.append("prefreeze_history")
+    deps["state_conditions_reader"] = lambda *_args: (
+        events.append("safe_state"), {
+            "T2_real_data_acquired": False,
+            "T2_opened": False,
+            "T2_research_access_count": 0,
+            "T2_features_observed": False,
+            "T2_outcomes_observed": False,
+            "T2_membership_reassigned": False,
+            "universe_definition_compatible": True,
+            "partition_algorithm_compatible": True,
+            "data_quality_policy_unchanged": True,
+        }
+    )[1]
+    t2_point_of_use._derive_t2_point_of_use_preservation_with_dependencies(repo, **deps)
+    assert events.index("authority_bridge") < events.index("readiness")
+    assert events.index("readiness") < events.index("gate")
+    assert events.index("gate") < events.index("prefreeze")
+    assert events.index("prefreeze_history") < events.index("safe_state")
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda state: state["real_partition_build_history"][0].update({"block_assignments_exposed": True}),
+    lambda state: state["trust_anchor_pinning"].update({"block_assignments_exposed": True}),
+    lambda state: state["real_partition_build_history"][0]["block_sizes"].update({"T2": 299}),
+    lambda state: state["real_partition_build_history"][0]["block_sizes"].pop("T2"),
+    lambda state: state["real_partition_build_history"][0].update({"t2_ticker_list_sha256": "0" * 64}),
+    lambda state: state["real_partition_build_history"][0].pop("t2_ticker_list_sha256"),
+    lambda state: state["real_partition_build_history"][0].update({"manifest_sha256": "0" * 64}),
+    lambda state: state["real_partition_build_history"][0].pop("manifest_sha256"),
+    lambda state: state["real_partition_build_history"][0].update({"partition_implementation_git_commit": "0" * 40}),
+    lambda state: state["real_partition_build_history"][0].pop("partition_implementation_git_commit"),
+])
+def test_t2_point_of_use_partition_and_anchor_mismatch_blocks(mutation):
+    head, state = _actual_v8_state_for_t2_test()
+    mutation(state)
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._derive_conditions_from_v8_state(
+            Path.cwd(), head, _state_reader_from_mapping(state),
+        )
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda state: state["T2"].update({"raw_data_acquired": True}),
+    lambda state: state["T2"].update({"opened_for_research": True}),
+    lambda state: state["T2"].update({"sealed_holdout_access_count": 1}),
+    lambda state: state.update({"backtests": 1}),
+    lambda state: state.update({"models_fitted": 1}),
+    lambda state: state.update({"profit_calculated": 1}),
+    lambda state: state.update({"parameter_search": 1}),
+    lambda state: state["T2"].update({"real_acquisition_authorized": True}),
+])
+def test_t2_point_of_use_positive_acquisition_or_research_state_blocks(mutation):
+    head, state = _actual_v8_state_for_t2_test()
+    mutation(state)
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._derive_conditions_from_v8_state(
+            Path.cwd(), head, _state_reader_from_mapping(state),
+        )
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda state: state.pop("real_partition_build_history"),
+    lambda state: state.update({"real_partition_build_history": []}),
+    lambda state: state["partition"].update({"block_assignments_recorded": True}),
+    lambda state: state["malformed_ohlcv_policy_clarification"].update({
+        "existing_partition_manifest_identity_unchanged": False,
+    }),
+])
+def test_t2_point_of_use_contradictory_or_ambiguous_safe_state_blocks(mutation):
+    head, state = _actual_v8_state_for_t2_test()
+    mutation(state)
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._derive_conditions_from_v8_state(
+            Path.cwd(), head, _state_reader_from_mapping(state),
+        )
+
+
+def test_t2_point_of_use_duplicate_partition_history_key_blocks():
+    head, state = _actual_v8_state_for_t2_test()
+    raw = json.dumps(state, separators=(",", ":"))[:-1]
+    raw += ',"real_partition_build_history":{}}'
+    with pytest.raises(t2_point_of_use.V8DT2PointOfUsePreservationBlocked):
+        t2_point_of_use._derive_conditions_from_v8_state(
+            Path.cwd(), head, lambda *_args: raw.encode("utf-8"),
+        )

@@ -188,6 +188,35 @@ def _require_safe_conditions(conditions: Mapping[str, Any]) -> dict[str, Any]:
     return dict(conditions)
 
 
+def _require_state_mapping(value: object, reason: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise V8DT2PointOfUsePreservationBlocked(reason)
+    return value
+
+
+def _require_state_bool(state: Mapping[str, Any], field: str, expected: bool, reason: str) -> None:
+    if _require_bool(state.get(field), reason) is not expected:
+        raise V8DT2PointOfUsePreservationBlocked(reason)
+
+
+def _require_state_int(state: Mapping[str, Any], field: str, expected: int, reason: str) -> None:
+    value = state.get(field)
+    if type(value) is not int or value != expected:
+        raise V8DT2PointOfUsePreservationBlocked(reason)
+
+
+def _require_state_sha256(state: Mapping[str, Any], field: str, expected: str, reason: str) -> None:
+    value = state.get(field)
+    if value != expected or not isinstance(value, str) or len(value) != 64:
+        raise V8DT2PointOfUsePreservationBlocked(reason)
+
+
+def _require_state_commit(state: Mapping[str, Any], field: str, expected: str, reason: str) -> None:
+    value = state.get(field)
+    if value != expected or not isinstance(value, str) or len(value) != 40:
+        raise V8DT2PointOfUsePreservationBlocked(reason)
+
+
 def _derive_conditions_from_v8_state(
     repository_root: Path,
     verified_head: str,
@@ -202,37 +231,329 @@ def _derive_conditions_from_v8_state(
     except V8DGitProvenanceBlocked as error:
         raise V8DT2PointOfUsePreservationBlocked("V8D_T2_POINT_OF_USE_V8_STATE_MISSING") from error
 
-    t2 = state.get("T2")
-    trust_anchor_state = state.get("trusted_partition_anchor_state")
-    if not isinstance(t2, Mapping) or not isinstance(trust_anchor_state, Mapping):
-        raise V8DT2PointOfUsePreservationBlocked("V8D_T2_POINT_OF_USE_V8_STATE_T2_EVIDENCE_INVALID")
-    if _require_bool(t2.get("raw_data_acquired"), "V8D_T2_POINT_OF_USE_V8_STATE_RAW_DATA_INVALID"):
-        raise V8DT2PointOfUsePreservationBlocked("V8D_T2_POINT_OF_USE_CONDITION_INVALID:T2_real_data_acquired")
-    if _require_bool(t2.get("opened_for_research"), "V8D_T2_POINT_OF_USE_V8_STATE_OPENED_INVALID"):
-        raise V8DT2PointOfUsePreservationBlocked("V8D_T2_POINT_OF_USE_CONDITION_INVALID:T2_opened")
+    t2 = _require_state_mapping(
+        state.get("T2"), "V8D_T2_POINT_OF_USE_V8_STATE_T2_EVIDENCE_INVALID",
+    )
+    partition_history_records = state.get("real_partition_build_history")
+    if not isinstance(partition_history_records, list) or len(partition_history_records) != 1:
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_PARTITION_HISTORY_INVALID",
+        )
+    partition_history = _require_state_mapping(
+        partition_history_records[0],
+        "V8D_T2_POINT_OF_USE_PARTITION_HISTORY_INVALID",
+    )
+    partition = _require_state_mapping(
+        state.get("partition"), "V8D_T2_POINT_OF_USE_PARTITION_STATE_INVALID",
+    )
+    trust_anchor_pinning = _require_state_mapping(
+        state.get("trust_anchor_pinning"),
+        "V8D_T2_POINT_OF_USE_TRUST_PINNING_INVALID",
+    )
+
+    # T2 uses null as the committed unopened representation.  A later
+    # explicitly recorded integer zero is also safe, but every other value
+    # is contradictory evidence.
+    _require_state_bool(
+        t2, "raw_data_acquired", False,
+        "V8D_T2_POINT_OF_USE_CONDITION_INVALID:T2_real_data_acquired",
+    )
+    _require_state_bool(
+        t2, "opened_for_research", False,
+        "V8D_T2_POINT_OF_USE_CONDITION_INVALID:T2_opened",
+    )
     access_count = t2.get("sealed_holdout_access_count")
     if access_count is not None and (type(access_count) is not int or access_count != 0):
-        raise V8DT2PointOfUsePreservationBlocked("V8D_T2_POINT_OF_USE_CONDITION_INVALID:T2_research_access_count")
-    if _require_bool(
-        trust_anchor_state.get("block_assignments_exposed"),
-        "V8D_T2_POINT_OF_USE_V8_STATE_ASSIGNMENT_EXPOSURE_INVALID",
-    ):
-        raise V8DT2PointOfUsePreservationBlocked("V8D_T2_POINT_OF_USE_CONDITION_INVALID:T2_features_observed")
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_CONDITION_INVALID:T2_research_access_count",
+        )
+    _require_state_bool(
+        t2, "real_acquisition_authorized", False,
+        "V8D_T2_POINT_OF_USE_T2_ACQUISITION_AUTHORIZATION_INVALID",
+    )
+    if t2.get("research_access_authorized") not in (None, False):
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_T2_RESEARCH_AUTHORIZATION_INVALID",
+        )
+    _require_state_int(
+        t2, "ticker_count_frozen", T2_COUNT,
+        "V8D_T2_POINT_OF_USE_T2_COUNT_INVALID",
+    )
 
-    # The committed state uses null for an unopened sealed-holdout access
-    # counter. Together with explicit no-acquisition/no-opening evidence,
-    # that is the safe committed representation of zero access; no private
-    # manifest or identity is needed at this checkpoint.
+    # The history is the committed record of the one authoritative
+    # production partition build.  Require its complete current schema so a
+    # missing/ambiguous alternate build cannot silently become the source of
+    # the frozen compatibility conclusions.
+    expected_history_fields = {
+        "authorized_implementation_head",
+        "mode",
+        "process_result",
+        "exit_code",
+        "source_reproduction_status",
+        "t0_reproduction_status",
+        "partition_manifest_written",
+        "real_block_assignments_created",
+        "real_jpx_requests_this_attempt",
+        "real_yahoo_requests_this_attempt",
+        "manifest_sha256",
+        "partition_implementation_git_commit",
+        "manifest_schema_version",
+        "block_sizes",
+        "t1_ticker_list_sha256",
+        "t2_ticker_list_sha256",
+        "t3_ticker_list_sha256",
+        "t_spare_ticker_list_sha256",
+        "one_time_authorization_consumed",
+        "retry_performed",
+        "raw_jpx_bytes_persisted",
+        "block_assignments_exposed",
+    }
+    if set(partition_history) != expected_history_fields:
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_PARTITION_HISTORY_SCHEMA_INVALID",
+        )
+    if partition_history.get("mode") != "PRODUCTION":
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_PARTITION_HISTORY_MODE_INVALID",
+        )
+    if partition_history.get("process_result") != "PASS" or partition_history.get("exit_code") != 0:
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_PARTITION_HISTORY_RESULT_INVALID",
+        )
+    if partition_history.get("source_reproduction_status") != "PASS" or partition_history.get("t0_reproduction_status") != "PASS":
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_PARTITION_HISTORY_REPRODUCTION_INVALID",
+        )
+    _require_state_bool(
+        partition_history, "partition_manifest_written", True,
+        "V8D_T2_POINT_OF_USE_PARTITION_HISTORY_MANIFEST_INVALID",
+    )
+    _require_state_bool(
+        partition_history, "real_block_assignments_created", True,
+        "V8D_T2_POINT_OF_USE_PARTITION_HISTORY_ASSIGNMENTS_INVALID",
+    )
+    _require_state_bool(
+        partition_history, "one_time_authorization_consumed", True,
+        "V8D_T2_POINT_OF_USE_PARTITION_HISTORY_AUTHORIZATION_INVALID",
+    )
+    _require_state_bool(
+        partition_history, "retry_performed", False,
+        "V8D_T2_POINT_OF_USE_PARTITION_HISTORY_RETRY_INVALID",
+    )
+    _require_state_bool(
+        partition_history, "raw_jpx_bytes_persisted", False,
+        "V8D_T2_POINT_OF_USE_PARTITION_HISTORY_RAW_BYTES_INVALID",
+    )
+    _require_state_bool(
+        partition_history, "block_assignments_exposed", False,
+        "V8D_T2_POINT_OF_USE_CONDITION_INVALID:T2_features_observed",
+    )
+    _require_state_sha256(
+        partition_history, "manifest_sha256", EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "V8D_T2_POINT_OF_USE_MANIFEST_SHA_MISMATCH",
+    )
+    _require_state_commit(
+        partition_history, "partition_implementation_git_commit", EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "V8D_T2_POINT_OF_USE_PARTITION_IMPLEMENTATION_MISMATCH",
+    )
+    if partition_history.get("authorized_implementation_head") != EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT:
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_AUTHORIZED_IMPLEMENTATION_HEAD_MISMATCH",
+        )
+    if partition_history.get("manifest_schema_version") != "V8_PARTITION_MANIFEST_V3":
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_PARTITION_MANIFEST_SCHEMA_INVALID",
+        )
+    block_sizes = _require_state_mapping(
+        partition_history.get("block_sizes"),
+        "V8D_T2_POINT_OF_USE_PARTITION_BLOCK_SIZES_INVALID",
+    )
+    if set(block_sizes) != {"T0", "T1", "T2", "T3", "T_spare"}:
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_PARTITION_BLOCK_SIZES_INVALID",
+        )
+    for block, size in block_sizes.items():
+        if type(size) is not int or size <= 0:
+            raise V8DT2PointOfUsePreservationBlocked(
+                "V8D_T2_POINT_OF_USE_PARTITION_BLOCK_SIZES_INVALID:" + block,
+            )
+    if block_sizes["T2"] != T2_COUNT:
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_T2_COUNT_INVALID",
+        )
+    _require_state_sha256(
+        partition_history, "t2_ticker_list_sha256", T2_TICKER_LIST_SHA256,
+        "V8D_T2_POINT_OF_USE_T2_TICKER_HASH_INVALID",
+    )
+
+    # The committed partition summary independently repeats the identity and
+    # no-regeneration facts without exposing any block member.
+    _require_state_bool(
+        partition, "real_partition_manifest_exists", True,
+        "V8D_T2_POINT_OF_USE_PARTITION_STATE_MANIFEST_INVALID",
+    )
+    _require_state_bool(
+        partition, "real_partition_manifest_validated", True,
+        "V8D_T2_POINT_OF_USE_PARTITION_STATE_VALIDATION_INVALID",
+    )
+    _require_state_bool(
+        partition, "trusted_partition_authorized", True,
+        "V8D_T2_POINT_OF_USE_PARTITION_STATE_AUTHORIZATION_INVALID",
+    )
+    _require_state_bool(
+        partition, "real_partition_creation_authorization_consumed", True,
+        "V8D_T2_POINT_OF_USE_PARTITION_STATE_AUTHORIZATION_INVALID",
+    )
+    _require_state_bool(
+        partition, "block_assignments_recorded", False,
+        "V8D_T2_POINT_OF_USE_CONDITION_INVALID:T2_membership_reassigned",
+    )
+    _require_state_sha256(
+        partition, "manifest_sha256", EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "V8D_T2_POINT_OF_USE_MANIFEST_SHA_MISMATCH",
+    )
+    _require_state_commit(
+        partition, "partition_implementation_git_commit", EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "V8D_T2_POINT_OF_USE_PARTITION_IMPLEMENTATION_MISMATCH",
+    )
+    partition_block_sizes = _require_state_mapping(
+        partition.get("block_sizes"),
+        "V8D_T2_POINT_OF_USE_PARTITION_BLOCK_SIZES_INVALID",
+    )
+    if partition_block_sizes.get("T2") != T2_COUNT:
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_T2_COUNT_INVALID",
+        )
+    if partition.get("t2_ticker_list_sha256") != T2_TICKER_LIST_SHA256:
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_T2_TICKER_HASH_INVALID",
+        )
+
+    # This is the actual location of the trust-pin exposure field.  The
+    # legacy trusted_partition_anchor_state object is intentionally not
+    # queried for it.
+    _require_state_sha256(
+        trust_anchor_pinning, "authorized_partition_manifest_sha256",
+        EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "V8D_T2_POINT_OF_USE_MANIFEST_SHA_MISMATCH",
+    )
+    _require_state_commit(
+        trust_anchor_pinning, "authorized_partition_implementation_git_commit",
+        EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "V8D_T2_POINT_OF_USE_PARTITION_IMPLEMENTATION_MISMATCH",
+    )
+    _require_state_bool(
+        trust_anchor_pinning, "block_assignments_exposed", False,
+        "V8D_T2_POINT_OF_USE_CONDITION_INVALID:T2_features_observed",
+    )
+    _require_state_bool(
+        trust_anchor_pinning, "t2_acquisition_authorized_by_this_pin", False,
+        "V8D_T2_POINT_OF_USE_T2_ACQUISITION_AUTHORIZATION_INVALID",
+    )
+    _require_state_bool(
+        trust_anchor_pinning, "one_time_authorization_consumed", True,
+        "V8D_T2_POINT_OF_USE_TRUST_PINNING_AUTHORIZATION_INVALID",
+    )
+
+    if state.get("real_data_acquired") is not False or state.get("real_orders_allowed") is not False:
+        raise V8DT2PointOfUsePreservationBlocked(
+            "V8D_T2_POINT_OF_USE_CONDITION_INVALID:T2_real_data_acquired",
+        )
+    for counter in ("backtests", "models_fitted", "profit_calculated", "parameter_search"):
+        _require_state_int(
+            state, counter, 0,
+            "V8D_T2_POINT_OF_USE_RESEARCH_COUNTER_INVALID:" + counter,
+        )
+
+    # These are existing committed design-policy facts.  They support the
+    # frozen data-quality condition without inventing a new V8_STATE field or
+    # reading any private/raw data.
+    policy = _require_state_mapping(
+        state.get("malformed_ohlcv_policy_clarification"),
+        "V8D_T2_POINT_OF_USE_DATA_QUALITY_POLICY_INVALID",
+    )
+    for field in (
+        "policy_applies_to_t1_t2",
+        "policy_uniform_across_t0_t1_t2_t3",
+        "existing_block_assignments_unchanged",
+        "existing_partition_manifest_identity_unchanged",
+    ):
+        _require_state_bool(
+            policy, field, True,
+            "V8D_T2_POINT_OF_USE_DATA_QUALITY_POLICY_INVALID:" + field,
+        )
+    for field in (
+        "ticker_removal_allowed",
+        "ticker_replacement_allowed",
+        "t_spare_replacement_allowed",
+        "repartition_allowed",
+        "imputation_allowed",
+        "forward_fill_allowed",
+        "back_fill_allowed",
+        "alternate_source_substitution_allowed",
+    ):
+        _require_state_bool(
+            policy, field, False,
+            "V8D_T2_POINT_OF_USE_DATA_QUALITY_POLICY_INVALID:" + field,
+        )
+
+    research_activity_observed = any(
+        state[counter] != 0
+        for counter in ("backtests", "models_fitted", "profit_calculated", "parameter_search")
+    )
+    t2_real_data_acquired = t2["raw_data_acquired"]
+    t2_opened = t2["opened_for_research"]
+    t2_research_access_count = 0 if access_count is None else access_count
+    t2_features_observed = (
+        partition_history["block_assignments_exposed"]
+        or trust_anchor_pinning["block_assignments_exposed"]
+    )
+    t2_outcomes_observed = research_activity_observed
+    t2_membership_reassigned = not (
+        partition_history["retry_performed"] is False
+        and partition["block_assignments_recorded"] is False
+        and policy["existing_partition_manifest_identity_unchanged"] is True
+    )
+    universe_definition_compatible = (
+        partition["trusted_partition_authorized"] is True
+        and partition["real_partition_manifest_validated"] is True
+        and policy["existing_partition_manifest_identity_unchanged"] is True
+        and partition_history["manifest_sha256"] == EXPECTED_V8_PARTITION_MANIFEST_SHA256
+    )
+    partition_algorithm_compatible = (
+        partition_history["source_reproduction_status"] == "PASS"
+        and partition_history["t0_reproduction_status"] == "PASS"
+        and partition_history["partition_implementation_git_commit"] == EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT
+        and block_sizes["T2"] == T2_COUNT
+    )
+    data_quality_policy_unchanged = (
+        policy["policy_applies_to_t1_t2"] is True
+        and policy["policy_uniform_across_t0_t1_t2_t3"] is True
+        and policy["existing_block_assignments_unchanged"] is True
+        and policy["existing_partition_manifest_identity_unchanged"] is True
+        and all(policy[field] is False for field in (
+            "ticker_removal_allowed",
+            "ticker_replacement_allowed",
+            "t_spare_replacement_allowed",
+            "repartition_allowed",
+            "imputation_allowed",
+            "forward_fill_allowed",
+            "back_fill_allowed",
+            "alternate_source_substitution_allowed",
+        ))
+    )
+
+    # No private manifest or ticker identity is needed at this checkpoint.
     return _require_safe_conditions({
-        "T2_real_data_acquired": False,
-        "T2_opened": False,
-        "T2_research_access_count": 0,
-        "T2_features_observed": False,
-        "T2_outcomes_observed": False,
-        "T2_membership_reassigned": False,
-        "universe_definition_compatible": True,
-        "partition_algorithm_compatible": True,
-        "data_quality_policy_unchanged": True,
+        "T2_real_data_acquired": t2_real_data_acquired,
+        "T2_opened": t2_opened,
+        "T2_research_access_count": t2_research_access_count,
+        "T2_features_observed": t2_features_observed,
+        "T2_outcomes_observed": t2_outcomes_observed,
+        "T2_membership_reassigned": t2_membership_reassigned,
+        "universe_definition_compatible": universe_definition_compatible,
+        "partition_algorithm_compatible": partition_algorithm_compatible,
+        "data_quality_policy_unchanged": data_quality_policy_unchanged,
     })
 
 
