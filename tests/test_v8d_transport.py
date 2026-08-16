@@ -538,6 +538,81 @@ def _patch_synthetic_production_reader(monkeypatch, artifacts, *, logical_stage)
     return reader, artifacts["receipt_root"] / receipt_path_name
 
 
+def _matching_production_execution_binding_fixture(*, binding_result="PASS", aggregate_result="PASS"):
+    gate = {
+        "gate_receipt_key_sha256": "1" * 64,
+        "gate_receipt_bytes_sha256": "2" * 64,
+        "authorization_identity_sha256": "3" * 64,
+    }
+    dossier_hashes = {0: "4" * 64, 149: "5" * 64, 299: "6" * 64}
+    dossier_bindings = [
+        {
+            "filename": f"dossier-{coordinate}.json",
+            "audit_artifact_self_hash": dossier_hashes[coordinate],
+            "logical_coordinate": coordinate,
+        }
+        for coordinate in (0, 149, 299)
+    ]
+    aggregate = {
+        "frozen_design_commit": FROZEN_DESIGN_COMMIT,
+        "reviewed_production_implementation_commit": IMPLEMENTATION_SHA,
+        "sentinel_indices": [0, 149, 299],
+        "window_start": "2025-12-01",
+        "window_end_exclusive": "2025-12-08",
+        "result": aggregate_result,
+        "aggregate_self_hash": "a" * 64,
+    }
+    dossiers = [
+        {
+            "frozen_design_commit": FROZEN_DESIGN_COMMIT,
+            "reviewed_production_implementation_commit": IMPLEMENTATION_SHA,
+            "logical_stage": "T1C_TRANSPORT_READINESS",
+            "window_start": "2025-12-01",
+            "window_end_exclusive": "2025-12-08",
+            "sentinel_indices": [0, 149, 299],
+            "logical_coordinate": coordinate,
+            "audit_artifact_self_hash": dossier_hashes[coordinate],
+        }
+        for coordinate in (0, 149, 299)
+    ]
+    binding = {
+        "logical_stage": "T1C_TRANSPORT_READINESS",
+        "aggregate_filename": "aggregate-test.json",
+        "frozen_design_commit": FROZEN_DESIGN_COMMIT,
+        "reviewed_production_implementation_commit": IMPLEMENTATION_SHA,
+        "sentinel_indices": [0, 149, 299],
+        "window_start": "2025-12-01",
+        "window_end_exclusive": "2025-12-08",
+        "execution_result": binding_result,
+        "aggregate_artifact_self_hash": "a" * 64,
+        "dossier_bindings": dossier_bindings,
+        **gate,
+    }
+    return binding, aggregate, dossiers, [item["filename"] for item in dossier_bindings], gate
+
+
+def test_production_execution_binding_compares_execution_result_to_transport_result():
+    binding, aggregate, dossiers, filenames, gate = _matching_production_execution_binding_fixture()
+    readiness_audit_verification._require_matching_production_execution_binding(
+        binding=binding, logical_stage="T1C_TRANSPORT_READINESS", aggregate=aggregate,
+        aggregate_filename="aggregate-test.json", dossiers=dossiers,
+        dossier_filenames=filenames, gate_binding=gate,
+    )
+
+
+@pytest.mark.parametrize("binding_result,aggregate_result", [("PASS", "BLOCK"), ("BLOCK", "PASS")])
+def test_production_execution_binding_result_mismatch_blocks(binding_result, aggregate_result):
+    binding, aggregate, dossiers, filenames, gate = _matching_production_execution_binding_fixture(
+        binding_result=binding_result, aggregate_result=aggregate_result,
+    )
+    with pytest.raises(readiness_audit_verification.V8DReadinessAuditVerificationBlocked):
+        readiness_audit_verification._require_matching_production_execution_binding(
+            binding=binding, logical_stage="T1C_TRANSPORT_READINESS", aggregate=aggregate,
+            aggregate_filename="aggregate-test.json", dossiers=dossiers,
+            dossier_filenames=filenames, gate_binding=gate,
+        )
+
+
 def test_canonical_readiness_receipts_are_stage_specific_and_privacy_safe(tmp_path):
     for logical_stage in ("T1C_TRANSPORT_READINESS", "T2_TRANSPORT_READINESS"):
         artifacts = _success_readiness_receipt(tmp_path / logical_stage, logical_stage=logical_stage)

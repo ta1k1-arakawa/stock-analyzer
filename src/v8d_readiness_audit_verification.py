@@ -243,10 +243,12 @@ def _require_matching_production_execution_binding(
         raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_STAGE_MISMATCH")
     for key in (
         "frozen_design_commit", "reviewed_production_implementation_commit", "sentinel_indices",
-        "window_start", "window_end_exclusive", "execution_result",
+        "window_start", "window_end_exclusive",
     ):
         if binding[key] != aggregate.get(key):
             raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_AGGREGATE_MISMATCH")
+    if binding["execution_result"] != aggregate.get("result"):
+        raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_AGGREGATE_MISMATCH")
     if binding["aggregate_artifact_self_hash"] != aggregate.get("aggregate_self_hash"):
         raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_AGGREGATE_HASH_MISMATCH")
     if len(dossiers) != 3 or len(dossier_filenames) != 3:
