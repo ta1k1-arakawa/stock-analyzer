@@ -357,6 +357,12 @@ def verify_dossier(path: str | Path, *, gate_receipt_state_root: str | Path | No
         raise V8DAuditVerificationBlocked("V8D_DOSSIER_SUCCESS_TERMINAL_INVALID")
     if final_record["terminal_state"] == "TERMINAL_FAILURE" and final_record["classification"] == "SUCCESS":
         raise V8DAuditVerificationBlocked("V8D_DOSSIER_FAILURE_TERMINAL_INVALID")
+    if (
+        final_record["terminal_state"] == "TERMINAL_FAILURE"
+        and derived[-1][1] is True
+        and len(attempts) != MAXIMUM_ATTEMPTS
+    ):
+        raise V8DAuditVerificationBlocked("V8D_DOSSIER_RETRYABLE_TERMINAL_NOT_EXHAUSTED")
     if len(attempts) - 1 > MAXIMUM_RETRIES:
         raise V8DAuditVerificationBlocked("V8D_DOSSIER_RETRY_COUNT_INVALID")
     return dossier

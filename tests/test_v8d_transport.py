@@ -213,6 +213,120 @@ def test_429_then_success_sleeps_only_after_durable_failure(tmp_path):
     assert [item["classification"] for item in checked["attempts"]] == ["HTTP_429", "SUCCESS"]
 
 
+def _always_retryable_terminal_dossier(tmp_path):
+    error = urllib.error.HTTPError(SAFE_URL, 429, "synthetic", {}, None)
+    with pytest.raises(urllib.error.HTTPError):
+        _single_attempt(tmp_path, _raise(error))
+    return next(tmp_path.glob("dossier-*.json"))
+
+
+def test_rehashed_retryable_terminal_failure_before_exhaustion_blocks(tmp_path):
+    dossier = _always_retryable_terminal_dossier(tmp_path)
+
+    def truncate_to_first_terminal(value):
+        value["attempts"] = value["attempts"][:1]
+        value["attempts"][0]["terminal_state"] = "TERMINAL_FAILURE"
+
+    _rehashed_dossier(dossier, truncate_to_first_terminal)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(
+            dossier, gate_receipt_state_root=_gate_root(tmp_path),
+            expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        )
+    assert excinfo.value.reason == "V8D_DOSSIER_RETRYABLE_TERMINAL_NOT_EXHAUSTED"
+
+
+def test_rehashed_retryable_terminal_failure_after_one_retry_blocks(tmp_path):
+    dossier = _always_retryable_terminal_dossier(tmp_path)
+
+    def truncate_after_one_retry(value):
+        value["attempts"] = value["attempts"][:2]
+        value["attempts"][-1]["terminal_state"] = "TERMINAL_FAILURE"
+
+    _rehashed_dossier(dossier, truncate_after_one_retry)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier(
+            dossier, gate_receipt_state_root=_gate_root(tmp_path),
+            expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        )
+    assert excinfo.value.reason == "V8D_DOSSIER_RETRYABLE_TERMINAL_NOT_EXHAUSTED"
+
+
+def test_retryable_terminal_failure_after_two_retries_passes(tmp_path):
+    dossier = _always_retryable_terminal_dossier(tmp_path)
+    checked = v8d_audit.verify_dossier(
+        dossier, gate_receipt_state_root=_gate_root(tmp_path),
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+    )
+    assert len(checked["attempts"]) == 3
+    assert checked["attempts"][-1]["terminal_state"] == "TERMINAL_FAILURE"
+
+
+@pytest.mark.parametrize("status", [400])
+def test_nonretryable_terminal_failure_passes_before_retry_exhaustion(tmp_path, status):
+    error = urllib.error.HTTPError(SAFE_URL, status, "synthetic", {}, None)
+    with pytest.raises(urllib.error.HTTPError):
+        _single_attempt(tmp_path, _raise(error))
+    checked = v8d_audit.verify_dossier(
+        next(tmp_path.glob("dossier-*.json")), gate_receipt_state_root=_gate_root(tmp_path),
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+    )
+    assert checked["attempts"][0]["retryable"] is False
+
+
+def test_retryable_failure_then_nonretryable_terminal_failure_passes(tmp_path):
+    calls = []
+
+    def request():
+        calls.append(1)
+        status = 429 if len(calls) == 1 else 400
+        raise urllib.error.HTTPError(SAFE_URL, status, "synthetic", {}, None)
+
+    with pytest.raises(urllib.error.HTTPError):
+        _single_attempt(tmp_path, request)
+    checked = v8d_audit.verify_dossier(
+        next(tmp_path.glob("dossier-*.json")), gate_receipt_state_root=_gate_root(tmp_path),
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+    )
+    assert [item["classification"] for item in checked["attempts"]] == ["HTTP_429", "HTTP_400"]
+
+
+def test_two_retryable_failures_then_success_on_attempt_three_passes(tmp_path):
+    calls = []
+
+    def request():
+        calls.append(1)
+        if len(calls) < 3:
+            raise urllib.error.HTTPError(SAFE_URL, 429, "synthetic", {}, None)
+        return "ok"
+
+    result, store, dossier_id = _single_attempt(tmp_path, request)
+    assert result[0] == "ok"
+    checked = v8d_audit.verify_dossier(
+        store._path(dossier_id), gate_receipt_state_root=_gate_root(tmp_path),
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+    )
+    assert [item["terminal_state"] for item in checked["attempts"]] == [
+        "RETRYABLE_FAILURE", "RETRYABLE_FAILURE", "SUCCESS",
+    ]
+
+
+def test_production_dossier_verifier_inherits_retryable_terminal_exhaustion(monkeypatch, tmp_path):
+    dossier = _always_retryable_terminal_dossier(tmp_path)
+
+    def truncate_to_first_terminal(value):
+        value["attempts"] = value["attempts"][:1]
+        value["attempts"][0]["terminal_state"] = "TERMINAL_FAILURE"
+
+    _rehashed_dossier(dossier, truncate_to_first_terminal)
+    monkeypatch.setattr(v8d_audit, "derive_reviewed_implementation_commit", lambda: IMPLEMENTATION_SHA)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_dossier_production(
+            dossier, gate_receipt_state_root=_gate_root(tmp_path),
+        )
+    assert excinfo.value.reason == "V8D_DOSSIER_RETRYABLE_TERMINAL_NOT_EXHAUSTED"
+
+
 @pytest.mark.parametrize(
     "error,expected",
     [
@@ -486,6 +600,33 @@ def _success_artifacts(tmp_path, *, stage="T1C_TRANSPORT_READINESS"):
         sleep_fn=lambda _seconds: None,
     )
     return result
+
+
+def test_aggregate_blocks_when_rehashed_dossier_has_unexhausted_retryable_terminal(tmp_path):
+    result = _success_artifacts(tmp_path)
+
+    def truncate_to_first_terminal(value):
+        value["attempts"] = value["attempts"][:1]
+        value["attempts"][0].update({
+            "classification": "HTTP_429",
+            "retryable": True,
+            "concrete_exception_type": "HTTPError",
+            "http_code": 429,
+            "reason_type": None,
+            "errno": None,
+            "named_condition": None,
+            "detector_evidence": None,
+            "terminal_state": "TERMINAL_FAILURE",
+        })
+
+    _rehashed_dossier(result["dossier_paths"][0], truncate_to_first_terminal)
+    _rehashed_aggregate(result)
+    with pytest.raises(v8d_audit.V8DAuditVerificationBlocked) as excinfo:
+        v8d_audit.verify_aggregate(
+            result["aggregate_path"], result["dossier_paths"],
+            gate_receipt_state_root=_gate_root(tmp_path), expected_stage="T1C_TRANSPORT_READINESS",
+        )
+    assert excinfo.value.reason == "V8D_DOSSIER_RETRYABLE_TERMINAL_NOT_EXHAUSTED"
 
 
 def _success_readiness_receipt(tmp_path, *, logical_stage="T1C_TRANSPORT_READINESS"):
