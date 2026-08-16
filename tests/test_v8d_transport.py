@@ -2406,6 +2406,52 @@ def test_generic_raw_transport_does_not_consume_a_gate(tmp_path, monkeypatch):
     assert not canonical_binding_root.exists()
 
 
+@pytest.mark.parametrize("outcome", ["PASS", "BLOCK"])
+def test_execute_v8d_stage_returns_the_exact_durable_aggregate(tmp_path, outcome):
+    stage = "T1C_RAW_ACQUISITION"
+    gate_root = _gate_root(tmp_path)
+    gate_binding = _consume_gate(gate_root, stage=stage)
+    store = DurableV8DAuditStore(tmp_path / "audit")
+
+    def request_factory(coordinate):
+        if outcome == "PASS":
+            request_fn = lambda: "synthetic-success"
+        else:
+            request_fn = lambda: (_ for _ in ()).throw(
+                urllib.error.HTTPError(SAFE_URL, 400, "synthetic terminal", {}, None)
+            )
+        return _plan(stage, coordinate, request_fn)
+
+    execution = execute_v8d_stage(
+        stage=stage,
+        request_factory=request_factory,
+        store=store,
+        reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        gate_binding=gate_binding,
+        window_start="2020-01-01",
+        window_end_exclusive="2020-01-08",
+        request_count=1,
+        sleep_fn=lambda _seconds: None,
+    )
+    returned = execution["aggregate"]
+    durable = json.loads(Path(execution["aggregate_path"]).read_text(encoding="utf-8"))
+    assert "aggregate_self_hash" in returned
+    assert returned["aggregate_self_hash"] == canonical_sha256(
+        {key: value for key, value in returned.items() if key != "aggregate_self_hash"}
+    )
+    assert returned == durable
+    assert returned["result"] == outcome
+    assert len(execution["dossier_paths"]) == 1
+    assert Path(execution["dossier_paths"][0]).is_file()
+    verified = v8d_audit.verify_aggregate(
+        execution["aggregate_path"], execution["dossier_paths"],
+        gate_receipt_state_root=gate_root,
+        expected_reviewed_implementation_commit=IMPLEMENTATION_SHA,
+        expected_stage=stage,
+    )
+    assert verified["result"] == outcome
+
+
 # --- Required test 36: real repo, missing review artifact -> fail closed ---
 
 

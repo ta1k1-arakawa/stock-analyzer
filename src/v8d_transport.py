@@ -802,8 +802,9 @@ def execute_v8d_stage(*, stage: str, request_factory: Callable[[int], V8DRequest
         "no_missing_terminal_failure_evidence": True,
     }
     aggregate_path = store.write_aggregate(run_id, aggregate)
+    durable_aggregate = store.read_aggregate(run_id)
     return {
-        "aggregate": aggregate,
+        "aggregate": durable_aggregate,
         "aggregate_path": aggregate_path,
         "dossier_paths": [store._path(dossier_id) for dossier_id in dossier_ids],  # private test/verification handle only
     }
