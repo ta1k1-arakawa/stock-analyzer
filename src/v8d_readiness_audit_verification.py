@@ -21,7 +21,14 @@ from src.v8d_audit import (
     verify_dossier_production,
 )
 from src.v8d_human_gate_consumption import CANONICAL_CONSUMPTION_STATE_ROOT
-from src.v8d_readiness import CANONICAL_PRODUCTION_AUDIT_ROOT
+from src.v8d_readiness import (
+    CANONICAL_PRODUCTION_AUDIT_ROOT,
+    CANONICAL_PRODUCTION_EXECUTION_BINDING_ROOT,
+    PRODUCTION_EXECUTION_BINDING_ARTIFACT_ROLE,
+    PRODUCTION_EXECUTION_BINDING_FIELDS,
+    PRODUCTION_EXECUTION_BINDING_SCHEMA_VERSION,
+    PRODUCTION_EXECUTION_DOSSIER_FIELDS,
+)
 from src.v8d_transport import (
     CANONICAL_PARSER_CLASSIFIER_BLOB,
     CANONICAL_PARSER_CLASSIFIER_COMMIT,
@@ -47,6 +54,7 @@ CANONICAL_READINESS_AUDIT_VERIFICATION_ROOT = (
 )
 T1C_RECEIPT_PATH = CANONICAL_READINESS_AUDIT_VERIFICATION_ROOT / "t1c-readiness-audit-verification.json"
 T2_RECEIPT_PATH = CANONICAL_READINESS_AUDIT_VERIFICATION_ROOT / "t2-readiness-audit-verification.json"
+_CANONICAL_RECEIPT_PATHS = frozenset({T1C_RECEIPT_PATH.resolve(), T2_RECEIPT_PATH.resolve()})
 
 RECEIPT_FIELDS = (
     "schema_version",
@@ -66,6 +74,15 @@ RECEIPT_FIELDS = (
     "receipt_self_hash",
 )
 DOSSIER_BINDING_FIELDS = ("filename", "audit_artifact_self_hash")
+_SYNTHETIC_RECEIPT_PATHS: set[Path] = set()
+
+
+def _binding_path_for_stage(logical_stage: str) -> Path:
+    if logical_stage == T1C_LOGICAL_STAGE:
+        return CANONICAL_PRODUCTION_EXECUTION_BINDING_ROOT / "t1c-readiness-production-execution-binding.json"
+    if logical_stage == T2_LOGICAL_STAGE:
+        return CANONICAL_PRODUCTION_EXECUTION_BINDING_ROOT / "t2-readiness-production-execution-binding.json"
+    raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_STAGE_INVALID")
 
 
 class V8DReadinessAuditVerificationBlocked(RuntimeError):
@@ -152,6 +169,109 @@ def _read_json_file(path: Path, *, label: str) -> dict[str, Any]:
         invalid_reason=f"V8D_READINESS_AUDIT_{label}_INVALID_JSON",
         duplicate_reason=f"V8D_READINESS_AUDIT_{label}_DUPLICATE_KEY",
     )
+
+
+def _read_production_execution_binding(logical_stage: str) -> dict[str, Any]:
+    path = _binding_path_for_stage(logical_stage)
+    try:
+        root = _canonical_root(CANONICAL_PRODUCTION_EXECUTION_BINDING_ROOT)
+        if path.is_symlink() or path.resolve(strict=True).parent != root:
+            raise OSError
+        binding = _read_json_file(path, label="PRODUCTION_BINDING")
+    except (OSError, V8DReadinessAuditVerificationBlocked) as error:
+        if isinstance(error, V8DReadinessAuditVerificationBlocked):
+            raise
+        raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_READ_FAILED") from error
+    if set(binding) != set(PRODUCTION_EXECUTION_BINDING_FIELDS):
+        raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_SCHEMA_INVALID")
+    if (
+        binding["schema_version"] != PRODUCTION_EXECUTION_BINDING_SCHEMA_VERSION
+        or binding["study"] != STUDY
+        or binding["artifact_role"] != PRODUCTION_EXECUTION_BINDING_ARTIFACT_ROLE
+        or binding["logical_stage"] != logical_stage
+        or binding["frozen_design_commit"] != FROZEN_DESIGN_COMMIT
+        or binding["sentinel_indices"] != list(SENTINEL_INDICES)
+        or binding["window_start"] != SENTINEL_START
+        or binding["window_end_exclusive"] != SENTINEL_END_EXCLUSIVE
+        or binding["execution_result"] not in {"PASS", "BLOCK"}
+    ):
+        raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_PROVENANCE_INVALID")
+    _require_hex(
+        binding["reviewed_production_implementation_commit"], 40,
+        "V8D_READINESS_PRODUCTION_BINDING_IMPLEMENTATION_INVALID",
+    )
+    _require_hex(binding["aggregate_artifact_self_hash"], 64, "V8D_READINESS_PRODUCTION_BINDING_AGGREGATE_HASH_INVALID")
+    for key in ("gate_receipt_key_sha256", "gate_receipt_bytes_sha256", "authorization_identity_sha256"):
+        _require_hex(binding[key], 64, "V8D_READINESS_PRODUCTION_BINDING_GATE_INVALID")
+    if (
+        not isinstance(binding["aggregate_filename"], str)
+        or not binding["aggregate_filename"]
+        or Path(binding["aggregate_filename"]).name != binding["aggregate_filename"]
+    ):
+        raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_FILENAME_INVALID")
+    dossier_bindings = binding["dossier_bindings"]
+    if not isinstance(dossier_bindings, list) or len(dossier_bindings) != 3:
+        raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_DOSSIER_COUNT_INVALID")
+    coordinates: list[int] = []
+    for dossier in dossier_bindings:
+        if not isinstance(dossier, dict) or set(dossier) != set(PRODUCTION_EXECUTION_DOSSIER_FIELDS):
+            raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_DOSSIER_SCHEMA_INVALID")
+        if (
+            not isinstance(dossier["filename"], str)
+            or not dossier["filename"]
+            or Path(dossier["filename"]).name != dossier["filename"]
+            or type(dossier["logical_coordinate"]) is not int
+        ):
+            raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_DOSSIER_INVALID")
+        _require_hex(dossier["audit_artifact_self_hash"], 64, "V8D_READINESS_PRODUCTION_BINDING_DOSSIER_HASH_INVALID")
+        coordinates.append(dossier["logical_coordinate"])
+    if coordinates != list(SENTINEL_INDICES) or len({item["filename"] for item in dossier_bindings}) != 3:
+        raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_COORDINATES_INVALID")
+    if binding["binding_self_hash"] != canonical_sha256(
+        {key: value for key, value in binding.items() if key != "binding_self_hash"}
+    ):
+        raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_SELF_HASH_INVALID")
+    return binding
+
+
+def _require_matching_production_execution_binding(
+    *, binding: Mapping[str, Any], logical_stage: str, aggregate: Mapping[str, Any],
+    aggregate_filename: str, dossiers: Sequence[Mapping[str, Any]], dossier_filenames: Sequence[str],
+    gate_binding: Mapping[str, str],
+) -> None:
+    if binding["logical_stage"] != logical_stage or binding["aggregate_filename"] != aggregate_filename:
+        raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_STAGE_MISMATCH")
+    for key in (
+        "frozen_design_commit", "reviewed_production_implementation_commit", "sentinel_indices",
+        "window_start", "window_end_exclusive", "execution_result",
+    ):
+        if binding[key] != aggregate.get(key):
+            raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_AGGREGATE_MISMATCH")
+    if binding["aggregate_artifact_self_hash"] != aggregate.get("aggregate_self_hash"):
+        raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_AGGREGATE_HASH_MISMATCH")
+    if len(dossiers) != 3 or len(dossier_filenames) != 3:
+        raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_DOSSIER_COUNT_INVALID")
+    for declared, dossier, filename, coordinate in zip(
+        binding["dossier_bindings"], dossiers, dossier_filenames, SENTINEL_INDICES
+    ):
+        if (
+            declared["filename"] != filename
+            or declared["logical_coordinate"] != coordinate
+            or declared["audit_artifact_self_hash"] != dossier.get("audit_artifact_self_hash")
+            or dossier.get("logical_coordinate") != coordinate
+        ):
+            raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_DOSSIER_MISMATCH")
+        for key in ("frozen_design_commit", "reviewed_production_implementation_commit", "logical_stage", "window_start", "window_end_exclusive", "sentinel_indices"):
+            expected = binding["frozen_design_commit"] if key == "frozen_design_commit" else (
+                binding["reviewed_production_implementation_commit"] if key == "reviewed_production_implementation_commit" else (
+                    logical_stage if key == "logical_stage" else binding[key]
+                )
+            )
+            if dossier.get(key) != expected:
+                raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_DOSSIER_MISMATCH")
+    for key in ("gate_receipt_key_sha256", "gate_receipt_bytes_sha256", "authorization_identity_sha256"):
+        if binding[key] != gate_binding.get(key):
+            raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_PRODUCTION_BINDING_GATE_MISMATCH")
 
 
 def _require_verified_dossier_bindings(
@@ -343,6 +463,7 @@ def _write_verified_receipt(
     aggregate_verifier: Callable[..., Mapping[str, Any]],
     dossier_verifier: Callable[..., Mapping[str, Any]],
     gate_root: Path,
+    require_production_execution_binding: bool = False,
 ) -> dict[str, Any]:
     verification_stage, logical_stage, receipt_path = _stage_constants(logical_stage)
     audit_root = _canonical_root(audit_root)
@@ -375,6 +496,12 @@ def _write_verified_receipt(
         raise V8DReadinessAuditVerificationBlocked(error.reason) from error
     _require_readiness_pass(aggregate, logical_stage)
     dossier_bindings, gate_binding = _require_verified_dossier_bindings(dossiers, aggregate, logical_stage=logical_stage)
+    if require_production_execution_binding:
+        _require_matching_production_execution_binding(
+            binding=_read_production_execution_binding(logical_stage), logical_stage=logical_stage,
+            aggregate=aggregate, aggregate_filename=aggregate_filename, dossiers=dossiers,
+            dossier_filenames=dossier_filenames, gate_binding=gate_binding,
+        )
     for binding, filename in zip(dossier_bindings, dossier_filenames):
         binding["filename"] = filename
     receipt = _build_receipt(
@@ -396,6 +523,7 @@ def _write_t1c_production(aggregate_path: str | Path, dossier_paths: Sequence[st
         receipt_root=CANONICAL_READINESS_AUDIT_VERIFICATION_ROOT,
         aggregate_verifier=verify_aggregate_production, dossier_verifier=verify_dossier_production,
         gate_root=CANONICAL_CONSUMPTION_STATE_ROOT,
+        require_production_execution_binding=True,
     )
 
 
@@ -406,6 +534,7 @@ def _write_t2_production(aggregate_path: str | Path, dossier_paths: Sequence[str
         receipt_root=CANONICAL_READINESS_AUDIT_VERIFICATION_ROOT,
         aggregate_verifier=verify_aggregate_production, dossier_verifier=verify_dossier_production,
         gate_root=CANONICAL_CONSUMPTION_STATE_ROOT,
+        require_production_execution_binding=True,
     )
 
 
@@ -447,6 +576,14 @@ def _read_canonical_pass(verification_stage: str) -> dict[str, Any]:
         )) for path in dossier_paths]
         _require_readiness_pass(aggregate, logical_stage)
         actual_bindings, gate_binding = _require_verified_dossier_bindings(dossiers, aggregate, logical_stage=logical_stage)
+        resolved_receipt_path = receipt_path.resolve()
+        if resolved_receipt_path not in _SYNTHETIC_RECEIPT_PATHS or resolved_receipt_path in _CANONICAL_RECEIPT_PATHS:
+            _require_matching_production_execution_binding(
+                binding=_read_production_execution_binding(logical_stage), logical_stage=logical_stage,
+                aggregate=aggregate, aggregate_filename=receipt["aggregate_filename"], dossiers=dossiers,
+                dossier_filenames=[binding["filename"] for binding in receipt["dossier_bindings"]],
+                gate_binding=gate_binding,
+            )
         for actual, declared in zip(actual_bindings, receipt["dossier_bindings"]):
             if actual["audit_artifact_self_hash"] != declared["audit_artifact_self_hash"]:
                 raise V8DReadinessAuditVerificationBlocked("V8D_READINESS_AUDIT_DOSSIER_BINDING_MISMATCH")
@@ -499,12 +636,16 @@ def _write_synthetic_receipt_for_tests(
     dossier_verifier: Callable[..., Mapping[str, Any]], gate_root: str | Path,
 ) -> dict[str, Any]:
     """TEST-ONLY.  This helper cannot consume a gate or establish authority."""
-    return _write_verified_receipt(
+    receipt = _write_verified_receipt(
         logical_stage=logical_stage, aggregate_path=aggregate_path, dossier_paths=dossier_paths,
         audit_root=Path(audit_root), receipt_root=Path(receipt_root),
         aggregate_verifier=aggregate_verifier, dossier_verifier=dossier_verifier,
         gate_root=Path(gate_root),
     )
+    # This is process-local test bookkeeping only. It creates no production
+    # execution binding and cannot authorize the production record writers.
+    _SYNTHETIC_RECEIPT_PATHS.add((Path(receipt_root) / _stage_constants(logical_stage)[2].name).resolve())
+    return receipt
 
 
 __all__ = [

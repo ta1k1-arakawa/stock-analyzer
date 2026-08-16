@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,12 +61,14 @@ from src.v8d_transport import (
     SENTINEL_START,
     V8DRequestPlan,
     V8DTransportBlocked,
+    STUDY,
     build_yahoo_request_plan,
     default_trusted_yahoo_opener,
     execute_v8d_stage,
     make_request_fingerprint,
     require_nonempty_quality,
     sha256_url,
+    canonical_sha256,
 )
 from src.v8_partition import MANIFEST_FIELDS as V8_MANIFEST_FIELDS
 
@@ -78,6 +81,209 @@ class V8DReadinessBlocked(RuntimeError):
 
 T0_EXPECTED_COUNT = 300
 CANONICAL_PRODUCTION_AUDIT_ROOT = CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8d-transport-audit-state"
+CANONICAL_PRODUCTION_EXECUTION_BINDING_ROOT = (
+    CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8d-readiness-production-execution-state"
+)
+
+PRODUCTION_EXECUTION_BINDING_SCHEMA_VERSION = "V8D_READINESS_PRODUCTION_EXECUTION_BINDING_V1"
+PRODUCTION_EXECUTION_BINDING_ARTIFACT_ROLE = "READINESS_PRODUCTION_EXECUTION_BINDING"
+PRODUCTION_EXECUTION_BINDING_FIELDS = (
+    "schema_version",
+    "study",
+    "artifact_role",
+    "logical_stage",
+    "frozen_design_commit",
+    "reviewed_production_implementation_commit",
+    "aggregate_filename",
+    "aggregate_artifact_self_hash",
+    "dossier_bindings",
+    "gate_receipt_key_sha256",
+    "gate_receipt_bytes_sha256",
+    "authorization_identity_sha256",
+    "sentinel_indices",
+    "window_start",
+    "window_end_exclusive",
+    "execution_result",
+    "binding_self_hash",
+)
+PRODUCTION_EXECUTION_DOSSIER_FIELDS = (
+    "filename",
+    "audit_artifact_self_hash",
+    "logical_coordinate",
+)
+_HEX40 = frozenset("0123456789abcdef")
+_HEX64 = _HEX40
+
+
+def _require_binding_hex(value: object, length: int, reason: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != length
+        or any(character not in (_HEX40 if length == 40 else _HEX64) for character in value)
+    ):
+        raise V8DReadinessBlocked(reason)
+    return value
+
+
+def _strict_readiness_json(path: Path, reason: str) -> dict[str, Any]:
+    try:
+        def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError
+                result[key] = value
+            return result
+
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise V8DReadinessBlocked(reason) from error
+    if not isinstance(value, dict):
+        raise V8DReadinessBlocked(reason)
+    return value
+
+
+def _safe_production_artifact(path_value: str | Path, *, audit_root: Path, reason: str) -> tuple[Path, str]:
+    try:
+        supplied = Path(path_value)
+        if supplied.is_symlink():
+            raise ValueError
+        resolved = supplied.resolve(strict=True)
+        root = audit_root.resolve(strict=True)
+    except (OSError, TypeError, ValueError) as error:
+        raise V8DReadinessBlocked(reason) from error
+    if not resolved.is_file() or resolved.parent != root or resolved.name != supplied.name:
+        raise V8DReadinessBlocked(reason)
+    return resolved, resolved.name
+
+
+def _build_production_execution_binding(
+    *, stage: str, reviewed_commit: str, gate_binding: Mapping[str, Any], execution: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Build safe provenance from the durable result of the fixed flow only."""
+    if stage not in READINESS_STAGES:
+        raise V8DReadinessBlocked("V8D_READINESS_STAGE_INVALID")
+    _require_binding_hex(reviewed_commit, 40, "V8D_READINESS_BINDING_IMPLEMENTATION_INVALID")
+    required_gate = {
+        "gate_receipt_key_sha256", "gate_receipt_bytes_sha256", "authorization_identity_sha256"
+    }
+    if not isinstance(gate_binding, Mapping) or not required_gate.issubset(gate_binding):
+        raise V8DReadinessBlocked("V8D_READINESS_BINDING_GATE_INVALID")
+    for key in required_gate:
+        _require_binding_hex(gate_binding[key], 64, "V8D_READINESS_BINDING_GATE_INVALID")
+    try:
+        aggregate_path = execution["aggregate_path"]
+        dossier_paths = execution["dossier_paths"]
+    except (KeyError, TypeError) as error:
+        raise V8DReadinessBlocked("V8D_READINESS_BINDING_RESULT_INVALID") from error
+    if not isinstance(dossier_paths, (list, tuple)) or len(dossier_paths) != len(SENTINEL_INDICES):
+        raise V8DReadinessBlocked("V8D_READINESS_BINDING_DOSSIER_COUNT_INVALID")
+
+    aggregate_file, aggregate_filename = _safe_production_artifact(
+        aggregate_path, audit_root=CANONICAL_PRODUCTION_AUDIT_ROOT,
+        reason="V8D_READINESS_BINDING_AGGREGATE_PATH_INVALID",
+    )
+    aggregate = _strict_readiness_json(aggregate_file, "V8D_READINESS_BINDING_AGGREGATE_INVALID")
+    aggregate_hash = _require_binding_hex(
+        aggregate.get("aggregate_self_hash"), 64, "V8D_READINESS_BINDING_AGGREGATE_HASH_INVALID"
+    )
+    if aggregate_hash != canonical_sha256({key: value for key, value in aggregate.items() if key != "aggregate_self_hash"}):
+        raise V8DReadinessBlocked("V8D_READINESS_BINDING_AGGREGATE_HASH_INVALID")
+    if (
+        aggregate.get("study") != STUDY
+        or aggregate.get("logical_stage") != stage
+        or aggregate.get("frozen_design_commit") != EXPECTED_V8D_FROZEN_DESIGN_COMMIT
+        or aggregate.get("reviewed_production_implementation_commit") != reviewed_commit
+        or aggregate.get("sentinel_indices") != list(SENTINEL_INDICES)
+        or aggregate.get("window_start") != SENTINEL_START
+        or aggregate.get("window_end_exclusive") != SENTINEL_END_EXCLUSIVE
+        or aggregate.get("result") not in {"PASS", "BLOCK"}
+    ):
+        raise V8DReadinessBlocked("V8D_READINESS_BINDING_AGGREGATE_MISMATCH")
+    dossier_bindings: list[dict[str, Any]] = []
+    dossier_hashes: list[str] = []
+    for expected_coordinate, dossier_path in zip(SENTINEL_INDICES, dossier_paths):
+        dossier_file, dossier_filename = _safe_production_artifact(
+            dossier_path, audit_root=CANONICAL_PRODUCTION_AUDIT_ROOT,
+            reason="V8D_READINESS_BINDING_DOSSIER_PATH_INVALID",
+        )
+        dossier = _strict_readiness_json(dossier_file, "V8D_READINESS_BINDING_DOSSIER_INVALID")
+        dossier_hash = _require_binding_hex(
+            dossier.get("audit_artifact_self_hash"), 64, "V8D_READINESS_BINDING_DOSSIER_HASH_INVALID"
+        )
+        if dossier_hash != canonical_sha256({key: value for key, value in dossier.items() if key != "audit_artifact_self_hash"}):
+            raise V8DReadinessBlocked("V8D_READINESS_BINDING_DOSSIER_HASH_INVALID")
+        if (
+            dossier.get("study") != STUDY
+            or dossier.get("logical_stage") != stage
+            or dossier.get("logical_coordinate") != expected_coordinate
+            or dossier.get("frozen_design_commit") != EXPECTED_V8D_FROZEN_DESIGN_COMMIT
+            or dossier.get("reviewed_production_implementation_commit") != reviewed_commit
+            or dossier.get("sentinel_indices") != list(SENTINEL_INDICES)
+            or dossier.get("window_start") != SENTINEL_START
+            or dossier.get("window_end_exclusive") != SENTINEL_END_EXCLUSIVE
+            or any(dossier.get(key) != gate_binding[key] for key in required_gate)
+        ):
+            raise V8DReadinessBlocked("V8D_READINESS_BINDING_DOSSIER_MISMATCH")
+        dossier_hashes.append(dossier_hash)
+        dossier_bindings.append({
+            "filename": dossier_filename,
+            "audit_artifact_self_hash": dossier_hash,
+            "logical_coordinate": expected_coordinate,
+        })
+    if aggregate.get("audit_artifact_self_hash") != canonical_sha256(sorted(dossier_hashes)):
+        raise V8DReadinessBlocked("V8D_READINESS_BINDING_AGGREGATE_DOSSIER_HASH_MISMATCH")
+    body: dict[str, Any] = {
+        "schema_version": PRODUCTION_EXECUTION_BINDING_SCHEMA_VERSION,
+        "study": STUDY,
+        "artifact_role": PRODUCTION_EXECUTION_BINDING_ARTIFACT_ROLE,
+        "logical_stage": stage,
+        "frozen_design_commit": EXPECTED_V8D_FROZEN_DESIGN_COMMIT,
+        "reviewed_production_implementation_commit": reviewed_commit,
+        "aggregate_filename": aggregate_filename,
+        "aggregate_artifact_self_hash": aggregate_hash,
+        "dossier_bindings": dossier_bindings,
+        "gate_receipt_key_sha256": gate_binding["gate_receipt_key_sha256"],
+        "gate_receipt_bytes_sha256": gate_binding["gate_receipt_bytes_sha256"],
+        "authorization_identity_sha256": gate_binding["authorization_identity_sha256"],
+        "sentinel_indices": list(SENTINEL_INDICES),
+        "window_start": SENTINEL_START,
+        "window_end_exclusive": SENTINEL_END_EXCLUSIVE,
+        "execution_result": aggregate["result"],
+    }
+    body["binding_self_hash"] = canonical_sha256(body)
+    return body
+
+
+def _publish_production_execution_binding(binding: Mapping[str, Any], stage: str) -> dict[str, Any]:
+    if set(binding) != set(PRODUCTION_EXECUTION_BINDING_FIELDS):
+        raise V8DReadinessBlocked("V8D_READINESS_BINDING_SCHEMA_INVALID")
+    filename = "t1c-readiness-production-execution-binding.json" if stage.startswith("T1C") else "t2-readiness-production-execution-binding.json"
+    destination = CANONICAL_PRODUCTION_EXECUTION_BINDING_ROOT / filename
+    payload = (json.dumps(binding, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    staging: Path | None = None
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.is_symlink() or destination.exists():
+            raise FileExistsError
+        staging = destination.parent / (destination.name + ".staging-" + os.urandom(8).hex())
+        with open(staging, "xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(str(staging), str(destination))
+    except FileExistsError as error:
+        raise V8DReadinessBlocked("V8D_READINESS_BINDING_ALREADY_PUBLISHED") from error
+    except (OSError, TypeError, ValueError) as error:
+        raise V8DReadinessBlocked("V8D_READINESS_BINDING_WRITE_FAILED") from error
+    finally:
+        if staging is not None:
+            try:
+                if staging.exists():
+                    staging.unlink()
+            except OSError:
+                pass
+    return dict(binding)
 
 
 def _wrap(error: BaseException) -> V8DReadinessBlocked:
@@ -452,7 +658,7 @@ def _execute_production_transport_readiness(
         "authorization_identity_sha256": binding.authorization_identity_sha256,
     }
 
-    return execute_transport_readiness_probe(
+    execution = execute_transport_readiness_probe(
         stage=stage,
         request_factory=request_factory,
         audit_root=CANONICAL_PRODUCTION_AUDIT_ROOT,
@@ -460,6 +666,14 @@ def _execute_production_transport_readiness(
         gate_binding=gate_binding,
         sleep_fn=time.sleep,
     )
+    # This is deliberately reachable only from the fixed, non-injectable
+    # production flow and only after the durable aggregate/dossiers exist.
+    binding = _build_production_execution_binding(
+        stage=stage, reviewed_commit=reviewed_commit, gate_binding=gate_binding, execution=execution
+    )
+    _publish_production_execution_binding(binding, stage)
+    execution["production_execution_binding"] = binding
+    return execution
 
 
 def execute_t1c_transport_readiness_production(
@@ -504,6 +718,11 @@ def synthetic_request_plan(*, stage: str, coordinate: int, url: str,
 
 __all__ = [
     "CANONICAL_PRODUCTION_AUDIT_ROOT",
+    "CANONICAL_PRODUCTION_EXECUTION_BINDING_ROOT",
+    "PRODUCTION_EXECUTION_BINDING_ARTIFACT_ROLE",
+    "PRODUCTION_EXECUTION_BINDING_FIELDS",
+    "PRODUCTION_EXECUTION_BINDING_SCHEMA_VERSION",
+    "PRODUCTION_EXECUTION_DOSSIER_FIELDS",
     "T0_EXPECTED_COUNT",
     "V8DReadinessBlocked",
     "_frozen_request_factory",
