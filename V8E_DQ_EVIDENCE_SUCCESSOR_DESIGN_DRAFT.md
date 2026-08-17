@@ -185,16 +185,14 @@ The repository value remains exactly:
 repository=ta1k1-arakawa/stock-analyzer
 ```
 
-### 3A.3 Inherited security semantics that do not change
+### 3A.3 Inherited security semantics and stage-specific boundaries
 
 The following semantics are copied without weakening or reinterpretation:
 
 - every preservation, authority, readiness, acquisition, and research-opening
   gate is one-shot;
-- the receipt is durably published with the inherited flush/fsync and
+- each receipt is durably published with the inherited flush/fsync and
   exclusive no-overwrite rules;
-- the consumption boundary remains
-  `IMMEDIATELY_BEFORE_FIRST_PRIVATE_BYTE_READ`;
 - `consumed=true` and `consumption_count=1` are required for a valid PASS;
 - authorization reset, deletion, replay, and reuse are prohibited;
 - a failed or malformed receipt is fail-closed and does not restore
@@ -208,6 +206,81 @@ The following semantics are copied without weakening or reinterpretation:
 
 V8E-specific names do not create an additional attempt, reset an old gate, or
 convert a historical V8D receipt into V8E authority.
+
+The following stage-specific consumption boundaries are frozen and take
+precedence over any generic successor-rebinding prose:
+
+1. **T1C prefreeze preservation private-verification gate.** Its boundary is
+   exactly:
+
+   ```text
+   consumption_boundary=IMMEDIATELY_BEFORE_FIRST_PRIVATE_BYTE_READ
+   ```
+
+   This boundary applies only to the preservation private-verification
+   authority defined in §3A.4. It does not apply to readiness, acquisition,
+   authority-bridge, or research-opening gates.
+
+2. **Yahoo-request-bearing T1C/T2 readiness gates.** Their boundary is
+   exactly:
+
+   ```text
+   consumption_boundary=IMMEDIATELY_BEFORE_FIRST_YAHOO_REQUEST
+   ```
+
+   All public, provenance, authority, implementation, and readiness
+   prerequisites must PASS before consumption. Any pre-gate failure leaves
+   the readiness gate unconsumed and `Yahoo requests=0`.
+
+3. **Yahoo-request-bearing T1C/T2 raw-acquisition gates.** Their boundary is
+   exactly:
+
+   ```text
+   consumption_boundary=IMMEDIATELY_BEFORE_FIRST_YAHOO_REQUEST
+   ```
+
+   All inherited pre-gate prerequisites occur before consumption. For T1C,
+   this includes the point-of-use re-read and independent verification of the
+   private allocation artifact and authoritative private V8 partition
+   manifest. If that verification fails, the raw-acquisition gate remains
+   unconsumed, `Yahoo requests=0`, acquisition is BLOCK, and no automatic
+   retry, redraw, or substitution is permitted. Only after every prerequisite
+   PASS may the gate be consumed immediately before the first Yahoo opener.
+
+   For T2, the frozen ordering is:
+
+   ```text
+   readiness PASS
+   -> readiness audit verification PASS
+   -> T2 point-of-use preservation PASS and independent review PASS
+   -> required acquisition preflight/revalidation
+   -> raw-acquisition gate consumption
+   -> first Yahoo request
+   ```
+
+   The T2 raw-acquisition gate remains unconsumed, with zero Yahoo requests,
+   when any preceding step fails.
+
+4. **Authority-bridge and research-opening gates.** This design does not
+   assign either `IMMEDIATELY_BEFORE_FIRST_PRIVATE_BYTE_READ` or
+   `IMMEDIATELY_BEFORE_FIRST_YAHOO_REQUEST` to these gate classes. They retain
+   their exact inherited V8D stage-specific semantics, mechanically rebound
+   to V8E current-study names and the exact V8E design SHA. A boundary defined
+   for one gate class MUST NOT be substituted for another.
+
+Receipt scope is equally stage-specific. The T1C preservation receipt is
+exactly the §3A.4 contract. Yahoo-bearing readiness and raw-acquisition
+receipts inherit the V8D production human-gate receipt semantics with V8E
+current-study rebinding: one-shot, durable, exclusive, no-overwrite,
+no-reset/no-reuse, exact V8E frozen-design binding, and
+`consumption_boundary=IMMEDIATELY_BEFORE_FIRST_YAHOO_REQUEST`. Those receipts
+are not the T1C preservation receipt schema. Authority-bridge and
+research-opening authorizations retain their own inherited stage-specific
+receipt contracts and are not implied to use either receipt schema above.
+
+Specific gate contracts in §3A.4 and the inherited stage-specific contracts
+take precedence over generic successor-rebinding prose. There is no
+universal gate consumption boundary in V8E.
 
 ### 3A.4 Frozen V8E T1C prefreeze preservation authority
 
