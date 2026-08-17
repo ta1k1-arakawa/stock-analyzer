@@ -8,9 +8,75 @@ from pathlib import Path
 import pytest
 
 from src import v8e_acquisition_engine as acquisition
+from src import v8e_authority_bridge as authority_bridge
 from src import v8e_git_provenance as git_provenance
 from src import v8e_production_provenance as provenance
+from src import v8e_t2_point_of_use_preservation as point_of_use
 from src import v8e_transport as transport
+
+
+V8D_T1C_PRESERVATION_COMMIT = "58b70e2ce79c5f1195d1b8f20d348305e513c5f3"
+V8D_T1C_PRESERVATION_BLOB = "049becb3d2743ef68dc278f424484919ba379cca"
+V8D_T2_PRESERVATION_COMMIT = "8ae3032b42b426420f44c9f7194f0b1849c23e98"
+V8D_T2_PRESERVATION_BLOB = "d023913b435ffd18eadef1e213c7ea43a49db331"
+
+V8E_T1C_PRESERVATION_COMMIT = "12a05d59daca7986e4dacb27bce63e073d064240"
+V8E_T1C_PRESERVATION_BLOB = "cd084dd6e49be724e876d01b27ac45fa11a2dc64"
+V8E_T2_PRESERVATION_COMMIT = "22071e3fceaff56ac2043f79e2d79d617f3658a5"
+V8E_T2_PRESERVATION_BLOB = "24248bf96877ffb47bdba8fac7924684b1cae5cb"
+
+
+def _valid_t1c_bridge() -> dict:
+    return {
+        "schema_version": authority_bridge.T1C_BRIDGE_SCHEMA,
+        "study": authority_bridge.STUDY,
+        "artifact_role": "T1C_ALLOCATION_AUTHORITY_BRIDGE",
+        "logical_block": "T1C",
+        "v8e_frozen_design_commit": authority_bridge.FROZEN_DESIGN_COMMIT,
+        "source_v8c_terminal_commit": "d18368c1ec1c26d752ea5862115ab9f4315d1780",
+        "source_v8c_trust_pin_git_commit": authority_bridge.V8C_TRUST_PIN_COMMIT,
+        "source_v8c_trust_pin_git_blob_sha": authority_bridge.V8C_TRUST_PIN_BLOB,
+        "authorized_allocation_artifact_self_hash": authority_bridge.T1C_ALLOCATION_SELF_HASH,
+        "t1c_ticker_count": 300,
+        "t1c_ticker_list_sha256": authority_bridge.T1C_TICKER_LIST_SHA256,
+        "parent_v8_partition_manifest_sha256": authority_bridge.V8_PARTITION_MANIFEST_SHA256,
+        "parent_v8_partition_implementation_commit": authority_bridge.V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "parent_t_spare_ticker_list_sha256": authority_bridge.T1C_PARENT_SPARE_LIST_SHA256,
+        "preservation_recheck_git_commit": authority_bridge.T1C_PRESERVATION_COMMIT,
+        "preservation_recheck_git_blob_sha": authority_bridge.T1C_PRESERVATION_BLOB,
+        "preservation_recheck_result": "PASS",
+        "human_gate": (
+            f"V8E_HUMAN_AUTHORIZE_T1C_AUTHORITY_BRIDGE_AT_{authority_bridge.FROZEN_DESIGN_COMMIT}"
+            f"_FOR_{authority_bridge.T1C_ALLOCATION_SELF_HASH}"
+        ),
+        "authorization_status": "AUTHORIZED",
+        "authorization_note": "authorized",
+    }
+
+
+def _valid_t2_bridge() -> dict:
+    return {
+        "schema_version": authority_bridge.T2_BRIDGE_SCHEMA,
+        "study": authority_bridge.STUDY,
+        "artifact_role": "T2_AUTHORITY_BRIDGE",
+        "logical_block": "T2",
+        "v8e_frozen_design_commit": authority_bridge.FROZEN_DESIGN_COMMIT,
+        "source_authority": "ORIGINAL_IMMUTABLE_V8_T2_AUTHORITY",
+        "v8_trust_anchor_git_identity": authority_bridge.V8_TRUST_ANCHOR_BLOB,
+        "authorized_parent_v8_partition_manifest_sha256": authority_bridge.V8_PARTITION_MANIFEST_SHA256,
+        "parent_v8_partition_implementation_commit": authority_bridge.V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "expected_t2_ticker_count": 300,
+        "expected_t2_ticker_list_sha256": authority_bridge.T2_TICKER_LIST_SHA256,
+        "preservation_recheck_git_commit": authority_bridge.T2_PRESERVATION_COMMIT,
+        "preservation_recheck_git_blob_sha": authority_bridge.T2_PRESERVATION_BLOB,
+        "preservation_recheck_result": "PASS",
+        "human_gate": (
+            f"V8E_HUMAN_AUTHORIZE_T2_AUTHORITY_BRIDGE_AT_{authority_bridge.FROZEN_DESIGN_COMMIT}"
+            f"_FOR_{authority_bridge.T2_TICKER_LIST_SHA256}"
+        ),
+        "authorization_status": "AUTHORIZED",
+        "authorization_note": "authorized",
+    }
 
 
 DESIGN = "6f672404b93a1003253915196dd635ca76fd2be1"
@@ -276,3 +342,78 @@ def test_production_branch_head_origin_and_clean_tree_invariants_fail_closed(mon
     with pytest.raises(git_provenance.V8EGitProvenanceBlocked) as error:
         git_provenance.resolve_verified_v8e_production_git_commit(Path.cwd())
     assert error.value.reason == "PRODUCTION_GIT_BRANCH_INVALID"
+
+
+def test_t1c_authority_bridge_binds_exact_v8e_preservation_commit_blob() -> None:
+    assert authority_bridge.T1C_PRESERVATION_COMMIT == V8E_T1C_PRESERVATION_COMMIT
+    assert authority_bridge.T1C_PRESERVATION_BLOB == V8E_T1C_PRESERVATION_BLOB
+    authority_bridge._verify_t1c_bridge(_valid_t1c_bridge())
+
+
+def test_t1c_authority_bridge_rejects_v8d_preservation_commit_blob() -> None:
+    bridge = _valid_t1c_bridge()
+    bridge["preservation_recheck_git_commit"] = V8D_T1C_PRESERVATION_COMMIT
+    with pytest.raises(authority_bridge.V8EAuthorityBridgeBlocked) as error:
+        authority_bridge._verify_t1c_bridge(bridge)
+    assert error.value.reason == "V8E_T1C_AUTHORITY_BRIDGE_PRESERVATION_RECHECK_GIT_COMMIT_MISMATCH"
+
+    bridge = _valid_t1c_bridge()
+    bridge["preservation_recheck_git_blob_sha"] = V8D_T1C_PRESERVATION_BLOB
+    with pytest.raises(authority_bridge.V8EAuthorityBridgeBlocked) as error:
+        authority_bridge._verify_t1c_bridge(bridge)
+    assert error.value.reason == "V8E_T1C_AUTHORITY_BRIDGE_PRESERVATION_RECHECK_GIT_BLOB_SHA_MISMATCH"
+
+
+def test_t2_authority_bridge_binds_exact_v8e_preservation_commit_blob() -> None:
+    assert authority_bridge.T2_PRESERVATION_COMMIT == V8E_T2_PRESERVATION_COMMIT
+    assert authority_bridge.T2_PRESERVATION_BLOB == V8E_T2_PRESERVATION_BLOB
+    authority_bridge._verify_t2_bridge(_valid_t2_bridge())
+
+
+def test_t2_authority_bridge_rejects_v8d_preservation_commit_blob() -> None:
+    bridge = _valid_t2_bridge()
+    bridge["preservation_recheck_git_commit"] = V8D_T2_PRESERVATION_COMMIT
+    with pytest.raises(authority_bridge.V8EAuthorityBridgeBlocked) as error:
+        authority_bridge._verify_t2_bridge(bridge)
+    assert error.value.reason == "V8E_T2_AUTHORITY_BRIDGE_PRESERVATION_RECHECK_GIT_COMMIT_MISMATCH"
+
+    bridge = _valid_t2_bridge()
+    bridge["preservation_recheck_git_blob_sha"] = V8D_T2_PRESERVATION_BLOB
+    with pytest.raises(authority_bridge.V8EAuthorityBridgeBlocked) as error:
+        authority_bridge._verify_t2_bridge(bridge)
+    assert error.value.reason == "V8E_T2_AUTHORITY_BRIDGE_PRESERVATION_RECHECK_GIT_BLOB_SHA_MISMATCH"
+
+
+def test_t2_point_of_use_binds_exact_v8e_prefreeze_commit_blob() -> None:
+    assert point_of_use.PREFREEZE_PRESERVATION_COMMIT == V8E_T2_PRESERVATION_COMMIT
+    assert point_of_use.PREFREEZE_PRESERVATION_BLOB == V8E_T2_PRESERVATION_BLOB
+    assert point_of_use.PREFREEZE_PRESERVATION_PATH == "V8E_T2_PREFREEZE_PRESERVATION_RECHECK.md"
+
+    calls: list[tuple[str, str]] = []
+
+    def blob_resolver(_root: Path, commit: str, path: str) -> str:
+        calls.append((commit, path))
+        assert commit == V8E_T2_PRESERVATION_COMMIT
+        assert path == point_of_use.PREFREEZE_PRESERVATION_PATH
+        return V8E_T2_PRESERVATION_BLOB
+
+    def ancestor_checker(_root: Path, ancestor: str, descendant: str, _reason: str) -> None:
+        assert ancestor == V8E_T2_PRESERVATION_COMMIT
+        assert descendant == SHA
+
+    point_of_use._verify_prefreeze_binding(Path.cwd(), SHA, blob_resolver, ancestor_checker)
+    assert calls == [(V8E_T2_PRESERVATION_COMMIT, point_of_use.PREFREEZE_PRESERVATION_PATH)]
+
+
+def test_t2_point_of_use_rejects_v8d_prefreeze_blob_fail_closed() -> None:
+    def stale_blob_resolver(_root: Path, _commit: str, _path: str) -> str:
+        return V8D_T2_PRESERVATION_BLOB
+
+    def unreachable_ancestor_checker(*_args: object) -> None:
+        raise AssertionError("ancestor check must not run after a blob mismatch")
+
+    with pytest.raises(point_of_use.V8ET2PointOfUsePreservationBlocked) as error:
+        point_of_use._verify_prefreeze_binding(
+            Path.cwd(), SHA, stale_blob_resolver, unreachable_ancestor_checker,
+        )
+    assert error.value.reason == "V8E_T2_POINT_OF_USE_PREFREEZE_PRESERVATION_BLOB_MISMATCH"
