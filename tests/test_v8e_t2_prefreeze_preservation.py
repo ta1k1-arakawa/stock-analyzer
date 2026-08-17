@@ -206,6 +206,7 @@ def _resolver_kwargs(**overrides):
         recheck.V8_TRUSTED_PARTITION_GIT_PATH: recheck.EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA,
         recheck.V8D_TERMINAL_GIT_PATH: recheck.V8D_TERMINAL_BLOB_SHA,
         recheck.V8D_T2_PREFREEZE_GIT_PATH: recheck.V8D_T2_PREFREEZE_BLOB_SHA,
+        recheck.V8E_T1C_PRESERVATION_RECHECK_GIT_PATH: recheck.V8E_T1C_PRESERVATION_RECHECK_BLOB_SHA,
     }
 
     def object_reader(root, commit, path):
@@ -358,6 +359,51 @@ def test_safe_git_evidence_resolver_passes_exact_reviewed_runtime_and_history():
     safe = _resolve()
     assert safe["T2_real_data_acquired"] is False
     assert safe["t2_count"] == 300
+    assert recheck.V8E_T1C_PRESERVATION_RECHECK_GIT_PATH in recheck.V8E_EXPECTED_PREFREEZE_CHRONOLOGY_PATHS
+
+
+def test_t1c_publication_commit_must_be_ancestor_of_reviewed_support():
+    with pytest.raises(recheck.V8ET2PrefreezePreservationBlocked) as excinfo:
+        _resolve(
+            commit_ancestor_reader=lambda root, commit, candidate: commit
+            != recheck.V8E_T1C_PRESERVATION_RECHECK_COMMIT
+        )
+    assert excinfo.value.reason == "V8E_T2_T1C_PRESERVATION_COMMIT_NOT_ANCESTOR"
+
+
+def test_t1c_publication_blob_at_reviewed_commit_must_match_exactly():
+    defaults = _resolver_kwargs()
+    original = defaults["git_blob_resolver"]
+
+    with pytest.raises(recheck.V8ET2PrefreezePreservationBlocked) as excinfo:
+        _resolve(
+            git_blob_resolver=lambda root, commit, path: "0" * 40
+            if commit == recheck.V8E_T1C_PRESERVATION_RECHECK_COMMIT
+            and path == recheck.V8E_T1C_PRESERVATION_RECHECK_GIT_PATH
+            else original(root, commit, path)
+        )
+    assert excinfo.value.reason == "V8E_T2_T1C_PRESERVATION_BLOB_MISMATCH"
+
+
+@pytest.mark.parametrize("replacement", ["0" * 40, None])
+def test_t1c_publication_blob_at_current_head_must_not_be_mutated_or_removed(replacement):
+    defaults = _resolver_kwargs()
+    original = defaults["git_blob_resolver"]
+
+    with pytest.raises(recheck.V8ET2PrefreezePreservationBlocked) as excinfo:
+        _resolve(
+            git_blob_resolver=lambda root, commit, path: replacement
+            if commit == "1" * 40
+            and path == recheck.V8E_T1C_PRESERVATION_RECHECK_GIT_PATH
+            else original(root, commit, path)
+        )
+    assert excinfo.value.reason == "V8E_T2_T1C_PRESERVATION_BLOB_MISMATCH"
+
+
+def test_verified_head_must_equal_reviewed_support_sha():
+    with pytest.raises(recheck.V8ET2PrefreezePreservationBlocked) as excinfo:
+        _resolve(verified_head="2" * 40)
+    assert excinfo.value.reason == "V8E_T2_REVIEWED_SUPPORT_HEAD_MISMATCH"
 
 
 @pytest.mark.parametrize(

@@ -92,12 +92,16 @@ V8D_TERMINAL_GIT_PATH = "V8D_DQ_EVIDENCE_CONTRACT_BLOCK_ADJUDICATION.md"
 V8D_TERMINAL_BLOB_SHA = "f81106f529c339e6762e60d3075e03e790335610"
 V8D_T2_PREFREEZE_GIT_PATH = "V8D_T2_PREFREEZE_PRESERVATION_RECHECK.md"
 V8D_T2_PREFREEZE_BLOB_SHA = "d023913b435ffd18eadef1e213c7ea43a49db331"
+V8E_T1C_PRESERVATION_RECHECK_COMMIT = "12a05d59daca7986e4dacb27bce63e073d064240"
+V8E_T1C_PRESERVATION_RECHECK_GIT_PATH = "V8E_T1C_PRESERVATION_RECHECK.json"
+V8E_T1C_PRESERVATION_RECHECK_BLOB_SHA = "cd084dd6e49be724e876d01b27ac45fa11a2dc64"
 
 V8E_EXPECTED_PREFREEZE_CHRONOLOGY_PATHS = frozenset(
     {
         "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md",
         "src/v8e_t1c_preservation.py",
         "tests/test_v8e_t1c_preservation.py",
+        V8E_T1C_PRESERVATION_RECHECK_GIT_PATH,
         "src/v8e_t2_prefreeze_preservation.py",
         "tests/test_v8e_t2_prefreeze_preservation.py",
     }
@@ -638,6 +642,30 @@ def _resolve_t2_prefreeze_safe_evidence_with_dependencies(
         runtime_state_reader=runtime_state_reader,
     )
     try:
+        ancestor_reader = commit_ancestor_reader or _default_commit_ancestor
+        if not ancestor_reader(
+            repository_root, V8E_T1C_PRESERVATION_RECHECK_COMMIT, reviewed_sha
+        ):
+            raise V8ET2PrefreezePreservationBlocked(
+                "V8E_T2_T1C_PRESERVATION_COMMIT_NOT_ANCESTOR"
+            )
+        if (
+            git_blob_resolver(
+                repository_root,
+                V8E_T1C_PRESERVATION_RECHECK_COMMIT,
+                V8E_T1C_PRESERVATION_RECHECK_GIT_PATH,
+            )
+            != V8E_T1C_PRESERVATION_RECHECK_BLOB_SHA
+            or git_blob_resolver(
+                repository_root,
+                verified_head,
+                V8E_T1C_PRESERVATION_RECHECK_GIT_PATH,
+            )
+            != V8E_T1C_PRESERVATION_RECHECK_BLOB_SHA
+        ):
+            raise V8ET2PrefreezePreservationBlocked(
+                "V8E_T2_T1C_PRESERVATION_BLOB_MISMATCH"
+            )
         if git_blob_resolver(repository_root, V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT, "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md") != V8E_DESIGN_CANDIDATE_BLOB_SHA:
             raise V8ET2PrefreezePreservationBlocked("V8E_T2_DESIGN_CANDIDATE_BLOB_MISMATCH")
         if git_blob_resolver(repository_root, reviewed_sha, "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md") != V8E_DESIGN_CANDIDATE_BLOB_SHA:
@@ -894,6 +922,9 @@ __all__ = [
     "V8D_TERMINAL_BLOB_SHA",
     "V8D_TERMINAL_COMMIT",
     "V8D_T2_PREFREEZE_BLOB_SHA",
+    "V8E_T1C_PRESERVATION_RECHECK_BLOB_SHA",
+    "V8E_T1C_PRESERVATION_RECHECK_COMMIT",
+    "V8E_T1C_PRESERVATION_RECHECK_GIT_PATH",
     "T2_SAFE_CONDITION_FIELDS",
     "V8E_EXPECTED_PREFREEZE_CHRONOLOGY_PATHS",
     "V8E_DESIGN_CANDIDATE_BLOB_SHA",
