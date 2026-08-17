@@ -16,6 +16,7 @@ AUTHORIZATION = (
     + preservation.V8E_AUTHORIZATION_SEPARATOR
     + preservation.AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH
 )
+REVIEWED_SUPPORT_SHA = "1" * 40
 
 
 def _clock():
@@ -40,6 +41,18 @@ def _preflight(**overrides):
         "v8c_allocation_implementation_commit": preservation.EXPECTED_V8C_ALLOCATION_IMPLEMENTATION_COMMIT,
         "parent_t_spare_ticker_count": preservation.EXPECTED_PARENT_T_SPARE_TICKER_COUNT,
         "parent_t_spare_ticker_list_sha256": preservation.EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+    }
+    value.update(overrides)
+    return value
+
+
+def _runtime_support_state(**overrides):
+    value = {
+        "branch": preservation.V8E_PRODUCTION_BRANCH,
+        "head": REVIEWED_SUPPORT_SHA,
+        "origin_head": REVIEWED_SUPPORT_SHA,
+        "worktree_clean": True,
+        "commits_after_reviewed_support_sha": 0,
     }
     value.update(overrides)
     return value
@@ -245,12 +258,14 @@ def test_preflight_failure_has_zero_private_reads_and_zero_receipt(tmp_path):
     with pytest.raises(preservation.V8ET1CPreservationBlocked):
         preservation._execute_with_dependencies(
             authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
             state_root=tmp_path / "state",
             output_path=tmp_path / "artifact.json",
             allocation_artifact_path=allocation,
             partition_manifest_path=manifest,
             repository_root=tmp_path / "repo",
             public_preflight=lambda: bad,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
             private_reader=lambda path: reads.append(path) or path.read_bytes(),
             gate_consumer=preservation.consume_gate_once,
             clock=_clock,
@@ -277,6 +292,48 @@ def test_fresh_public_evidence_rejects_each_absence_contradiction(field):
         preservation._validate_fresh_t1c_public_evidence(evidence)
 
 
+def test_exact_reviewed_support_sha_runtime_binding_passes():
+    assert preservation._validate_reviewed_support_implementation_binding(
+        Path("synthetic-repository"),
+        _preflight(),
+        REVIEWED_SUPPORT_SHA,
+        runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
+    ) == REVIEWED_SUPPORT_SHA
+
+
+@pytest.mark.parametrize(
+    "reviewed_sha,runtime_overrides",
+    [
+        ("malformed", {}),
+        (REVIEWED_SUPPORT_SHA, {"head": "2" * 40}),
+        (REVIEWED_SUPPORT_SHA, {"origin_head": "2" * 40}),
+        (REVIEWED_SUPPORT_SHA, {"commits_after_reviewed_support_sha": 1}),
+        (REVIEWED_SUPPORT_SHA, {"branch": "other-branch"}),
+        (REVIEWED_SUPPORT_SHA, {"worktree_clean": False}),
+    ],
+)
+def test_reviewed_support_sha_runtime_mismatch_blocks(reviewed_sha, runtime_overrides):
+    with pytest.raises(preservation.V8ET1CPreservationBlocked):
+        preservation._validate_reviewed_support_implementation_binding(
+            Path("synthetic-repository"),
+            _preflight(),
+            reviewed_sha,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(**runtime_overrides),
+        )
+
+
+def test_allowlisted_source_filename_cannot_override_later_commit_failure():
+    with pytest.raises(preservation.V8ET1CPreservationBlocked):
+        preservation._validate_reviewed_support_implementation_binding(
+            Path("synthetic-repository"),
+            _preflight(),
+            REVIEWED_SUPPORT_SHA,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(
+                head="2" * 40, commits_after_reviewed_support_sha=1
+            ),
+        )
+
+
 def test_historical_v8d_pass_is_not_v8e_fresh_authority():
     historical_only = {
         "schema_version": "V8D_T1C_PRESERVATION_RECHECK_V1",
@@ -289,14 +346,19 @@ def test_historical_v8d_pass_is_not_v8e_fresh_authority():
 @pytest.mark.parametrize(
     "chronology",
     [
-        [{"commit": "1" * 40, "paths": ["V8_STATE.json"]}],
-        [{"commit": "1" * 40, "paths": ["unclassified-safe-looking.txt"]}],
         [{"commit": "1" * 40, "paths": ["src/v8e_t1c_preservation.py", "src/v8e_t1c_preservation.py"]}],
+        [{"commit": "not-a-sha", "paths": ["src/v8e_t1c_preservation.py"]}],
     ],
 )
-def test_intervening_unverified_or_contradictory_chronology_blocks(chronology):
+def test_malformed_chronology_blocks(chronology):
     with pytest.raises(preservation.V8ET1CPreservationBlocked):
         preservation._validate_public_chronology(chronology)
+
+
+def test_historical_chronology_does_not_use_filename_allowlist():
+    assert preservation._validate_public_chronology(
+        [{"commit": "1" * 40, "paths": ["V8_STATE.json", "future-preservation-relevant-file"]}]
+    )[0]["paths"] == ["V8_STATE.json", "future-preservation-relevant-file"]
 
 
 @pytest.mark.parametrize("mutation", ["missing", "extra"])
@@ -353,21 +415,55 @@ def test_public_fresh_evidence_failure_precedes_gate_and_private_read(tmp_path):
     allocation.write_bytes(b"synthetic allocation")
     manifest.write_bytes(b"synthetic manifest")
     reads = []
+    gate_calls = []
     with pytest.raises(preservation.V8ET1CPreservationBlocked):
         preservation._execute_with_dependencies(
             authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
             state_root=tmp_path / "state",
             output_path=tmp_path / "artifact.json",
             allocation_artifact_path=allocation,
             partition_manifest_path=manifest,
             repository_root=tmp_path / "repo",
             public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
             public_evidence_resolver=lambda _: {"bad": True},
             private_reader=lambda path: reads.append(path) or path.read_bytes(),
-            gate_consumer=preservation.consume_gate_once,
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
             clock=_clock,
         )
     assert reads == []
+    assert gate_calls == []
+    assert not (tmp_path / "state").exists()
+
+
+def test_reviewed_support_failure_precedes_gate_private_read_and_receipt(tmp_path):
+    allocation = tmp_path / "allocation.bin"
+    manifest = tmp_path / "manifest.bin"
+    allocation.write_bytes(b"synthetic allocation")
+    manifest.write_bytes(b"synthetic manifest")
+    reads = []
+    gate_calls = []
+    with pytest.raises(preservation.V8ET1CPreservationBlocked):
+        preservation._execute_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+            state_root=tmp_path / "state",
+            output_path=tmp_path / "artifact.json",
+            allocation_artifact_path=allocation,
+            partition_manifest_path=manifest,
+            repository_root=tmp_path / "repo",
+            public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(
+                head="2" * 40, commits_after_reviewed_support_sha=1
+            ),
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert reads == []
+    assert gate_calls == []
     assert not (tmp_path / "state").exists()
 
 
@@ -380,12 +476,14 @@ def test_gate_consumed_immediately_before_first_synthetic_private_read(tmp_path)
     with pytest.raises(preservation.V8ET1CPreservationBlocked):
         preservation._execute_with_dependencies(
             authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
             state_root=tmp_path / "state",
             output_path=tmp_path / "artifact.json",
             allocation_artifact_path=allocation,
             partition_manifest_path=manifest,
             repository_root=tmp_path / "repo",
             public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
             public_evidence_resolver=lambda _: _fresh_public_evidence(),
             private_reader=lambda path: reads.append(path) or path.read_bytes(),
             gate_consumer=preservation.consume_gate_once,
@@ -403,12 +501,14 @@ def test_consumed_receipt_is_retained_after_post_consumption_failure(tmp_path):
     with pytest.raises(preservation.V8ET1CPreservationBlocked):
         preservation._execute_with_dependencies(
             authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
             state_root=tmp_path / "state",
             output_path=tmp_path / "artifact.json",
             allocation_artifact_path=allocation,
             partition_manifest_path=manifest,
             repository_root=tmp_path / "repo",
             public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
             public_evidence_resolver=lambda _: _fresh_public_evidence(),
             private_reader=lambda path: path.read_bytes(),
             gate_consumer=preservation.consume_gate_once,

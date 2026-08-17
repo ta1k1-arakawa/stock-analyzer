@@ -61,18 +61,6 @@ V8E_V8D_HISTORICAL_T1C_BLOB_SHA = "049becb3d2743ef68dc278f424484919ba379cca"
 V8E_V8_STATE_GIT_PATH = "V8_STATE.json"
 V8E_V8_STATE_BLOB_SHA = "8e5fd2f39dc92a7983c0cdaab42f633d624b4956"
 
-# This is deliberately an exact, narrow classification.  A future commit
-# outside these paths is not silently treated as harmless chronology.
-V8E_PREFREEZE_CHRONOLOGY_SAFE_PATHS = frozenset(
-    {
-        "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md",
-        "src/v8e_t1c_preservation.py",
-        "src/v8e_t2_prefreeze_preservation.py",
-        "tests/test_v8e_t1c_preservation.py",
-        "tests/test_v8e_t2_prefreeze_preservation.py",
-    }
-)
-
 V8E_T1C_PRESERVATION_GATE = "HUMAN_V8E_T1C_PRESERVATION_PRIVATE_VERIFICATION_GATE"
 V8E_AUTHORIZATION_PREFIX = "V8E_HUMAN_AUTHORIZE_T1C_PRESERVATION_VERIFY_AT_"
 V8E_AUTHORIZATION_SEPARATOR = "_FOR_"
@@ -705,6 +693,76 @@ def _validate_current_trusted_t1c_allocation(record: Mapping[str, Any]) -> dict[
     return dict(record)
 
 
+_REVIEWED_SUPPORT_RUNTIME_FIELDS = frozenset(
+    {"branch", "head", "origin_head", "worktree_clean", "commits_after_reviewed_support_sha"}
+)
+
+
+def _default_reviewed_support_runtime_state(
+    repository_root: Path, reviewed_support_implementation_sha: str
+) -> dict[str, Any]:
+    reviewed_sha = _require_hex(
+        reviewed_support_implementation_sha, 40, "V8E_REVIEWED_SUPPORT_SHA_MALFORMED"
+    )
+    resolved_sha = _git_text(
+        repository_root,
+        ["rev-parse", "--verify", f"{reviewed_sha}^{{commit}}"],
+        "V8E_REVIEWED_SUPPORT_SHA_UNRESOLVABLE",
+    )
+    if resolved_sha != reviewed_sha:
+        raise V8ET1CPreservationBlocked("V8E_REVIEWED_SUPPORT_SHA_UNRESOLVABLE")
+    count_text = _git_text(
+        repository_root,
+        ["rev-list", "--count", f"{reviewed_sha}..HEAD"],
+        "V8E_REVIEWED_SUPPORT_CHRONOLOGY_INVALID",
+    )
+    if not count_text.isdecimal():
+        raise V8ET1CPreservationBlocked("V8E_REVIEWED_SUPPORT_CHRONOLOGY_INVALID")
+    return {
+        "branch": _git_text(repository_root, ["branch", "--show-current"], "V8E_PUBLIC_BRANCH_UNAVAILABLE"),
+        "head": _git_text(repository_root, ["rev-parse", "HEAD"], "V8E_PUBLIC_HEAD_UNAVAILABLE"),
+        "origin_head": _git_text(
+            repository_root,
+            ["rev-parse", "origin/" + V8E_PRODUCTION_BRANCH],
+            "V8E_PUBLIC_ORIGIN_UNAVAILABLE",
+        ),
+        "worktree_clean": _git_text(repository_root, ["status", "--porcelain"], "V8E_PUBLIC_GIT_UNAVAILABLE") == "",
+        "commits_after_reviewed_support_sha": int(count_text),
+    }
+
+
+def _validate_reviewed_support_implementation_binding(
+    repository_root: Path,
+    preflight: Mapping[str, Any],
+    reviewed_support_implementation_sha: str,
+    *,
+    runtime_state_reader: Callable[[Path, str], Mapping[str, Any]] | None = None,
+) -> str:
+    reviewed_sha = _require_hex(
+        reviewed_support_implementation_sha, 40, "V8E_REVIEWED_SUPPORT_SHA_MALFORMED"
+    )
+    runtime = (runtime_state_reader or _default_reviewed_support_runtime_state)(repository_root, reviewed_sha)
+    if not isinstance(runtime, Mapping) or set(runtime) != _REVIEWED_SUPPORT_RUNTIME_FIELDS:
+        raise V8ET1CPreservationBlocked("V8E_REVIEWED_SUPPORT_RUNTIME_SCHEMA_INVALID")
+    if (
+        runtime["branch"] != V8E_PRODUCTION_BRANCH
+        or runtime["head"] != reviewed_sha
+        or runtime["origin_head"] != reviewed_sha
+        or runtime["worktree_clean"] is not True
+        or type(runtime["commits_after_reviewed_support_sha"]) is not int
+        or runtime["commits_after_reviewed_support_sha"] != 0
+    ):
+        raise V8ET1CPreservationBlocked("V8E_REVIEWED_SUPPORT_RUNTIME_BINDING_INVALID")
+    if (
+        preflight["branch"] != V8E_PRODUCTION_BRANCH
+        or preflight["head"] != reviewed_sha
+        or preflight["origin_head"] != reviewed_sha
+        or preflight["worktree_clean"] is not True
+    ):
+        raise V8ET1CPreservationBlocked("V8E_REVIEWED_SUPPORT_PREFLIGHT_BINDING_INVALID")
+    return reviewed_sha
+
+
 def _default_public_chronology(repository_root: Path, lower: str, upper: str) -> list[dict[str, Any]]:
     if _git_text(repository_root, ["merge-base", "--is-ancestor", lower, upper], "V8E_PUBLIC_CHRONOLOGY_INVALID") != "":
         raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_INVALID")
@@ -732,8 +790,8 @@ def _validate_public_chronology(records: Any) -> list[dict[str, Any]]:
         paths = record["paths"]
         if not isinstance(paths, list) or not paths or any(not isinstance(path, str) for path in paths):
             raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_UNVERIFIABLE")
-        if len(set(paths)) != len(paths) or any(path not in V8E_PREFREEZE_CHRONOLOGY_SAFE_PATHS for path in paths):
-            raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_UNCLASSIFIED_CHANGE")
+        if len(set(paths)) != len(paths):
+            raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_UNVERIFIABLE")
         validated.append({"commit": record["commit"], "paths": list(paths)})
     return validated
 
@@ -826,12 +884,18 @@ def _validate_fresh_t1c_public_evidence(evidence: Mapping[str, Any]) -> dict[str
 def _default_fresh_t1c_public_evidence(
     repository_root: Path,
     preflight: Mapping[str, Any],
+    reviewed_support_implementation_sha: str,
     *,
     chronology_reader: Callable[[Path, str, str], Any] | None = None,
+    runtime_state_reader: Callable[[Path, str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    head = _require_hex(preflight["head"], 40, "V8E_PUBLIC_HEAD_INVALID")
-    if _git_text(repository_root, ["rev-parse", "HEAD"], "V8E_PUBLIC_HEAD_UNAVAILABLE") != head:
-        raise V8ET1CPreservationBlocked("V8E_PUBLIC_HEAD_CHANGED")
+    reviewed_sha = _validate_reviewed_support_implementation_binding(
+        repository_root,
+        preflight,
+        reviewed_support_implementation_sha,
+        runtime_state_reader=runtime_state_reader,
+    )
+    head = reviewed_sha
     try:
         design_blob = resolve_git_blob(repository_root, V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT, "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md")
         current_design_blob = resolve_git_blob(repository_root, head, "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md")
@@ -870,19 +934,10 @@ def _default_fresh_t1c_public_evidence(
     state = _read_public_git_json(repository_root, head, V8E_V8_STATE_GIT_PATH, invalid="V8E_V8_STATE_INVALID_JSON", duplicate="V8E_V8_STATE_DUPLICATE_KEY")
     _validate_current_v8_state(state)
     chronology = _validate_public_chronology(
-        (chronology_reader or _default_public_chronology)(repository_root, V8E_V8D_PREDECESSOR_TERMINAL_COMMIT, head)
+        (chronology_reader or _default_public_chronology)(repository_root, V8E_V8D_PREDECESSOR_TERMINAL_COMMIT, reviewed_sha)
     )
     if not chronology:
         raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_INVALID")
-    if chronology_reader is None:
-        for record in chronology:
-            if "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md" in record["paths"]:
-                if _git_text(
-                    repository_root,
-                    ["merge-base", "--is-ancestor", record["commit"], V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT],
-                    "V8E_PUBLIC_CHRONOLOGY_UNVERIFIABLE",
-                ) != "":
-                    raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_CONTRADICTION")
     # Every current absence is a conjunction of the historical boundary
     # evidence, the current safe state, and the verified absence of a
     # preservation-relevant committed change in the V8E interval.
@@ -919,13 +974,19 @@ def _default_fresh_t1c_public_evidence(
 def derive_fresh_t1c_public_evidence(
     repository_root: Path = CANONICAL_REPOSITORY_ROOT,
     *,
+    reviewed_support_implementation_sha: str,
     preflight: Mapping[str, Any] | None = None,
     chronology_reader: Callable[[Path, str, str], Any] | None = None,
+    runtime_state_reader: Callable[[Path, str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Resolve fresh public T1C evidence before any gate or private read."""
     verified_preflight = preflight or _default_public_preflight(repository_root)
     return _default_fresh_t1c_public_evidence(
-        repository_root, _validate_public_preflight(verified_preflight), chronology_reader=chronology_reader
+        repository_root,
+        _validate_public_preflight(verified_preflight),
+        reviewed_support_implementation_sha,
+        chronology_reader=chronology_reader,
+        runtime_state_reader=runtime_state_reader,
     )
 
 
@@ -1235,12 +1296,20 @@ def _execute_with_dependencies(
     private_reader: Callable[[Path], bytes],
     gate_consumer: Callable[..., Mapping[str, Any]],
     clock: Callable[[], datetime],
+    reviewed_support_implementation_sha: str,
     public_evidence_resolver: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+    runtime_state_reader: Callable[[Path, str], Mapping[str, Any]] | None = None,
     reviewed_v8e_design_candidate_commit: str = V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT,
     authorized_allocation_artifact_self_hash: str = AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
 ) -> dict[str, Any]:
     """DI-only future execution boundary; never called with real private paths here."""
     preflight = _validate_public_preflight(public_preflight())
+    reviewed_support_sha = _validate_reviewed_support_implementation_binding(
+        repository_root,
+        preflight,
+        reviewed_support_implementation_sha,
+        runtime_state_reader=runtime_state_reader,
+    )
     validate_authorization_identity(
         authorization_identity,
         reviewed_v8e_design_candidate_commit,
@@ -1251,9 +1320,15 @@ def _execute_with_dependencies(
         reviewed_v8e_design_candidate_commit,
         authorized_allocation_artifact_self_hash,
     )
-    fresh_public_evidence = _validate_fresh_t1c_public_evidence(
-        (public_evidence_resolver or (lambda value: _default_fresh_t1c_public_evidence(repository_root, value)))(preflight)
-    )
+    if public_evidence_resolver is None:
+        fresh_public_evidence = _default_fresh_t1c_public_evidence(
+            repository_root,
+            preflight,
+            reviewed_support_sha,
+            runtime_state_reader=runtime_state_reader,
+        )
+    else:
+        fresh_public_evidence = _validate_fresh_t1c_public_evidence(public_evidence_resolver(preflight))
     state, output, allocation_path, manifest_path = _prepare_execution_paths(
         state_root=state_root,
         output_path=output_path,
@@ -1319,6 +1394,7 @@ def _execute_with_dependencies(
 def resolve_and_verify_t1c_preservation(
     authorization_identity: str,
     *,
+    reviewed_support_implementation_sha: str,
     allocation_artifact_path: str | os.PathLike[str],
     partition_manifest_path: str | os.PathLike[str],
     output_path: str | os.PathLike[str],
@@ -1327,6 +1403,7 @@ def resolve_and_verify_t1c_preservation(
     """Prepared future entry point; not executed by this support task."""
     return _execute_with_dependencies(
         authorization_identity=authorization_identity,
+        reviewed_support_implementation_sha=reviewed_support_implementation_sha,
         state_root=CANONICAL_V8E_T1C_PRESERVATION_STATE_ROOT,
         output_path=output_path,
         allocation_artifact_path=allocation_artifact_path,
