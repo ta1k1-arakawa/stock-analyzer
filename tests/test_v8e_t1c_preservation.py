@@ -80,6 +80,51 @@ def _exact_artifact():
     }
 
 
+def _fresh_public_evidence(**overrides):
+    value = {
+        "schema_version": "V8E_T1C_FRESH_PUBLIC_PRESERVATION_EVIDENCE_V1",
+        "evidence_role": "T1C_FRESH_PUBLIC_PRESERVATION_EVIDENCE",
+        "study": preservation.V8E_STUDY_NAME,
+        "reviewed_v8e_design_candidate_commit": preservation.V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT,
+        "v8d_predecessor_terminal_commit": preservation.V8E_V8D_PREDECESSOR_TERMINAL_COMMIT,
+        "v8d_terminal_status": "BLOCK_CLOSED",
+        "v8d_terminal_failure_class": "DESIGN_AUDITABILITY_FAILURE",
+        "v8d_terminal_implementation_head": "a862efec34dcf4a89005c88b55b35c39be12b7bc",
+        "v8d_historical_t1c_artifact_blob_sha": preservation.V8E_V8D_HISTORICAL_T1C_BLOB_SHA,
+        "allocation_artifact_self_hash": preservation.AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
+        "t1c_ticker_count": preservation.EXPECTED_V8E_T1C_TICKER_COUNT,
+        "t1c_ticker_list_sha256": preservation.EXPECTED_V8E_T1C_TICKER_LIST_SHA256,
+        "parent_t_spare_ticker_list_sha256": preservation.EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+        "remaining_t_spare_ticker_list_sha256": preservation.EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256,
+        "t1c_raw_acquisition_performed": False,
+        "t1c_research_opened": False,
+        "t1c_ohlcv_research_access": False,
+        "t1c_feature_access": False,
+        "t1c_outcome_access": False,
+        "t1c_identities_publicly_exposed": False,
+        "t1c_membership_reassigned": False,
+        "allocation_self_hash_unchanged": True,
+        "parent_v8_provenance_unchanged": True,
+        "v8c_terminal_adjudication_authoritative": True,
+        "fresh_public_preservation_evidence_result": "PASS",
+    }
+    value.update(overrides)
+    return value
+
+
+def _private_summary():
+    return {
+        "allocation_artifact_self_hash": preservation.AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
+        "t1c_ticker_count": preservation.EXPECTED_V8E_T1C_TICKER_COUNT,
+        "t1c_ticker_list_sha256": preservation.EXPECTED_V8E_T1C_TICKER_LIST_SHA256,
+        "parent_t_spare_ticker_list_sha256": preservation.EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+        "remaining_t_spare_ticker_list_sha256": preservation.EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256,
+        "t1c_membership_reassigned": False,
+        "allocation_self_hash_unchanged": True,
+        "parent_v8_provenance_unchanged": True,
+    }
+
+
 def test_exact_candidate_and_authorization_grammar():
     preservation.validate_authorization_identity(AUTHORIZATION)
     assert preservation.authorization_identity_sha256(AUTHORIZATION) == hashlib.sha256(
@@ -214,6 +259,118 @@ def test_preflight_failure_has_zero_private_reads_and_zero_receipt(tmp_path):
     assert not (tmp_path / "state").exists()
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "t1c_raw_acquisition_performed",
+        "t1c_research_opened",
+        "t1c_ohlcv_research_access",
+        "t1c_feature_access",
+        "t1c_outcome_access",
+        "t1c_identities_publicly_exposed",
+        "t1c_membership_reassigned",
+    ],
+)
+def test_fresh_public_evidence_rejects_each_absence_contradiction(field):
+    evidence = _fresh_public_evidence(**{field: True})
+    with pytest.raises(preservation.V8ET1CPreservationBlocked):
+        preservation._validate_fresh_t1c_public_evidence(evidence)
+
+
+def test_historical_v8d_pass_is_not_v8e_fresh_authority():
+    historical_only = {
+        "schema_version": "V8D_T1C_PRESERVATION_RECHECK_V1",
+        "preservation_recheck_result": "PASS",
+    }
+    with pytest.raises(preservation.V8ET1CPreservationBlocked):
+        preservation._validate_fresh_t1c_public_evidence(historical_only)
+
+
+@pytest.mark.parametrize(
+    "chronology",
+    [
+        [{"commit": "1" * 40, "paths": ["V8_STATE.json"]}],
+        [{"commit": "1" * 40, "paths": ["unclassified-safe-looking.txt"]}],
+        [{"commit": "1" * 40, "paths": ["src/v8e_t1c_preservation.py", "src/v8e_t1c_preservation.py"]}],
+    ],
+)
+def test_intervening_unverified_or_contradictory_chronology_blocks(chronology):
+    with pytest.raises(preservation.V8ET1CPreservationBlocked):
+        preservation._validate_public_chronology(chronology)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra"])
+def test_fresh_public_evidence_exact_schema(mutation):
+    evidence = _fresh_public_evidence()
+    if mutation == "missing":
+        del evidence["t1c_outcome_access"]
+    else:
+        evidence["unexpected"] = False
+    with pytest.raises(preservation.V8ET1CPreservationBlocked):
+        preservation._validate_fresh_t1c_public_evidence(evidence)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("v8d_predecessor_terminal_commit", "0" * 40),
+        ("v8d_terminal_status", "PASS"),
+        ("reviewed_v8e_design_candidate_commit", "0" * 40),
+        ("allocation_artifact_self_hash", "0" * 64),
+        ("parent_v8_provenance_unchanged", False),
+    ],
+)
+def test_fresh_public_evidence_bindings_fail_closed(field, value):
+    with pytest.raises(preservation.V8ET1CPreservationBlocked):
+        preservation._validate_fresh_t1c_public_evidence(_fresh_public_evidence(**{field: value}))
+
+
+def test_public_artifact_absence_fields_are_from_fresh_evidence():
+    artifact = preservation._build_public_artifact(_private_summary(), _fresh_public_evidence())
+    for field in (
+        "t1c_raw_acquisition_performed",
+        "t1c_research_opened",
+        "t1c_ohlcv_research_access",
+        "t1c_feature_access",
+        "t1c_outcome_access",
+        "t1c_identities_publicly_exposed",
+        "t1c_membership_reassigned",
+    ):
+        assert artifact[field] is False
+
+
+def test_fresh_public_evidence_has_no_sensitive_values():
+    public = json.dumps(_fresh_public_evidence(), sort_keys=True)
+    assert AUTHORIZATION not in public
+    assert "allocation_artifact_path" not in public
+    assert "partition_manifest_path" not in public
+    assert "raw_payload" not in public
+
+
+def test_public_fresh_evidence_failure_precedes_gate_and_private_read(tmp_path):
+    allocation = tmp_path / "allocation.bin"
+    manifest = tmp_path / "manifest.bin"
+    allocation.write_bytes(b"synthetic allocation")
+    manifest.write_bytes(b"synthetic manifest")
+    reads = []
+    with pytest.raises(preservation.V8ET1CPreservationBlocked):
+        preservation._execute_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            state_root=tmp_path / "state",
+            output_path=tmp_path / "artifact.json",
+            allocation_artifact_path=allocation,
+            partition_manifest_path=manifest,
+            repository_root=tmp_path / "repo",
+            public_preflight=_preflight,
+            public_evidence_resolver=lambda _: {"bad": True},
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=preservation.consume_gate_once,
+            clock=_clock,
+        )
+    assert reads == []
+    assert not (tmp_path / "state").exists()
+
+
 def test_gate_consumed_immediately_before_first_synthetic_private_read(tmp_path):
     allocation = tmp_path / "allocation.bin"
     manifest = tmp_path / "manifest.bin"
@@ -229,6 +386,7 @@ def test_gate_consumed_immediately_before_first_synthetic_private_read(tmp_path)
             partition_manifest_path=manifest,
             repository_root=tmp_path / "repo",
             public_preflight=_preflight,
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
             private_reader=lambda path: reads.append(path) or path.read_bytes(),
             gate_consumer=preservation.consume_gate_once,
             clock=_clock,
@@ -251,6 +409,7 @@ def test_consumed_receipt_is_retained_after_post_consumption_failure(tmp_path):
             partition_manifest_path=manifest,
             repository_root=tmp_path / "repo",
             public_preflight=_preflight,
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
             private_reader=lambda path: path.read_bytes(),
             gate_consumer=preservation.consume_gate_once,
             clock=_clock,

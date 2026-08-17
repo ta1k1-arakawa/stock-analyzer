@@ -34,7 +34,10 @@ from src.v8c_git_provenance import (
     resolve_git_blob,
 )
 from src.v8c_human_gate_consumption import CANONICAL_CONSUMPTION_STATE_ROOT
-from src.v8c_production_provenance import read_and_verify_v8_trusted_partition_anchor
+from src.v8c_production_provenance import (
+    V8CProductionProvenanceBlocked,
+    read_and_verify_v8_trusted_partition_anchor,
+)
 from src.v8c_t1c_allocation import (
     V8CAllocationBlocked,
     read_t1c_allocation_artifact_bytes,
@@ -50,6 +53,25 @@ V8E_PRODUCTION_BRANCH = "v8e-dq-evidence-successor-design"
 V8E_REPOSITORY_IDENTITY = "ta1k1-arakawa/stock-analyzer"
 V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT = "6f672404b93a1003253915196dd635ca76fd2be1"
 V8E_DESIGN_CANDIDATE_BLOB_SHA = "dac32f9e97d1ae2b90eb8b0820914e3845d0fa26"
+V8E_V8D_PREDECESSOR_TERMINAL_COMMIT = "b8f8d0d500d349ccaa5d3e49294f351dc53ea7e8"
+V8E_V8D_TERMINAL_RECORD_GIT_PATH = "V8D_DQ_EVIDENCE_CONTRACT_BLOCK_ADJUDICATION.md"
+V8E_V8D_TERMINAL_RECORD_BLOB_SHA = "f81106f529c339e6762e60d3075e03e790335610"
+V8E_V8D_HISTORICAL_T1C_GIT_PATH = "V8D_T1C_PRESERVATION_RECHECK.json"
+V8E_V8D_HISTORICAL_T1C_BLOB_SHA = "049becb3d2743ef68dc278f424484919ba379cca"
+V8E_V8_STATE_GIT_PATH = "V8_STATE.json"
+V8E_V8_STATE_BLOB_SHA = "8e5fd2f39dc92a7983c0cdaab42f633d624b4956"
+
+# This is deliberately an exact, narrow classification.  A future commit
+# outside these paths is not silently treated as harmless chronology.
+V8E_PREFREEZE_CHRONOLOGY_SAFE_PATHS = frozenset(
+    {
+        "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md",
+        "src/v8e_t1c_preservation.py",
+        "src/v8e_t2_prefreeze_preservation.py",
+        "tests/test_v8e_t1c_preservation.py",
+        "tests/test_v8e_t2_prefreeze_preservation.py",
+    }
+)
 
 V8E_T1C_PRESERVATION_GATE = "HUMAN_V8E_T1C_PRESERVATION_PRIVATE_VERIFICATION_GATE"
 V8E_AUTHORIZATION_PREFIX = "V8E_HUMAN_AUTHORIZE_T1C_PRESERVATION_VERIFY_AT_"
@@ -93,6 +115,34 @@ V8E_PRESERVATION_ARTIFACT_FIELDS = (
     "parent_v8_provenance_unchanged",
     "v8c_terminal_adjudication_authoritative",
     "preservation_recheck_result",
+)
+
+V8E_FRESH_T1C_PUBLIC_EVIDENCE_FIELDS = (
+    "schema_version",
+    "evidence_role",
+    "study",
+    "reviewed_v8e_design_candidate_commit",
+    "v8d_predecessor_terminal_commit",
+    "v8d_terminal_status",
+    "v8d_terminal_failure_class",
+    "v8d_terminal_implementation_head",
+    "v8d_historical_t1c_artifact_blob_sha",
+    "allocation_artifact_self_hash",
+    "t1c_ticker_count",
+    "t1c_ticker_list_sha256",
+    "parent_t_spare_ticker_list_sha256",
+    "remaining_t_spare_ticker_list_sha256",
+    "t1c_raw_acquisition_performed",
+    "t1c_research_opened",
+    "t1c_ohlcv_research_access",
+    "t1c_feature_access",
+    "t1c_outcome_access",
+    "t1c_identities_publicly_exposed",
+    "t1c_membership_reassigned",
+    "allocation_self_hash_unchanged",
+    "parent_v8_provenance_unchanged",
+    "v8c_terminal_adjudication_authoritative",
+    "fresh_public_preservation_evidence_result",
 )
 
 # Historical V8/V8C commitments are safe public provenance constants.  They
@@ -493,6 +543,392 @@ def _strict_public_json(raw: bytes, invalid_reason: str, duplicate_reason: str) 
     return _strict_json_object(raw, invalid_reason, duplicate_reason)
 
 
+def _require_exact_public_fields(value: Mapping[str, Any], fields: frozenset[str], reason: str) -> None:
+    if set(value) != fields:
+        raise V8ET1CPreservationBlocked(reason)
+
+
+def _read_public_git_json(repository_root: Path, ref: str, git_path: str, *, invalid: str, duplicate: str) -> dict[str, Any]:
+    try:
+        raw = read_git_object_bytes(repository_root, ref, git_path)
+    except V8CGitProvenanceBlocked as error:
+        raise V8ET1CPreservationBlocked("V8E_PUBLIC_PROVENANCE_INVALID") from error
+    return _strict_public_json(raw, invalid, duplicate)
+
+
+def _parse_v8d_terminal_record(raw: bytes) -> dict[str, str]:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise V8ET1CPreservationBlocked("V8E_V8D_TERMINAL_RECORD_INVALID") from error
+    values: dict[str, str] = {}
+    for key in ("study", "terminal_status", "failure_class", "terminal_implementation_head"):
+        matches = re.findall(r"(?m)^" + re.escape(key) + r"=([^\r\n]+)$", text)
+        if len(matches) != 1:
+            raise V8ET1CPreservationBlocked("V8E_V8D_TERMINAL_RECORD_INVALID")
+        values[key] = matches[0]
+    if values != {
+        "study": "V8D_HISTORICAL_RESEARCH",
+        "terminal_status": "BLOCK_CLOSED",
+        "failure_class": "DESIGN_AUDITABILITY_FAILURE",
+        "terminal_implementation_head": "a862efec34dcf4a89005c88b55b35c39be12b7bc",
+    }:
+        raise V8ET1CPreservationBlocked("V8E_V8D_TERMINAL_BINDING_INVALID")
+    required_absence_evidence = (
+        "No T1C/T2 outcomes or features were observed.",
+        "accessed no ticker identities",
+        "opened no research data",
+    )
+    if any(sentence not in text for sentence in required_absence_evidence):
+        raise V8ET1CPreservationBlocked("V8E_V8D_TERMINAL_ABSENCE_EVIDENCE_INVALID")
+    values.update(
+        {
+            "t1c_feature_access": False,
+            "t1c_outcome_access": False,
+            "t1c_identities_publicly_exposed": False,
+        }
+    )
+    return values
+
+
+_V8D_HISTORICAL_T1C_FIELDS = frozenset(
+    {
+        "allocation_artifact_self_hash",
+        "allocation_self_hash_unchanged",
+        "artifact_role",
+        "parent_t_spare_ticker_list_sha256",
+        "parent_v8_provenance_unchanged",
+        "preservation_recheck_result",
+        "remaining_t_spare_ticker_list_sha256",
+        "reviewed_design_candidate_commit",
+        "schema_version",
+        "source_v8c_terminal_commit",
+        "study",
+        "t1c_feature_access",
+        "t1c_identities_publicly_exposed",
+        "t1c_membership_reassigned",
+        "t1c_ohlcv_research_access",
+        "t1c_outcome_access",
+        "t1c_raw_acquisition_performed",
+        "t1c_research_opened",
+        "t1c_ticker_count",
+        "t1c_ticker_list_sha256",
+        "v8c_terminal_adjudication_authoritative",
+    }
+)
+
+
+def _validate_historical_v8d_t1c_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    _require_exact_public_fields(record, _V8D_HISTORICAL_T1C_FIELDS, "V8E_V8D_HISTORICAL_T1C_SCHEMA_INVALID")
+    exact = {
+        "allocation_artifact_self_hash": AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
+        "allocation_self_hash_unchanged": True,
+        "artifact_role": "T1C_PRESERVATION_RECHECK",
+        "parent_t_spare_ticker_list_sha256": EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+        "parent_v8_provenance_unchanged": True,
+        "preservation_recheck_result": "PASS",
+        "remaining_t_spare_ticker_list_sha256": EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256,
+        "reviewed_design_candidate_commit": "eda657cde2383718d986c4c4bfaae794784fe04d",
+        "schema_version": "V8D_T1C_PRESERVATION_RECHECK_V1",
+        "source_v8c_terminal_commit": V8C_TERMINAL_COMMIT,
+        "study": "V8D_HISTORICAL_RESEARCH",
+        "t1c_feature_access": False,
+        "t1c_identities_publicly_exposed": False,
+        "t1c_membership_reassigned": False,
+        "t1c_ohlcv_research_access": False,
+        "t1c_outcome_access": False,
+        "t1c_raw_acquisition_performed": False,
+        "t1c_research_opened": False,
+        "t1c_ticker_count": EXPECTED_V8E_T1C_TICKER_COUNT,
+        "t1c_ticker_list_sha256": EXPECTED_V8E_T1C_TICKER_LIST_SHA256,
+        "v8c_terminal_adjudication_authoritative": True,
+    }
+    for key, expected in exact.items():
+        if record[key] != expected or (isinstance(expected, bool) and type(record[key]) is not bool):
+            raise V8ET1CPreservationBlocked("V8E_V8D_HISTORICAL_T1C_VALUE_INVALID:" + key)
+    return dict(record)
+
+
+_V8C_TRUSTED_ALLOCATION_FIELDS = frozenset(
+    {
+        "artifact_role",
+        "authorization_note",
+        "authorization_status",
+        "authorized_allocation_artifact_self_hash",
+        "human_gate",
+        "logical_block",
+        "parent_t_spare_ticker_count",
+        "parent_t_spare_ticker_list_sha256",
+        "parent_v8_partition_implementation_commit",
+        "parent_v8_partition_manifest_sha256",
+        "predecessor_burned_count",
+        "remaining_t_spare_ticker_count",
+        "remaining_t_spare_ticker_list_sha256",
+        "schema_version",
+        "study_name",
+        "t1c_ticker_count",
+        "t1c_ticker_list_sha256",
+        "v8c_allocation_implementation_commit",
+        "v8c_frozen_design_commit",
+        "v8c_reviewed_production_implementation_commit",
+        "verification_result",
+    }
+)
+
+
+def _validate_current_trusted_t1c_allocation(record: Mapping[str, Any]) -> dict[str, Any]:
+    _require_exact_public_fields(record, _V8C_TRUSTED_ALLOCATION_FIELDS, "V8E_TRUSTED_ALLOCATION_SCHEMA_INVALID")
+    exact = {
+        "artifact_role": "TRUSTED_T1C_ALLOCATION_PIN",
+        "authorization_status": "AUTHORIZED",
+        "authorized_allocation_artifact_self_hash": AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
+        "logical_block": "T1C",
+        "parent_t_spare_ticker_count": EXPECTED_PARENT_T_SPARE_TICKER_COUNT,
+        "parent_t_spare_ticker_list_sha256": EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+        "parent_v8_partition_implementation_commit": EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "parent_v8_partition_manifest_sha256": EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "predecessor_burned_count": 300,
+        "remaining_t_spare_ticker_count": 1304,
+        "remaining_t_spare_ticker_list_sha256": EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256,
+        "schema_version": "V8C_TRUSTED_ALLOCATION_V1",
+        "study_name": "V8C_HISTORICAL_RESEARCH",
+        "t1c_ticker_count": EXPECTED_V8E_T1C_TICKER_COUNT,
+        "t1c_ticker_list_sha256": EXPECTED_V8E_T1C_TICKER_LIST_SHA256,
+        "v8c_allocation_implementation_commit": EXPECTED_V8C_ALLOCATION_IMPLEMENTATION_COMMIT,
+        "v8c_frozen_design_commit": EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
+        "v8c_reviewed_production_implementation_commit": EXPECTED_V8C_ALLOCATION_IMPLEMENTATION_COMMIT,
+        "verification_result": "PASS",
+    }
+    for key, expected in exact.items():
+        if record[key] != expected:
+            raise V8ET1CPreservationBlocked("V8E_TRUSTED_ALLOCATION_VALUE_INVALID:" + key)
+    return dict(record)
+
+
+def _default_public_chronology(repository_root: Path, lower: str, upper: str) -> list[dict[str, Any]]:
+    if _git_text(repository_root, ["merge-base", "--is-ancestor", lower, upper], "V8E_PUBLIC_CHRONOLOGY_INVALID") != "":
+        raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_INVALID")
+    commits_text = _git_text(repository_root, ["rev-list", "--reverse", f"{lower}..{upper}"], "V8E_PUBLIC_CHRONOLOGY_INVALID")
+    records: list[dict[str, Any]] = []
+    for commit in commits_text.splitlines():
+        paths_text = _git_text(
+            repository_root,
+            ["diff-tree", "--no-commit-id", "--name-only", "-r", commit],
+            "V8E_PUBLIC_CHRONOLOGY_INVALID",
+        )
+        paths = [path for path in paths_text.splitlines() if path]
+        records.append({"commit": commit, "paths": paths})
+    return records
+
+
+def _validate_public_chronology(records: Any) -> list[dict[str, Any]]:
+    if not isinstance(records, list) or not records:
+        raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_INVALID")
+    validated: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, Mapping) or set(record) != {"commit", "paths"}:
+            raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_UNVERIFIABLE")
+        _require_hex(record["commit"], 40, "V8E_PUBLIC_CHRONOLOGY_UNVERIFIABLE")
+        paths = record["paths"]
+        if not isinstance(paths, list) or not paths or any(not isinstance(path, str) for path in paths):
+            raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_UNVERIFIABLE")
+        if len(set(paths)) != len(paths) or any(path not in V8E_PREFREEZE_CHRONOLOGY_SAFE_PATHS for path in paths):
+            raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_UNCLASSIFIED_CHANGE")
+        validated.append({"commit": record["commit"], "paths": list(paths)})
+    return validated
+
+
+def _validate_current_v8_state(state: Mapping[str, Any]) -> None:
+    if state.get("schema_version") != "V8_STATE_SNAPSHOT_V1" or state.get("study") != "V8_HISTORICAL_RESEARCH":
+        raise V8ET1CPreservationBlocked("V8E_V8_STATE_BINDING_INVALID")
+    partition = state.get("partition")
+    t1 = state.get("T1")
+    attempt = state.get("last_real_t1_acquisition_attempt")
+    if not isinstance(partition, Mapping) or not isinstance(t1, Mapping) or not isinstance(attempt, Mapping):
+        raise V8ET1CPreservationBlocked("V8E_V8_STATE_SCHEMA_INVALID")
+    partition_exact = {
+        "real_partition_manifest_exists": True,
+        "real_partition_manifest_validated": True,
+        "trusted_partition_authorized": True,
+        "manifest_sha256": EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "partition_implementation_git_commit": EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "manifest_schema_version": "V8_PARTITION_MANIFEST_V3",
+        "t1_ticker_list_sha256": "262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d",
+        "t2_ticker_list_sha256": "e7578db7202dcb6407d7bcd98d6365fc65f22e30aa05467313a347f9cc3d6500",
+        "t_spare_ticker_list_sha256": EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+        "block_assignments_recorded": False,
+        "block_size_frozen": EXPECTED_V8E_T1C_TICKER_COUNT,
+    }
+    t1_exact = {
+        "raw_data_acquired": False,
+        "real_acquisition_authorized": False,
+        "raw_bundle_exists": False,
+        "research_access_authorized": False,
+        "ticker_count_frozen": EXPECTED_V8E_T1C_TICKER_COUNT,
+        "validation_access_count": None,
+        "layer_b_opened": False,
+    }
+    attempt_exact = {
+        "result": "BLOCKED",
+        "retry_performed": False,
+        "t1_final_bundle_exists": False,
+        "t1_opened_for_research": False,
+        "t1_successfully_acquired": False,
+        "validation_accessed": False,
+        "attempt_3_authorized": False,
+    }
+    for key, expected in partition_exact.items():
+        if partition.get(key) != expected or (isinstance(expected, bool) and type(partition.get(key)) is not bool):
+            raise V8ET1CPreservationBlocked("V8E_V8_STATE_PARTITION_INVALID:" + key)
+    for key, expected in t1_exact.items():
+        if t1.get(key) != expected or (isinstance(expected, bool) and type(t1.get(key)) is not bool):
+            raise V8ET1CPreservationBlocked("V8E_V8_STATE_T1_INVALID:" + key)
+    for key, expected in attempt_exact.items():
+        if attempt.get(key) != expected or (isinstance(expected, bool) and type(attempt.get(key)) is not bool):
+            raise V8ET1CPreservationBlocked("V8E_V8_STATE_ATTEMPT_INVALID:" + key)
+
+
+def _validate_fresh_t1c_public_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    _require_exact_public_fields(evidence, frozenset(V8E_FRESH_T1C_PUBLIC_EVIDENCE_FIELDS), "V8E_FRESH_EVIDENCE_SCHEMA_INVALID")
+    exact = {
+        "schema_version": "V8E_T1C_FRESH_PUBLIC_PRESERVATION_EVIDENCE_V1",
+        "evidence_role": "T1C_FRESH_PUBLIC_PRESERVATION_EVIDENCE",
+        "study": V8E_STUDY_NAME,
+        "reviewed_v8e_design_candidate_commit": V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT,
+        "v8d_predecessor_terminal_commit": V8E_V8D_PREDECESSOR_TERMINAL_COMMIT,
+        "v8d_terminal_status": "BLOCK_CLOSED",
+        "v8d_terminal_failure_class": "DESIGN_AUDITABILITY_FAILURE",
+        "v8d_terminal_implementation_head": "a862efec34dcf4a89005c88b55b35c39be12b7bc",
+        "v8d_historical_t1c_artifact_blob_sha": V8E_V8D_HISTORICAL_T1C_BLOB_SHA,
+        "allocation_artifact_self_hash": AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
+        "t1c_ticker_count": EXPECTED_V8E_T1C_TICKER_COUNT,
+        "t1c_ticker_list_sha256": EXPECTED_V8E_T1C_TICKER_LIST_SHA256,
+        "parent_t_spare_ticker_list_sha256": EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+        "remaining_t_spare_ticker_list_sha256": EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256,
+        "t1c_raw_acquisition_performed": False,
+        "t1c_research_opened": False,
+        "t1c_ohlcv_research_access": False,
+        "t1c_feature_access": False,
+        "t1c_outcome_access": False,
+        "t1c_identities_publicly_exposed": False,
+        "t1c_membership_reassigned": False,
+        "allocation_self_hash_unchanged": True,
+        "parent_v8_provenance_unchanged": True,
+        "v8c_terminal_adjudication_authoritative": True,
+        "fresh_public_preservation_evidence_result": "PASS",
+    }
+    for key, expected in exact.items():
+        if evidence[key] != expected or (isinstance(expected, bool) and type(evidence[key]) is not bool):
+            raise V8ET1CPreservationBlocked("V8E_FRESH_EVIDENCE_VALUE_INVALID:" + key)
+    return dict(evidence)
+
+
+def _default_fresh_t1c_public_evidence(
+    repository_root: Path,
+    preflight: Mapping[str, Any],
+    *,
+    chronology_reader: Callable[[Path, str, str], Any] | None = None,
+) -> dict[str, Any]:
+    head = _require_hex(preflight["head"], 40, "V8E_PUBLIC_HEAD_INVALID")
+    if _git_text(repository_root, ["rev-parse", "HEAD"], "V8E_PUBLIC_HEAD_UNAVAILABLE") != head:
+        raise V8ET1CPreservationBlocked("V8E_PUBLIC_HEAD_CHANGED")
+    try:
+        design_blob = resolve_git_blob(repository_root, V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT, "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md")
+        current_design_blob = resolve_git_blob(repository_root, head, "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md")
+        v8d_terminal_blob = resolve_git_blob(repository_root, V8E_V8D_PREDECESSOR_TERMINAL_COMMIT, V8E_V8D_TERMINAL_RECORD_GIT_PATH)
+        historical_t1c_blob = resolve_git_blob(repository_root, V8E_V8D_PREDECESSOR_TERMINAL_COMMIT, V8E_V8D_HISTORICAL_T1C_GIT_PATH)
+        v8c_terminal_blob = resolve_git_blob(repository_root, V8C_TERMINAL_COMMIT, V8C_TERMINAL_ADJUDICATION_GIT_PATH)
+        v8c_prefreeze_blob = resolve_git_blob(repository_root, V8C_TERMINAL_COMMIT, V8C_PREFREEZE_AUDIT_GIT_PATH)
+        trusted_allocation_blob = resolve_git_blob(repository_root, head, V8C_TRUSTED_ALLOCATION_GIT_PATH)
+        state_blob = resolve_git_blob(repository_root, head, V8E_V8_STATE_GIT_PATH)
+    except V8CGitProvenanceBlocked as error:
+        raise V8ET1CPreservationBlocked("V8E_PUBLIC_PROVENANCE_INVALID") from error
+    if design_blob != V8E_DESIGN_CANDIDATE_BLOB_SHA or current_design_blob != V8E_DESIGN_CANDIDATE_BLOB_SHA:
+        raise V8ET1CPreservationBlocked("V8E_DESIGN_CANDIDATE_BLOB_MISMATCH")
+    if v8d_terminal_blob != V8E_V8D_TERMINAL_RECORD_BLOB_SHA or historical_t1c_blob != V8E_V8D_HISTORICAL_T1C_BLOB_SHA:
+        raise V8ET1CPreservationBlocked("V8E_V8D_HISTORICAL_BLOB_MISMATCH")
+    if v8c_terminal_blob != V8C_TERMINAL_ADJUDICATION_BLOB_SHA or v8c_prefreeze_blob != V8C_PREFREEZE_AUDIT_BLOB_SHA:
+        raise V8ET1CPreservationBlocked("V8E_V8C_PROVENANCE_BLOB_MISMATCH")
+    if trusted_allocation_blob != V8C_TRUSTED_ALLOCATION_BLOB_SHA or state_blob != V8E_V8_STATE_BLOB_SHA:
+        raise V8ET1CPreservationBlocked("V8E_PUBLIC_PROVENANCE_INVALID")
+    try:
+        anchor = read_and_verify_v8_trusted_partition_anchor(repository_root, head)
+    except (V8CGitProvenanceBlocked, V8CProductionProvenanceBlocked, V8PartitionBlocked) as error:
+        raise V8ET1CPreservationBlocked("V8E_TRUSTED_PARTITION_ANCHOR_INVALID") from error
+    if (
+        anchor.get("authorized_partition_manifest_sha256") != EXPECTED_V8_PARTITION_MANIFEST_SHA256
+        or anchor.get("authorized_partition_implementation_git_commit") != EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT
+    ):
+        raise V8ET1CPreservationBlocked("V8E_TRUSTED_PARTITION_ANCHOR_INVALID")
+    terminal = _parse_v8d_terminal_record(read_git_object_bytes(repository_root, V8E_V8D_PREDECESSOR_TERMINAL_COMMIT, V8E_V8D_TERMINAL_RECORD_GIT_PATH))
+    historical = _validate_historical_v8d_t1c_record(
+        _read_public_git_json(repository_root, V8E_V8D_PREDECESSOR_TERMINAL_COMMIT, V8E_V8D_HISTORICAL_T1C_GIT_PATH, invalid="V8E_V8D_HISTORICAL_T1C_INVALID_JSON", duplicate="V8E_V8D_HISTORICAL_T1C_DUPLICATE_KEY")
+    )
+    allocation = _validate_current_trusted_t1c_allocation(
+        _read_public_git_json(repository_root, head, V8C_TRUSTED_ALLOCATION_GIT_PATH, invalid="V8E_TRUSTED_ALLOCATION_INVALID_JSON", duplicate="V8E_TRUSTED_ALLOCATION_DUPLICATE_KEY")
+    )
+    state = _read_public_git_json(repository_root, head, V8E_V8_STATE_GIT_PATH, invalid="V8E_V8_STATE_INVALID_JSON", duplicate="V8E_V8_STATE_DUPLICATE_KEY")
+    _validate_current_v8_state(state)
+    chronology = _validate_public_chronology(
+        (chronology_reader or _default_public_chronology)(repository_root, V8E_V8D_PREDECESSOR_TERMINAL_COMMIT, head)
+    )
+    if not chronology:
+        raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_INVALID")
+    if chronology_reader is None:
+        for record in chronology:
+            if "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md" in record["paths"]:
+                if _git_text(
+                    repository_root,
+                    ["merge-base", "--is-ancestor", record["commit"], V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT],
+                    "V8E_PUBLIC_CHRONOLOGY_UNVERIFIABLE",
+                ) != "":
+                    raise V8ET1CPreservationBlocked("V8E_PUBLIC_CHRONOLOGY_CONTRADICTION")
+    # Every current absence is a conjunction of the historical boundary
+    # evidence, the current safe state, and the verified absence of a
+    # preservation-relevant committed change in the V8E interval.
+    evidence = {
+        "schema_version": "V8E_T1C_FRESH_PUBLIC_PRESERVATION_EVIDENCE_V1",
+        "evidence_role": "T1C_FRESH_PUBLIC_PRESERVATION_EVIDENCE",
+        "study": V8E_STUDY_NAME,
+        "reviewed_v8e_design_candidate_commit": V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT,
+        "v8d_predecessor_terminal_commit": V8E_V8D_PREDECESSOR_TERMINAL_COMMIT,
+        "v8d_terminal_status": terminal["terminal_status"],
+        "v8d_terminal_failure_class": terminal["failure_class"],
+        "v8d_terminal_implementation_head": terminal["terminal_implementation_head"],
+        "v8d_historical_t1c_artifact_blob_sha": historical_t1c_blob,
+        "allocation_artifact_self_hash": allocation["authorized_allocation_artifact_self_hash"],
+        "t1c_ticker_count": allocation["t1c_ticker_count"],
+        "t1c_ticker_list_sha256": allocation["t1c_ticker_list_sha256"],
+        "parent_t_spare_ticker_list_sha256": allocation["parent_t_spare_ticker_list_sha256"],
+        "remaining_t_spare_ticker_list_sha256": allocation["remaining_t_spare_ticker_list_sha256"],
+        "t1c_raw_acquisition_performed": state["T1"]["raw_data_acquired"] is not False or state["last_real_t1_acquisition_attempt"]["t1_successfully_acquired"] is not False,
+        "t1c_research_opened": state["T1"]["layer_b_opened"] is not False or state["last_real_t1_acquisition_attempt"]["t1_opened_for_research"] is not False,
+        "t1c_ohlcv_research_access": state["T1"]["validation_access_count"] is not None or state["last_real_t1_acquisition_attempt"]["validation_accessed"] is not False,
+        "t1c_feature_access": terminal["t1c_feature_access"],
+        "t1c_outcome_access": terminal["t1c_outcome_access"],
+        "t1c_identities_publicly_exposed": terminal["t1c_identities_publicly_exposed"],
+        "t1c_membership_reassigned": allocation["t1c_ticker_list_sha256"] != EXPECTED_V8E_T1C_TICKER_LIST_SHA256 or allocation["logical_block"] != "T1C",
+        "allocation_self_hash_unchanged": allocation["authorized_allocation_artifact_self_hash"] == AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH and historical["allocation_self_hash_unchanged"] is True,
+        "parent_v8_provenance_unchanged": allocation["parent_v8_partition_manifest_sha256"] == EXPECTED_V8_PARTITION_MANIFEST_SHA256 and allocation["parent_v8_partition_implementation_commit"] == EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT and historical["parent_v8_provenance_unchanged"] is True,
+        "v8c_terminal_adjudication_authoritative": historical["v8c_terminal_adjudication_authoritative"] is True,
+        "fresh_public_preservation_evidence_result": "PASS",
+    }
+    return _validate_fresh_t1c_public_evidence(evidence)
+
+
+def derive_fresh_t1c_public_evidence(
+    repository_root: Path = CANONICAL_REPOSITORY_ROOT,
+    *,
+    preflight: Mapping[str, Any] | None = None,
+    chronology_reader: Callable[[Path, str, str], Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve fresh public T1C evidence before any gate or private read."""
+    verified_preflight = preflight or _default_public_preflight(repository_root)
+    return _default_fresh_t1c_public_evidence(
+        repository_root, _validate_public_preflight(verified_preflight), chronology_reader=chronology_reader
+    )
+
+
 def _default_public_preflight(repository_root: Path = CANONICAL_REPOSITORY_ROOT) -> dict[str, Any]:
     status = _git_text(repository_root, ["status", "--porcelain"], "V8E_PUBLIC_GIT_UNAVAILABLE")
     branch = _git_text(repository_root, ["branch", "--show-current"], "V8E_PUBLIC_BRANCH_UNAVAILABLE")
@@ -665,28 +1101,43 @@ def _verify_private_artifacts(
     }
 
 
-def _build_public_artifact(private_summary: Mapping[str, Any]) -> dict[str, Any]:
+def _build_public_artifact(
+    private_summary: Mapping[str, Any], fresh_public_evidence: Mapping[str, Any]
+) -> dict[str, Any]:
+    fresh = _validate_fresh_t1c_public_evidence(fresh_public_evidence)
+    for key in (
+        "allocation_artifact_self_hash",
+        "t1c_ticker_count",
+        "t1c_ticker_list_sha256",
+        "parent_t_spare_ticker_list_sha256",
+        "remaining_t_spare_ticker_list_sha256",
+        "t1c_membership_reassigned",
+        "allocation_self_hash_unchanged",
+        "parent_v8_provenance_unchanged",
+    ):
+        if private_summary[key] != fresh[key]:
+            raise V8ET1CPreservationBlocked("V8E_PRIVATE_PUBLIC_EVIDENCE_MISMATCH:" + key)
     artifact = {
         "schema_version": "V8E_T1C_PRESERVATION_RECHECK_V1",
         "artifact_role": "T1C_PRESERVATION_RECHECK",
         "study": V8E_STUDY_NAME,
         "reviewed_v8e_design_candidate_commit": V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT,
         "source_v8c_terminal_commit": V8C_TERMINAL_COMMIT,
-        "allocation_artifact_self_hash": private_summary["allocation_artifact_self_hash"],
-        "t1c_ticker_count": private_summary["t1c_ticker_count"],
-        "t1c_ticker_list_sha256": private_summary["t1c_ticker_list_sha256"],
-        "parent_t_spare_ticker_list_sha256": private_summary["parent_t_spare_ticker_list_sha256"],
-        "remaining_t_spare_ticker_list_sha256": private_summary["remaining_t_spare_ticker_list_sha256"],
-        "t1c_raw_acquisition_performed": False,
-        "t1c_research_opened": False,
-        "t1c_ohlcv_research_access": False,
-        "t1c_feature_access": False,
-        "t1c_outcome_access": False,
-        "t1c_identities_publicly_exposed": False,
-        "t1c_membership_reassigned": private_summary["t1c_membership_reassigned"],
-        "allocation_self_hash_unchanged": private_summary["allocation_self_hash_unchanged"],
-        "parent_v8_provenance_unchanged": private_summary["parent_v8_provenance_unchanged"],
-        "v8c_terminal_adjudication_authoritative": True,
+        "allocation_artifact_self_hash": fresh["allocation_artifact_self_hash"],
+        "t1c_ticker_count": fresh["t1c_ticker_count"],
+        "t1c_ticker_list_sha256": fresh["t1c_ticker_list_sha256"],
+        "parent_t_spare_ticker_list_sha256": fresh["parent_t_spare_ticker_list_sha256"],
+        "remaining_t_spare_ticker_list_sha256": fresh["remaining_t_spare_ticker_list_sha256"],
+        "t1c_raw_acquisition_performed": fresh["t1c_raw_acquisition_performed"],
+        "t1c_research_opened": fresh["t1c_research_opened"],
+        "t1c_ohlcv_research_access": fresh["t1c_ohlcv_research_access"],
+        "t1c_feature_access": fresh["t1c_feature_access"],
+        "t1c_outcome_access": fresh["t1c_outcome_access"],
+        "t1c_identities_publicly_exposed": fresh["t1c_identities_publicly_exposed"],
+        "t1c_membership_reassigned": fresh["t1c_membership_reassigned"],
+        "allocation_self_hash_unchanged": fresh["allocation_self_hash_unchanged"],
+        "parent_v8_provenance_unchanged": fresh["parent_v8_provenance_unchanged"],
+        "v8c_terminal_adjudication_authoritative": fresh["v8c_terminal_adjudication_authoritative"],
         "preservation_recheck_result": "PASS",
     }
     if set(artifact) != set(V8E_PRESERVATION_ARTIFACT_FIELDS):
@@ -784,6 +1235,7 @@ def _execute_with_dependencies(
     private_reader: Callable[[Path], bytes],
     gate_consumer: Callable[..., Mapping[str, Any]],
     clock: Callable[[], datetime],
+    public_evidence_resolver: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
     reviewed_v8e_design_candidate_commit: str = V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT,
     authorized_allocation_artifact_self_hash: str = AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
 ) -> dict[str, Any]:
@@ -798,6 +1250,9 @@ def _execute_with_dependencies(
         authorization_identity,
         reviewed_v8e_design_candidate_commit,
         authorized_allocation_artifact_self_hash,
+    )
+    fresh_public_evidence = _validate_fresh_t1c_public_evidence(
+        (public_evidence_resolver or (lambda value: _default_fresh_t1c_public_evidence(repository_root, value)))(preflight)
     )
     state, output, allocation_path, manifest_path = _prepare_execution_paths(
         state_root=state_root,
@@ -831,7 +1286,7 @@ def _execute_with_dependencies(
         expected_partition_implementation_commit=preflight["partition_implementation_commit"],
         expected_v8c_allocation_implementation_commit=preflight["v8c_allocation_implementation_commit"],
     )
-    artifact = _build_public_artifact(private_summary)
+    artifact = _build_public_artifact(private_summary, fresh_public_evidence)
     if output.exists():
         raise V8ET1CPreservationBlocked("V8E_PRESERVATION_ARTIFACT_ALREADY_EXISTS")
     payload = _canonical_json_bytes(artifact)
@@ -895,6 +1350,7 @@ __all__ = [
     "V8E_DESIGN_CANDIDATE_BLOB_SHA",
     "V8E_REVIEWED_DESIGN_CANDIDATE_COMMIT",
     "V8E_PRESERVATION_ARTIFACT_FIELDS",
+    "V8E_FRESH_T1C_PUBLIC_EVIDENCE_FIELDS",
     "V8E_RECEIPT_FIELDS",
     "V8E_STUDY_NAME",
     "V8E_T1C_PRESERVATION_GATE",
@@ -902,6 +1358,7 @@ __all__ = [
     "authorization_identity_sha256",
     "compute_receipt_key",
     "consume_gate_once",
+    "derive_fresh_t1c_public_evidence",
     "gate_receipt_bytes_sha256",
     "read_gate_receipt",
     "resolve_and_verify_t1c_preservation",
