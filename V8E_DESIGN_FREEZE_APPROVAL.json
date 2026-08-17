@@ -1,0 +1,18 @@
+{
+  "schema_version": "V8E_DESIGN_FREEZE_APPROVAL_V1",
+  "study": "V8E_HISTORICAL_RESEARCH",
+  "frozen_design_git_commit": "6f672404b93a1003253915196dd635ca76fd2be1",
+  "design_document": "V8E_DQ_EVIDENCE_SUCCESSOR_DESIGN_DRAFT.md",
+  "final_independent_design_review_result": "PASS",
+  "final_independent_design_review_commit": "6f672404b93a1003253915196dd635ca76fd2be1",
+  "t1c_preservation_recheck_result": "PASS",
+  "t1c_preservation_recheck_design_commit": "6f672404b93a1003253915196dd635ca76fd2be1",
+  "t1c_preservation_independent_review_result": "PASS",
+  "t1c_preservation_independent_review_design_commit": "6f672404b93a1003253915196dd635ca76fd2be1",
+  "t2_prefreeze_preservation_recheck_result": "PASS",
+  "t2_prefreeze_preservation_recheck_design_commit": "6f672404b93a1003253915196dd635ca76fd2be1",
+  "t2_prefreeze_preservation_independent_review_result": "PASS",
+  "t2_prefreeze_preservation_independent_review_design_commit": "6f672404b93a1003253915196dd635ca76fd2be1",
+  "approval_status": "APPROVED",
+  "human_gate": "HUMAN_V8E_DESIGN_FREEZE"
+}
