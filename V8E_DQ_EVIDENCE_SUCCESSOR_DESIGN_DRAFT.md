@@ -680,6 +680,9 @@ and bound to the exact V8E design candidate:
 CREATE_V8E_DESIGN_DRAFT
 INDEPENDENT_V8E_DESIGN_REVIEW
 
+V8E_PREFREEZE_PRESERVATION_SUPPORT_IMPLEMENTATION
+INDEPENDENT_V8E_PREFREEZE_PRESERVATION_SUPPORT_REVIEW
+
 V8E_T1C_PRESERVATION_AUTHORITY_GATE
 V8E_T1C_PRESERVATION_RECHECK
 INDEPENDENT_V8E_T1C_PRESERVATION_RECHECK_REVIEW
@@ -807,6 +810,55 @@ human_gate_consumed=false
 This draft does not implement the producer or verifier, create an approval or
 freeze artifact, read private files, inspect ticker identities, access Yahoo
 or JPX, consume a gate, acquire raw data, open research, or evaluate strategy
-profitability. Implementation may begin only after fresh V8E design review,
-fresh V8E preservation PASS/reviews, exact-SHA human freeze, and the remaining
-V8E authority and gate sequence.
+profitability. The two implementation classes below are distinct and ordered.
+
+### A. Prefreeze preservation support
+
+After `INDEPENDENT_V8E_DESIGN_REVIEW=PASS` for the exact reviewed V8E
+candidate, only the minimum support needed to execute and independently verify
+the following may be implemented:
+
+- the V8E T1C preservation human-gate/receipt/private-verification boundary;
+- V8E T1C preservation artifact verification; and
+- safe V8E T2 prefreeze preservation audit/review support.
+
+This support must bind to the exact reviewed V8E candidate SHA and may use
+synthetic/temp tests only during implementation. It must receive a GPT
+exact-SHA independent implementation review at
+`INDEPENDENT_V8E_PREFREEZE_PRESERVATION_SUPPORT_REVIEW` before any real
+private preservation execution. It does not authorize private access,
+network access, acquisition, allocation, research opening, readiness, or
+strategy evaluation, and it may not implement the later production
+transport/acquisition system. The separately human-authorized real T1C
+preservation gate may be reached only after both explicit prefreeze support
+stages have PASS results:
+
+```text
+V8E_PREFREEZE_PRESERVATION_SUPPORT_IMPLEMENTATION
+INDEPENDENT_V8E_PREFREEZE_PRESERVATION_SUPPORT_REVIEW=PASS
+```
+
+### B. Frozen production implementation
+
+The main V8E transport/DQ/readiness/acquisition implementation may begin only
+after all of the following conditions hold for the exact candidate:
+
+- `INDEPENDENT_V8E_DESIGN_REVIEW=PASS`;
+- `V8E_T1C_PRESERVATION_RECHECK=PASS` and
+  `INDEPENDENT_V8E_T1C_PRESERVATION_RECHECK_REVIEW=PASS`;
+- `V8E_T2_PREFREEZE_PRESERVATION_RECHECK=PASS` and
+  `INDEPENDENT_V8E_T2_PREFREEZE_PRESERVATION_RECHECK_REVIEW=PASS`;
+- `V8E_DESIGN_FINALIZED`; and
+- `HUMAN_V8E_DESIGN_FREEZE`.
+
+It occurs before T1C/T2 authority-bridge execution, readiness gates,
+acquisition gates, and research-opening gates. Its exact stages remain:
+
+```text
+V8E_TRANSPORT_AUDIT_IMPLEMENTATION
+INDEPENDENT_V8E_PRODUCTION_IMPLEMENTATION_REVIEW
+```
+
+Only after `INDEPENDENT_V8E_PRODUCTION_IMPLEMENTATION_REVIEW=PASS` may the
+later authority-bridge, readiness, acquisition, and research-opening
+sequence proceed.
