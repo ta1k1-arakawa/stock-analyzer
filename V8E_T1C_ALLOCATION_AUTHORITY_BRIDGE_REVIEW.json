@@ -1,0 +1,9 @@
+{
+  "schema_version": "V8E_AUTHORITY_BRIDGE_INDEPENDENT_REVIEW_V1",
+  "study": "V8E_HISTORICAL_RESEARCH",
+  "artifact_role": "AUTHORITY_BRIDGE_INDEPENDENT_REVIEW",
+  "logical_block": "T1C",
+  "reviewed_bridge_git_commit": "5b3f853022c9b730df79b7078a79043c56ffea98",
+  "reviewed_bridge_git_blob_sha": "8e26c2b3c4359c870a52e2edb32dd970faaa7cb9",
+  "review_result": "PASS"
+}
