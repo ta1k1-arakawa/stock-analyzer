@@ -305,6 +305,15 @@ version-controlled Markdown in this repository, not in repeated prompt
 prose. `CLAUDE.md`, this file, and `AGENTS.md` are the canonical
 locations for that stable material.
 
+For reusable safety rules governing real network, private-data, human-gated,
+durable-state, raw-acquisition, research-opening, or prepared direct
+PowerShell execution, the canonical document is
+`AI_REAL_EXECUTION_RUNBOOK.md`. Those rules belong there, not in
+conversational memory or repeated long prompts. Future ChatGPT, Codex,
+Claude Code Cloud, and reviewer agents must read and apply it whenever the
+task is in scope. Its operational rules do not change the authority hierarchy
+or any frozen methodology; a stricter task-specific rule still wins.
+
 Claude Code, Codex, and any reviewer agent must read `AGENTS.md`, this
 file, and every task-specific authoritative doc named in the current
 prompt before acting.

@@ -18,6 +18,15 @@ delta (objective, scope, docs to read, new prohibitions/gates, tests,
 required report) and should not repeat frozen methodology or governance
 text that already exists in those files.
 
+For every task that can reach real network, private or sealed data, a human-
+gated one-shot execution, durable machine-local production/audit state, raw
+acquisition, research opening, or direct Windows PowerShell prepared for
+such an operation, read `AI_REAL_EXECUTION_RUNBOOK.md` before acting. This
+also applies to ChatGPT, reviewer, and execution-agent prompts that prepare
+or review real PowerShell execution. The runbook supplies mandatory stable
+operational safety and does not weaken any frozen study or task-specific
+rule.
+
 ---
 
 # Evaluator v2 rules
