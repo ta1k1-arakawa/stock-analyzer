@@ -287,7 +287,11 @@ def test_v8e_receipt_cannot_be_read_as_v8f_receipt(tmp_path):
     assert v8e_receipt["gate"] != preservation.V8F_T1C_PRESERVATION_GATE
     with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
         preservation._validate_receipt(v8e_receipt, v8e_key)
-    assert excinfo.value.reason == "V8F_RECEIPT_GATE_INVALID"
+    # The V8E receipt's field set itself differs (reviewed_v8e_design_candidate_commit
+    # vs reviewed_v8f_design_candidate_commit), so exact-schema rejection fires
+    # before the gate-literal check is even reached -- V8E authority is rejected
+    # at the earliest possible point, not merely at one specific field.
+    assert excinfo.value.reason == "V8F_RECEIPT_SCHEMA_INVALID"
 
 
 # ---------------------------------------------------------------------------

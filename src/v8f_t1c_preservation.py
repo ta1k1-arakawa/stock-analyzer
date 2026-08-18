@@ -44,6 +44,10 @@ from src.v8c_git_provenance import (
     resolve_git_blob,
 )
 from src.v8c_human_gate_consumption import CANONICAL_CONSUMPTION_STATE_ROOT
+from src.v8c_production_provenance import (
+    V8CProductionProvenanceBlocked,
+    read_and_verify_v8_trusted_partition_anchor,
+)
 from src.v8c_t1c_allocation import (
     V8CAllocationBlocked,
     read_t1c_allocation_artifact_bytes,
@@ -153,6 +157,13 @@ EXPECTED_V8_PARTITION_MANIFEST_SHA256 = "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b
 EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT = "36cbed941050e728f7f96ce2af505e81175cc02c"
 EXPECTED_V8C_ALLOCATION_IMPLEMENTATION_COMMIT = "f9c4bfcc9dab1845a6252ce7e5dc30441fec16ba"
 EXPECTED_V8C_FROZEN_DESIGN_COMMIT = "c9c541ac7f7ba3bcca76db6250fe8273d9bb5756"
+
+# Real, currently-committed public evidence source for the parent T_spare /
+# allocation-implementation provenance fields.  This file's Git blob is read
+# and independently derived at every preflight; the EXPECTED_* constants
+# above are comparison targets only, never a substitute for that read.
+V8C_TRUSTED_ALLOCATION_GIT_PATH = "V8C_TRUSTED_ALLOCATION.json"
+V8C_TRUSTED_ALLOCATION_BLOB_SHA = "61082f9818efb68ca2a5ad29fa5918f887575c10"
 
 CANONICAL_V8F_T1C_PRESERVATION_STATE_ROOT = (
     CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8f-t1c-preservation-gate-state"
@@ -511,6 +522,10 @@ def _validate_public_preflight(preflight: Mapping[str, Any]) -> dict[str, Any]:
     return dict(preflight)
 
 
+def _strict_public_json(raw: bytes, invalid_reason: str, duplicate_reason: str) -> dict[str, Any]:
+    return _strict_json_object(raw, invalid_reason, duplicate_reason)
+
+
 def _git_text(repository_root: Path, args: list[str], reason: str) -> str:
     try:
         result = subprocess.run(
@@ -752,10 +767,32 @@ def _default_public_preflight(repository_root: Path = CANONICAL_REPOSITORY_ROOT)
             repository_root, V8F_REVIEWED_DESIGN_CANDIDATE_COMMIT, "V8F_TRANSPORT_WINDOW_SEMANTICS_SUCCESSOR_DESIGN_DRAFT.md"
         )
         terminal_blob = resolve_git_blob(repository_root, V8F_V8E_PREDECESSOR_TERMINAL_COMMIT, V8F_V8E_TERMINAL_RECORD_GIT_PATH)
-    except V8CGitProvenanceBlocked as error:
+        trusted_allocation_blob = resolve_git_blob(repository_root, head, V8C_TRUSTED_ALLOCATION_GIT_PATH)
+        trusted_partition_blob = resolve_git_blob(repository_root, head, "V8_TRUSTED_PARTITION.json")
+        # Independently read-only verify the real V8 trust anchor rather than
+        # asserting its provenance as a constant.
+        anchor = read_and_verify_v8_trusted_partition_anchor(repository_root, head)
+        trusted_allocation = _strict_public_json(
+            read_git_object_bytes(repository_root, head, V8C_TRUSTED_ALLOCATION_GIT_PATH),
+            "V8F_TRUSTED_ALLOCATION_INVALID_JSON",
+            "V8F_TRUSTED_ALLOCATION_DUPLICATE_KEY",
+        )
+    except (V8CGitProvenanceBlocked, V8CProductionProvenanceBlocked, V8PartitionBlocked) as error:
         raise V8FT1CPreservationBlocked("V8F_PUBLIC_PROVENANCE_INVALID") from error
-    if design_blob != V8F_DESIGN_CANDIDATE_BLOB_SHA or terminal_blob != V8F_V8E_TERMINAL_RECORD_BLOB_SHA:
+    if (
+        design_blob != V8F_DESIGN_CANDIDATE_BLOB_SHA
+        or terminal_blob != V8F_V8E_TERMINAL_RECORD_BLOB_SHA
+        or trusted_allocation_blob != V8C_TRUSTED_ALLOCATION_BLOB_SHA
+    ):
         raise V8FT1CPreservationBlocked("V8F_PUBLIC_PROVENANCE_INVALID")
+    if set(trusted_allocation) < {
+        "v8c_allocation_implementation_commit",
+        "parent_v8_partition_manifest_sha256",
+        "parent_v8_partition_implementation_commit",
+        "parent_t_spare_ticker_count",
+        "parent_t_spare_ticker_list_sha256",
+    }:
+        raise V8FT1CPreservationBlocked("V8F_TRUSTED_ALLOCATION_SCHEMA_INVALID")
     return _validate_public_preflight(
         {
             "repository_identity": V8F_REPOSITORY_IDENTITY,
@@ -767,12 +804,16 @@ def _default_public_preflight(repository_root: Path = CANONICAL_REPOSITORY_ROOT)
             "reviewed_v8f_design_blob_sha": design_blob,
             "v8e_terminal_commit": V8F_V8E_PREDECESSOR_TERMINAL_COMMIT,
             "v8e_terminal_blob_sha": terminal_blob,
-            "trusted_partition_blob_sha": EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA,
-            "partition_manifest_sha256": EXPECTED_V8_PARTITION_MANIFEST_SHA256,
-            "partition_implementation_commit": EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
-            "v8c_allocation_implementation_commit": EXPECTED_V8C_ALLOCATION_IMPLEMENTATION_COMMIT,
-            "parent_t_spare_ticker_count": EXPECTED_PARENT_T_SPARE_TICKER_COUNT,
-            "parent_t_spare_ticker_list_sha256": EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+            # Every value below is the observed value independently derived
+            # from the real V8 trust anchor / V8C_TRUSTED_ALLOCATION.json Git
+            # objects read above; `_validate_public_preflight` compares each
+            # against its EXPECTED_* constant and fails closed on mismatch.
+            "trusted_partition_blob_sha": trusted_partition_blob,
+            "partition_manifest_sha256": anchor["authorized_partition_manifest_sha256"],
+            "partition_implementation_commit": anchor["authorized_partition_implementation_git_commit"],
+            "v8c_allocation_implementation_commit": trusted_allocation["v8c_allocation_implementation_commit"],
+            "parent_t_spare_ticker_count": trusted_allocation["parent_t_spare_ticker_count"],
+            "parent_t_spare_ticker_list_sha256": trusted_allocation["parent_t_spare_ticker_list_sha256"],
         }
     )
 
