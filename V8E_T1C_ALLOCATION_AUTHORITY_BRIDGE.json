@@ -1,0 +1,22 @@
+{
+  "schema_version": "V8E_T1C_ALLOCATION_AUTHORITY_BRIDGE_V1",
+  "study": "V8E_HISTORICAL_RESEARCH",
+  "artifact_role": "T1C_ALLOCATION_AUTHORITY_BRIDGE",
+  "logical_block": "T1C",
+  "v8e_frozen_design_commit": "6f672404b93a1003253915196dd635ca76fd2be1",
+  "source_v8c_terminal_commit": "d18368c1ec1c26d752ea5862115ab9f4315d1780",
+  "source_v8c_trust_pin_git_commit": "2a65674d8439f5964ff694494d5dad5ed19ad0f6",
+  "source_v8c_trust_pin_git_blob_sha": "61082f9818efb68ca2a5ad29fa5918f887575c10",
+  "authorized_allocation_artifact_self_hash": "16e3c2b026e4aaf4382d88e5bce25c2a52f0bb7ebbc03838679c3c6e84daaf7c",
+  "t1c_ticker_count": 300,
+  "t1c_ticker_list_sha256": "85a06d4b88698915315f5cf72e0d3e04dfacafb5403786ac3bb613e14b0deb54",
+  "parent_v8_partition_manifest_sha256": "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62",
+  "parent_v8_partition_implementation_commit": "36cbed941050e728f7f96ce2af505e81175cc02c",
+  "parent_t_spare_ticker_list_sha256": "360d5c874e6c08471f118af8ac450dadb38ca138fecd1ecdb834cc08156a9e70",
+  "preservation_recheck_git_commit": "12a05d59daca7986e4dacb27bce63e073d064240",
+  "preservation_recheck_git_blob_sha": "cd084dd6e49be724e876d01b27ac45fa11a2dc64",
+  "preservation_recheck_result": "PASS",
+  "human_gate": "V8E_HUMAN_AUTHORIZE_T1C_AUTHORITY_BRIDGE_AT_6f672404b93a1003253915196dd635ca76fd2be1_FOR_16e3c2b026e4aaf4382d88e5bce25c2a52f0bb7ebbc03838679c3c6e84daaf7c",
+  "authorization_status": "AUTHORIZED",
+  "authorization_note": "Fresh human authorization is restricted to this V8E T1C allocation authority bridge; it grants no private-data, network, readiness, acquisition, or research-opening authority."
+}
