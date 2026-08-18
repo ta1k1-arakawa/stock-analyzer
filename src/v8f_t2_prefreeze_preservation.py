@@ -28,6 +28,22 @@ readiness, and therefore never reached T2) and V8E's own T2 prefreeze
 preservation recheck record (the direct predecessor-study analogue of the
 V8D record the V8E precedent bound to).  Historical V8/V8B/V8C/V8D/V8E
 identifiers remain historical and are never renamed to V8F.
+
+Remediation note (V8F-PREFREEZE-HIGH-002): the canonical path additionally
+enforces the frozen V8F stage order
+(``V8F_T1C_PRESERVATION_RECHECK`` -> ``INDEPENDENT_V8F_T1C_PRESERVATION_
+RECHECK_REVIEW`` -> ``V8F_T2_PREFREEZE_PRESERVATION_RECHECK``): T2 prefreeze
+cannot PASS without a real, externally GPT-reviewed, unmutated current-study
+``V8F_T1C_PRESERVATION_RECHECK.json`` artifact whose reviewed commit is an
+ancestor of this T2 support commit and of the current verified HEAD.  That
+exact commit is supplied only by a later task, after GPT has independently
+reviewed it and returned PASS -- this module never invents or fabricates it.
+The reviewed-support runtime binding was changed from an exact
+``HEAD == reviewed_support_implementation_sha`` equality (which could never
+hold once a later-stage T1C artifact is committed on top) to an ancestor
+model: later-stage artifacts may legitimately be committed, but an
+unreviewed change to this T2 support module's own Git blob after the
+reviewed support commit still BLOCKs.
 """
 
 from __future__ import annotations
@@ -44,6 +60,7 @@ from src.v8c_git_provenance import (
     resolve_git_blob,
 )
 from src.v8c_production_provenance import read_and_verify_v8_trusted_partition_anchor
+from src import v8f_t1c_preservation as t1c_preservation
 
 
 V8F_STUDY_NAME = "V8F_HISTORICAL_RESEARCH"
@@ -127,6 +144,17 @@ V8F_V8E_TERMINAL_RECORD_BLOB_SHA = "4a9f4153bae40ca43533850eaf4953ac13ce5562"
 V8E_T2_PREFREEZE_GIT_PATH = "V8E_T2_PREFREEZE_PRESERVATION_RECHECK.md"
 V8E_T2_PREFREEZE_COMMIT = "22071e3fceaff56ac2043f79e2d79d617f3658a5"
 V8E_T2_PREFREEZE_BLOB_SHA = "24248bf96877ffb47bdba8fac7924684b1cae5cb"
+
+# Current-study V8F T1C preservation recheck artifact -- a hard prerequisite
+# for T2 prefreeze under the frozen V8F stage order
+# (V8F_T1C_PRESERVATION_RECHECK -> INDEPENDENT_V8F_T1C_PRESERVATION_RECHECK_
+# REVIEW -> V8F_T2_PREFREEZE_PRESERVATION_RECHECK).  This file does not yet
+# exist anywhere in the repository: the human-gated V8F T1C preservation
+# stage has not occurred.  No commit/blob constant is defined here, unlike
+# the historical V8E/V8D sources above -- the exact reviewed commit is
+# supplied only by a later task, after GPT has independently reviewed that
+# commit's real artifact and returned PASS.
+V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH = "V8F_T1C_PRESERVATION_RECHECK.json"
 
 V8F_ORIGIN_URLS = frozenset(
     {
@@ -475,6 +503,44 @@ def _validate_v8f_design(raw: bytes) -> dict[str, bool]:
     return {"policy_unchanged": True}
 
 
+def _validate_t1c_preservation_prerequisite(
+    repository_root,
+    reviewed_t1c_commit: str,
+    *,
+    verified_head: str,
+    git_blob_resolver: Callable[[Any, str, str], str],
+    git_object_reader: Callable[[Any, str, str], bytes],
+) -> dict[str, Any]:
+    """Hard prerequisite (V8F-PREFREEZE-HIGH-002): T2 prefreeze cannot PASS
+    without a real, externally GPT-reviewed, unmutated current-study V8F T1C
+    preservation recheck artifact.  This reuses the exact contract already
+    defined by ``src/v8f_t1c_preservation.py`` (``V8F_PRESERVATION_ARTIFACT_
+    FIELDS`` / ``_validate_public_artifact``) rather than reimplementing or
+    inventing a parallel one.
+
+    A missing artifact (this file does not exist anywhere in the repository
+    at the time of this remediation, since the human-gated T1C preservation
+    stage has not happened) surfaces as ``V8CGitProvenanceBlocked`` from the
+    blob resolver, which the caller maps to
+    ``V8F_T2_SAFE_GIT_EVIDENCE_UNAVAILABLE``.
+    """
+    blob_at_commit = git_blob_resolver(repository_root, reviewed_t1c_commit, V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH)
+    blob_at_head = git_blob_resolver(repository_root, verified_head, V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH)
+    if blob_at_commit != blob_at_head:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_T1C_PRESERVATION_ARTIFACT_MUTATED_AFTER_REVIEW")
+    raw = git_object_reader(repository_root, reviewed_t1c_commit, V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH)
+    try:
+        artifact = t1c_preservation._strict_json_object(
+            raw,
+            "V8F_PRESERVATION_ARTIFACT_INVALID_JSON",
+            "V8F_PRESERVATION_ARTIFACT_DUPLICATE_KEY",
+        )
+        validated = t1c_preservation._validate_public_artifact(artifact)
+    except t1c_preservation.V8FT1CPreservationBlocked as error:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_T1C_PRESERVATION_ARTIFACT_INVALID:" + error.reason) from error
+    return validated
+
+
 def _derive_safe_evidence(
     state: Mapping[str, Any],
     bridge: Mapping[str, Any],
@@ -654,15 +720,22 @@ def _git_text(repository_root, args: list[str], reason: str) -> str:
 
 _REVIEWED_SUPPORT_RUNTIME_FIELDS = frozenset(
     {
-        "resolved_support_sha",
         "branch",
         "head",
         "origin_head",
         "worktree_clean",
         "origin_url",
-        "commits_after_reviewed_support_sha",
+        "resolved_support_sha",
+        "resolved_t1c_commit",
+        "support_sha_ancestor_of_head",
+        "t1c_commit_ancestor_of_head",
+        "support_sha_ancestor_of_t1c_commit",
+        "t2_source_blob_at_head",
+        "t2_source_blob_at_reviewed_support_sha",
     }
 )
+
+_T2_SOURCE_GIT_PATH = "src/v8f_t2_prefreeze_preservation.py"
 
 
 def _strict_text_bytes(raw: bytes, reason: str) -> bytes:
@@ -671,23 +744,37 @@ def _strict_text_bytes(raw: bytes, reason: str) -> bytes:
     return raw
 
 
-def _default_reviewed_support_runtime_state(repository_root, reviewed_sha: str) -> dict[str, Any]:
-    resolved = _git_text(
-        repository_root,
-        ["rev-parse", "--verify", f"{reviewed_sha}^{{commit}}"],
-        "V8F_T2_REVIEWED_SUPPORT_SHA_UNRESOLVABLE",
+def _resolved_commit_or_none(repository_root, sha: str) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(repository_root), "rev-parse", "--verify", f"{sha}^{{commit}}"],
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
-    count_text = _git_text(
-        repository_root,
-        ["rev-list", "--count", f"{reviewed_sha}..HEAD"],
-        "V8F_T2_REVIEWED_SUPPORT_CHRONOLOGY_INVALID",
-    )
-    if not count_text.isdecimal():
-        raise V8FT2PrefreezePreservationBlocked("V8F_T2_REVIEWED_SUPPORT_CHRONOLOGY_INVALID")
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _is_ancestor(repository_root, commit: str, candidate: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository_root), "merge-base", "--is-ancestor", commit, candidate],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_GIT_UNAVAILABLE") from error
+    return result.returncode == 0
+
+
+def _default_reviewed_support_runtime_state(
+    repository_root, reviewed_support_sha: str, reviewed_t1c_commit: str
+) -> dict[str, Any]:
+    head = _git_text(repository_root, ["rev-parse", "HEAD"], "V8F_T2_HEAD_UNAVAILABLE")
     return {
-        "resolved_support_sha": resolved,
         "branch": _git_text(repository_root, ["branch", "--show-current"], "V8F_T2_BRANCH_UNAVAILABLE"),
-        "head": _git_text(repository_root, ["rev-parse", "HEAD"], "V8F_T2_HEAD_UNAVAILABLE"),
+        "head": head,
         "origin_head": _git_text(
             repository_root,
             ["rev-parse", "origin/" + V8F_PRODUCTION_BRANCH],
@@ -695,32 +782,66 @@ def _default_reviewed_support_runtime_state(repository_root, reviewed_sha: str) 
         ),
         "worktree_clean": _git_text(repository_root, ["status", "--porcelain"], "V8F_T2_GIT_UNAVAILABLE") == "",
         "origin_url": _git_text(repository_root, ["config", "--get", "remote.origin.url"], "V8F_T2_ORIGIN_UNAVAILABLE"),
-        "commits_after_reviewed_support_sha": int(count_text),
+        "resolved_support_sha": _resolved_commit_or_none(repository_root, reviewed_support_sha),
+        "resolved_t1c_commit": _resolved_commit_or_none(repository_root, reviewed_t1c_commit),
+        "support_sha_ancestor_of_head": _is_ancestor(repository_root, reviewed_support_sha, head),
+        "t1c_commit_ancestor_of_head": _is_ancestor(repository_root, reviewed_t1c_commit, head),
+        "support_sha_ancestor_of_t1c_commit": _is_ancestor(repository_root, reviewed_support_sha, reviewed_t1c_commit),
+        "t2_source_blob_at_head": resolve_git_blob(repository_root, head, _T2_SOURCE_GIT_PATH),
+        "t2_source_blob_at_reviewed_support_sha": resolve_git_blob(repository_root, reviewed_support_sha, _T2_SOURCE_GIT_PATH),
     }
 
 
 def _validate_reviewed_support_runtime(
     repository_root,
-    reviewed_sha: str,
+    reviewed_support_sha: str,
+    reviewed_t1c_commit: str,
     *,
     verified_head: str,
-    runtime_state_reader: Callable[[Any, str], Mapping[str, Any]] | None = None,
+    runtime_state_reader: Callable[[Any, str, str], Mapping[str, Any]] | None = None,
 ) -> None:
-    runtime = (runtime_state_reader or _default_reviewed_support_runtime_state)(repository_root, reviewed_sha)
+    """Frozen V8F stage-order runtime binding (V8F-PREFREEZE-HIGH-002).
+
+    Unlike the earlier ``HEAD == reviewed_support_implementation_sha`` model
+    (which cannot work once a later-stage T1C preservation artifact has been
+    committed on top of the reviewed support commit), this requires only
+    that: the reviewed support SHA and the reviewed T1C preservation commit
+    both resolve and are ancestors of the current verified HEAD; the support
+    SHA is itself an ancestor of the T1C commit (preserving the frozen order
+    T1C preservation before T2 prefreeze); and this T2 support module's own
+    Git blob is byte-identical between the reviewed support commit and the
+    current HEAD -- an unreviewed change to the T2 support implementation
+    itself must BLOCK even though later-stage artifacts may legitimately be
+    committed on top.
+    """
+    runtime = (runtime_state_reader or _default_reviewed_support_runtime_state)(
+        repository_root, reviewed_support_sha, reviewed_t1c_commit
+    )
     if not isinstance(runtime, Mapping) or set(runtime) != _REVIEWED_SUPPORT_RUNTIME_FIELDS:
         raise V8FT2PrefreezePreservationBlocked("V8F_T2_REVIEWED_SUPPORT_RUNTIME_SCHEMA_INVALID")
+    if runtime["branch"] != V8F_PRODUCTION_BRANCH:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_BRANCH_MISMATCH")
+    if runtime["head"] != verified_head or runtime["origin_head"] != verified_head:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_HEAD_NOT_ORIGIN")
+    if runtime["worktree_clean"] is not True:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_WORKTREE_DIRTY")
+    if runtime["origin_url"] not in V8F_ORIGIN_URLS:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_ORIGIN_UNTRUSTED")
+    if runtime["resolved_support_sha"] != reviewed_support_sha:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_REVIEWED_SUPPORT_SHA_UNRESOLVABLE")
+    if runtime["resolved_t1c_commit"] != reviewed_t1c_commit:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_REVIEWED_T1C_COMMIT_UNRESOLVABLE")
+    if runtime["support_sha_ancestor_of_head"] is not True:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_SUPPORT_SHA_NOT_ANCESTOR_OF_HEAD")
+    if runtime["t1c_commit_ancestor_of_head"] is not True:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_T1C_COMMIT_NOT_ANCESTOR_OF_HEAD")
+    if runtime["support_sha_ancestor_of_t1c_commit"] is not True:
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_SUPPORT_SHA_NOT_ANCESTOR_OF_T1C_COMMIT")
     if (
-        runtime["resolved_support_sha"] != reviewed_sha
-        or runtime["branch"] != V8F_PRODUCTION_BRANCH
-        or runtime["head"] != reviewed_sha
-        or runtime["origin_head"] != reviewed_sha
-        or runtime["worktree_clean"] is not True
-        or runtime["origin_url"] not in V8F_ORIGIN_URLS
-        or type(runtime["commits_after_reviewed_support_sha"]) is not int
-        or runtime["commits_after_reviewed_support_sha"] != 0
-        or verified_head != reviewed_sha
+        not isinstance(runtime["t2_source_blob_at_head"], str)
+        or runtime["t2_source_blob_at_head"] != runtime["t2_source_blob_at_reviewed_support_sha"]
     ):
-        raise V8FT2PrefreezePreservationBlocked("V8F_T2_REVIEWED_SUPPORT_RUNTIME_BINDING_INVALID")
+        raise V8FT2PrefreezePreservationBlocked("V8F_T2_SUPPORT_SOURCE_BLOB_CHANGED_SINCE_REVIEW")
 
 
 def _resolve_t2_prefreeze_safe_evidence_with_dependencies(
@@ -728,29 +849,38 @@ def _resolve_t2_prefreeze_safe_evidence_with_dependencies(
     *,
     verified_head: str,
     reviewed_support_implementation_sha: str,
+    reviewed_v8f_t1c_preservation_recheck_commit: str,
     git_blob_resolver: Callable[[Any, str, str], str] = resolve_git_blob,
     git_object_reader: Callable[[Any, str, str], bytes] = read_git_object_bytes,
     safe_state_reader: Callable[[Any, str, Callable[[Any, str, str], bytes]], Mapping[str, Any]] = _default_read_safe_state,
     safe_bridge_reader: Callable[[Any, str, Callable[[Any, str, str], bytes]], Mapping[str, Any]] = _default_read_safe_bridge,
     trusted_anchor_reader: Callable[[Any, str], Mapping[str, Any]] = read_and_verify_v8_trusted_partition_anchor,
-    runtime_state_reader: Callable[[Any, str], Mapping[str, Any]] | None = None,
+    runtime_state_reader: Callable[[Any, str, str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """DI-testable safe Git/audit/provenance resolver; no private reads.
 
-    This is the canonical production derivation path required by
-    V8F-PREFREEZE-HIGH-001: every fact feeding the nine conditions is read
-    from and independently verified against real committed public Git
-    objects, never accepted as a bare caller assertion.
+    This is the canonical production derivation path.  Every fact feeding
+    the nine conditions is read from and independently verified against real
+    committed public Git objects, never accepted as a bare caller assertion
+    (V8F-PREFREEZE-HIGH-001).  It additionally requires, as a hard
+    prerequisite, a real externally-reviewed current-study V8F T1C
+    preservation recheck artifact whose reviewed commit precedes this T2
+    support commit and both precede the current verified HEAD
+    (V8F-PREFREEZE-HIGH-002).  A caller-supplied final safe-evidence mapping
+    is never accepted here as a substitute for that derivation chain.
     """
     reviewed_sha = _require_hex(
         reviewed_support_implementation_sha, 40, "V8F_T2_REVIEWED_SUPPORT_SHA_INVALID"
     )
-    if _require_hex(verified_head, 40, "V8F_T2_HEAD_INVALID") != reviewed_sha:
-        raise V8FT2PrefreezePreservationBlocked("V8F_T2_REVIEWED_SUPPORT_HEAD_MISMATCH")
+    reviewed_t1c_commit = _require_hex(
+        reviewed_v8f_t1c_preservation_recheck_commit, 40, "V8F_T2_REVIEWED_T1C_COMMIT_INVALID"
+    )
+    head = _require_hex(verified_head, 40, "V8F_T2_HEAD_INVALID")
     _validate_reviewed_support_runtime(
         repository_root,
         reviewed_sha,
-        verified_head=verified_head,
+        reviewed_t1c_commit,
+        verified_head=head,
         runtime_state_reader=runtime_state_reader,
     )
     try:
@@ -764,15 +894,25 @@ def _resolve_t2_prefreeze_safe_evidence_with_dependencies(
             (V8_TRUSTED_PARTITION_GIT_PATH, EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA),
         )
         for path, expected_blob in expected_blobs:
-            if git_blob_resolver(repository_root, verified_head, path) != expected_blob:
+            if git_blob_resolver(repository_root, head, path) != expected_blob:
                 raise V8FT2PrefreezePreservationBlocked("V8F_T2_SAFE_BLOB_MISMATCH:" + path)
         if git_blob_resolver(repository_root, V8F_V8E_PREDECESSOR_TERMINAL_COMMIT, V8F_V8E_TERMINAL_RECORD_GIT_PATH) != V8F_V8E_TERMINAL_RECORD_BLOB_SHA:
             raise V8FT2PrefreezePreservationBlocked("V8F_T2_V8E_TERMINAL_BLOB_MISMATCH")
         if git_blob_resolver(repository_root, V8E_T2_PREFREEZE_COMMIT, V8E_T2_PREFREEZE_GIT_PATH) != V8E_T2_PREFREEZE_BLOB_SHA:
             raise V8FT2PrefreezePreservationBlocked("V8F_T2_V8E_HISTORICAL_BLOB_MISMATCH")
-        state = safe_state_reader(repository_root, verified_head, git_object_reader)
-        bridge = safe_bridge_reader(repository_root, verified_head, git_object_reader)
-        anchor = trusted_anchor_reader(repository_root, verified_head)
+        # Hard prerequisite: T2 prefreeze cannot PASS without a real,
+        # externally-reviewed, unmutated current-study T1C preservation
+        # artifact (V8F-PREFREEZE-HIGH-002).
+        _validate_t1c_preservation_prerequisite(
+            repository_root,
+            reviewed_t1c_commit,
+            verified_head=head,
+            git_blob_resolver=git_blob_resolver,
+            git_object_reader=git_object_reader,
+        )
+        state = safe_state_reader(repository_root, head, git_object_reader)
+        bridge = safe_bridge_reader(repository_root, head, git_object_reader)
+        anchor = trusted_anchor_reader(repository_root, head)
         terminal = _validate_v8e_terminal(
             _strict_text_bytes(
                 git_object_reader(repository_root, V8F_V8E_PREDECESSOR_TERMINAL_COMMIT, V8F_V8E_TERMINAL_RECORD_GIT_PATH),
@@ -807,11 +947,16 @@ def _resolve_t2_prefreeze_safe_evidence_with_dependencies(
 
 
 def resolve_and_verify_t2_prefreeze_preservation(
-    *, reviewed_support_implementation_sha: str
+    *,
+    reviewed_support_implementation_sha: str,
+    reviewed_v8f_t1c_preservation_recheck_commit: str,
 ) -> dict[str, Any]:
     """Resolve safe committed evidence and validate an in-memory record only.
 
     Prepared future entry point; not executed by this support task.
+    ``reviewed_v8f_t1c_preservation_recheck_commit`` is supplied only by a
+    later task, after GPT has independently reviewed that exact commit's
+    real V8F T1C preservation recheck artifact and returned PASS.
     """
     root = CANONICAL_REPOSITORY_ROOT
     branch = _git_text(root, ["branch", "--show-current"], "V8F_T2_BRANCH_UNAVAILABLE")
@@ -822,6 +967,7 @@ def resolve_and_verify_t2_prefreeze_preservation(
         root,
         verified_head=head,
         reviewed_support_implementation_sha=reviewed_support_implementation_sha,
+        reviewed_v8f_t1c_preservation_recheck_commit=reviewed_v8f_t1c_preservation_recheck_commit,
     )
     record = build_t2_prefreeze_record(safe)
     verification = verify_t2_prefreeze_record(record, safe_evidence=safe)
@@ -841,6 +987,7 @@ __all__ = [
     "V8F_DESIGN_CANDIDATE_BLOB_SHA",
     "V8F_REVIEWED_DESIGN_CANDIDATE_COMMIT",
     "V8F_STUDY_NAME",
+    "V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH",
     "V8F_T2_PREFREEZE_RECORD_FIELDS",
     "V8F_T2_SAFE_EVIDENCE_FIELDS",
     "V8F_V8E_PREDECESSOR_TERMINAL_COMMIT",

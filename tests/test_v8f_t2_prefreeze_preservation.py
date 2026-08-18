@@ -6,7 +6,14 @@ import subprocess
 import pytest
 
 from src import v8f_t2_prefreeze_preservation as recheck
+from src import v8f_t1c_preservation as t1c_preservation
 from src.v8c_git_provenance import CANONICAL_REPOSITORY_ROOT
+
+
+SUPPORT_SHA = "1" * 40
+T1C_COMMIT = "2" * 40
+HEAD = T1C_COMMIT
+T1C_ARTIFACT_BLOB = "3" * 40
 
 
 def _safe(**overrides):
@@ -168,6 +175,42 @@ def _terminal():
     }
 
 
+def _t1c_artifact(**overrides):
+    """Synthetic V8F T1C preservation recheck artifact matching the exact
+    contract already defined by src/v8f_t1c_preservation.py.  This is a
+    synthetic fixture used only to prove future stage-order enforcement; it
+    does NOT constitute or claim a real V8F T1C preservation PASS."""
+    value = {
+        "schema_version": "V8F_T1C_PRESERVATION_RECHECK_V1",
+        "artifact_role": "T1C_PRESERVATION_RECHECK",
+        "study": t1c_preservation.V8F_STUDY_NAME,
+        "reviewed_v8f_design_candidate_commit": t1c_preservation.V8F_REVIEWED_DESIGN_CANDIDATE_COMMIT,
+        "source_v8e_terminal_commit": t1c_preservation.V8F_V8E_PREDECESSOR_TERMINAL_COMMIT,
+        "allocation_artifact_self_hash": t1c_preservation.AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
+        "t1c_ticker_count": t1c_preservation.EXPECTED_V8F_T1C_TICKER_COUNT,
+        "t1c_ticker_list_sha256": t1c_preservation.EXPECTED_V8F_T1C_TICKER_LIST_SHA256,
+        "parent_t_spare_ticker_list_sha256": t1c_preservation.EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+        "remaining_t_spare_ticker_list_sha256": t1c_preservation.EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256,
+        "t1c_raw_acquisition_performed": False,
+        "t1c_research_opened": False,
+        "t1c_ohlcv_research_access": False,
+        "t1c_feature_access": False,
+        "t1c_outcome_access": False,
+        "t1c_identities_publicly_exposed": False,
+        "t1c_membership_reassigned": False,
+        "allocation_self_hash_unchanged": True,
+        "parent_v8_provenance_unchanged": True,
+        "v8e_terminal_adjudication_authoritative": True,
+        "preservation_recheck_result": "PASS",
+    }
+    value.update(overrides)
+    return value
+
+
+def _t1c_artifact_bytes(**overrides):
+    return json.dumps(_t1c_artifact(**overrides), sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
 def _text_block(values):
     return ("```text\n" + "\n".join(f"{key}={value}" for key, value in values.items()) + "\n```\n").encode()
 
@@ -191,49 +234,62 @@ def _design_bytes():
     )
 
 
-def _runtime(sha="1" * 40, **overrides):
+def _runtime(support_sha=SUPPORT_SHA, t1c_commit=T1C_COMMIT, head=HEAD, **overrides):
     value = {
-        "resolved_support_sha": sha,
         "branch": recheck.V8F_PRODUCTION_BRANCH,
-        "head": sha,
-        "origin_head": sha,
+        "head": head,
+        "origin_head": head,
         "worktree_clean": True,
         "origin_url": "https://github.com/ta1k1-arakawa/stock-analyzer.git",
-        "commits_after_reviewed_support_sha": 0,
+        "resolved_support_sha": support_sha,
+        "resolved_t1c_commit": t1c_commit,
+        "support_sha_ancestor_of_head": True,
+        "t1c_commit_ancestor_of_head": True,
+        "support_sha_ancestor_of_t1c_commit": True,
+        "t2_source_blob_at_head": "same-blob",
+        "t2_source_blob_at_reviewed_support_sha": "same-blob",
     }
     value.update(overrides)
     return value
 
 
-def _resolver_kwargs(**overrides):
-    reviewed_sha = "1" * 40
-    blobs = {
+def _default_blobs():
+    return {
         recheck.V8F_DESIGN_GIT_PATH: recheck.V8F_DESIGN_CANDIDATE_BLOB_SHA,
         recheck.V8_STATE_GIT_PATH: recheck.V8_STATE_BLOB_SHA,
         recheck.V8B_T2_AUTHORITY_BRIDGE_GIT_PATH: recheck.V8B_T2_AUTHORITY_BRIDGE_BLOB_SHA,
         recheck.V8_TRUSTED_PARTITION_GIT_PATH: recheck.EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA,
         recheck.V8F_V8E_TERMINAL_RECORD_GIT_PATH: recheck.V8F_V8E_TERMINAL_RECORD_BLOB_SHA,
         recheck.V8E_T2_PREFREEZE_GIT_PATH: recheck.V8E_T2_PREFREEZE_BLOB_SHA,
+        recheck.V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH: T1C_ARTIFACT_BLOB,
     }
 
-    def object_reader(root, commit, path):
-        if path == recheck.V8E_T2_PREFREEZE_GIT_PATH:
-            return _historical_t2_bytes()
-        if path == recheck.V8F_V8E_TERMINAL_RECORD_GIT_PATH:
-            return _terminal_bytes()
-        if path == recheck.V8F_DESIGN_GIT_PATH:
-            return _design_bytes()
-        raise AssertionError(path)
+
+def _default_object_reader(root, commit, path):
+    if path == recheck.V8E_T2_PREFREEZE_GIT_PATH:
+        return _historical_t2_bytes()
+    if path == recheck.V8F_V8E_TERMINAL_RECORD_GIT_PATH:
+        return _terminal_bytes()
+    if path == recheck.V8F_DESIGN_GIT_PATH:
+        return _design_bytes()
+    if path == recheck.V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH:
+        return _t1c_artifact_bytes()
+    raise AssertionError(path)
+
+
+def _resolver_kwargs(**overrides):
+    blobs = _default_blobs()
 
     defaults = {
-        "verified_head": reviewed_sha,
-        "reviewed_support_implementation_sha": reviewed_sha,
+        "verified_head": HEAD,
+        "reviewed_support_implementation_sha": SUPPORT_SHA,
+        "reviewed_v8f_t1c_preservation_recheck_commit": T1C_COMMIT,
         "git_blob_resolver": lambda root, commit, path: blobs[path],
-        "git_object_reader": object_reader,
+        "git_object_reader": _default_object_reader,
         "safe_state_reader": lambda root, commit, reader: _state(),
         "safe_bridge_reader": lambda root, commit, reader: _bridge(),
         "trusted_anchor_reader": lambda root, commit: _anchor(),
-        "runtime_state_reader": lambda root, sha: _runtime(sha),
+        "runtime_state_reader": lambda root, s_sha, t_commit: _runtime(s_sha, t_commit),
     }
     defaults.update(overrides)
     return defaults
@@ -283,8 +339,13 @@ def test_wrong_v8f_candidate_blocks():
 
 
 def test_design_candidate_blob_mismatch_blocks():
+    blobs = _default_blobs()
     with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
-        _resolve(git_blob_resolver=lambda root, commit, path: "0" * 40 if path == recheck.V8F_DESIGN_GIT_PATH else _resolver_kwargs()["git_blob_resolver"](root, commit, path))
+        _resolve(
+            git_blob_resolver=lambda root, commit, path: "0" * 40
+            if path == recheck.V8F_DESIGN_GIT_PATH
+            else blobs[path]
+        )
     assert excinfo.value.reason == "V8F_T2_DESIGN_CANDIDATE_BLOB_MISMATCH"
 
 
@@ -350,12 +411,16 @@ def test_duplicate_json_key_in_record_bytes_blocks():
 
 
 # ---------------------------------------------------------------------------
-# Canonical T2 evidence is derived from committed-public-object inputs
-# (requirement 4, bullet 1)
+# Canonical T2 evidence is derived from committed-public-object inputs,
+# GIVEN a valid synthetic T1C preservation prerequisite chain
 # ---------------------------------------------------------------------------
 
 
-def test_canonical_resolver_derives_from_committed_public_objects():
+def test_correct_synthetic_chronology_and_t1c_artifact_permits_resolver_to_continue():
+    """With a valid synthetic T1C preservation prerequisite chain, the
+    resolver continues to the existing independently-derived T2 evidence.
+    This is a synthetic proof of stage-order plumbing only -- it does NOT
+    constitute or claim a real V8F T1C preservation PASS."""
     safe = _resolve()
     assert safe == _safe()
     record = recheck.build_t2_prefreeze_record(safe)
@@ -367,22 +432,20 @@ def test_canonical_resolver_derives_from_committed_public_objects():
 def test_canonical_resolver_has_no_caller_supplied_final_evidence_parameter():
     """A caller-supplied final safe-evidence mapping alone must never be
     sufficient to establish canonical PASS: the resolver's signature only
-    accepts low-level Git-object readers, never a pre-derived mapping."""
+    accepts low-level Git-object readers and ancestor-derived runtime facts,
+    never a pre-derived mapping."""
     import inspect
 
     sig = inspect.signature(recheck._resolve_t2_prefreeze_safe_evidence_with_dependencies)
     assert "safe_evidence" not in sig.parameters
     assert "final_evidence" not in sig.parameters
+    sig2 = inspect.signature(recheck.resolve_and_verify_t2_prefreeze_preservation)
+    assert "safe_evidence" not in sig2.parameters
+    assert "final_evidence" not in sig2.parameters
+    assert "reviewed_v8f_t1c_preservation_recheck_commit" in sig2.parameters
 
 
 def test_provenance_independently_verified_requires_real_derivation_chain():
-    # A record that would satisfy verify_t2_prefreeze_record on its own,
-    # built directly from a caller mapping, never reports having been
-    # produced via the independent committed-evidence derivation chain
-    # unless it actually went through _resolve_t2_prefreeze_safe_evidence_
-    # with_dependencies. The pure verifier only ever proves internal
-    # consistency of what it is given, which is why the canonical path
-    # (tested above) is the sole route to a derivation-backed PASS.
     safe = _safe()
     record = recheck.build_t2_prefreeze_record(safe)
     verification = recheck.verify_t2_prefreeze_record(record, safe_evidence=safe)
@@ -392,8 +455,276 @@ def test_provenance_independently_verified_requires_real_derivation_chain():
 
 
 # ---------------------------------------------------------------------------
+# V8F-PREFREEZE-HIGH-002: current V8F T1C preservation is a hard prerequisite
+# ---------------------------------------------------------------------------
+
+
+def test_current_real_repository_cannot_reach_t2_prefreeze_pass_before_t1c_preservation():
+    """At the current repository stage, the canonical resolver MUST BLOCK,
+    because no committed current-study V8F_T1C_PRESERVATION_RECHECK.json
+    exists yet -- the human-gated V8F T1C preservation stage has not
+    happened.  This uses the REAL repository's Git objects (no network, no
+    private read), with only the runtime ancestor facts dependency-injected
+    since this checkout's local branch differs from the authoritative V8F
+    branch name."""
+    root = CANONICAL_REPOSITORY_ROOT
+    head_sha = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    def fake_runtime(_root, support_sha, t1c_commit):
+        return {
+            "branch": recheck.V8F_PRODUCTION_BRANCH,
+            "head": head_sha,
+            "origin_head": head_sha,
+            "worktree_clean": True,
+            "origin_url": "https://github.com/ta1k1-arakawa/stock-analyzer.git",
+            "resolved_support_sha": support_sha,
+            "resolved_t1c_commit": t1c_commit,
+            "support_sha_ancestor_of_head": True,
+            "t1c_commit_ancestor_of_head": True,
+            "support_sha_ancestor_of_t1c_commit": True,
+            "t2_source_blob_at_head": "same-blob",
+            "t2_source_blob_at_reviewed_support_sha": "same-blob",
+        }
+
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        recheck._resolve_t2_prefreeze_safe_evidence_with_dependencies(
+            root,
+            verified_head=head_sha,
+            reviewed_support_implementation_sha=head_sha,
+            reviewed_v8f_t1c_preservation_recheck_commit=head_sha,
+            runtime_state_reader=fake_runtime,
+        )
+    # The real V8F_T1C_PRESERVATION_RECHECK.json does not exist anywhere in
+    # this repository yet, so the real Git blob resolver cannot find it.
+    assert excinfo.value.reason == "V8F_T2_SAFE_GIT_EVIDENCE_UNAVAILABLE"
+
+
+def test_missing_t1c_artifact_blocks():
+    def missing_blob_resolver(root, commit, path):
+        if path == recheck.V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH:
+            from src.v8c_git_provenance import V8CGitProvenanceBlocked
+            raise V8CGitProvenanceBlocked("NOT_FOUND")
+        return _default_blobs()[path]
+
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(git_blob_resolver=missing_blob_resolver)
+    assert excinfo.value.reason == "V8F_T2_SAFE_GIT_EVIDENCE_UNAVAILABLE"
+
+
+@pytest.mark.parametrize(
+    "mutation,expected_reason",
+    [
+        ("schema_version", "V8F_T2_T1C_PRESERVATION_ARTIFACT_INVALID:V8F_PRESERVATION_ARTIFACT_VALUE_MISMATCH:schema_version"),
+        ("study", "V8F_T2_T1C_PRESERVATION_ARTIFACT_INVALID:V8F_PRESERVATION_ARTIFACT_VALUE_MISMATCH:study"),
+        (
+            "reviewed_v8f_design_candidate_commit",
+            "V8F_T2_T1C_PRESERVATION_ARTIFACT_INVALID:V8F_PRESERVATION_ARTIFACT_VALUE_MISMATCH:reviewed_v8f_design_candidate_commit",
+        ),
+        (
+            "preservation_recheck_result",
+            "V8F_T2_T1C_PRESERVATION_ARTIFACT_INVALID:V8F_PRESERVATION_ARTIFACT_VALUE_MISMATCH:preservation_recheck_result",
+        ),
+    ],
+)
+def test_wrong_t1c_artifact_schema_or_binding_blocks(mutation, expected_reason):
+    overrides = {
+        "schema_version": "WRONG_SCHEMA_V1",
+        "study": "V8E_HISTORICAL_RESEARCH",
+        "reviewed_v8f_design_candidate_commit": "0" * 40,
+        "preservation_recheck_result": "BLOCK",
+    }
+    tampered_bytes = _t1c_artifact_bytes(**{mutation: overrides[mutation]})
+
+    def object_reader(root, commit, path):
+        if path == recheck.V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH:
+            return tampered_bytes
+        return _default_object_reader(root, commit, path)
+
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(git_object_reader=object_reader)
+    assert excinfo.value.reason == expected_reason
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "t1c_raw_acquisition_performed",
+        "t1c_research_opened",
+        "t1c_ohlcv_research_access",
+        "t1c_feature_access",
+        "t1c_outcome_access",
+        "t1c_identities_publicly_exposed",
+        "t1c_membership_reassigned",
+    ],
+)
+def test_tampered_t1c_no_access_flag_blocks(field):
+    tampered_bytes = _t1c_artifact_bytes(**{field: True})
+
+    def object_reader(root, commit, path):
+        if path == recheck.V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH:
+            return tampered_bytes
+        return _default_object_reader(root, commit, path)
+
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(git_object_reader=object_reader)
+    assert excinfo.value.reason == "V8F_T2_T1C_PRESERVATION_ARTIFACT_INVALID:V8F_PRESERVATION_ARTIFACT_VALUE_MISMATCH:" + field
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("t1c_ticker_count", 299),
+        ("t1c_ticker_list_sha256", "0" * 64),
+        ("allocation_artifact_self_hash", "0" * 64),
+        ("parent_t_spare_ticker_list_sha256", "0" * 64),
+        ("remaining_t_spare_ticker_list_sha256", "0" * 64),
+        ("allocation_self_hash_unchanged", False),
+        ("parent_v8_provenance_unchanged", False),
+    ],
+)
+def test_tampered_t1c_count_hash_or_provenance_blocks(field, value):
+    tampered_bytes = _t1c_artifact_bytes(**{field: value})
+
+    def object_reader(root, commit, path):
+        if path == recheck.V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH:
+            return tampered_bytes
+        return _default_object_reader(root, commit, path)
+
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(git_object_reader=object_reader)
+    assert excinfo.value.reason == "V8F_T2_T1C_PRESERVATION_ARTIFACT_INVALID:V8F_PRESERVATION_ARTIFACT_VALUE_MISMATCH:" + field
+
+
+def test_t1c_artifact_blob_changed_after_reviewed_commit_blocks():
+    # verified_head must differ from reviewed_t1c_commit for this mutation
+    # to be observable at all -- otherwise "blob at commit" and "blob at
+    # head" trivially read the identical commit.
+    later_head = "4" * 40
+
+    def mutated_blob_resolver(root, commit, path):
+        blobs = _default_blobs()
+        if path == recheck.V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH:
+            return T1C_ARTIFACT_BLOB if commit == T1C_COMMIT else "9" * 40
+        return blobs[path]
+
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(
+            verified_head=later_head,
+            git_blob_resolver=mutated_blob_resolver,
+            runtime_state_reader=lambda root, s, t: _runtime(s, t, head=later_head, origin_head=later_head),
+        )
+    assert excinfo.value.reason == "V8F_T2_T1C_PRESERVATION_ARTIFACT_MUTATED_AFTER_REVIEW"
+
+
+def test_t1c_artifact_duplicate_json_key_blocks():
+    raw = b'{"schema_version":"V8F_T1C_PRESERVATION_RECHECK_V1","schema_version":"X"}'
+
+    def object_reader(root, commit, path):
+        if path == recheck.V8F_T1C_PRESERVATION_ARTIFACT_GIT_PATH:
+            return raw
+        return _default_object_reader(root, commit, path)
+
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(git_object_reader=object_reader)
+    assert excinfo.value.reason == "V8F_T2_T1C_PRESERVATION_ARTIFACT_INVALID:V8F_PRESERVATION_ARTIFACT_DUPLICATE_KEY"
+
+
+# ---------------------------------------------------------------------------
+# Fix runtime binding for the frozen stage order
+# ---------------------------------------------------------------------------
+
+
+def test_support_sha_not_ancestor_of_t1c_commit_blocks():
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(
+            runtime_state_reader=lambda root, s, t: _runtime(s, t, support_sha_ancestor_of_t1c_commit=False)
+        )
+    assert excinfo.value.reason == "V8F_T2_SUPPORT_SHA_NOT_ANCESTOR_OF_T1C_COMMIT"
+
+
+def test_t1c_commit_not_ancestor_of_head_blocks():
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(runtime_state_reader=lambda root, s, t: _runtime(s, t, t1c_commit_ancestor_of_head=False))
+    assert excinfo.value.reason == "V8F_T2_T1C_COMMIT_NOT_ANCESTOR_OF_HEAD"
+
+
+def test_support_sha_not_ancestor_of_head_blocks():
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(runtime_state_reader=lambda root, s, t: _runtime(s, t, support_sha_ancestor_of_head=False))
+    assert excinfo.value.reason == "V8F_T2_SUPPORT_SHA_NOT_ANCESTOR_OF_HEAD"
+
+
+def test_t2_support_source_blob_changed_since_review_blocks():
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(
+            runtime_state_reader=lambda root, s, t: _runtime(
+                s, t, t2_source_blob_at_head="new-blob", t2_source_blob_at_reviewed_support_sha="old-blob"
+            )
+        )
+    assert excinfo.value.reason == "V8F_T2_SUPPORT_SOURCE_BLOB_CHANGED_SINCE_REVIEW"
+
+
+def test_resolved_support_sha_mismatch_blocks():
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(runtime_state_reader=lambda root, s, t: _runtime(s, t, resolved_support_sha="9" * 40))
+    assert excinfo.value.reason == "V8F_T2_REVIEWED_SUPPORT_SHA_UNRESOLVABLE"
+
+
+def test_resolved_t1c_commit_mismatch_blocks():
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(runtime_state_reader=lambda root, s, t: _runtime(s, t, resolved_t1c_commit="9" * 40))
+    assert excinfo.value.reason == "V8F_T2_REVIEWED_T1C_COMMIT_UNRESOLVABLE"
+
+
+@pytest.mark.parametrize(
+    "runtime_overrides,expected_reason",
+    [
+        ({"branch": "other-branch"}, "V8F_T2_BRANCH_MISMATCH"),
+        ({"head": "9" * 40}, "V8F_T2_HEAD_NOT_ORIGIN"),
+        ({"origin_head": "9" * 40}, "V8F_T2_HEAD_NOT_ORIGIN"),
+        ({"worktree_clean": False}, "V8F_T2_WORKTREE_DIRTY"),
+        ({"origin_url": "https://evil.example/x.git"}, "V8F_T2_ORIGIN_UNTRUSTED"),
+    ],
+)
+def test_reviewed_support_runtime_mismatch_blocks(runtime_overrides, expected_reason):
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(runtime_state_reader=lambda root, s, t: _runtime(s, t, **runtime_overrides))
+    assert excinfo.value.reason == expected_reason
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra"])
+def test_runtime_schema_exactness(mutation):
+    def bad_runtime(root, s, t):
+        value = _runtime(s, t)
+        if mutation == "missing":
+            del value["worktree_clean"]
+        else:
+            value["unexpected"] = True
+        return value
+
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
+        _resolve(runtime_state_reader=bad_runtime)
+    assert excinfo.value.reason == "V8F_T2_REVIEWED_SUPPORT_RUNTIME_SCHEMA_INVALID"
+
+
+def test_later_stage_artifact_committed_on_top_of_support_sha_no_longer_blocks_by_itself():
+    """The whole point of the fix: HEAD may legitimately be a strict
+    descendant of reviewed_support_implementation_sha (because the T1C
+    preservation artifact was committed afterward) without that alone
+    causing BLOCK -- only an actual change to this T2 support module's own
+    source blob does."""
+    safe = _resolve(
+        verified_head=T1C_COMMIT,
+        runtime_state_reader=lambda root, s, t: _runtime(s, t, head=T1C_COMMIT, origin_head=T1C_COMMIT),
+    )
+    assert safe == _safe()
+
+
+# ---------------------------------------------------------------------------
 # Changing a committed source fact causes BLOCK even if a caller would have
-# supplied the expected PASS value (requirement 4, bullet 2)
+# supplied the expected PASS value
 # ---------------------------------------------------------------------------
 
 
@@ -424,11 +755,7 @@ def test_committed_historical_t2_fact_change_blocks():
     def object_reader(root, commit, path):
         if path == recheck.V8E_T2_PREFREEZE_GIT_PATH:
             return _text_block({key: str(value).lower() if isinstance(value, bool) else str(value) for key, value in tampered.items()})
-        if path == recheck.V8F_V8E_TERMINAL_RECORD_GIT_PATH:
-            return _terminal_bytes()
-        if path == recheck.V8F_DESIGN_GIT_PATH:
-            return _design_bytes()
-        raise AssertionError(path)
+        return _default_object_reader(root, commit, path)
 
     with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked):
         _resolve(git_object_reader=object_reader)
@@ -436,26 +763,27 @@ def test_committed_historical_t2_fact_change_blocks():
 
 # ---------------------------------------------------------------------------
 # Missing/malformed/mismatched historical Git object causes BLOCK
-# (requirement 4, bullet 3)
 # ---------------------------------------------------------------------------
 
 
 def test_v8e_historical_blob_binding_mismatch_blocks():
+    blobs = _default_blobs()
     with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
         _resolve(
             git_blob_resolver=lambda root, commit, path: "0" * 40
             if path == recheck.V8E_T2_PREFREEZE_GIT_PATH
-            else _resolver_kwargs()["git_blob_resolver"](root, commit, path)
+            else blobs[path]
         )
     assert excinfo.value.reason == "V8F_T2_V8E_HISTORICAL_BLOB_MISMATCH"
 
 
 def test_v8e_terminal_blob_binding_mismatch_blocks():
+    blobs = _default_blobs()
     with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
         _resolve(
             git_blob_resolver=lambda root, commit, path: "0" * 40
             if path == recheck.V8F_V8E_TERMINAL_RECORD_GIT_PATH
-            else _resolver_kwargs()["git_blob_resolver"](root, commit, path)
+            else blobs[path]
         )
     assert excinfo.value.reason == "V8F_T2_V8E_TERMINAL_BLOB_MISMATCH"
 
@@ -469,12 +797,9 @@ def test_v8e_terminal_blob_binding_mismatch_blocks():
     ],
 )
 def test_safe_blob_mismatch_at_current_head_blocks(path):
+    blobs = _default_blobs()
     with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
-        _resolve(
-            git_blob_resolver=lambda root, commit, p: "0" * 40
-            if p == path
-            else _resolver_kwargs()["git_blob_resolver"](root, commit, p)
-        )
+        _resolve(git_blob_resolver=lambda root, commit, p: "0" * 40 if p == path else blobs[p])
     assert excinfo.value.reason == "V8F_T2_SAFE_BLOB_MISMATCH:" + path
 
 
@@ -482,11 +807,7 @@ def test_malformed_historical_t2_text_block_blocks():
     def object_reader(root, commit, path):
         if path == recheck.V8E_T2_PREFREEZE_GIT_PATH:
             return b"not a text block at all"
-        if path == recheck.V8F_V8E_TERMINAL_RECORD_GIT_PATH:
-            return _terminal_bytes()
-        if path == recheck.V8F_DESIGN_GIT_PATH:
-            return _design_bytes()
-        raise AssertionError(path)
+        return _default_object_reader(root, commit, path)
 
     with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
         _resolve(git_object_reader=object_reader)
@@ -495,13 +816,9 @@ def test_malformed_historical_t2_text_block_blocks():
 
 def test_malformed_terminal_json_blocks():
     def object_reader(root, commit, path):
-        if path == recheck.V8E_T2_PREFREEZE_GIT_PATH:
-            return _historical_t2_bytes()
         if path == recheck.V8F_V8E_TERMINAL_RECORD_GIT_PATH:
             return b"{not json"
-        if path == recheck.V8F_DESIGN_GIT_PATH:
-            return _design_bytes()
-        raise AssertionError(path)
+        return _default_object_reader(root, commit, path)
 
     with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
         _resolve(git_object_reader=object_reader)
@@ -510,44 +827,13 @@ def test_malformed_terminal_json_blocks():
 
 def test_missing_design_policy_text_blocks():
     def object_reader(root, commit, path):
-        if path == recheck.V8E_T2_PREFREEZE_GIT_PATH:
-            return _historical_t2_bytes()
-        if path == recheck.V8F_V8E_TERMINAL_RECORD_GIT_PATH:
-            return _terminal_bytes()
         if path == recheck.V8F_DESIGN_GIT_PATH:
             return b"unrelated design text"
-        raise AssertionError(path)
+        return _default_object_reader(root, commit, path)
 
     with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
         _resolve(git_object_reader=object_reader)
     assert excinfo.value.reason == "V8F_T2_DESIGN_POLICY_INVALID"
-
-
-# ---------------------------------------------------------------------------
-# Reviewed-support runtime binding
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "runtime_overrides",
-    [
-        {"branch": "other-branch"},
-        {"head": "2" * 40},
-        {"origin_head": "2" * 40},
-        {"worktree_clean": False},
-        {"origin_url": "https://evil.example/x.git"},
-        {"commits_after_reviewed_support_sha": 1},
-    ],
-)
-def test_reviewed_support_runtime_mismatch_blocks(runtime_overrides):
-    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked):
-        _resolve(runtime_state_reader=lambda root, sha: _runtime(sha, **runtime_overrides))
-
-
-def test_verified_head_must_equal_reviewed_support_sha():
-    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
-        _resolve(verified_head="2" * 40)
-    assert excinfo.value.reason == "V8F_T2_REVIEWED_SUPPORT_HEAD_MISMATCH"
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +858,7 @@ def test_derive_safe_evidence_rejects_t2_access_not_prohibited():
 
 
 # ---------------------------------------------------------------------------
-# Builder writes nothing; no real network/private access
+# Builder writes nothing; no real network/private access/gate consumption
 # ---------------------------------------------------------------------------
 
 
@@ -599,6 +885,15 @@ def test_no_network_module_wide():
     assert not (forbidden & attrs)
 
 
+def test_no_gate_consumer_or_private_reader_anywhere():
+    import inspect
+
+    source = inspect.getsource(recheck)
+    assert "gate_consumer" not in source
+    assert "consume_gate" not in source
+    assert "private_reader" not in source
+
+
 def test_no_ticker_identity_or_private_path_in_record():
     public = json.dumps(_record())
     assert "allocation_artifact_path" not in public
@@ -620,75 +915,16 @@ def test_no_private_manifest_path_parameter_anywhere():
         assert "ticker_identity" not in params
 
 
-# ---------------------------------------------------------------------------
-# Real-repository proof: the canonical resolver, pointed at this actual
-# repository's real committed objects (with only branch/head identity
-# dependency-injected, since the current checkout may be on a different
-# local branch than the authoritative V8F branch), independently derives
-# PASS from the real V8_STATE.json / V8B_T2_AUTHORITY_BRIDGE.json /
-# V8_TRUSTED_PARTITION.json / V8E historical documents.  No network access;
-# only local Git object reads against the already-cloned repository.
-# ---------------------------------------------------------------------------
+def test_resolve_uses_real_default_readers_when_uninjected():
+    """Confirms git_blob_resolver / git_object_reader / trusted_anchor_reader
+    default to the real Git-object functions (proving the DI parameters are
+    genuine overrides of a real path, not the only path that exists)."""
+    import inspect
 
+    sig = inspect.signature(recheck._resolve_t2_prefreeze_safe_evidence_with_dependencies)
+    from src.v8c_git_provenance import read_git_object_bytes, resolve_git_blob
+    from src.v8c_production_provenance import read_and_verify_v8_trusted_partition_anchor
 
-def test_canonical_resolver_derives_pass_from_this_actual_repository():
-    root = CANONICAL_REPOSITORY_ROOT
-    head_sha = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-    ).stdout.strip()
-
-    def fake_runtime(_root, _sha):
-        return {
-            "resolved_support_sha": head_sha,
-            "branch": recheck.V8F_PRODUCTION_BRANCH,
-            "head": head_sha,
-            "origin_head": head_sha,
-            "worktree_clean": True,
-            "origin_url": "https://github.com/ta1k1-arakawa/stock-analyzer.git",
-            "commits_after_reviewed_support_sha": 0,
-        }
-
-    safe = recheck._resolve_t2_prefreeze_safe_evidence_with_dependencies(
-        root,
-        verified_head=head_sha,
-        reviewed_support_implementation_sha=head_sha,
-        runtime_state_reader=fake_runtime,
-    )
-    assert safe == _safe()
-    record = recheck.build_t2_prefreeze_record(safe)
-    verification = recheck.verify_t2_prefreeze_record(record, safe_evidence=safe)
-    assert verification["result"] == "PASS"
-
-
-def test_tampered_real_repository_blob_reference_blocks():
-    root = CANONICAL_REPOSITORY_ROOT
-    head_sha = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-    ).stdout.strip()
-    from src.v8c_git_provenance import resolve_git_blob as real_resolve_git_blob
-
-    def fake_runtime(_root, _sha):
-        return {
-            "resolved_support_sha": head_sha,
-            "branch": recheck.V8F_PRODUCTION_BRANCH,
-            "head": head_sha,
-            "origin_head": head_sha,
-            "worktree_clean": True,
-            "origin_url": "https://github.com/ta1k1-arakawa/stock-analyzer.git",
-            "commits_after_reviewed_support_sha": 0,
-        }
-
-    def tampered_blob_resolver(r, commit, path):
-        if path == recheck.V8_STATE_GIT_PATH:
-            return "0" * 40
-        return real_resolve_git_blob(r, commit, path)
-
-    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked) as excinfo:
-        recheck._resolve_t2_prefreeze_safe_evidence_with_dependencies(
-            root,
-            verified_head=head_sha,
-            reviewed_support_implementation_sha=head_sha,
-            runtime_state_reader=fake_runtime,
-            git_blob_resolver=tampered_blob_resolver,
-        )
-    assert excinfo.value.reason == "V8F_T2_SAFE_BLOB_MISMATCH:" + recheck.V8_STATE_GIT_PATH
+    assert sig.parameters["git_blob_resolver"].default is resolve_git_blob
+    assert sig.parameters["git_object_reader"].default is read_git_object_bytes
+    assert sig.parameters["trusted_anchor_reader"].default is read_and_verify_v8_trusted_partition_anchor
