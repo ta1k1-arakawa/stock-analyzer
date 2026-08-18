@@ -73,6 +73,14 @@ V8F_V8E_TERMINAL_RECORD_BLOB_SHA = "4a9f4153bae40ca43533850eaf4953ac13ce5562"
 V8F_V8E_TERMINAL_DISPOSITION = "BLOCK_CLOSED"
 V8F_V8E_TERMINAL_FAILURE_CLASS = "TRANSPORT_PARSER_FAILURE"
 
+# Historical V8E's own T1C preservation recheck artifact: the direct
+# predecessor-study analogue of the V8D_T1C_PRESERVATION_RECHECK.json record
+# the V8E precedent itself bound to.  Real Git introduction commit found via
+# `git log --follow -- V8E_T1C_PRESERVATION_RECHECK.json`, not invented.
+V8E_T1C_PRESERVATION_RECHECK_COMMIT = "12a05d59daca7986e4dacb27bce63e073d064240"
+V8E_T1C_PRESERVATION_RECHECK_GIT_PATH = "V8E_T1C_PRESERVATION_RECHECK.json"
+V8E_T1C_PRESERVATION_RECHECK_BLOB_SHA = "cd084dd6e49be724e876d01b27ac45fa11a2dc64"
+
 V8F_T1C_PRESERVATION_GATE = "HUMAN_V8F_T1C_PRESERVATION_PRIVATE_VERIFICATION_GATE"
 V8F_AUTHORIZATION_PREFIX = "V8F_HUMAN_AUTHORIZE_T1C_PRESERVATION_VERIFY_AT_"
 V8F_AUTHORIZATION_SEPARATOR = "_FOR_"
@@ -164,6 +172,11 @@ EXPECTED_V8C_FROZEN_DESIGN_COMMIT = "c9c541ac7f7ba3bcca76db6250fe8273d9bb5756"
 # above are comparison targets only, never a substitute for that read.
 V8C_TRUSTED_ALLOCATION_GIT_PATH = "V8C_TRUSTED_ALLOCATION.json"
 V8C_TRUSTED_ALLOCATION_BLOB_SHA = "61082f9818efb68ca2a5ad29fa5918f887575c10"
+
+# Real, currently-committed public evidence source for T1/access-flag
+# provenance.  Read at the current head, not asserted.
+V8_STATE_GIT_PATH = "V8_STATE.json"
+V8_STATE_BLOB_SHA = "8e5fd2f39dc92a7983c0cdaab42f633d624b4956"
 
 CANONICAL_V8F_T1C_PRESERVATION_STATE_ROOT = (
     CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8f-t1c-preservation-gate-state"
@@ -664,24 +677,196 @@ def _validate_fresh_t1c_public_evidence(evidence: Mapping[str, Any]) -> dict[str
     return dict(evidence)
 
 
+_V8C_TRUSTED_ALLOCATION_FIELDS = frozenset(
+    {
+        "artifact_role",
+        "authorization_note",
+        "authorization_status",
+        "authorized_allocation_artifact_self_hash",
+        "human_gate",
+        "logical_block",
+        "parent_t_spare_ticker_count",
+        "parent_t_spare_ticker_list_sha256",
+        "parent_v8_partition_implementation_commit",
+        "parent_v8_partition_manifest_sha256",
+        "predecessor_burned_count",
+        "remaining_t_spare_ticker_count",
+        "remaining_t_spare_ticker_list_sha256",
+        "schema_version",
+        "study_name",
+        "t1c_ticker_count",
+        "t1c_ticker_list_sha256",
+        "v8c_allocation_implementation_commit",
+        "v8c_frozen_design_commit",
+        "v8c_reviewed_production_implementation_commit",
+        "verification_result",
+    }
+)
+
+
+def _validate_current_trusted_t1c_allocation(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Independently validate the real, currently-committed T1C allocation
+    pin.  Every EXPECTED_* constant here is a comparison target only; the
+    observed value comes from ``record``, itself read from the real Git
+    object by the caller."""
+    if not isinstance(record, Mapping) or set(record) != _V8C_TRUSTED_ALLOCATION_FIELDS:
+        raise V8FT1CPreservationBlocked("V8F_TRUSTED_ALLOCATION_SCHEMA_INVALID")
+    exact = {
+        "artifact_role": "TRUSTED_T1C_ALLOCATION_PIN",
+        "authorization_status": "AUTHORIZED",
+        "authorized_allocation_artifact_self_hash": AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
+        "logical_block": "T1C",
+        "parent_t_spare_ticker_count": EXPECTED_PARENT_T_SPARE_TICKER_COUNT,
+        "parent_t_spare_ticker_list_sha256": EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+        "parent_v8_partition_implementation_commit": EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "parent_v8_partition_manifest_sha256": EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "schema_version": "V8C_TRUSTED_ALLOCATION_V1",
+        "t1c_ticker_count": EXPECTED_V8F_T1C_TICKER_COUNT,
+        "t1c_ticker_list_sha256": EXPECTED_V8F_T1C_TICKER_LIST_SHA256,
+        "v8c_allocation_implementation_commit": EXPECTED_V8C_ALLOCATION_IMPLEMENTATION_COMMIT,
+        "v8c_frozen_design_commit": EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
+        "verification_result": "PASS",
+    }
+    for key, expected in exact.items():
+        if record[key] != expected:
+            raise V8FT1CPreservationBlocked("V8F_TRUSTED_ALLOCATION_VALUE_INVALID:" + key)
+    return dict(record)
+
+
+_V8E_T1C_PRESERVATION_RECHECK_FIELDS = frozenset(
+    {
+        "allocation_artifact_self_hash",
+        "allocation_self_hash_unchanged",
+        "artifact_role",
+        "parent_t_spare_ticker_list_sha256",
+        "parent_v8_provenance_unchanged",
+        "preservation_recheck_result",
+        "remaining_t_spare_ticker_list_sha256",
+        "reviewed_v8e_design_candidate_commit",
+        "schema_version",
+        "source_v8c_terminal_commit",
+        "study",
+        "t1c_feature_access",
+        "t1c_identities_publicly_exposed",
+        "t1c_membership_reassigned",
+        "t1c_ohlcv_research_access",
+        "t1c_outcome_access",
+        "t1c_raw_acquisition_performed",
+        "t1c_research_opened",
+        "t1c_ticker_count",
+        "t1c_ticker_list_sha256",
+        "v8c_terminal_adjudication_authoritative",
+    }
+)
+
+
+def _validate_historical_v8e_t1c_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Independently validate V8E's own real, historical T1C preservation
+    recheck artifact -- the direct predecessor-study evidence source for the
+    no-access/no-reassignment/unchanged-provenance facts, exactly as the V8E
+    precedent used V8D's own historical T1C record for the same purpose."""
+    if not isinstance(record, Mapping) or set(record) != _V8E_T1C_PRESERVATION_RECHECK_FIELDS:
+        raise V8FT1CPreservationBlocked("V8F_V8E_HISTORICAL_T1C_SCHEMA_INVALID")
+    exact = {
+        "allocation_artifact_self_hash": AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
+        "allocation_self_hash_unchanged": True,
+        "artifact_role": "T1C_PRESERVATION_RECHECK",
+        "parent_t_spare_ticker_list_sha256": EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+        "parent_v8_provenance_unchanged": True,
+        "preservation_recheck_result": "PASS",
+        "remaining_t_spare_ticker_list_sha256": EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256,
+        "schema_version": "V8E_T1C_PRESERVATION_RECHECK_V1",
+        "study": "V8E_HISTORICAL_RESEARCH",
+        "t1c_feature_access": False,
+        "t1c_identities_publicly_exposed": False,
+        "t1c_membership_reassigned": False,
+        "t1c_ohlcv_research_access": False,
+        "t1c_outcome_access": False,
+        "t1c_raw_acquisition_performed": False,
+        "t1c_research_opened": False,
+        "t1c_ticker_count": EXPECTED_V8F_T1C_TICKER_COUNT,
+        "t1c_ticker_list_sha256": EXPECTED_V8F_T1C_TICKER_LIST_SHA256,
+        "v8c_terminal_adjudication_authoritative": True,
+    }
+    for key, expected in exact.items():
+        if record[key] != expected or (isinstance(expected, bool) and type(record[key]) is not bool):
+            raise V8FT1CPreservationBlocked("V8F_V8E_HISTORICAL_T1C_VALUE_INVALID:" + key)
+    return dict(record)
+
+
+def _validate_current_v8_state_t1(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Independently derive the observed T1C access-flag facts from the
+    real, currently-committed V8_STATE.json T1 and last-attempt sections."""
+    t1 = state.get("T1")
+    attempt = state.get("last_real_t1_acquisition_attempt")
+    if not isinstance(t1, Mapping) or not isinstance(attempt, Mapping):
+        raise V8FT1CPreservationBlocked("V8F_V8_STATE_SCHEMA_INVALID")
+    required_t1 = ("raw_data_acquired", "layer_b_opened", "validation_access_count", "ticker_count_frozen")
+    required_attempt = ("t1_successfully_acquired", "t1_opened_for_research", "validation_accessed")
+    for key in required_t1:
+        if key not in t1:
+            raise V8FT1CPreservationBlocked("V8F_V8_STATE_T1_FIELD_MISSING:" + key)
+    for key in required_attempt:
+        if key not in attempt:
+            raise V8FT1CPreservationBlocked("V8F_V8_STATE_ATTEMPT_FIELD_MISSING:" + key)
+    if t1["ticker_count_frozen"] != EXPECTED_V8F_T1C_TICKER_COUNT:
+        raise V8FT1CPreservationBlocked("V8F_V8_STATE_T1_TICKER_COUNT_MISMATCH")
+    return {
+        "raw_acquisition_performed": t1["raw_data_acquired"] is not False or attempt["t1_successfully_acquired"] is not False,
+        "research_opened": t1["layer_b_opened"] is not False or attempt["t1_opened_for_research"] is not False,
+        "ohlcv_research_access": t1["validation_access_count"] is not None or attempt["validation_accessed"] is not False,
+    }
+
+
+def _default_public_chronology(repository_root: Path, lower: str, upper: str) -> list[dict[str, Any]]:
+    if _git_text(repository_root, ["merge-base", "--is-ancestor", lower, upper], "V8F_PUBLIC_CHRONOLOGY_INVALID") != "":
+        raise V8FT1CPreservationBlocked("V8F_PUBLIC_CHRONOLOGY_INVALID")
+    commits_text = _git_text(repository_root, ["rev-list", "--reverse", f"{lower}..{upper}"], "V8F_PUBLIC_CHRONOLOGY_INVALID")
+    records: list[dict[str, Any]] = []
+    for commit in commits_text.splitlines():
+        paths_text = _git_text(
+            repository_root,
+            ["diff-tree", "--no-commit-id", "--name-only", "-r", commit],
+            "V8F_PUBLIC_CHRONOLOGY_INVALID",
+        )
+        paths = [path for path in paths_text.splitlines() if path]
+        records.append({"commit": commit, "paths": paths})
+    return records
+
+
+def _validate_public_chronology(records: Any) -> list[dict[str, Any]]:
+    if not isinstance(records, list) or not records:
+        raise V8FT1CPreservationBlocked("V8F_PUBLIC_CHRONOLOGY_INVALID")
+    validated: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, Mapping) or set(record) != {"commit", "paths"}:
+            raise V8FT1CPreservationBlocked("V8F_PUBLIC_CHRONOLOGY_UNVERIFIABLE")
+        _require_hex(record["commit"], 40, "V8F_PUBLIC_CHRONOLOGY_UNVERIFIABLE")
+        paths = record["paths"]
+        if not isinstance(paths, list) or not paths or any(not isinstance(path, str) for path in paths):
+            raise V8FT1CPreservationBlocked("V8F_PUBLIC_CHRONOLOGY_UNVERIFIABLE")
+        if len(set(paths)) != len(paths):
+            raise V8FT1CPreservationBlocked("V8F_PUBLIC_CHRONOLOGY_UNVERIFIABLE")
+        validated.append({"commit": record["commit"], "paths": list(paths)})
+    return validated
+
+
 def _default_fresh_t1c_public_evidence(
     repository_root: Path,
     preflight: Mapping[str, Any],
     reviewed_support_implementation_sha: str,
     *,
+    chronology_reader: Callable[[Path, str, str], Any] | None = None,
     runtime_state_reader: Callable[[Path, str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Best-effort default derivation bound only to facts given for V8F.
-
-    This default binds to the exact V8E terminal adjudication commit/blob and
-    its exact known field values.  The access-flag derivation follows the
-    frozen V8E/V8D/V8C stage order: raw acquisition and research opening
-    require their respective ``*_allowed`` gate to be true first, and OHLCV/
-    feature/outcome access are themselves strictly downstream of research
-    opening.  Because the terminal record proves both ``*_allowed`` flags are
-    false, every downstream access flag is false by construction.  No T1C
-    acquisition ever occurred, so there was never raw private content in this
-    study's lifecycle capable of public exposure.
+    """Independently derive fresh public T1C evidence from committed Git
+    evidence: the real current V8_STATE.json, the real current
+    V8C_TRUSTED_ALLOCATION.json, V8E's own real historical T1C preservation
+    recheck artifact, the V8E T1C readiness terminal adjudication, and a
+    non-empty committed chronology between the two.  No fact here is a bare
+    caller assertion or a hardcoded constant standing in for an observation;
+    every EXPECTED_* constant is compared against, never substituted for, an
+    independently read value.
     """
     reviewed_sha = _validate_reviewed_support_implementation_binding(
         repository_root,
@@ -693,37 +878,90 @@ def _default_fresh_t1c_public_evidence(
         terminal_blob = resolve_git_blob(
             repository_root, V8F_V8E_PREDECESSOR_TERMINAL_COMMIT, V8F_V8E_TERMINAL_RECORD_GIT_PATH
         )
+        historical_blob = resolve_git_blob(
+            repository_root, V8E_T1C_PRESERVATION_RECHECK_COMMIT, V8E_T1C_PRESERVATION_RECHECK_GIT_PATH
+        )
+        trusted_allocation_blob = resolve_git_blob(repository_root, reviewed_sha, V8C_TRUSTED_ALLOCATION_GIT_PATH)
+        state_blob = resolve_git_blob(repository_root, reviewed_sha, V8_STATE_GIT_PATH)
     except V8CGitProvenanceBlocked as error:
         raise V8FT1CPreservationBlocked("V8F_PUBLIC_PROVENANCE_INVALID") from error
     if terminal_blob != V8F_V8E_TERMINAL_RECORD_BLOB_SHA:
         raise V8FT1CPreservationBlocked("V8F_V8E_TERMINAL_BLOB_MISMATCH")
-    _parse_v8e_terminal_record(
+    if historical_blob != V8E_T1C_PRESERVATION_RECHECK_BLOB_SHA:
+        raise V8FT1CPreservationBlocked("V8F_V8E_HISTORICAL_T1C_BLOB_MISMATCH")
+    if trusted_allocation_blob != V8C_TRUSTED_ALLOCATION_BLOB_SHA or state_blob != V8_STATE_BLOB_SHA:
+        raise V8FT1CPreservationBlocked("V8F_PUBLIC_PROVENANCE_INVALID")
+
+    terminal = _parse_v8e_terminal_record(
         read_git_object_bytes(repository_root, V8F_V8E_PREDECESSOR_TERMINAL_COMMIT, V8F_V8E_TERMINAL_RECORD_GIT_PATH)
     )
+    historical = _validate_historical_v8e_t1c_record(
+        _strict_public_json(
+            read_git_object_bytes(repository_root, V8E_T1C_PRESERVATION_RECHECK_COMMIT, V8E_T1C_PRESERVATION_RECHECK_GIT_PATH),
+            "V8F_V8E_HISTORICAL_T1C_INVALID_JSON",
+            "V8F_V8E_HISTORICAL_T1C_DUPLICATE_KEY",
+        )
+    )
+    allocation = _validate_current_trusted_t1c_allocation(
+        _strict_public_json(
+            read_git_object_bytes(repository_root, reviewed_sha, V8C_TRUSTED_ALLOCATION_GIT_PATH),
+            "V8F_TRUSTED_ALLOCATION_INVALID_JSON",
+            "V8F_TRUSTED_ALLOCATION_DUPLICATE_KEY",
+        )
+    )
+    state = _strict_public_json(
+        read_git_object_bytes(repository_root, reviewed_sha, V8_STATE_GIT_PATH),
+        "V8F_V8_STATE_INVALID_JSON",
+        "V8F_V8_STATE_DUPLICATE_KEY",
+    )
+    observed_t1 = _validate_current_v8_state_t1(state)
+    chronology = _validate_public_chronology(
+        (chronology_reader or _default_public_chronology)(repository_root, V8F_V8E_PREDECESSOR_TERMINAL_COMMIT, reviewed_sha)
+    )
+    if not chronology:
+        raise V8FT1CPreservationBlocked("V8F_PUBLIC_CHRONOLOGY_INVALID")
+
+    # Every current absence below is a conjunction of the current safe state,
+    # the current trusted allocation, and the historical V8E preservation
+    # evidence -- never a bare assertion.
     evidence = {
         "schema_version": "V8F_T1C_FRESH_PUBLIC_PRESERVATION_EVIDENCE_V1",
         "evidence_role": "T1C_FRESH_PUBLIC_PRESERVATION_EVIDENCE",
         "study": V8F_STUDY_NAME,
         "reviewed_v8f_design_candidate_commit": V8F_REVIEWED_DESIGN_CANDIDATE_COMMIT,
         "v8e_predecessor_terminal_commit": V8F_V8E_PREDECESSOR_TERMINAL_COMMIT,
-        "v8e_terminal_disposition": V8F_V8E_TERMINAL_DISPOSITION,
-        "v8e_terminal_failure_class": V8F_V8E_TERMINAL_FAILURE_CLASS,
+        "v8e_terminal_disposition": terminal["disposition"],
+        "v8e_terminal_failure_class": terminal["failure_class"],
         "v8e_terminal_artifact_blob_sha": terminal_blob,
-        "allocation_artifact_self_hash": AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
-        "t1c_ticker_count": EXPECTED_V8F_T1C_TICKER_COUNT,
-        "t1c_ticker_list_sha256": EXPECTED_V8F_T1C_TICKER_LIST_SHA256,
-        "parent_t_spare_ticker_list_sha256": EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
-        "remaining_t_spare_ticker_list_sha256": EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256,
-        "t1c_raw_acquisition_performed": False,
-        "t1c_research_opened": False,
-        "t1c_ohlcv_research_access": False,
-        "t1c_feature_access": False,
-        "t1c_outcome_access": False,
-        "t1c_identities_publicly_exposed": False,
-        "t1c_membership_reassigned": False,
-        "allocation_self_hash_unchanged": True,
-        "parent_v8_provenance_unchanged": True,
-        "v8e_terminal_adjudication_authoritative": True,
+        "allocation_artifact_self_hash": allocation["authorized_allocation_artifact_self_hash"],
+        "t1c_ticker_count": allocation["t1c_ticker_count"],
+        "t1c_ticker_list_sha256": allocation["t1c_ticker_list_sha256"],
+        "parent_t_spare_ticker_list_sha256": allocation["parent_t_spare_ticker_list_sha256"],
+        "remaining_t_spare_ticker_list_sha256": allocation["remaining_t_spare_ticker_list_sha256"],
+        "t1c_raw_acquisition_performed": observed_t1["raw_acquisition_performed"] or historical["t1c_raw_acquisition_performed"],
+        "t1c_research_opened": observed_t1["research_opened"] or historical["t1c_research_opened"],
+        "t1c_ohlcv_research_access": observed_t1["ohlcv_research_access"] or historical["t1c_ohlcv_research_access"],
+        "t1c_feature_access": historical["t1c_feature_access"],
+        "t1c_outcome_access": historical["t1c_outcome_access"],
+        "t1c_identities_publicly_exposed": historical["t1c_identities_publicly_exposed"],
+        "t1c_membership_reassigned": (
+            allocation["t1c_ticker_list_sha256"] != EXPECTED_V8F_T1C_TICKER_LIST_SHA256
+            or allocation["logical_block"] != "T1C"
+            or historical["t1c_membership_reassigned"] is not False
+        ),
+        "allocation_self_hash_unchanged": (
+            allocation["authorized_allocation_artifact_self_hash"] == AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH
+            and historical["allocation_self_hash_unchanged"] is True
+        ),
+        "parent_v8_provenance_unchanged": (
+            allocation["parent_v8_partition_manifest_sha256"] == EXPECTED_V8_PARTITION_MANIFEST_SHA256
+            and allocation["parent_v8_partition_implementation_commit"] == EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT
+            and historical["parent_v8_provenance_unchanged"] is True
+        ),
+        "v8e_terminal_adjudication_authoritative": (
+            terminal["disposition"] == V8F_V8E_TERMINAL_DISPOSITION
+            and historical["v8c_terminal_adjudication_authoritative"] is True
+        ),
         "fresh_public_preservation_evidence_result": "PASS",
     }
     return _validate_fresh_t1c_public_evidence(evidence)
@@ -734,6 +972,7 @@ def derive_fresh_t1c_public_evidence(
     *,
     reviewed_support_implementation_sha: str,
     preflight: Mapping[str, Any] | None = None,
+    chronology_reader: Callable[[Path, str, str], Any] | None = None,
     runtime_state_reader: Callable[[Path, str], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Resolve fresh public T1C evidence before any gate or private read."""
@@ -742,6 +981,7 @@ def derive_fresh_t1c_public_evidence(
         repository_root,
         _validate_public_preflight(verified_preflight),
         reviewed_support_implementation_sha,
+        chronology_reader=chronology_reader,
         runtime_state_reader=runtime_state_reader,
     )
 

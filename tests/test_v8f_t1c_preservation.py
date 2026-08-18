@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 
 from src import v8e_t1c_preservation as v8e_preservation
 from src import v8f_t1c_preservation as preservation
+from src.v8c_git_provenance import CANONICAL_REPOSITORY_ROOT
 
 
 AUTHORIZATION = (
@@ -626,3 +628,356 @@ def test_public_artifact_contains_no_identity_or_private_path():
     assert AUTHORIZATION not in public
     assert "allocation_artifact_path" not in public
     assert "partition_manifest_path" not in public
+
+
+# ---------------------------------------------------------------------------
+# V8F-PREFREEZE-HIGH-003: canonical/default fresh-public-evidence derivation
+# from real committed public Git objects (not caller assertions / bare
+# constants).  These exercise the real repository this session is running
+# in: local Git object reads only, no network, no private data.
+# ---------------------------------------------------------------------------
+
+
+def _real_head() -> str:
+    return subprocess.run(
+        ["git", "-C", str(CANONICAL_REPOSITORY_ROOT), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _real_preflight(head_sha: str):
+    return {
+        "repository_identity": preservation.V8F_REPOSITORY_IDENTITY,
+        "branch": preservation.V8F_PRODUCTION_BRANCH,
+        "head": head_sha,
+        "origin_head": head_sha,
+        "worktree_clean": True,
+        "reviewed_v8f_design_candidate_commit": preservation.V8F_REVIEWED_DESIGN_CANDIDATE_COMMIT,
+        "reviewed_v8f_design_blob_sha": preservation.V8F_DESIGN_CANDIDATE_BLOB_SHA,
+        "v8e_terminal_commit": preservation.V8F_V8E_PREDECESSOR_TERMINAL_COMMIT,
+        "v8e_terminal_blob_sha": preservation.V8F_V8E_TERMINAL_RECORD_BLOB_SHA,
+        "trusted_partition_blob_sha": preservation.EXPECTED_V8_TRUSTED_PARTITION_BLOB_SHA,
+        "partition_manifest_sha256": preservation.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "partition_implementation_commit": preservation.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "v8c_allocation_implementation_commit": preservation.EXPECTED_V8C_ALLOCATION_IMPLEMENTATION_COMMIT,
+        "parent_t_spare_ticker_count": preservation.EXPECTED_PARENT_T_SPARE_TICKER_COUNT,
+        "parent_t_spare_ticker_list_sha256": preservation.EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+    }
+
+
+def _real_runtime(head_sha: str):
+    def reader(_root, _sha):
+        return {
+            "branch": preservation.V8F_PRODUCTION_BRANCH,
+            "head": head_sha,
+            "origin_head": head_sha,
+            "worktree_clean": True,
+            "commits_after_reviewed_support_sha": 0,
+        }
+    return reader
+
+
+def test_default_fresh_evidence_is_derived_from_real_committed_git_objects():
+    head_sha = _real_head()
+    evidence = preservation._default_fresh_t1c_public_evidence(
+        CANONICAL_REPOSITORY_ROOT,
+        _real_preflight(head_sha),
+        head_sha,
+        runtime_state_reader=_real_runtime(head_sha),
+    )
+    assert evidence["fresh_public_preservation_evidence_result"] == "PASS"
+    assert evidence["allocation_artifact_self_hash"] == preservation.AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH
+    assert evidence["t1c_ticker_count"] == preservation.EXPECTED_V8F_T1C_TICKER_COUNT
+    for field in (
+        "t1c_raw_acquisition_performed",
+        "t1c_research_opened",
+        "t1c_ohlcv_research_access",
+        "t1c_feature_access",
+        "t1c_outcome_access",
+        "t1c_identities_publicly_exposed",
+        "t1c_membership_reassigned",
+    ):
+        assert evidence[field] is False
+
+
+def test_default_fresh_evidence_has_no_caller_final_evidence_shortcut_parameter():
+    """A caller-supplied final PASS mapping alone must never be sufficient
+    for the canonical execution path: the default derivation's signature
+    only accepts low-level chronology/runtime readers, never a pre-derived
+    evidence mapping."""
+    import inspect
+
+    sig = inspect.signature(preservation._default_fresh_t1c_public_evidence)
+    assert "evidence" not in sig.parameters
+    assert "safe_evidence" not in sig.parameters
+    assert "final_evidence" not in sig.parameters
+
+
+@pytest.mark.parametrize(
+    "tamper_path",
+    [
+        "V8_STATE_GIT_PATH",
+        "V8C_TRUSTED_ALLOCATION_GIT_PATH",
+        "V8F_V8E_TERMINAL_RECORD_GIT_PATH",
+        "V8E_T1C_PRESERVATION_RECHECK_GIT_PATH",
+    ],
+)
+def test_tampered_committed_blob_reference_blocks_before_gate(tamper_path):
+    head_sha = _real_head()
+    target_path = getattr(preservation, tamper_path)
+    real_resolve = preservation.resolve_git_blob
+
+    def tampered(root_, commit, path):
+        if path == target_path:
+            return "0" * 40
+        return real_resolve(root_, commit, path)
+
+    preservation.resolve_git_blob = tampered
+    try:
+        with pytest.raises(preservation.V8FT1CPreservationBlocked):
+            preservation._default_fresh_t1c_public_evidence(
+                CANONICAL_REPOSITORY_ROOT,
+                _real_preflight(head_sha),
+                head_sha,
+                runtime_state_reader=_real_runtime(head_sha),
+            )
+    finally:
+        preservation.resolve_git_blob = real_resolve
+
+
+def test_empty_chronology_between_predecessor_and_candidate_blocks():
+    head_sha = _real_head()
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._default_fresh_t1c_public_evidence(
+            CANONICAL_REPOSITORY_ROOT,
+            _real_preflight(head_sha),
+            head_sha,
+            runtime_state_reader=_real_runtime(head_sha),
+            chronology_reader=lambda *args: [],
+        )
+    assert excinfo.value.reason == "V8F_PUBLIC_CHRONOLOGY_INVALID"
+
+
+def test_malformed_chronology_record_blocks():
+    head_sha = _real_head()
+    with pytest.raises(preservation.V8FT1CPreservationBlocked):
+        preservation._default_fresh_t1c_public_evidence(
+            CANONICAL_REPOSITORY_ROOT,
+            _real_preflight(head_sha),
+            head_sha,
+            runtime_state_reader=_real_runtime(head_sha),
+            chronology_reader=lambda *args: [{"commit": "not-a-sha", "paths": ["x"]}],
+        )
+
+
+def _historical_t1c_record(**overrides):
+    value = {
+        "allocation_artifact_self_hash": preservation.AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
+        "allocation_self_hash_unchanged": True,
+        "artifact_role": "T1C_PRESERVATION_RECHECK",
+        "parent_t_spare_ticker_list_sha256": preservation.EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+        "parent_v8_provenance_unchanged": True,
+        "preservation_recheck_result": "PASS",
+        "remaining_t_spare_ticker_list_sha256": preservation.EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256,
+        "reviewed_v8e_design_candidate_commit": "6f672404b93a1003253915196dd635ca76fd2be1",
+        "schema_version": "V8E_T1C_PRESERVATION_RECHECK_V1",
+        "source_v8c_terminal_commit": "d18368c1ec1c26d752ea5862115ab9f4315d1780",
+        "study": "V8E_HISTORICAL_RESEARCH",
+        "t1c_feature_access": False,
+        "t1c_identities_publicly_exposed": False,
+        "t1c_membership_reassigned": False,
+        "t1c_ohlcv_research_access": False,
+        "t1c_outcome_access": False,
+        "t1c_raw_acquisition_performed": False,
+        "t1c_research_opened": False,
+        "t1c_ticker_count": preservation.EXPECTED_V8F_T1C_TICKER_COUNT,
+        "t1c_ticker_list_sha256": preservation.EXPECTED_V8F_T1C_TICKER_LIST_SHA256,
+        "v8c_terminal_adjudication_authoritative": True,
+    }
+    value.update(overrides)
+    return value
+
+
+def test_historical_t1c_record_exactly_matches_real_committed_artifact():
+    """This fixture matches the real, currently-committed
+    V8E_T1C_PRESERVATION_RECHECK.json content exactly, and that real file
+    validates successfully as V8F's historical evidence source."""
+    assert set(_historical_t1c_record()) == preservation._V8E_T1C_PRESERVATION_RECHECK_FIELDS
+    assert preservation._validate_historical_v8e_t1c_record(_historical_t1c_record())
+    real_bytes = subprocess.run(
+        ["git", "-C", str(CANONICAL_REPOSITORY_ROOT), "show",
+         f"{preservation.V8E_T1C_PRESERVATION_RECHECK_COMMIT}:{preservation.V8E_T1C_PRESERVATION_RECHECK_GIT_PATH}"],
+        capture_output=True, check=True,
+    ).stdout
+    real_record = json.loads(real_bytes)
+    assert real_record == _historical_t1c_record()
+    assert preservation._validate_historical_v8e_t1c_record(real_record)
+
+
+def test_tampered_historical_t1c_record_field_blocks():
+    tampered = _historical_t1c_record(t1c_membership_reassigned=True)
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._validate_historical_v8e_t1c_record(tampered)
+    assert excinfo.value.reason == "V8F_V8E_HISTORICAL_T1C_VALUE_INVALID:t1c_membership_reassigned"
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra"])
+def test_historical_t1c_record_schema_exactness(mutation):
+    record = _historical_t1c_record()
+    if mutation == "missing":
+        del record["t1c_feature_access"]
+    else:
+        record["unexpected"] = True
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._validate_historical_v8e_t1c_record(record)
+    assert excinfo.value.reason == "V8F_V8E_HISTORICAL_T1C_SCHEMA_INVALID"
+
+
+def test_tampered_trusted_allocation_field_blocks():
+    tampered = {
+        "artifact_role": "TRUSTED_T1C_ALLOCATION_PIN",
+        "authorization_note": "x",
+        "authorization_status": "AUTHORIZED",
+        "authorized_allocation_artifact_self_hash": "0" * 64,  # tampered
+        "human_gate": "x",
+        "logical_block": "T1C",
+        "parent_t_spare_ticker_count": preservation.EXPECTED_PARENT_T_SPARE_TICKER_COUNT,
+        "parent_t_spare_ticker_list_sha256": preservation.EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256,
+        "parent_v8_partition_implementation_commit": preservation.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "parent_v8_partition_manifest_sha256": preservation.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "predecessor_burned_count": 300,
+        "remaining_t_spare_ticker_count": 1304,
+        "remaining_t_spare_ticker_list_sha256": preservation.EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256,
+        "schema_version": "V8C_TRUSTED_ALLOCATION_V1",
+        "study_name": "V8C_HISTORICAL_RESEARCH",
+        "t1c_ticker_count": preservation.EXPECTED_V8F_T1C_TICKER_COUNT,
+        "t1c_ticker_list_sha256": preservation.EXPECTED_V8F_T1C_TICKER_LIST_SHA256,
+        "v8c_allocation_implementation_commit": preservation.EXPECTED_V8C_ALLOCATION_IMPLEMENTATION_COMMIT,
+        "v8c_frozen_design_commit": preservation.EXPECTED_V8C_FROZEN_DESIGN_COMMIT,
+        "v8c_reviewed_production_implementation_commit": preservation.EXPECTED_V8C_ALLOCATION_IMPLEMENTATION_COMMIT,
+        "verification_result": "PASS",
+    }
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._validate_current_trusted_t1c_allocation(tampered)
+    assert excinfo.value.reason == "V8F_TRUSTED_ALLOCATION_VALUE_INVALID:authorized_allocation_artifact_self_hash"
+
+
+def test_v8_state_t1_missing_section_blocks():
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._validate_current_v8_state_t1({"T1": {}, "last_real_t1_acquisition_attempt": {}})
+    assert excinfo.value.reason.startswith("V8F_V8_STATE_T1_FIELD_MISSING")
+
+
+def test_v8_state_t1_observed_access_flags_derived_correctly():
+    state = {
+        "T1": {
+            "raw_data_acquired": False,
+            "layer_b_opened": False,
+            "validation_access_count": None,
+            "ticker_count_frozen": preservation.EXPECTED_V8F_T1C_TICKER_COUNT,
+        },
+        "last_real_t1_acquisition_attempt": {
+            "t1_successfully_acquired": False,
+            "t1_opened_for_research": False,
+            "validation_accessed": False,
+        },
+    }
+    observed = preservation._validate_current_v8_state_t1(state)
+    assert observed == {
+        "raw_acquisition_performed": False,
+        "research_opened": False,
+        "ohlcv_research_access": False,
+    }
+
+
+def test_v8_state_t1_tampered_acquisition_flag_flips_observed_value():
+    state = {
+        "T1": {
+            "raw_data_acquired": True,  # tampered
+            "layer_b_opened": False,
+            "validation_access_count": None,
+            "ticker_count_frozen": preservation.EXPECTED_V8F_T1C_TICKER_COUNT,
+        },
+        "last_real_t1_acquisition_attempt": {
+            "t1_successfully_acquired": False,
+            "t1_opened_for_research": False,
+            "validation_accessed": False,
+        },
+    }
+    observed = preservation._validate_current_v8_state_t1(state)
+    assert observed["raw_acquisition_performed"] is True
+
+
+def test_pre_gate_default_evidence_failure_yields_zero_gate_and_private_reads(tmp_path):
+    """Exercises the real default derivation path (public_evidence_resolver
+    omitted) against this actual repository, forcing a pre-gate failure via
+    a reviewed-support SHA that does not match the real runtime -- proving
+    the default resolver never reaches private reads or gate consumption
+    when its own binding checks fail."""
+    allocation = tmp_path / "allocation.bin"
+    manifest = tmp_path / "manifest.bin"
+    allocation.write_bytes(b"synthetic allocation")
+    manifest.write_bytes(b"synthetic manifest")
+    reads = []
+    gate_calls = []
+    head_sha = _real_head()
+    wrong_sha = ("f" if head_sha[0] != "f" else "e") + head_sha[1:]
+
+    with pytest.raises(preservation.V8FT1CPreservationBlocked):
+        preservation._execute_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=wrong_sha,
+            state_root=tmp_path / "state",
+            output_path=tmp_path / "artifact.json",
+            allocation_artifact_path=allocation,
+            partition_manifest_path=manifest,
+            repository_root=CANONICAL_REPOSITORY_ROOT,
+            public_preflight=lambda: _real_preflight(head_sha),
+            runtime_state_reader=_real_runtime(head_sha),
+            # public_evidence_resolver omitted -> exercises the real default
+            # derivation path, which never even reaches evidence derivation
+            # because the reviewed-support binding fails first.
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert reads == []
+    assert gate_calls == []
+    assert not (tmp_path / "state").exists()
+
+
+def test_default_derivation_actually_reaches_pass_when_wired_through_execute(tmp_path):
+    """Positive counterpart: with the real reviewed-support SHA and real
+    default derivation (public_evidence_resolver omitted), the pipeline
+    proceeds past evidence derivation into gate consumption and private
+    reads -- proving the default path is genuinely wired in, not merely
+    unreachable scaffolding."""
+    allocation = tmp_path / "allocation.bin"
+    manifest = tmp_path / "manifest.bin"
+    allocation.write_bytes(b"synthetic allocation")
+    manifest.write_bytes(b"synthetic manifest")
+    reads = []
+    gate_calls = []
+    head_sha = _real_head()
+
+    with pytest.raises(preservation.V8FT1CPreservationBlocked):
+        # Still fails eventually (synthetic allocation bytes cannot pass the
+        # real private-artifact verifier), but only *after* the real gate
+        # consumption and private reads occur -- proving evidence derivation
+        # itself passed using the real default resolver.
+        preservation._execute_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=head_sha,
+            state_root=tmp_path / "state",
+            output_path=tmp_path / "artifact.json",
+            allocation_artifact_path=allocation,
+            partition_manifest_path=manifest,
+            repository_root=CANONICAL_REPOSITORY_ROOT,
+            public_preflight=lambda: _real_preflight(head_sha),
+            runtime_state_reader=_real_runtime(head_sha),
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert len(reads) == 2
+    assert len(gate_calls) == 1
