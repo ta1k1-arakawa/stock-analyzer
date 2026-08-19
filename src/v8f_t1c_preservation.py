@@ -26,7 +26,7 @@ import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from src.v8_partition import (
     MANIFEST_FIELDS,
@@ -1161,6 +1161,87 @@ def _verify_private_artifacts(
     }
 
 
+PARTITION_MANIFEST_BASENAME = "partition_manifest.json"
+
+
+def validate_candidate_partition_manifest_paths(
+    candidate_partition_manifest_paths: Sequence[str | os.PathLike[str]],
+    repository_root: Path = CANONICAL_REPOSITORY_ROOT,
+) -> tuple[Path, ...]:
+    """Pre-gate, metadata-only candidate validation.  Reads no bytes.
+
+    Every candidate must be an absolute path outside the repository whose
+    basename is exactly ``partition_manifest.json``; the normalized list
+    must be non-empty and free of duplicates.  This only normalizes and
+    compares path strings (and, via ``Path.resolve``, filesystem metadata
+    such as symlinks); it never opens or reads a candidate file.
+    """
+    if isinstance(candidate_partition_manifest_paths, (str, bytes)):
+        raise V8FT1CPreservationBlocked("V8F_LOCATOR_CANDIDATE_LIST_INVALID")
+    try:
+        candidate_list = list(candidate_partition_manifest_paths)
+    except TypeError as error:
+        raise V8FT1CPreservationBlocked("V8F_LOCATOR_CANDIDATE_LIST_INVALID") from error
+    if len(candidate_list) == 0:
+        raise V8FT1CPreservationBlocked("V8F_LOCATOR_CANDIDATE_LIST_EMPTY")
+    normalized: list[Path] = []
+    seen: set[Path] = set()
+    for value in candidate_list:
+        resolved = _require_safe_external_path(value, repository_root, "V8F_LOCATOR_CANDIDATE_PATH_INVALID")
+        if resolved.name != PARTITION_MANIFEST_BASENAME:
+            raise V8FT1CPreservationBlocked("V8F_LOCATOR_CANDIDATE_BASENAME_INVALID")
+        if resolved in seen:
+            raise V8FT1CPreservationBlocked("V8F_LOCATOR_CANDIDATE_DUPLICATE_PATH")
+        seen.add(resolved)
+        normalized.append(resolved)
+    return tuple(normalized)
+
+
+def _locate_authorized_partition_manifest(
+    private_reader: Callable[[Path], bytes],
+    candidate_paths: Sequence[Path],
+    *,
+    expected_partition_manifest_sha256: str,
+    expected_partition_implementation_commit: str,
+) -> tuple[bytes, dict[str, int]]:
+    """Single post-gate content-addressed scan over pre-validated candidates.
+
+    A candidate can only ever fail to become a match; an unreadable,
+    malformed, or non-matching candidate never aborts the scan of the
+    remaining candidates, and this never trusts a candidate's self-declared
+    ``manifest_sha256`` -- ``_read_partition_manifest_bytes`` always
+    recomputes it first.  Exactly one exact match is required; zero or more
+    than one is fail-closed.  Never returns or logs a candidate path.
+    """
+    candidates_read_count = 0
+    matches: list[bytes] = []
+    for candidate_path in candidate_paths:
+        try:
+            candidate_raw = private_reader(candidate_path)
+        except OSError:
+            continue
+        candidates_read_count += 1
+        try:
+            manifest = _read_partition_manifest_bytes(candidate_raw)
+        except V8FT1CPreservationBlocked:
+            continue
+        if (
+            manifest["manifest_sha256"] == expected_partition_manifest_sha256
+            and manifest["partition_implementation_git_commit"] == expected_partition_implementation_commit
+        ):
+            matches.append(candidate_raw)
+    stats = {
+        "candidate_count": len(candidate_paths),
+        "candidates_read_count": candidates_read_count,
+        "exact_match_count": len(matches),
+    }
+    if len(matches) == 0:
+        raise V8FT1CPreservationBlocked("V8F_LOCATOR_ZERO_MATCHING_CANDIDATES")
+    if len(matches) > 1:
+        raise V8FT1CPreservationBlocked("V8F_LOCATOR_MULTIPLE_MATCHING_CANDIDATES")
+    return matches[0], stats
+
+
 def _build_public_artifact(
     private_summary: Mapping[str, Any], fresh_public_evidence: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -1415,6 +1496,172 @@ def resolve_and_verify_t1c_preservation(
     )
 
 
+def _execute_locator_with_dependencies(
+    *,
+    authorization_identity: str,
+    state_root: str | os.PathLike[str],
+    allocation_artifact_path: str | os.PathLike[str],
+    candidate_partition_manifest_paths: Sequence[str | os.PathLike[str]],
+    repository_root: Path,
+    public_preflight: Callable[[], Mapping[str, Any]],
+    private_reader: Callable[[Path], bytes],
+    gate_consumer: Callable[..., Mapping[str, Any]],
+    clock: Callable[[], datetime],
+    reviewed_support_implementation_sha: str,
+    public_evidence_resolver: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+    runtime_state_reader: Callable[[Path, str], Mapping[str, Any]] | None = None,
+    reviewed_v8f_design_candidate_commit: str = V8F_REVIEWED_DESIGN_CANDIDATE_COMMIT,
+    authorized_allocation_artifact_self_hash: str = AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
+) -> dict[str, Any]:
+    """DI-only future content-addressed locator boundary; never called with
+    real private paths here.  Mirrors `_execute_with_dependencies`'s exact
+    pre-gate ordering, replacing its single exact `partition_manifest_path`
+    with a pre-validated candidate list resolved by content address only
+    after the same one-shot gate is durably consumed.
+    """
+    preflight = _validate_public_preflight(public_preflight())
+    reviewed_support_sha = _validate_reviewed_support_implementation_binding(
+        repository_root,
+        preflight,
+        reviewed_support_implementation_sha,
+        runtime_state_reader=runtime_state_reader,
+    )
+    validate_authorization_identity(
+        authorization_identity,
+        reviewed_v8f_design_candidate_commit,
+        authorized_allocation_artifact_self_hash,
+    )
+    receipt_key = compute_receipt_key(
+        authorization_identity,
+        reviewed_v8f_design_candidate_commit,
+        authorized_allocation_artifact_self_hash,
+    )
+    if public_evidence_resolver is None:
+        _default_fresh_t1c_public_evidence(
+            repository_root,
+            preflight,
+            reviewed_support_sha,
+            runtime_state_reader=runtime_state_reader,
+        )
+    else:
+        _validate_fresh_t1c_public_evidence(public_evidence_resolver(preflight))
+
+    # Pre-gate, metadata-only: normalize/dedupe/basename/outside-repo only.
+    candidates = validate_candidate_partition_manifest_paths(
+        candidate_partition_manifest_paths, repository_root
+    )
+    state = _require_safe_external_path(state_root, repository_root, "V8F_STATE_PATH_INVALID")
+    allocation_path = _require_safe_external_path(
+        allocation_artifact_path, repository_root, "V8F_PRIVATE_PATH_INVALID"
+    )
+    if allocation_path in candidates:
+        raise V8FT1CPreservationBlocked("V8F_OUTPUT_PATH_COLLISION")
+    try:
+        state.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise V8FT1CPreservationBlocked("V8F_OUTPUT_OR_STATE_PREPARATION_FAILED") from error
+    if not state.is_dir():
+        raise V8FT1CPreservationBlocked("V8F_OUTPUT_OR_STATE_PREPARATION_FAILED")
+    if not allocation_path.is_file():
+        raise V8FT1CPreservationBlocked("V8F_PRIVATE_ARTIFACT_UNAVAILABLE")
+    if (state / (receipt_key + ".json")).exists():
+        raise V8FT1CPreservationBlocked("V8F_GATE_ALREADY_CONSUMED")
+
+    # Exact frozen boundary: no private reader is called before durable receipt.
+    gate_consumer(
+        state,
+        authorization_identity,
+        clock=clock,
+        reviewed_v8f_design_candidate_commit=reviewed_v8f_design_candidate_commit,
+        authorized_allocation_artifact_self_hash=authorized_allocation_artifact_self_hash,
+    )
+
+    expected_partition_manifest_sha256 = preflight["partition_manifest_sha256"]
+    expected_partition_implementation_commit = preflight["partition_implementation_commit"]
+    expected_allocation_artifact_self_hash = preflight.get(
+        "authorized_allocation_artifact_self_hash", authorized_allocation_artifact_self_hash
+    )
+
+    try:
+        allocation_raw = private_reader(allocation_path)
+    except OSError as error:
+        raise V8FT1CPreservationBlocked("V8F_PRIVATE_ARTIFACT_READ_FAILED") from error
+    allocation_artifact = read_t1c_allocation_artifact_bytes(allocation_raw)
+    if allocation_artifact.get("artifact_self_hash") != expected_allocation_artifact_self_hash:
+        raise V8FT1CPreservationBlocked("V8F_ALLOCATION_ARTIFACT_SELF_HASH_MISMATCH_TRUSTED")
+    if allocation_artifact.get("parent_v8_partition_manifest_sha256") != expected_partition_manifest_sha256:
+        raise V8FT1CPreservationBlocked("V8F_ALLOCATION_PARENT_MANIFEST_MISMATCH")
+    if (
+        allocation_artifact.get("parent_v8_partition_implementation_commit")
+        != expected_partition_implementation_commit
+    ):
+        raise V8FT1CPreservationBlocked("V8F_ALLOCATION_PARENT_IMPLEMENTATION_MISMATCH")
+
+    matched_manifest_raw, stats = _locate_authorized_partition_manifest(
+        private_reader,
+        candidates,
+        expected_partition_manifest_sha256=expected_partition_manifest_sha256,
+        expected_partition_implementation_commit=expected_partition_implementation_commit,
+    )
+
+    private_summary = _verify_private_artifacts(
+        allocation_raw,
+        matched_manifest_raw,
+        expected_allocation_artifact_self_hash=expected_allocation_artifact_self_hash,
+        expected_parent_t_spare_ticker_list_sha256=preflight["parent_t_spare_ticker_list_sha256"],
+        expected_partition_manifest_sha256=expected_partition_manifest_sha256,
+        expected_partition_implementation_commit=expected_partition_implementation_commit,
+        expected_v8c_allocation_implementation_commit=preflight["v8c_allocation_implementation_commit"],
+    )
+    return {
+        "result": "PASS",
+        "candidate_count": stats["candidate_count"],
+        "candidates_read_count": stats["candidates_read_count"],
+        "exact_match_count": stats["exact_match_count"],
+        "private_read_count": 1 + stats["candidates_read_count"],
+        "expected_partition_manifest_sha256": expected_partition_manifest_sha256,
+        "allocation_verified": True,
+        "partition_manifest_verified": True,
+        "t1c_membership_reassigned": private_summary["t1c_membership_reassigned"],
+        "allocation_self_hash_unchanged": private_summary["allocation_self_hash_unchanged"],
+        "parent_v8_provenance_unchanged": private_summary["parent_v8_provenance_unchanged"],
+        "gate_receipt_key_sha256": receipt_key,
+    }
+
+
+def resolve_and_verify_t1c_preservation_by_content_address(
+    authorization_identity: str,
+    *,
+    reviewed_support_implementation_sha: str,
+    allocation_artifact_path: str | os.PathLike[str],
+    candidate_partition_manifest_paths: Sequence[str | os.PathLike[str]],
+    clock: Callable[[], datetime] | None = None,
+) -> dict[str, Any]:
+    """Prepared future entry point: locate and verify the already-authorized
+    V8 partition manifest among externally-supplied candidate paths by
+    content address, only after the existing one-shot V8F T1C preservation
+    gate is durably consumed.  Not executed by this support task.
+
+    ``candidate_partition_manifest_paths`` must already be a metadata-only
+    resolved candidate list (a future PowerShell/runbook step); this module
+    performs no filesystem-wide discovery of its own.  The exact-path
+    production entry point, `resolve_and_verify_t1c_preservation`, is
+    unchanged and remains available for compatibility.
+    """
+    return _execute_locator_with_dependencies(
+        authorization_identity=authorization_identity,
+        reviewed_support_implementation_sha=reviewed_support_implementation_sha,
+        state_root=CANONICAL_V8F_T1C_PRESERVATION_STATE_ROOT,
+        allocation_artifact_path=allocation_artifact_path,
+        candidate_partition_manifest_paths=candidate_partition_manifest_paths,
+        repository_root=CANONICAL_REPOSITORY_ROOT,
+        public_preflight=lambda: _default_public_preflight(CANONICAL_REPOSITORY_ROOT),
+        private_reader=lambda path: path.read_bytes(),
+        gate_consumer=consume_gate_once,
+        clock=clock or (lambda: datetime.now(timezone.utc)),
+    )
+
+
 __all__ = [
     "AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH",
     "CANONICAL_V8F_T1C_PRESERVATION_STATE_ROOT",
@@ -1423,6 +1670,7 @@ __all__ = [
     "EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256",
     "EXPECTED_V8F_T1C_TICKER_COUNT",
     "EXPECTED_V8F_T1C_TICKER_LIST_SHA256",
+    "PARTITION_MANIFEST_BASENAME",
     "V8F_DESIGN_CANDIDATE_BLOB_SHA",
     "V8F_REVIEWED_DESIGN_CANDIDATE_COMMIT",
     "V8F_PRESERVATION_ARTIFACT_FIELDS",
@@ -1438,7 +1686,9 @@ __all__ = [
     "gate_receipt_bytes_sha256",
     "read_gate_receipt",
     "resolve_and_verify_t1c_preservation",
+    "resolve_and_verify_t1c_preservation_by_content_address",
     "validate_authorization_identity",
+    "validate_candidate_partition_manifest_paths",
     "verify_t1c_preservation_artifact_and_receipt",
     "verify_t1c_preservation_artifact_bytes",
 ]

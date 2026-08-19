@@ -9,8 +9,10 @@ from pathlib import Path
 import pytest
 
 from src import v8e_t1c_preservation as v8e_preservation
+from src import v8_partition as v8_partition_module
 from src import v8f_t1c_preservation as preservation
 from src.v8c_git_provenance import CANONICAL_REPOSITORY_ROOT
+from src.v8c_t1c_allocation import build_t1c_allocation_artifact
 
 
 AUTHORIZATION = (
@@ -981,3 +983,587 @@ def test_default_derivation_actually_reaches_pass_when_wired_through_execute(tmp
         )
     assert len(reads) == 2
     assert len(gate_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# V8F-T1C-LOCATOR-001: post-gate content-addressed partition-manifest locator
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_parent_tickers(count: int | None = None) -> list[str]:
+    count = preservation.EXPECTED_PARENT_T_SPARE_TICKER_COUNT if count is None else count
+    return [f"SYN{i:05d}" for i in range(count)]
+
+
+def _synthetic_manifest_and_allocation():
+    """A fully self-consistent, independently-verifiable synthetic manifest +
+    allocation pair: every hash below is *computed*, never a bare literal
+    standing in for real private production content."""
+    parent = _synthetic_parent_tickers()
+    t_spare_hash = v8_partition_module.ticker_list_sha256(parent)
+    partition_commit = "a" * 40
+    allocation_commit = "b" * 40
+    design_commit = "c" * 40
+    manifest_body = {
+        "schema_version": v8_partition_module.SCHEMA_VERSION,
+        "study_name": "V8_HISTORICAL_RESEARCH",
+        "design_commit": "c414d3191cba356734d7ed08bdf1abc7d51fc384",
+        "source_snapshot_semantics": v8_partition_module.SOURCE_SNAPSHOT_SEMANTICS,
+        "source_snapshot_clarification_commit": v8_partition_module.SOURCE_SNAPSHOT_CLARIFICATION_COMMIT,
+        "partition_implementation_git_commit": partition_commit,
+        "created_utc": "2026-01-01T00:00:00Z",
+        "source_url": "https://example.invalid/synthetic",
+        "source_host": "example.invalid",
+        "source_acquisition_utc": "2026-01-01T00:00:00Z",
+        "source_raw_sha256": "0" * 64,
+        "source_raw_byte_count": 1,
+        "v4_source_raw_sha256_reference": "0" * 64,
+        "v4_raw_sha_equality_required": False,
+        "source_reproduction_status": "PASS",
+        "t0_reproduction_status": "PASS",
+        "eligible_ticker_count": len(parent),
+        "eligible_ticker_list_sha256": t_spare_hash,
+        "selection_rule": "synthetic",
+        "deterministic_ordering_rule": "synthetic",
+        "t0_ticker_list_sha256": v8_partition_module.ticker_list_sha256(["T0_A"]),
+        "t1_ticker_list_sha256": v8_partition_module.ticker_list_sha256(["T1_A"]),
+        "t2_ticker_list_sha256": v8_partition_module.ticker_list_sha256(["T2_A"]),
+        "t3_ticker_list_sha256": v8_partition_module.ticker_list_sha256(["T3_A"]),
+        "t_spare_ticker_list_sha256": t_spare_hash,
+        "legacy_exclude_list": [],
+        "legacy_exclude_list_sha256": v8_partition_module.ticker_list_sha256([]),
+        "block_sizes": {"T0": 1, "T1": 1, "T2": 1, "T3": 1, "T_spare": len(parent)},
+        "block_assignments": {
+            "T0": ["T0_A"],
+            "T1": ["T1_A"],
+            "T2": ["T2_A"],
+            "T3": ["T3_A"],
+            "T_spare": parent,
+        },
+        "p_hist_start": "2018-01-01",
+        "p_hist_end": "2025-12-31",
+        "t1_role": "synthetic",
+        "t2_role": "synthetic",
+        "t3_role": "synthetic",
+        "t3_price_acquisition_authorized": False,
+    }
+    manifest_sha256 = v8_partition_module.canonical_sha256(manifest_body)
+    manifest = dict(manifest_body)
+    manifest["manifest_sha256"] = manifest_sha256
+    assert set(manifest) == set(v8_partition_module.MANIFEST_FIELDS)
+
+    allocation = build_t1c_allocation_artifact(
+        parent,
+        parent_v8_partition_manifest_sha256=manifest_sha256,
+        parent_v8_partition_implementation_commit=partition_commit,
+        parent_t_spare_ticker_list_sha256=t_spare_hash,
+        v8c_frozen_design_commit=design_commit,
+        v8c_allocation_implementation_commit=allocation_commit,
+        clock=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    meta = {
+        "manifest_sha256": manifest_sha256,
+        "partition_commit": partition_commit,
+        "allocation_commit": allocation_commit,
+        "design_commit": design_commit,
+        "t_spare_hash": t_spare_hash,
+    }
+    return manifest, allocation, meta
+
+
+def _retarget_manifest(manifest, **field_overrides):
+    """A self-consistent but *differently-hashed* variant of a manifest."""
+    mutated = dict(manifest)
+    mutated.update(field_overrides)
+    body = {k: v for k, v in mutated.items() if k != "manifest_sha256"}
+    mutated["manifest_sha256"] = v8_partition_module.canonical_sha256(body)
+    return mutated
+
+
+# --- validate_candidate_partition_manifest_paths: pre-gate, metadata-only ---
+
+
+def test_candidate_list_empty_blocks():
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation.validate_candidate_partition_manifest_paths([], repository_root=Path("/repo"))
+    assert excinfo.value.reason == "V8F_LOCATOR_CANDIDATE_LIST_EMPTY"
+
+
+def test_candidate_list_bare_string_rejected():
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation.validate_candidate_partition_manifest_paths(
+            "/outside/a/partition_manifest.json", repository_root=Path("/repo")
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_CANDIDATE_LIST_INVALID"
+
+
+def test_candidate_basename_must_be_exact():
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation.validate_candidate_partition_manifest_paths(
+            ["/outside/a/other_name.json"], repository_root=Path("/repo")
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_CANDIDATE_BASENAME_INVALID"
+
+
+def test_candidate_inside_repo_blocks():
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation.validate_candidate_partition_manifest_paths(
+            ["/repo/nested/partition_manifest.json"], repository_root=Path("/repo")
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_CANDIDATE_PATH_INVALID"
+
+
+def test_candidate_relative_path_blocks():
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation.validate_candidate_partition_manifest_paths(
+            ["relative/partition_manifest.json"], repository_root=Path("/repo")
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_CANDIDATE_PATH_INVALID"
+
+
+def test_candidate_duplicate_after_normalization_blocks():
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation.validate_candidate_partition_manifest_paths(
+            [
+                "/outside/a/./partition_manifest.json",
+                "/outside/a/partition_manifest.json",
+            ],
+            repository_root=Path("/repo"),
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_CANDIDATE_DUPLICATE_PATH"
+
+
+def test_candidate_list_accepts_valid_unique_paths():
+    result = preservation.validate_candidate_partition_manifest_paths(
+        ["/outside/a/partition_manifest.json", "/outside/b/partition_manifest.json"],
+        repository_root=Path("/repo"),
+    )
+    assert result == (
+        Path("/outside/a/partition_manifest.json"),
+        Path("/outside/b/partition_manifest.json"),
+    )
+
+
+# --- _locate_authorized_partition_manifest: post-gate content matching ---
+
+
+def test_locator_selects_the_one_exact_match_among_several():
+    manifest, _allocation, meta = _synthetic_manifest_and_allocation()
+    manifest_raw = json.dumps(manifest).encode("utf-8")
+    other_raw = json.dumps(_retarget_manifest(manifest, source_url="https://example.invalid/other")).encode(
+        "utf-8"
+    )
+    reads = {
+        Path("/outside/a/partition_manifest.json"): other_raw,
+        Path("/outside/b/partition_manifest.json"): manifest_raw,
+        Path("/outside/c/partition_manifest.json"): b"not json at all",
+    }
+    matched_raw, stats = preservation._locate_authorized_partition_manifest(
+        lambda path: reads[path],
+        tuple(reads.keys()),
+        expected_partition_manifest_sha256=meta["manifest_sha256"],
+        expected_partition_implementation_commit=meta["partition_commit"],
+    )
+    assert matched_raw == manifest_raw
+    assert stats == {"candidate_count": 3, "candidates_read_count": 3, "exact_match_count": 1}
+
+
+def test_locator_zero_matches_blocks():
+    manifest, _allocation, meta = _synthetic_manifest_and_allocation()
+    non_matching = json.dumps(
+        _retarget_manifest(manifest, source_url="https://example.invalid/nonmatching")
+    ).encode("utf-8")
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._locate_authorized_partition_manifest(
+            lambda path: non_matching,
+            (Path("/outside/a/partition_manifest.json"),),
+            expected_partition_manifest_sha256=meta["manifest_sha256"],
+            expected_partition_implementation_commit=meta["partition_commit"],
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_ZERO_MATCHING_CANDIDATES"
+
+
+def test_locator_multiple_exact_copies_blocks():
+    manifest, _allocation, meta = _synthetic_manifest_and_allocation()
+    raw = json.dumps(manifest).encode("utf-8")
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._locate_authorized_partition_manifest(
+            lambda path: raw,
+            (Path("/outside/a/partition_manifest.json"), Path("/outside/b/partition_manifest.json")),
+            expected_partition_manifest_sha256=meta["manifest_sha256"],
+            expected_partition_implementation_commit=meta["partition_commit"],
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_MULTIPLE_MATCHING_CANDIDATES"
+
+
+def test_locator_rejects_self_declared_hash_without_recomputation():
+    manifest, _allocation, meta = _synthetic_manifest_and_allocation()
+    tampered = dict(manifest)
+    # Content changed, but the (now stale/incorrect) manifest_sha256 field is
+    # left exactly equal to the expected hash -- a bare self-declaration.
+    tampered["source_url"] = "https://example.invalid/tampered-but-claims-original-hash"
+    raw = json.dumps(tampered).encode("utf-8")
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._locate_authorized_partition_manifest(
+            lambda path: raw,
+            (Path("/outside/a/partition_manifest.json"),),
+            expected_partition_manifest_sha256=meta["manifest_sha256"],
+            expected_partition_implementation_commit=meta["partition_commit"],
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_ZERO_MATCHING_CANDIDATES"
+
+
+def test_locator_rejects_wrong_implementation_commit_despite_hash_match():
+    manifest, _allocation, meta = _synthetic_manifest_and_allocation()
+    raw = json.dumps(manifest).encode("utf-8")
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._locate_authorized_partition_manifest(
+            lambda path: raw,
+            (Path("/outside/a/partition_manifest.json"),),
+            expected_partition_manifest_sha256=meta["manifest_sha256"],
+            expected_partition_implementation_commit="d" * 40,
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_ZERO_MATCHING_CANDIDATES"
+
+
+def test_locator_malformed_candidate_cannot_match():
+    manifest, _allocation, meta = _synthetic_manifest_and_allocation()
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._locate_authorized_partition_manifest(
+            lambda path: b"{not valid json",
+            (Path("/outside/a/partition_manifest.json"),),
+            expected_partition_manifest_sha256=meta["manifest_sha256"],
+            expected_partition_implementation_commit=meta["partition_commit"],
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_ZERO_MATCHING_CANDIDATES"
+
+
+def test_locator_unreadable_candidate_cannot_match():
+    manifest, _allocation, meta = _synthetic_manifest_and_allocation()
+
+    def private_reader(path):
+        raise OSError("synthetic: candidate does not exist")
+
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._locate_authorized_partition_manifest(
+            private_reader,
+            (Path("/outside/a/partition_manifest.json"),),
+            expected_partition_manifest_sha256=meta["manifest_sha256"],
+            expected_partition_implementation_commit=meta["partition_commit"],
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_ZERO_MATCHING_CANDIDATES"
+
+
+def test_locator_error_never_leaks_candidate_path():
+    manifest, _allocation, meta = _synthetic_manifest_and_allocation()
+    non_matching = json.dumps(
+        _retarget_manifest(manifest, source_url="https://example.invalid/nonmatching")
+    ).encode("utf-8")
+    secret_path = Path("/outside/SECRET_TICKER_MARKER/partition_manifest.json")
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._locate_authorized_partition_manifest(
+            lambda path: non_matching,
+            (secret_path,),
+            expected_partition_manifest_sha256=meta["manifest_sha256"],
+            expected_partition_implementation_commit=meta["partition_commit"],
+        )
+    assert "SECRET_TICKER_MARKER" not in str(excinfo.value)
+    assert "SECRET_TICKER_MARKER" not in excinfo.value.reason
+
+
+# --- Full existing verification chain, exercised end-to-end with synthetic,
+# fully self-consistent data (never the frozen real production hash) ---
+
+
+def test_locator_selected_candidate_passes_full_existing_verification():
+    manifest, allocation, meta = _synthetic_manifest_and_allocation()
+    allocation_raw = json.dumps(allocation).encode("utf-8")
+    manifest_raw = json.dumps(manifest).encode("utf-8")
+
+    matched_raw, stats = preservation._locate_authorized_partition_manifest(
+        lambda path: manifest_raw,
+        (Path("/outside/a/partition_manifest.json"),),
+        expected_partition_manifest_sha256=meta["manifest_sha256"],
+        expected_partition_implementation_commit=meta["partition_commit"],
+    )
+    assert stats["exact_match_count"] == 1
+
+    summary = preservation._verify_private_artifacts(
+        allocation_raw,
+        matched_raw,
+        expected_allocation_artifact_self_hash=allocation["artifact_self_hash"],
+        expected_parent_t_spare_ticker_list_sha256=meta["t_spare_hash"],
+        expected_t1c_ticker_list_sha256=allocation["t1c_ticker_list_sha256"],
+        expected_remaining_t_spare_ticker_list_sha256=allocation["remaining_t_spare_ticker_list_sha256"],
+        expected_partition_manifest_sha256=meta["manifest_sha256"],
+        expected_partition_implementation_commit=meta["partition_commit"],
+        expected_v8c_allocation_implementation_commit=meta["allocation_commit"],
+        expected_v8c_frozen_design_commit=meta["design_commit"],
+    )
+    assert summary["allocation_artifact_self_hash"] == allocation["artifact_self_hash"]
+    assert summary["t1c_membership_reassigned"] is False
+    assert summary["allocation_self_hash_unchanged"] is True
+    assert summary["parent_v8_provenance_unchanged"] is True
+
+
+def test_locator_full_verification_rejects_wrong_parent_t_spare_binding():
+    manifest, allocation, meta = _synthetic_manifest_and_allocation()
+    allocation_raw = json.dumps(allocation).encode("utf-8")
+    manifest_raw = json.dumps(manifest).encode("utf-8")
+    with pytest.raises(preservation.V8FT1CPreservationBlocked):
+        preservation._verify_private_artifacts(
+            allocation_raw,
+            manifest_raw,
+            expected_allocation_artifact_self_hash=allocation["artifact_self_hash"],
+            expected_parent_t_spare_ticker_list_sha256="0" * 64,
+            expected_t1c_ticker_list_sha256=allocation["t1c_ticker_list_sha256"],
+            expected_remaining_t_spare_ticker_list_sha256=allocation["remaining_t_spare_ticker_list_sha256"],
+            expected_partition_manifest_sha256=meta["manifest_sha256"],
+            expected_partition_implementation_commit=meta["partition_commit"],
+            expected_v8c_allocation_implementation_commit=meta["allocation_commit"],
+            expected_v8c_frozen_design_commit=meta["design_commit"],
+        )
+
+
+# --- Full DI execution boundary: gate/private-read ordering, pre/post-gate
+# classification, one-shot no-retry semantics ---
+
+
+def test_locator_pre_gate_failure_has_zero_gate_and_private_reads(tmp_path):
+    allocation_path = tmp_path / "allocation.bin"
+    allocation_path.write_bytes(b"synthetic allocation")
+    reads = []
+    gate_calls = []
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+            state_root=tmp_path / "state",
+            allocation_artifact_path=allocation_path,
+            candidate_partition_manifest_paths=[],
+            repository_root=tmp_path / "repo",
+            public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_CANDIDATE_LIST_EMPTY"
+    assert reads == []
+    assert gate_calls == []
+    assert not (tmp_path / "state").exists()
+
+
+def test_locator_duplicate_candidate_paths_pre_gate_block(tmp_path):
+    allocation_path = tmp_path / "allocation.bin"
+    allocation_path.write_bytes(b"synthetic allocation")
+    candidate = tmp_path.parent / "outside-candidates" / "partition_manifest.json"
+    reads = []
+    gate_calls = []
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+            state_root=tmp_path / "state",
+            allocation_artifact_path=allocation_path,
+            candidate_partition_manifest_paths=[candidate, candidate],
+            repository_root=tmp_path / "repo",
+            public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_CANDIDATE_DUPLICATE_PATH"
+    assert reads == []
+    assert gate_calls == []
+
+
+def test_locator_repo_internal_candidate_pre_gate_block(tmp_path):
+    allocation_path = tmp_path / "allocation.bin"
+    allocation_path.write_bytes(b"synthetic allocation")
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    candidate = repo_root / "nested" / "partition_manifest.json"
+    reads = []
+    gate_calls = []
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+            state_root=tmp_path / "state",
+            allocation_artifact_path=allocation_path,
+            candidate_partition_manifest_paths=[candidate],
+            repository_root=repo_root,
+            public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert excinfo.value.reason == "V8F_LOCATOR_CANDIDATE_PATH_INVALID"
+    assert reads == []
+    assert gate_calls == []
+
+
+def test_locator_reviewed_support_failure_precedes_gate_and_private_read(tmp_path):
+    allocation_path = tmp_path / "allocation.bin"
+    allocation_path.write_bytes(b"synthetic allocation")
+    candidate = tmp_path.parent / "outside-candidates-2" / "partition_manifest.json"
+    reads = []
+    gate_calls = []
+    with pytest.raises(preservation.V8FT1CPreservationBlocked):
+        preservation._execute_locator_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+            state_root=tmp_path / "state",
+            allocation_artifact_path=allocation_path,
+            candidate_partition_manifest_paths=[candidate],
+            repository_root=tmp_path / "repo",
+            public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(
+                head="2" * 40, commits_after_reviewed_support_sha=1
+            ),
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert reads == []
+    assert gate_calls == []
+    assert not (tmp_path / "state").exists()
+
+
+def _locator_ordering_scenario(tmp_path, monkeypatch):
+    """`validate_authorization_identity` always re-checks its allocation-hash
+    argument against the real frozen `AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH`
+    constant, so no fabricated authorization can ever reach the gate with a
+    synthetic self-hash -- confirmed by `test_locator_pre_gate_...` style
+    failures if attempted.  These plumbing/ordering tests therefore use the
+    real `AUTHORIZATION` and monkeypatch only `read_t1c_allocation_artifact_bytes`
+    to bypass the *cryptographic preimage* requirement (which cannot be
+    fabricated and is already exercised directly and exhaustively via
+    `_verify_private_artifacts` elsewhere in this file), so the call ordering
+    itself -- gate before any private read, allocation before candidates --
+    can be observed all the way through the candidate scan."""
+    monkeypatch.setattr(
+        preservation,
+        "read_t1c_allocation_artifact_bytes",
+        lambda raw: {
+            "artifact_self_hash": preservation.AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH,
+            "parent_v8_partition_manifest_sha256": preservation.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+            "parent_v8_partition_implementation_commit": preservation.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        },
+    )
+    allocation_path = tmp_path / "allocation.json"
+    allocation_path.write_bytes(b"synthetic allocation bytes")
+    candidate_dir = tmp_path / "outside-candidates" / "a"
+    candidate_dir.mkdir(parents=True)
+    candidate = candidate_dir / "partition_manifest.json"
+    candidate.write_bytes(b"synthetic candidate bytes")
+    state_root = tmp_path / "state"
+    kwargs = dict(
+        authorization_identity=AUTHORIZATION,
+        reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+        state_root=state_root,
+        allocation_artifact_path=allocation_path,
+        candidate_partition_manifest_paths=[candidate],
+        repository_root=tmp_path / "repo",
+        public_preflight=_preflight,
+        runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
+        public_evidence_resolver=lambda _: _fresh_public_evidence(),
+        gate_consumer=preservation.consume_gate_once,
+        clock=_clock,
+    )
+    return kwargs, state_root
+
+
+def test_locator_candidate_and_allocation_bytes_only_read_after_gate(tmp_path, monkeypatch):
+    kwargs, state_root = _locator_ordering_scenario(tmp_path, monkeypatch)
+    receipt_seen_before_read = []
+
+    def private_reader(path):
+        receipt_seen_before_read.append(any(state_root.glob("*.json")))
+        return path.read_bytes()
+
+    kwargs["private_reader"] = private_reader
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(**kwargs)
+    # The only reachable post-gate BLOCK here is "no exact content match" --
+    # there is no way to fabricate the frozen real partition-manifest hash --
+    # but reaching it proves both the allocation read and the candidate scan
+    # read actually happened, and only after gate consumption.
+    assert excinfo.value.reason == "V8F_LOCATOR_ZERO_MATCHING_CANDIDATES"
+    assert receipt_seen_before_read == [True, True]
+    assert list(state_root.glob("*.json"))
+
+
+def test_locator_post_gate_failure_receipt_persists_no_retry(tmp_path, monkeypatch):
+    kwargs, state_root = _locator_ordering_scenario(tmp_path, monkeypatch)
+    kwargs["private_reader"] = lambda path: path.read_bytes()
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(**kwargs)
+    assert excinfo.value.reason == "V8F_LOCATOR_ZERO_MATCHING_CANDIDATES"
+
+    key = preservation.compute_receipt_key(AUTHORIZATION)
+    receipt = preservation.read_gate_receipt(state_root, key)
+    assert receipt["consumed"] is True
+    assert receipt["consumption_count"] == 1
+
+    # Same authorization again: pre-gate checks pass again, but the gate is
+    # already consumed -- no retry, no receipt reset, no second scan.
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo_retry:
+        preservation._execute_locator_with_dependencies(**kwargs)
+    assert excinfo_retry.value.reason == "V8F_GATE_ALREADY_CONSUMED"
+
+
+def test_locator_no_ticker_or_path_in_safe_result_fields():
+    manifest, allocation, meta = _synthetic_manifest_and_allocation()
+    manifest_raw = json.dumps(manifest).encode("utf-8")
+    allocation_raw = json.dumps(allocation).encode("utf-8")
+    matched_raw, stats = preservation._locate_authorized_partition_manifest(
+        lambda path: manifest_raw,
+        (Path("/outside/a/partition_manifest.json"),),
+        expected_partition_manifest_sha256=meta["manifest_sha256"],
+        expected_partition_implementation_commit=meta["partition_commit"],
+    )
+    summary = preservation._verify_private_artifacts(
+        allocation_raw,
+        matched_raw,
+        expected_allocation_artifact_self_hash=allocation["artifact_self_hash"],
+        expected_parent_t_spare_ticker_list_sha256=meta["t_spare_hash"],
+        expected_t1c_ticker_list_sha256=allocation["t1c_ticker_list_sha256"],
+        expected_remaining_t_spare_ticker_list_sha256=allocation["remaining_t_spare_ticker_list_sha256"],
+        expected_partition_manifest_sha256=meta["manifest_sha256"],
+        expected_partition_implementation_commit=meta["partition_commit"],
+        expected_v8c_allocation_implementation_commit=meta["allocation_commit"],
+        expected_v8c_frozen_design_commit=meta["design_commit"],
+    )
+    safe_fields = set(stats) | set(summary)
+    assert "t1c_tickers" not in safe_fields
+    assert "remaining_t_spare_tickers" not in safe_fields
+    for ticker in allocation["t1c_tickers"]:
+        assert ticker not in json.dumps(stats)
+        assert ticker not in json.dumps(summary)
+
+
+def test_partition_manifest_basename_constant_is_exact():
+    assert preservation.PARTITION_MANIFEST_BASENAME == "partition_manifest.json"
+
+
+def test_no_network_and_no_real_private_read_locator_seam():
+    """Re-runs the existing module-wide AST scan; the locator seam adds no
+    forbidden network/socket names."""
+    import ast
+    import inspect
+
+    source = inspect.getsource(preservation)
+    tree = ast.parse(source)
+    forbidden = {"urlopen", "socket", "requests", "httpx"}
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    attrs = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    assert not (forbidden & names)
+    assert not (forbidden & attrs)
