@@ -201,18 +201,138 @@ preservation gate — is itself a prerequisite check before this gate may be
 consumed; a mismatch on any field is a `PRE_GATE` `BLOCK`, never a
 post-gate condition.
 
-The durable gate receipt must safely record every field in
-`locator_gate_authority_binding` above — all of them are safe (two Git
-commit SHAs, the fixed study/gate literals, and the two frozen public
-partition-identity values; none is a private path, a ticker identity, or
-the raw human authorization identity) — plus the existing one-shot receipt
-fields (`schema_version`, `artifact_role`, `authorization_identity_sha256`,
-`consumed`, `consumption_count`, `consumption_boundary`,
-`consumption_timestamp_utc`), exactly mirroring `V8F_RECEIPT_FIELDS`'s
-existing safe-field discipline. Unlike the V8F combined gate, this receipt
-never records an allocation-artifact hash: the locator stage resolves and
+**Human authorization grammar.** The human authorization that consumes this
+gate is a single deterministic string, frozen exactly, binding human
+authority to the exact reviewed candidate, exact reviewed implementation,
+and frozen partition identity above:
+
+```text
+authorization_identity =
+    "V8G_HUMAN_AUTHORIZE_PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT_AT_"
+  + reviewed_v8g_design_candidate_commit
+  + "_WITH_"
+  + reviewed_locator_support_implementation_sha
+  + "_FOR_MANIFEST_"
+  + expected_partition_manifest_sha256
+  + "_IMPL_"
+  + expected_partition_implementation_commit
+```
+
+Every component must be exact lowercase hexadecimal of its frozen length:
+`reviewed_v8g_design_candidate_commit`, `reviewed_locator_support_implementation_sha`,
+and `expected_partition_implementation_commit` are each exactly 40
+lowercase hex characters (a full Git commit object id);
+`expected_partition_manifest_sha256` is exactly 64 lowercase hex characters
+(a SHA-256 digest). Any component of the wrong length, wrong case, or
+containing a non-hex character is a grammar mismatch and a `PRE_GATE`
+`BLOCK` — never a post-gate condition, and never silently coerced (no
+case-folding, no trimming).
+
+The raw `authorization_identity` string must never be printed, logged,
+persisted publicly, or included in any exception message, receipt, or
+artifact, at any point, under any failure mode. Only its digest,
+
+```text
+authorization_identity_sha256 = SHA256(UTF8(authorization_identity))
+```
+
+may ever be persisted or appear in any receipt or safe result.
+
+**Deterministic one-shot receipt key.** The receipt key that determines
+whether this gate has already been consumed is frozen to be exactly:
+
+```text
+receipt_key_material =
+    "V8G_PRIVATE_PARTITION_LOCATOR_GATE_RECEIPT_KEY_V1\0"
+  + "ta1k1-arakawa/stock-analyzer"
+  + "\0"
+  + "V8G_HISTORICAL_RESEARCH"
+  + "\0"
+  + "HUMAN_V8G_PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT_GATE"
+
+locator_gate_receipt_key_sha256 = SHA256(UTF8(receipt_key_material))
+```
+
+This deliberately, and unlike V8F's own T1C preservation receipt key
+(`reviewed_v8f_design_candidate_commit` + `authorization_identity_sha256` +
+`authorized_allocation_artifact_self_hash`), excludes every value that
+could ever change across attempts: the authorization identity/hash, the
+design candidate commit, the locator-support implementation SHA, the
+partition manifest SHA, the selected path hash, and the candidate-set hash.
+None of those may ever appear in `receipt_key_material`. This is
+intentional: `HUMAN_V8G_PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT_GATE` may
+be durably consumed **at most once for the entire life of the V8G study**
+— the receipt key is fixed the moment the repository identity, study name,
+and gate name are fixed, and stays fixed regardless of which authorization,
+which reviewed design candidate, or which reviewed implementation was used
+at the one execution that consumed it. Once any V8G locator gate receipt
+exists at all, no later fresh human authorization, no later amended and
+independently re-reviewed design candidate, and no later locator-support
+implementation can ever obtain a second locator execution in this study —
+the fixed-key receipt itself blocks it, before the authorization-grammar
+and binding checks above are even reached. This is strictly stronger than,
+and does not weaken, the binding checks above: those checks still ensure
+that whichever single execution *does* consume this fixed key used a
+genuinely reviewed and current candidate/implementation; the fixed key
+ensures no second execution — under any candidate, any implementation, any
+authorization — can ever happen at all. A post-gate `BLOCK` under this
+gate therefore always requires a successor study, exactly as this
+subsection's existing failure semantics already freeze below.
+
+The exact reviewed candidate/implementation/partition-identity values used
+at the one execution that does consume this key belong in the receipt
+**body**, never the key, precisely so they remain independently verifiable
+without ever being able to unlock a second consumption. The receipt body
+must contain and validate at minimum:
+
+```text
+schema_version
+artifact_role
+study                                   (= "V8G_HISTORICAL_RESEARCH")
+gate                                    (= "HUMAN_V8G_PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT_GATE")
+reviewed_v8g_design_candidate_commit
+reviewed_locator_support_implementation_sha
+expected_partition_manifest_sha256
+expected_partition_implementation_commit
+authorization_identity_sha256
+consumed=true
+consumption_count=1
+consumption_boundary
+consumption_timestamp_utc
+```
+
+The exact JSON field ordering/typing is frozen by the future implementation
+that builds this receipt; the field *set* above is frozen by this design.
+None of these fields is a private path, a ticker identity, a raw manifest
+byte, or the raw authorization identity — they are exactly the same class
+of safe Git-commit/hash/enum/boolean/timestamp values `V8F_RECEIPT_FIELDS`
+already safely persists. Unlike the V8F combined gate, this receipt never
+records an allocation-artifact hash: the locator stage resolves and
 verifies only the partition manifest, never the T1C allocation, which
 remains the separate, later V8G T1C preservation gate's exclusive concern.
+
+**Durable state.** The receipt lives in canonical machine-local durable
+state, outside this repository, shared across every checkout of
+`ta1k1-arakawa/stock-analyzer` on that machine — never a per-checkout or
+HOME/USERPROFILE-derived location. A future implementation must reuse the
+existing repository pattern for this exactly
+(`src/v8c_human_gate_consumption.py`'s `CANONICAL_CONSUMPTION_STATE_ROOT`
+resolution: the Windows `FOLDERID_ProgramData` known-folder path via
+`SHGetKnownFolderPath`, with a POSIX `/var/lib/stock-analyzer` fallback for
+local development/testing), under its own `v8g-locator-gate-state`
+subdirectory; it must not invent a new or per-checkout state root. Receipt
+publication is exclusive and no-overwrite, with flush/fsync on the receipt
+file and fsync on its containing directory, exactly per
+`AI_REAL_EXECUTION_RUNBOOK.md`'s durable-publication discipline. There is
+no reset/delete/reuse API for this receipt, ever. An existing receipt at
+the fixed key is a `PRE_GATE` `BLOCK` before any candidate content is
+read, regardless of which authorization/candidate/implementation the
+caller now presents. A malformed existing receipt (wrong schema, wrong
+field set, unparseable, or any other structural defect) is also `BLOCK`,
+and is never deleted, repaired, or replaced — it is left exactly as found,
+and only a successor-study decision may address it. The receipt's own
+filesystem path is itself machine-local private operational detail; it
+never needs to appear in, and must not appear in, any public evidence.
 
 Before this gate's durable receipt is published: `candidate_content_reads =
 0`. Only the metadata-only enumeration and hashing of §2.1.1–§2.1.2 may
@@ -547,6 +667,29 @@ review, synthetic tests must cover at minimum:
   `candidate_content_reads=0`;
 - no candidate content is read before the locator gate's durable receipt
   exists;
+- the exact authorization grammar accepts the exact tuple of
+  `reviewed_v8g_design_candidate_commit` / `reviewed_locator_support_implementation_sha`
+  / `expected_partition_manifest_sha256` / `expected_partition_implementation_commit`
+  it was constructed from, and only that tuple;
+- any single component mismatch (wrong commit, wrong manifest SHA, wrong
+  length, wrong case, non-hex character) rejects the authorization
+  `PRE_GATE`, never post-gate;
+- the raw `authorization_identity` string never appears in any log,
+  exception message, receipt, or artifact — only `authorization_identity_sha256`
+  does;
+- `locator_gate_receipt_key_sha256` is deterministic: recomputing
+  `receipt_key_material` from the same repository/study/gate literals
+  always yields the same digest;
+- changing only the authorization identity, only the reviewed design
+  candidate commit, or only the reviewed locator-support implementation SHA
+  — independently or in any combination — never changes
+  `locator_gate_receipt_key_sha256`;
+- a second locator execution attempted after a receipt already exists at
+  the fixed key `BLOCK`s even when presented with a fresh, otherwise-valid
+  authorization identity, a newly reviewed design candidate, or a newly
+  reviewed implementation;
+- a malformed existing receipt at the fixed key `BLOCK`s and is never
+  deleted, repaired, or overwritten by a subsequent attempt;
 - exactly one exact synthetic match among several non-matching/malformed
   candidates => locator PASS;
 - zero exact matches post-gate => `BLOCK_CLOSED`;
