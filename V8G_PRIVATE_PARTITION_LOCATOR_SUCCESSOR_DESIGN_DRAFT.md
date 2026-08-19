@@ -41,8 +41,11 @@ downgrade that finding; it is carried forward exactly as recorded.
 
 No V8F human authorization, gate, receipt, preservation result, locator
 result, or research-opening authority authorizes any V8G stage. Every V8G
-prerequisite requires fresh, V8G-specific authorization bound to the exact
-V8G frozen design commit.
+prerequisite requires fresh, V8G-specific authorization, bound — per stage,
+exactly as §2.3 freezes — to either the exact independently reviewed V8G
+design candidate commit applicable to that stage (every stage before
+`HUMAN_V8G_DESIGN_FREEZE`) or the exact frozen V8G design commit (every
+stage from `HUMAN_V8G_DESIGN_FREEZE` onward).
 
 ## 2. Single change relative to V8F
 
@@ -172,6 +175,45 @@ gate=HUMAN_V8G_PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT_GATE
 consumption_boundary=IMMEDIATELY_BEFORE_FIRST_CANDIDATE_PARTITION_BYTE_READ
 ```
 
+This gate's authority is a prefreeze authority (§2.3): it binds exactly to
+
+```text
+locator_gate_authority_binding:
+  reviewed_v8g_design_candidate_commit         (§2.3; the candidate commit
+                                                  this locator stage's own
+                                                  independent review PASS
+                                                  actually approved)
+  reviewed_locator_support_implementation_sha  (the exact reviewed Git
+                                                  commit of the locator-
+                                                  support module, §2.2)
+  study                                        (= "V8G_HISTORICAL_RESEARCH")
+  gate = "HUMAN_V8G_PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT_GATE"
+  expected_partition_manifest_sha256           (§2.1, frozen identity)
+  expected_partition_implementation_commit     (§2.1, frozen identity)
+```
+
+Mechanically re-verifying that binding — the executing implementation's own
+commit and every field above equal exactly what was independently reviewed
+and authorized for this stage, exactly as the existing
+`_validate_reviewed_support_implementation_binding` /
+`_validate_public_preflight` pattern already does for V8F's T1C
+preservation gate — is itself a prerequisite check before this gate may be
+consumed; a mismatch on any field is a `PRE_GATE` `BLOCK`, never a
+post-gate condition.
+
+The durable gate receipt must safely record every field in
+`locator_gate_authority_binding` above — all of them are safe (two Git
+commit SHAs, the fixed study/gate literals, and the two frozen public
+partition-identity values; none is a private path, a ticker identity, or
+the raw human authorization identity) — plus the existing one-shot receipt
+fields (`schema_version`, `artifact_role`, `authorization_identity_sha256`,
+`consumed`, `consumption_count`, `consumption_boundary`,
+`consumption_timestamp_utc`), exactly mirroring `V8F_RECEIPT_FIELDS`'s
+existing safe-field discipline. Unlike the V8F combined gate, this receipt
+never records an allocation-artifact hash: the locator stage resolves and
+verifies only the partition manifest, never the T1C allocation, which
+remains the separate, later V8G T1C preservation gate's exclusive concern.
+
 Before this gate's durable receipt is published: `candidate_content_reads =
 0`. Only the metadata-only enumeration and hashing of §2.1.1–§2.1.2 may
 occur pre-gate.
@@ -232,6 +274,8 @@ public artifact — conceptually `V8G_PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT.js
 schema_version
 artifact_role
 study
+reviewed_v8g_design_candidate_commit
+reviewed_locator_support_implementation_sha
 predecessor_terminal_commit
 predecessor_terminal_artifact_blob
 locator_contract              (= "PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT_V1")
@@ -256,11 +300,41 @@ of this public artifact by the methodology authority is mandatory before
 any V8G T1C preservation authority may be granted; the locator stage does
 not itself authorize preservation.
 
+The locator artifact verifier — both this independent review step and any
+later stage's own pre-gate preflight that consumes this artifact (§2.1.5)
+— must require exact equality between the artifact's
+`reviewed_v8g_design_candidate_commit` / `reviewed_locator_support_implementation_sha`
+and that consuming stage's own currently authorized/reviewed values. A
+locator artifact produced under a different (including a later-amended,
+per the §2.3 staleness rule) design candidate commit, an unreviewed
+locator-support implementation, a locator-support implementation the
+artifact's own review never covered, or any predecessor study's
+identifiers must `BLOCK` on that mismatch alone and must never authorize
+V8G T1C preservation, regardless of how the artifact's own
+`exact_match_count` or `locator_result` fields read.
+
 #### 2.1.5 Future preservation use
 
-After the locator artifact reaches PASS and independent review PASS, a
-future V8G T1C preservation execution resolves the private manifest path as
-follows, strictly before its own preservation gate:
+V8G T1C preservation is itself a prefreeze stage (§2.3): its own authority
+binds to its own `reviewed_v8g_design_candidate_commit` and its own
+reviewed T1C-preservation-support implementation commit, exactly as the
+locator stage's does (§2.1.3) — never to a frozen design commit, since none
+exists yet at this stage either.
+
+Before doing anything else — and strictly before the manifest-path
+resolution below is even attempted — V8G T1C preservation must mechanically
+re-verify that the reviewed locator artifact's
+`reviewed_v8g_design_candidate_commit` and
+`reviewed_locator_support_implementation_sha` (§2.1.4) exactly equal V8G
+T1C preservation's own currently authorized/reviewed values. Any mismatch
+is a `PRE_GATE` `BLOCK`, per §2.1.4's verifier requirement; a stale locator
+artifact (one reviewed against an earlier, since-amended design candidate)
+never authorizes T1C preservation, no matter how it resolved.
+
+After the locator artifact reaches PASS and independent review PASS, *and*
+that binding re-verification passes, a future V8G T1C preservation
+execution resolves the private manifest path as follows, strictly before
+its own preservation gate:
 
 - repeat the same metadata-only enumeration and canonicalization contract
   of §2.1.1–§2.1.2 (same scope, same exclusions, same hashing scheme);
@@ -307,6 +381,93 @@ V8F applied to the historical V7 transport source. Those historical modules
 remain valid, unmodified evidence of their own predecessor studies; they
 are never renamed to V8G and never substitute for V8G's own fresh
 implementation or authority.
+
+### 2.3 Stage-aware design authority binding
+
+No frozen V8G design commit exists until `HUMAN_V8G_DESIGN_FREEZE` (§7)
+completes. Every stage in §7's minimum stage order that occurs *before*
+`HUMAN_V8G_DESIGN_FREEZE` — `V8G_LOCATOR_SUPPORT_IMPLEMENTATION`,
+`HUMAN_V8G_PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT_GATE`,
+`V8G_PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT`,
+`V8G_T1C_PRESERVATION_SUPPORT_IMPLEMENTATION`,
+`V8G_T1C_PRESERVATION_AUTHORITY_GATE`, `V8G_T1C_PRESERVATION_RECHECK`, and
+`V8G_T2_PREFREEZE_PRESERVATION_RECHECK` — therefore cannot bind its
+authority to a frozen design commit. This section is the exact, frozen
+resolution of that gap; every other reference in this draft to authority
+"bound to the exact V8G frozen design commit" means exactly what this
+section defines, not a nonexistent pre-freeze frozen commit.
+
+```text
+prefreeze_stages = {
+  V8G_LOCATOR_SUPPORT_IMPLEMENTATION,
+  HUMAN_V8G_PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT_GATE,
+  V8G_PRIVATE_PARTITION_LOCATOR_ESTABLISHMENT,
+  V8G_T1C_PRESERVATION_SUPPORT_IMPLEMENTATION,
+  V8G_T1C_PRESERVATION_AUTHORITY_GATE,
+  V8G_T1C_PRESERVATION_RECHECK,
+  V8G_T2_PREFREEZE_PRESERVATION_RECHECK,
+}
+
+postfreeze_stages = {
+  V8G_TRANSPORT_PRODUCTION_IMPLEMENTATION,
+  V8G_T1C_AUTHORITY_BRIDGE_GATE,
+  V8G_T1C_READINESS_HUMAN_GATE,
+  EXECUTE_FIXED_V8G_T1C_TRANSPORT_READINESS,
+  V8G_T1C_RAW_ACQUISITION_HUMAN_GATE,
+  EXECUTE_V8G_T1C_RAW_ACQUISITION,
+  SEPARATE_V8G_T1C_RESEARCH_OPENING_GATE,
+  V8G_T1C_RESEARCH_OPENING,
+  ... and every analogous T2 stage, once frozen per §7's closing note
+}
+```
+
+For every stage in `prefreeze_stages`, authority binds to
+`reviewed_v8g_design_candidate_commit`: the exact Git commit of *this*
+design draft that underwent independent methodology review and was
+explicitly approved as current for that specific stage. It never binds to
+a "frozen design commit," because none exists yet at that point.
+
+`reviewed_v8g_design_candidate_commit` is frozen per stage, not globally.
+Different prefreeze stages may be reviewed and authorized against
+different candidate commits over time, if this draft is amended and
+independently re-reviewed between them. Each stage's own authorization
+records exactly which candidate commit it was reviewed and authorized
+against; it is never inferred, defaulted, or assumed equal to any other
+stage's binding.
+
+```text
+design_candidate_staleness_rule:
+  the instant this design draft's content changes (any new commit to
+  V8G_PRIVATE_PARTITION_LOCATOR_SUCCESSOR_DESIGN_DRAFT.md), every existing
+  reviewed_v8g_design_candidate_commit binding tied to the prior content
+  becomes stale immediately.
+  A stale candidate authority may not authorize, and may never be treated
+  as authorizing, any stage reviewed against the amended (later) candidate.
+  A materially amended candidate requires its own fresh independent review
+  before it can authorize anything, for every stage whose authority it
+  would newly cover.
+```
+
+For every stage in `postfreeze_stages` (and every later stage this draft
+has not yet frozen), authority binds to the exact frozen
+`v8g_frozen_design_commit` established at `HUMAN_V8G_DESIGN_FREEZE` — the
+same binding V8F's own T1C preservation stage already used
+(`reviewed_v8f_design_candidate_commit`), generalized here across every
+V8G prefreeze stage and then superseded by frozen-commit binding once
+`HUMAN_V8G_DESIGN_FREEZE` completes.
+
+No prefreeze authority — no prefreeze human gate consumption, no prefreeze
+one-shot receipt, no prefreeze `reviewed_v8g_design_candidate_commit`
+binding — carries through `HUMAN_V8G_DESIGN_FREEZE` to become post-freeze
+execution authority for any stage, under any circumstance. The one
+exception is narrower than "carrying forward as authority": a prefreeze
+stage's own durable public artifact (e.g. the locator artifact, the V8G
+T1C preservation artifact) remains valid historical evidence that a later,
+independently gated stage's own contract may explicitly require and read
+as input (exactly as §2.1.5 requires V8G T1C preservation to read the
+reviewed locator artifact) — but reading that historical evidence is never
+itself an authorization, consumes no gate, and never substitutes for that
+later stage's own fresh, independently authorized gate.
 
 ## 3. Unchanged inherited methodology
 
@@ -395,6 +556,14 @@ review, synthetic tests must cover at minimum:
   trusted from the declared field alone;
 - a post-gate locator failure leaves `locator_authorization_consumed=true`
   with no retry, no reset, and a second execution attempt fails closed;
+- a locator gate/artifact whose `reviewed_v8g_design_candidate_commit` or
+  `reviewed_locator_support_implementation_sha` disagrees with the
+  currently authorized/reviewed values is rejected pre-gate (for the gate)
+  or by the artifact verifier (for the artifact), never treated as PASS;
+- a stale locator artifact (reviewed against an earlier, since-amended
+  design candidate per §2.3's staleness rule) is rejected by V8G T1C
+  preservation's own binding re-verification before manifest-path
+  resolution is even attempted;
 - the §2.1.5 pre-preservation-gate path-hash resolution: zero or more than
   one currently-enumerated match for the frozen `selected_locator_path_sha256`
   => `PRE_GATE` `BLOCK`, preservation gate not consumed;
@@ -499,13 +668,21 @@ verification; no T1C preservation verification substitutes for readiness;
 no readiness verification substitutes for acquisition verification; no
 acquisition verification substitutes for a research-opening authorization.
 
+Every stage above binds its authority exactly per §2.3:
+`reviewed_v8g_design_candidate_commit` before `HUMAN_V8G_DESIGN_FREEZE`,
+the frozen `v8g_frozen_design_commit` from `HUMAN_V8G_DESIGN_FREEZE`
+onward. No stage's authority is ever inferred from, defaulted from, or
+assumed equal to, another stage's binding.
+
 ### 7.1 No V8F authority carries forward
 
 No V8F human authorization, gate, preservation result, locator result,
 implementation review, freeze approval, allocation-authority bridge, or
 readiness receipt authorizes any V8G stage. Every V8G prerequisite requires
-fresh, V8G-specific authorization bound to the exact V8G frozen design
-commit. Historical V8F, V8E, V8D, V8C, V8B, and V8 identifiers (the
+fresh, V8G-specific authorization, bound per §2.3 to the reviewed design
+candidate commit applicable to that stage before `HUMAN_V8G_DESIGN_FREEZE`,
+and to the exact frozen V8G design commit from `HUMAN_V8G_DESIGN_FREEZE`
+onward. Historical V8F, V8E, V8D, V8C, V8B, and V8 identifiers (the
 original partition hash and implementation commit, trust-pin
 commits/blobs, T1C/T2 membership hashes, and the V8F terminal adjudication
 commit/blob cited in §1) remain historical evidence only; they are never
