@@ -422,39 +422,98 @@ not itself authorize preservation.
 
 The locator artifact verifier — both this independent review step and any
 later stage's own pre-gate preflight that consumes this artifact (§2.1.5)
-— must require exact equality between the artifact's
-`reviewed_v8g_design_candidate_commit` / `reviewed_locator_support_implementation_sha`
-and that consuming stage's own currently authorized/reviewed values. A
-locator artifact produced under a different (including a later-amended,
-per the §2.3 staleness rule) design candidate commit, an unreviewed
-locator-support implementation, a locator-support implementation the
-artifact's own review never covered, or any predecessor study's
-identifiers must `BLOCK` on that mismatch alone and must never authorize
-V8G T1C preservation, regardless of how the artifact's own
-`exact_match_count` or `locator_result` fields read.
+— must independently require exact equality on two distinct bindings, and
+must never compare them to each other:
+
+```text
+locator_artifact_verifier_checks:
+
+  artifact.reviewed_v8g_design_candidate_commit
+    == the currently authorized/reviewed V8G design candidate commit for
+       whichever stage is doing the checking (§2.3; this is the staleness
+       check — the same *kind* of value, a design candidate commit, is
+       compared on both sides)
+
+  artifact.reviewed_locator_support_implementation_sha
+    == the exact locator-support implementation SHA that *this locator
+       artifact's own independent review* (this subsection) actually
+       approved — never compared against any other stage's own
+       implementation SHA, including V8G T1C preservation's own reviewed
+       `reviewed_t1c_preservation_support_implementation_sha` (§2.1.5).
+       `reviewed_locator_support_implementation_sha` and
+       `reviewed_t1c_preservation_support_implementation_sha` are two
+       distinct implementation SHAs for two distinct, separately reviewed
+       modules (§2.2), and must never be required, compared, or assumed
+       equal to each other under any circumstance.
+```
+
+A locator artifact produced under a different (including a later-amended,
+per the §2.3 staleness rule) design candidate commit, or under a
+locator-support implementation different from the one its own independent
+review actually approved, must `BLOCK` on that mismatch alone and must
+never authorize V8G T1C preservation, regardless of how the artifact's own
+`exact_match_count` or `locator_result` fields read. A predecessor study's
+identifiers fail the design-candidate-commit check trivially — they are
+never a valid `reviewed_v8g_design_candidate_commit` for this study at all.
 
 #### 2.1.5 Future preservation use
 
 V8G T1C preservation is itself a prefreeze stage (§2.3): its own authority
 binds to its own `reviewed_v8g_design_candidate_commit` and its own
-reviewed T1C-preservation-support implementation commit, exactly as the
-locator stage's does (§2.1.3) — never to a frozen design commit, since none
-exists yet at this stage either.
+`reviewed_t1c_preservation_support_implementation_sha` — the exact
+independently reviewed Git commit of the separate T1C-preservation-support
+module (§2.2) — never to a frozen design commit, since none exists yet at
+this stage either.
+
+`reviewed_t1c_preservation_support_implementation_sha` is a distinct name
+for a distinct value from the locator stage's own
+`reviewed_locator_support_implementation_sha` (§2.1.3). The two are never
+renamed, repurposed, merged, or compared against each other anywhere in
+this contract: the locator-support module and the T1C-preservation-support
+module are separate fresh implementations (§2.2) with separate independent
+reviews, and each stage's authority binds only to its own module's
+reviewed commit.
 
 Before doing anything else — and strictly before the manifest-path
-resolution below is even attempted — V8G T1C preservation must mechanically
-re-verify that the reviewed locator artifact's
-`reviewed_v8g_design_candidate_commit` and
-`reviewed_locator_support_implementation_sha` (§2.1.4) exactly equal V8G
-T1C preservation's own currently authorized/reviewed values. Any mismatch
-is a `PRE_GATE` `BLOCK`, per §2.1.4's verifier requirement; a stale locator
-artifact (one reviewed against an earlier, since-amended design candidate)
-never authorizes T1C preservation, no matter how it resolved.
+resolution below is even attempted — V8G T1C preservation must
+independently verify all three of the following. A failure on any one
+alone is a `PRE_GATE` `BLOCK`; none of the three ever substitutes for, or
+is compared against, another:
+
+```text
+A. locator artifact design-candidate binding is current and exact:
+     reviewed locator artifact.reviewed_v8g_design_candidate_commit
+       == the currently authorized/reviewed V8G design candidate commit
+          for the T1C preservation stage
+   (a stale locator artifact — one reviewed against an earlier,
+   since-amended design candidate, per §2.3's staleness rule — fails this
+   check)
+
+B. locator artifact locator-support-implementation binding is exact:
+     reviewed locator artifact.reviewed_locator_support_implementation_sha
+       == the exact locator-support implementation SHA that artifact's own
+          independent review (§2.1.4) actually approved
+
+C. the currently executing T1C-preservation-support implementation is
+   exact, independently of A and B:
+     executing T1C-preservation-support implementation commit
+       == reviewed_t1c_preservation_support_implementation_sha authorized
+          and independently reviewed for the T1C preservation stage
+```
+
+Checks A and B verify that the *locator artifact itself* is current and
+genuine; check C verifies that the *T1C preservation implementation now
+running* is current and genuine. These are independent facts about two
+different modules — `reviewed_locator_support_implementation_sha` (checked
+in B) and `reviewed_t1c_preservation_support_implementation_sha` (checked
+in C) must never be required, compared, or assumed equal to each other,
+and swapping one value into the other's check is itself a mismatch, not a
+valid substitution.
 
 After the locator artifact reaches PASS and independent review PASS, *and*
-that binding re-verification passes, a future V8G T1C preservation
-execution resolves the private manifest path as follows, strictly before
-its own preservation gate:
+checks A, B, and C above all pass, a future V8G T1C preservation execution
+resolves the private manifest path as follows, strictly before its own
+preservation gate:
 
 - repeat the same metadata-only enumeration and canonicalization contract
   of §2.1.1–§2.1.2 (same scope, same exclusions, same hashing scheme);
@@ -492,9 +551,13 @@ no retry, following the same permanent-consumption discipline as §2.1.3.
 ### 2.2 Implementation boundary
 
 A future V8G implementation must introduce study-scoped code: a fresh
-V8G-namespaced locator-support module for §2.1.1–§2.1.4, and a separate
-fresh V8G-namespaced T1C preservation module for §2.1.5, each independently
-reviewed. Neither may edit `src/v8f_t1c_preservation.py`,
+V8G-namespaced locator-support module for §2.1.1–§2.1.4, reviewed and bound
+to `reviewed_locator_support_implementation_sha`, and a separate fresh
+V8G-namespaced T1C preservation module for §2.1.5, independently reviewed
+and bound to its own, distinct `reviewed_t1c_preservation_support_implementation_sha`.
+These two implementation-commit bindings are never merged, renamed, or
+compared to each other anywhere in this contract (§2.1.4, §2.1.5). Neither
+module may edit `src/v8f_t1c_preservation.py`,
 `src/v8e_t1c_preservation.py`, `src/v8d_t1c_preservation.py`, or any of
 their historical tests in place — the same non-in-place-modification rule
 V8F applied to the historical V7 transport source. Those historical modules
@@ -705,8 +768,26 @@ review, synthetic tests must cover at minimum:
   or by the artifact verifier (for the artifact), never treated as PASS;
 - a stale locator artifact (reviewed against an earlier, since-amended
   design candidate per §2.3's staleness rule) is rejected by V8G T1C
-  preservation's own binding re-verification before manifest-path
-  resolution is even attempted;
+  preservation's own check A before manifest-path resolution is even
+  attempted;
+- a locator artifact whose `reviewed_locator_support_implementation_sha`
+  equals the locator stage's own reviewed value, paired with a *different*,
+  independently correct `reviewed_t1c_preservation_support_implementation_sha`
+  for the currently executing T1C preservation implementation, passes
+  checks A/B/C and is accepted — the two implementation SHAs are never
+  required to be equal;
+- a wrong `reviewed_locator_support_implementation_sha` (check B) blocks,
+  independently of whether check C would otherwise pass;
+- a wrong `reviewed_t1c_preservation_support_implementation_sha` for the
+  executing implementation (check C) blocks, independently of whether
+  checks A/B would otherwise pass;
+- swapping the two roles — presenting the T1C-preservation-support SHA
+  where the locator-support SHA is expected, or vice versa — is a mismatch
+  like any other and blocks, never treated as an accidental-but-valid
+  substitution;
+- none of the checks A, B, or C, whether individually or in combination,
+  ever consumes the V8G T1C preservation gate on failure — every failure
+  above is `PRE_GATE`;
 - the §2.1.5 pre-preservation-gate path-hash resolution: zero or more than
   one currently-enumerated match for the frozen `selected_locator_path_sha256`
   => `PRE_GATE` `BLOCK`, preservation gate not consumed;
