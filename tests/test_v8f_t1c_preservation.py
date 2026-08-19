@@ -1332,6 +1332,7 @@ def test_locator_full_verification_rejects_wrong_parent_t_spare_binding():
 def test_locator_pre_gate_failure_has_zero_gate_and_private_reads(tmp_path):
     allocation_path = tmp_path / "allocation.bin"
     allocation_path.write_bytes(b"synthetic allocation")
+    output_path = tmp_path / "outside-output" / "artifact.json"
     reads = []
     gate_calls = []
     with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
@@ -1339,6 +1340,7 @@ def test_locator_pre_gate_failure_has_zero_gate_and_private_reads(tmp_path):
             authorization_identity=AUTHORIZATION,
             reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
             state_root=tmp_path / "state",
+            output_path=output_path,
             allocation_artifact_path=allocation_path,
             candidate_partition_manifest_paths=[],
             repository_root=tmp_path / "repo",
@@ -1353,12 +1355,14 @@ def test_locator_pre_gate_failure_has_zero_gate_and_private_reads(tmp_path):
     assert reads == []
     assert gate_calls == []
     assert not (tmp_path / "state").exists()
+    assert not output_path.exists()
 
 
 def test_locator_duplicate_candidate_paths_pre_gate_block(tmp_path):
     allocation_path = tmp_path / "allocation.bin"
     allocation_path.write_bytes(b"synthetic allocation")
     candidate = tmp_path.parent / "outside-candidates" / "partition_manifest.json"
+    output_path = tmp_path / "outside-output" / "artifact.json"
     reads = []
     gate_calls = []
     with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
@@ -1366,6 +1370,7 @@ def test_locator_duplicate_candidate_paths_pre_gate_block(tmp_path):
             authorization_identity=AUTHORIZATION,
             reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
             state_root=tmp_path / "state",
+            output_path=output_path,
             allocation_artifact_path=allocation_path,
             candidate_partition_manifest_paths=[candidate, candidate],
             repository_root=tmp_path / "repo",
@@ -1379,6 +1384,7 @@ def test_locator_duplicate_candidate_paths_pre_gate_block(tmp_path):
     assert excinfo.value.reason == "V8F_LOCATOR_CANDIDATE_DUPLICATE_PATH"
     assert reads == []
     assert gate_calls == []
+    assert not output_path.exists()
 
 
 def test_locator_repo_internal_candidate_pre_gate_block(tmp_path):
@@ -1387,6 +1393,7 @@ def test_locator_repo_internal_candidate_pre_gate_block(tmp_path):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     candidate = repo_root / "nested" / "partition_manifest.json"
+    output_path = tmp_path / "outside-output" / "artifact.json"
     reads = []
     gate_calls = []
     with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
@@ -1394,6 +1401,7 @@ def test_locator_repo_internal_candidate_pre_gate_block(tmp_path):
             authorization_identity=AUTHORIZATION,
             reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
             state_root=tmp_path / "state",
+            output_path=output_path,
             allocation_artifact_path=allocation_path,
             candidate_partition_manifest_paths=[candidate],
             repository_root=repo_root,
@@ -1407,12 +1415,14 @@ def test_locator_repo_internal_candidate_pre_gate_block(tmp_path):
     assert excinfo.value.reason == "V8F_LOCATOR_CANDIDATE_PATH_INVALID"
     assert reads == []
     assert gate_calls == []
+    assert not output_path.exists()
 
 
 def test_locator_reviewed_support_failure_precedes_gate_and_private_read(tmp_path):
     allocation_path = tmp_path / "allocation.bin"
     allocation_path.write_bytes(b"synthetic allocation")
     candidate = tmp_path.parent / "outside-candidates-2" / "partition_manifest.json"
+    output_path = tmp_path / "outside-output" / "artifact.json"
     reads = []
     gate_calls = []
     with pytest.raises(preservation.V8FT1CPreservationBlocked):
@@ -1420,6 +1430,7 @@ def test_locator_reviewed_support_failure_precedes_gate_and_private_read(tmp_pat
             authorization_identity=AUTHORIZATION,
             reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
             state_root=tmp_path / "state",
+            output_path=output_path,
             allocation_artifact_path=allocation_path,
             candidate_partition_manifest_paths=[candidate],
             repository_root=tmp_path / "repo",
@@ -1435,6 +1446,155 @@ def test_locator_reviewed_support_failure_precedes_gate_and_private_read(tmp_pat
     assert reads == []
     assert gate_calls == []
     assert not (tmp_path / "state").exists()
+    assert not output_path.exists()
+
+
+def test_locator_output_already_exists_pre_gate_block(tmp_path):
+    allocation_path = tmp_path / "allocation.bin"
+    allocation_path.write_bytes(b"synthetic allocation")
+    candidate_dir = tmp_path / "outside-candidates" / "a"
+    candidate_dir.mkdir(parents=True)
+    candidate = candidate_dir / "partition_manifest.json"
+    output_dir = tmp_path / "outside-output"
+    output_dir.mkdir()
+    output_path = output_dir / "artifact.json"
+    output_path.write_text("{}", encoding="utf-8")
+    reads = []
+    gate_calls = []
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+            state_root=tmp_path / "state",
+            output_path=output_path,
+            allocation_artifact_path=allocation_path,
+            candidate_partition_manifest_paths=[candidate],
+            repository_root=tmp_path / "repo",
+            public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert excinfo.value.reason == "V8F_OUTPUT_OR_STATE_PREPARATION_FAILED"
+    assert reads == []
+    assert gate_calls == []
+    assert output_path.read_text(encoding="utf-8") == "{}"
+
+
+def test_locator_output_equals_allocation_path_pre_gate_block(tmp_path):
+    allocation_path = tmp_path / "allocation.bin"
+    allocation_path.write_bytes(b"synthetic allocation")
+    candidate_dir = tmp_path / "outside-candidates" / "a"
+    candidate_dir.mkdir(parents=True)
+    candidate = candidate_dir / "partition_manifest.json"
+    reads = []
+    gate_calls = []
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+            state_root=tmp_path / "state",
+            output_path=allocation_path,
+            allocation_artifact_path=allocation_path,
+            candidate_partition_manifest_paths=[candidate],
+            repository_root=tmp_path / "repo",
+            public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert excinfo.value.reason == "V8F_OUTPUT_PATH_COLLISION"
+    assert reads == []
+    assert gate_calls == []
+
+
+def test_locator_output_equals_candidate_path_pre_gate_block(tmp_path):
+    allocation_path = tmp_path / "allocation.bin"
+    allocation_path.write_bytes(b"synthetic allocation")
+    candidate_dir = tmp_path / "outside-candidates" / "a"
+    candidate_dir.mkdir(parents=True)
+    candidate = candidate_dir / "partition_manifest.json"
+    reads = []
+    gate_calls = []
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+            state_root=tmp_path / "state",
+            output_path=candidate,
+            allocation_artifact_path=allocation_path,
+            candidate_partition_manifest_paths=[candidate],
+            repository_root=tmp_path / "repo",
+            public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert excinfo.value.reason == "V8F_OUTPUT_PATH_COLLISION"
+    assert reads == []
+    assert gate_calls == []
+
+
+def test_locator_repo_internal_output_pre_gate_block(tmp_path):
+    allocation_path = tmp_path / "allocation.bin"
+    allocation_path.write_bytes(b"synthetic allocation")
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    candidate = tmp_path.parent / "outside-candidates-out-test" / "partition_manifest.json"
+    reads = []
+    gate_calls = []
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+            state_root=tmp_path / "state",
+            output_path=repo_root / "nested" / "artifact.json",
+            allocation_artifact_path=allocation_path,
+            candidate_partition_manifest_paths=[candidate],
+            repository_root=repo_root,
+            public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert excinfo.value.reason == "V8F_OUTPUT_PATH_INVALID"
+    assert reads == []
+    assert gate_calls == []
+
+
+def test_locator_relative_output_pre_gate_block(tmp_path):
+    allocation_path = tmp_path / "allocation.bin"
+    allocation_path.write_bytes(b"synthetic allocation")
+    candidate = tmp_path.parent / "outside-candidates-relout" / "partition_manifest.json"
+    reads = []
+    gate_calls = []
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+            state_root=tmp_path / "state",
+            output_path="relative/artifact.json",
+            allocation_artifact_path=allocation_path,
+            candidate_partition_manifest_paths=[candidate],
+            repository_root=tmp_path / "repo",
+            public_preflight=_preflight,
+            runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
+            public_evidence_resolver=lambda _: _fresh_public_evidence(),
+            private_reader=lambda path: reads.append(path) or path.read_bytes(),
+            gate_consumer=lambda *args, **kwargs: gate_calls.append((args, kwargs)),
+            clock=_clock,
+        )
+    assert excinfo.value.reason == "V8F_OUTPUT_PATH_INVALID"
+    assert reads == []
+    assert gate_calls == []
 
 
 def _locator_ordering_scenario(tmp_path, monkeypatch):
@@ -1465,10 +1625,12 @@ def _locator_ordering_scenario(tmp_path, monkeypatch):
     candidate = candidate_dir / "partition_manifest.json"
     candidate.write_bytes(b"synthetic candidate bytes")
     state_root = tmp_path / "state"
+    output_path = tmp_path / "outside-output" / "artifact.json"
     kwargs = dict(
         authorization_identity=AUTHORIZATION,
         reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
         state_root=state_root,
+        output_path=output_path,
         allocation_artifact_path=allocation_path,
         candidate_partition_manifest_paths=[candidate],
         repository_root=tmp_path / "repo",
@@ -1478,11 +1640,11 @@ def _locator_ordering_scenario(tmp_path, monkeypatch):
         gate_consumer=preservation.consume_gate_once,
         clock=_clock,
     )
-    return kwargs, state_root
+    return kwargs, state_root, output_path
 
 
 def test_locator_candidate_and_allocation_bytes_only_read_after_gate(tmp_path, monkeypatch):
-    kwargs, state_root = _locator_ordering_scenario(tmp_path, monkeypatch)
+    kwargs, state_root, output_path = _locator_ordering_scenario(tmp_path, monkeypatch)
     receipt_seen_before_read = []
 
     def private_reader(path):
@@ -1499,14 +1661,18 @@ def test_locator_candidate_and_allocation_bytes_only_read_after_gate(tmp_path, m
     assert excinfo.value.reason == "V8F_LOCATOR_ZERO_MATCHING_CANDIDATES"
     assert receipt_seen_before_read == [True, True]
     assert list(state_root.glob("*.json"))
+    # Zero-match BLOCK: the gate is consumed, but no canonical artifact is
+    # ever built or published for a non-matching scan.
+    assert not output_path.exists()
 
 
 def test_locator_post_gate_failure_receipt_persists_no_retry(tmp_path, monkeypatch):
-    kwargs, state_root = _locator_ordering_scenario(tmp_path, monkeypatch)
+    kwargs, state_root, output_path = _locator_ordering_scenario(tmp_path, monkeypatch)
     kwargs["private_reader"] = lambda path: path.read_bytes()
     with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
         preservation._execute_locator_with_dependencies(**kwargs)
     assert excinfo.value.reason == "V8F_LOCATOR_ZERO_MATCHING_CANDIDATES"
+    assert not output_path.exists()
 
     key = preservation.compute_receipt_key(AUTHORIZATION)
     receipt = preservation.read_gate_receipt(state_root, key)
@@ -1518,6 +1684,7 @@ def test_locator_post_gate_failure_receipt_persists_no_retry(tmp_path, monkeypat
     with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo_retry:
         preservation._execute_locator_with_dependencies(**kwargs)
     assert excinfo_retry.value.reason == "V8F_GATE_ALREADY_CONSUMED"
+    assert not output_path.exists()
 
 
 def test_locator_no_ticker_or_path_in_safe_result_fields():
@@ -1548,6 +1715,209 @@ def test_locator_no_ticker_or_path_in_safe_result_fields():
     for ticker in allocation["t1c_tickers"]:
         assert ticker not in json.dumps(stats)
         assert ticker not in json.dumps(summary)
+
+
+# ---------------------------------------------------------------------------
+# V8F-T1C-LOCATOR-HIGH-001: the locator seam must complete the SAME
+# preservation transaction as the exact-path seam -- durably publish the
+# canonical V8F_T1C_PRESERVATION_RECHECK artifact built from
+# private_summary + fresh_public_evidence, not just return a safe summary.
+# ---------------------------------------------------------------------------
+
+
+def _full_synthetic_locator_scenario(tmp_path, monkeypatch):
+    """A handful of module-level frozen constants are compared directly
+    (not via an overridable parameter) by `validate_authorization_identity`
+    and `_validate_public_preflight` -- by design, no fabricated preimage can
+    ever satisfy them (that is exactly the point of freezing them).  For this
+    one test scenario we monkeypatch only those specific constants to match a
+    fully self-consistent SYNTHETIC manifest+allocation pair (every hash
+    below is computed from the synthetic content, never asserted), so the
+    *actual* `_execute_locator_with_dependencies` transaction can be observed
+    reaching genuine PASS end-to-end.  `_verify_private_artifacts` is wrapped
+    -- not replaced -- to additionally supply the three expected_* values
+    `_execute_locator_with_dependencies` does not forward from preflight
+    (mirroring the pre-existing, unmodified exact-path `_execute_with_dependencies`
+    exactly); the real cryptographic checks inside it still genuinely run
+    against the synthetic bytes and would still fail on any real inconsistency.
+    """
+    manifest, allocation, meta = _synthetic_manifest_and_allocation()
+
+    monkeypatch.setattr(preservation, "AUTHORIZED_ALLOCATION_ARTIFACT_SELF_HASH", allocation["artifact_self_hash"])
+    monkeypatch.setattr(preservation, "EXPECTED_V8_PARTITION_MANIFEST_SHA256", meta["manifest_sha256"])
+    monkeypatch.setattr(preservation, "EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT", meta["partition_commit"])
+    monkeypatch.setattr(preservation, "EXPECTED_PARENT_T_SPARE_TICKER_LIST_SHA256", meta["t_spare_hash"])
+    monkeypatch.setattr(preservation, "EXPECTED_V8C_ALLOCATION_IMPLEMENTATION_COMMIT", meta["allocation_commit"])
+    monkeypatch.setattr(preservation, "EXPECTED_V8F_T1C_TICKER_LIST_SHA256", allocation["t1c_ticker_list_sha256"])
+    monkeypatch.setattr(
+        preservation,
+        "EXPECTED_REMAINING_T_SPARE_TICKER_LIST_SHA256",
+        allocation["remaining_t_spare_ticker_list_sha256"],
+    )
+
+    real_verify = preservation._verify_private_artifacts
+
+    def patched_verify(allocation_raw, manifest_raw, **kwargs):
+        kwargs.setdefault("expected_t1c_ticker_list_sha256", allocation["t1c_ticker_list_sha256"])
+        kwargs.setdefault(
+            "expected_remaining_t_spare_ticker_list_sha256", allocation["remaining_t_spare_ticker_list_sha256"]
+        )
+        kwargs.setdefault("expected_v8c_frozen_design_commit", meta["design_commit"])
+        return real_verify(allocation_raw, manifest_raw, **kwargs)
+
+    monkeypatch.setattr(preservation, "_verify_private_artifacts", patched_verify)
+
+    allocation_path = tmp_path / "allocation.json"
+    allocation_path.write_text(json.dumps(allocation), encoding="utf-8")
+    candidate_dir = tmp_path / "outside-candidates" / "a"
+    candidate_dir.mkdir(parents=True)
+    candidate = candidate_dir / "partition_manifest.json"
+    candidate.write_text(json.dumps(manifest), encoding="utf-8")
+    output_path = tmp_path / "outside-output" / "V8F_T1C_PRESERVATION_RECHECK.json"
+    state_root = tmp_path / "state"
+
+    synthetic_authorization = (
+        preservation.V8F_AUTHORIZATION_PREFIX
+        + preservation.V8F_REVIEWED_DESIGN_CANDIDATE_COMMIT
+        + preservation.V8F_AUTHORIZATION_SEPARATOR
+        + allocation["artifact_self_hash"]
+    )
+    preflight = _preflight(
+        partition_manifest_sha256=meta["manifest_sha256"],
+        partition_implementation_commit=meta["partition_commit"],
+        v8c_allocation_implementation_commit=meta["allocation_commit"],
+        parent_t_spare_ticker_list_sha256=meta["t_spare_hash"],
+    )
+    kwargs = dict(
+        authorization_identity=synthetic_authorization,
+        reviewed_support_implementation_sha=REVIEWED_SUPPORT_SHA,
+        state_root=state_root,
+        output_path=output_path,
+        allocation_artifact_path=allocation_path,
+        candidate_partition_manifest_paths=[candidate],
+        repository_root=tmp_path / "repo",
+        public_preflight=lambda: preflight,
+        runtime_state_reader=lambda _root, _sha: _runtime_support_state(),
+        public_evidence_resolver=lambda _: _fresh_public_evidence(),
+        private_reader=lambda path: path.read_bytes(),
+        gate_consumer=preservation.consume_gate_once,
+        clock=_clock,
+        authorized_allocation_artifact_self_hash=allocation["artifact_self_hash"],
+    )
+    return kwargs, output_path, state_root, allocation, manifest, meta
+
+
+def test_locator_full_transaction_writes_canonical_artifact(tmp_path, monkeypatch):
+    kwargs, output_path, state_root, allocation, manifest, meta = _full_synthetic_locator_scenario(
+        tmp_path, monkeypatch
+    )
+    assert not output_path.exists()
+    result = preservation._execute_locator_with_dependencies(**kwargs)
+    assert result["result"] == "PASS"
+    assert result["artifact_written"] is True
+    assert result["exact_match_count"] == 1
+    assert output_path.exists()
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert written["schema_version"] == "V8F_T1C_PRESERVATION_RECHECK_V1"
+    assert written["artifact_role"] == "T1C_PRESERVATION_RECHECK"
+    assert written["study"] == preservation.V8F_STUDY_NAME
+    assert set(written) == set(preservation.V8F_PRESERVATION_ARTIFACT_FIELDS)
+    # Exactly one receipt: the gate was consumed exactly once for this PASS.
+    assert len(list(state_root.glob("*.json"))) == 1
+
+
+def test_locator_written_artifact_passes_validate_public_artifact(tmp_path, monkeypatch):
+    kwargs, output_path, *_ = _full_synthetic_locator_scenario(tmp_path, monkeypatch)
+    preservation._execute_locator_with_dependencies(**kwargs)
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    # The monkeypatches from `_full_synthetic_locator_scenario` are still
+    # active in this test's scope, so what was actually written still
+    # matches the (patched) real frozen constants `_validate_public_artifact`
+    # re-checks every field against.
+    validated = preservation._validate_public_artifact(written)
+    assert validated["preservation_recheck_result"] == "PASS"
+
+
+def test_locator_written_artifact_built_from_private_summary_and_fresh_evidence(tmp_path, monkeypatch):
+    kwargs, output_path, state_root, allocation, manifest, meta = _full_synthetic_locator_scenario(
+        tmp_path, monkeypatch
+    )
+    preservation._execute_locator_with_dependencies(**kwargs)
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    # private_summary-sourced fields (only derivable from the actual private
+    # allocation/manifest bytes read through the DI boundary):
+    assert written["allocation_artifact_self_hash"] == allocation["artifact_self_hash"]
+    assert written["t1c_ticker_count"] == allocation["t1c_ticker_count"]
+    assert written["t1c_ticker_list_sha256"] == allocation["t1c_ticker_list_sha256"]
+    assert written["parent_t_spare_ticker_list_sha256"] == allocation["parent_t_spare_ticker_list_sha256"]
+    assert written["remaining_t_spare_ticker_list_sha256"] == allocation["remaining_t_spare_ticker_list_sha256"]
+    # fresh_public_evidence-sourced fields (never derivable from
+    # private_summary alone -- proving fresh_public_evidence was not discarded):
+    assert written["source_v8e_terminal_commit"] == preservation.V8F_V8E_PREDECESSOR_TERMINAL_COMMIT
+    assert written["v8e_terminal_adjudication_authoritative"] is True
+
+
+def test_build_public_artifact_rejects_private_public_mismatch():
+    mismatched_private_summary = dict(_private_summary(), t1c_ticker_list_sha256="0" * 64)
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._build_public_artifact(mismatched_private_summary, _fresh_public_evidence())
+    assert excinfo.value.reason == "V8F_PRIVATE_PUBLIC_EVIDENCE_MISMATCH:t1c_ticker_list_sha256"
+
+
+def test_locator_evidence_binding_failure_after_gate_writes_no_artifact(tmp_path, monkeypatch):
+    kwargs, output_path, state_root, *_ = _full_synthetic_locator_scenario(tmp_path, monkeypatch)
+
+    def failing_build(private_summary, fresh_public_evidence):
+        raise preservation.V8FT1CPreservationBlocked("V8F_PRIVATE_PUBLIC_EVIDENCE_MISMATCH:synthetic_test")
+
+    monkeypatch.setattr(preservation, "_build_public_artifact", failing_build)
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(**kwargs)
+    assert excinfo.value.reason == "V8F_PRIVATE_PUBLIC_EVIDENCE_MISMATCH:synthetic_test"
+    assert not output_path.exists()
+    # Gate remains consumed -- a post-gate failure is never retried.
+    assert len(list(state_root.glob("*.json"))) == 1
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo_retry:
+        preservation._execute_locator_with_dependencies(**kwargs)
+    assert excinfo_retry.value.reason == "V8F_GATE_ALREADY_CONSUMED"
+
+
+def test_locator_multi_match_post_gate_no_artifact(tmp_path, monkeypatch):
+    kwargs, output_path, state_root, allocation, manifest, meta = _full_synthetic_locator_scenario(
+        tmp_path, monkeypatch
+    )
+    candidate_dir_2 = tmp_path / "outside-candidates" / "b"
+    candidate_dir_2.mkdir(parents=True)
+    candidate_2 = candidate_dir_2 / "partition_manifest.json"
+    candidate_2.write_text(json.dumps(manifest), encoding="utf-8")
+    kwargs["candidate_partition_manifest_paths"] = list(kwargs["candidate_partition_manifest_paths"]) + [
+        candidate_2
+    ]
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(**kwargs)
+    assert excinfo.value.reason == "V8F_LOCATOR_MULTIPLE_MATCHING_CANDIDATES"
+    assert not output_path.exists()
+    assert len(list(state_root.glob("*.json"))) == 1
+
+
+def test_locator_artifact_publication_failure_post_gate_no_retry(tmp_path, monkeypatch):
+    kwargs, output_path, state_root, *_ = _full_synthetic_locator_scenario(tmp_path, monkeypatch)
+
+    def failing_publish(artifact, output):
+        raise preservation.V8FT1CPreservationBlocked("V8F_PRESERVATION_ARTIFACT_WRITE_FAILED")
+
+    monkeypatch.setattr(preservation, "_publish_preservation_artifact", failing_publish)
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo:
+        preservation._execute_locator_with_dependencies(**kwargs)
+    assert excinfo.value.reason == "V8F_PRESERVATION_ARTIFACT_WRITE_FAILED"
+    assert not output_path.exists()
+    assert len(list(state_root.glob("*.json"))) == 1
+
+    # No retry: the second call hits the already-consumed gate, not a fresh
+    # publish attempt (still patched, but never reached).
+    with pytest.raises(preservation.V8FT1CPreservationBlocked) as excinfo_retry:
+        preservation._execute_locator_with_dependencies(**kwargs)
+    assert excinfo_retry.value.reason == "V8F_GATE_ALREADY_CONSUMED"
 
 
 def test_partition_manifest_basename_constant_is_exact():

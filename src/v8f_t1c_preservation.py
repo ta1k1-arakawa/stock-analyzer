@@ -1242,6 +1242,45 @@ def _locate_authorized_partition_manifest(
     return matches[0], stats
 
 
+def _prepare_locator_execution_paths(
+    *,
+    state_root: str | os.PathLike[str],
+    output_path: str | os.PathLike[str],
+    allocation_artifact_path: str | os.PathLike[str],
+    candidates: Sequence[Path],
+    repository_root: Path,
+    receipt_key: str,
+) -> tuple[Path, Path, Path]:
+    """Locator analogue of `_prepare_execution_paths`: the same pre-gate,
+    metadata-only output/allocation/state safety properties (absolute,
+    outside the repository, no existing destination, no collision), checked
+    against every already-normalized candidate path instead of a single
+    exact manifest path.  Never reads a candidate or allocation byte.
+    """
+    state = _require_safe_external_path(state_root, repository_root, "V8F_STATE_PATH_INVALID")
+    output = _require_safe_external_path(output_path, repository_root, "V8F_OUTPUT_PATH_INVALID")
+    allocation = _require_safe_external_path(allocation_artifact_path, repository_root, "V8F_PRIVATE_PATH_INVALID")
+    if (
+        allocation in candidates
+        or output == allocation
+        or output in candidates
+        or output == state / (receipt_key + ".json")
+    ):
+        raise V8FT1CPreservationBlocked("V8F_OUTPUT_PATH_COLLISION")
+    try:
+        state.mkdir(parents=True, exist_ok=True)
+        output.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise V8FT1CPreservationBlocked("V8F_OUTPUT_OR_STATE_PREPARATION_FAILED") from error
+    if not state.is_dir() or not output.parent.is_dir() or output.exists():
+        raise V8FT1CPreservationBlocked("V8F_OUTPUT_OR_STATE_PREPARATION_FAILED")
+    if not allocation.is_file():
+        raise V8FT1CPreservationBlocked("V8F_PRIVATE_ARTIFACT_UNAVAILABLE")
+    if (state / (receipt_key + ".json")).exists():
+        raise V8FT1CPreservationBlocked("V8F_GATE_ALREADY_CONSUMED")
+    return state, output, allocation
+
+
 def _build_public_artifact(
     private_summary: Mapping[str, Any], fresh_public_evidence: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -1364,6 +1403,42 @@ def verify_t1c_preservation_artifact_bytes(
     return verify_t1c_preservation_artifact_and_receipt(artifact_raw, receipt_raw, receipt_key=receipt_key)
 
 
+def _publish_preservation_artifact(artifact: Mapping[str, Any], output: Path) -> dict[str, Any]:
+    """Write-once atomic publication of the canonical T1C preservation
+    artifact: canonical JSON bytes, staging write, fsync file, atomic
+    no-overwrite link publication, fsync directory, staging cleanup.  Never
+    replaces an existing destination.  Shared by every V8F T1C preservation
+    execution seam so publication semantics cannot drift between them.
+    """
+    if output.exists():
+        raise V8FT1CPreservationBlocked("V8F_PRESERVATION_ARTIFACT_ALREADY_EXISTS")
+    payload = _canonical_json_bytes(artifact)
+    staging = output.parent / (output.name + ".staging-" + os.urandom(8).hex())
+    try:
+        with open(staging, "xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(staging, output)
+        except FileExistsError as error:
+            raise V8FT1CPreservationBlocked("V8F_PRESERVATION_ARTIFACT_ALREADY_EXISTS") from error
+        except OSError as error:
+            raise V8FT1CPreservationBlocked("V8F_PRESERVATION_ARTIFACT_ATOMIC_PUBLISH_FAILED") from error
+        _fsync_directory(output.parent)
+    except V8FT1CPreservationBlocked:
+        raise
+    except OSError as error:
+        raise V8FT1CPreservationBlocked("V8F_PRESERVATION_ARTIFACT_WRITE_FAILED") from error
+    finally:
+        if staging.exists():
+            try:
+                staging.unlink()
+            except OSError:
+                pass
+    return dict(artifact)
+
+
 def _execute_with_dependencies(
     *,
     authorization_identity: str,
@@ -1442,33 +1517,7 @@ def _execute_with_dependencies(
         expected_v8c_allocation_implementation_commit=preflight["v8c_allocation_implementation_commit"],
     )
     artifact = _build_public_artifact(private_summary, fresh_public_evidence)
-    if output.exists():
-        raise V8FT1CPreservationBlocked("V8F_PRESERVATION_ARTIFACT_ALREADY_EXISTS")
-    payload = _canonical_json_bytes(artifact)
-    staging = output.parent / (output.name + ".staging-" + os.urandom(8).hex())
-    try:
-        with open(staging, "xb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(staging, output)
-        except FileExistsError as error:
-            raise V8FT1CPreservationBlocked("V8F_PRESERVATION_ARTIFACT_ALREADY_EXISTS") from error
-        except OSError as error:
-            raise V8FT1CPreservationBlocked("V8F_PRESERVATION_ARTIFACT_ATOMIC_PUBLISH_FAILED") from error
-        _fsync_directory(output.parent)
-    except V8FT1CPreservationBlocked:
-        raise
-    except OSError as error:
-        raise V8FT1CPreservationBlocked("V8F_PRESERVATION_ARTIFACT_WRITE_FAILED") from error
-    finally:
-        if staging.exists():
-            try:
-                staging.unlink()
-            except OSError:
-                pass
-    return dict(artifact)
+    return _publish_preservation_artifact(artifact, output)
 
 
 def resolve_and_verify_t1c_preservation(
@@ -1500,6 +1549,7 @@ def _execute_locator_with_dependencies(
     *,
     authorization_identity: str,
     state_root: str | os.PathLike[str],
+    output_path: str | os.PathLike[str],
     allocation_artifact_path: str | os.PathLike[str],
     candidate_partition_manifest_paths: Sequence[str | os.PathLike[str]],
     repository_root: Path,
@@ -1515,9 +1565,11 @@ def _execute_locator_with_dependencies(
 ) -> dict[str, Any]:
     """DI-only future content-addressed locator boundary; never called with
     real private paths here.  Mirrors `_execute_with_dependencies`'s exact
-    pre-gate ordering, replacing its single exact `partition_manifest_path`
-    with a pre-validated candidate list resolved by content address only
-    after the same one-shot gate is durably consumed.
+    pre-gate ordering and completes the *same* preservation transaction --
+    durably publishing the same canonical `V8F_T1C_PRESERVATION_RECHECK`
+    artifact -- replacing only its single exact `partition_manifest_path`
+    with a pre-validated candidate list resolved by content address after
+    the same one-shot gate is durably consumed.
     """
     preflight = _validate_public_preflight(public_preflight())
     reviewed_support_sha = _validate_reviewed_support_implementation_binding(
@@ -1537,35 +1589,27 @@ def _execute_locator_with_dependencies(
         authorized_allocation_artifact_self_hash,
     )
     if public_evidence_resolver is None:
-        _default_fresh_t1c_public_evidence(
+        fresh_public_evidence = _default_fresh_t1c_public_evidence(
             repository_root,
             preflight,
             reviewed_support_sha,
             runtime_state_reader=runtime_state_reader,
         )
     else:
-        _validate_fresh_t1c_public_evidence(public_evidence_resolver(preflight))
+        fresh_public_evidence = _validate_fresh_t1c_public_evidence(public_evidence_resolver(preflight))
 
     # Pre-gate, metadata-only: normalize/dedupe/basename/outside-repo only.
     candidates = validate_candidate_partition_manifest_paths(
         candidate_partition_manifest_paths, repository_root
     )
-    state = _require_safe_external_path(state_root, repository_root, "V8F_STATE_PATH_INVALID")
-    allocation_path = _require_safe_external_path(
-        allocation_artifact_path, repository_root, "V8F_PRIVATE_PATH_INVALID"
+    state, output, allocation_path = _prepare_locator_execution_paths(
+        state_root=state_root,
+        output_path=output_path,
+        allocation_artifact_path=allocation_artifact_path,
+        candidates=candidates,
+        repository_root=repository_root,
+        receipt_key=receipt_key,
     )
-    if allocation_path in candidates:
-        raise V8FT1CPreservationBlocked("V8F_OUTPUT_PATH_COLLISION")
-    try:
-        state.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        raise V8FT1CPreservationBlocked("V8F_OUTPUT_OR_STATE_PREPARATION_FAILED") from error
-    if not state.is_dir():
-        raise V8FT1CPreservationBlocked("V8F_OUTPUT_OR_STATE_PREPARATION_FAILED")
-    if not allocation_path.is_file():
-        raise V8FT1CPreservationBlocked("V8F_PRIVATE_ARTIFACT_UNAVAILABLE")
-    if (state / (receipt_key + ".json")).exists():
-        raise V8FT1CPreservationBlocked("V8F_GATE_ALREADY_CONSUMED")
 
     # Exact frozen boundary: no private reader is called before durable receipt.
     gate_consumer(
@@ -1613,6 +1657,8 @@ def _execute_locator_with_dependencies(
         expected_partition_implementation_commit=expected_partition_implementation_commit,
         expected_v8c_allocation_implementation_commit=preflight["v8c_allocation_implementation_commit"],
     )
+    artifact = _build_public_artifact(private_summary, fresh_public_evidence)
+    _publish_preservation_artifact(artifact, output)
     return {
         "result": "PASS",
         "candidate_count": stats["candidate_count"],
@@ -1620,11 +1666,7 @@ def _execute_locator_with_dependencies(
         "exact_match_count": stats["exact_match_count"],
         "private_read_count": 1 + stats["candidates_read_count"],
         "expected_partition_manifest_sha256": expected_partition_manifest_sha256,
-        "allocation_verified": True,
-        "partition_manifest_verified": True,
-        "t1c_membership_reassigned": private_summary["t1c_membership_reassigned"],
-        "allocation_self_hash_unchanged": private_summary["allocation_self_hash_unchanged"],
-        "parent_v8_provenance_unchanged": private_summary["parent_v8_provenance_unchanged"],
+        "artifact_written": True,
         "gate_receipt_key_sha256": receipt_key,
     }
 
@@ -1635,12 +1677,15 @@ def resolve_and_verify_t1c_preservation_by_content_address(
     reviewed_support_implementation_sha: str,
     allocation_artifact_path: str | os.PathLike[str],
     candidate_partition_manifest_paths: Sequence[str | os.PathLike[str]],
+    output_path: str | os.PathLike[str],
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Prepared future entry point: locate and verify the already-authorized
     V8 partition manifest among externally-supplied candidate paths by
-    content address, only after the existing one-shot V8F T1C preservation
-    gate is durably consumed.  Not executed by this support task.
+    content address, then durably publish the same canonical
+    `V8F_T1C_PRESERVATION_RECHECK` artifact the exact-path seam publishes --
+    only after the existing one-shot V8F T1C preservation gate is durably
+    consumed.  Not executed by this support task.
 
     ``candidate_partition_manifest_paths`` must already be a metadata-only
     resolved candidate list (a future PowerShell/runbook step); this module
@@ -1652,6 +1697,7 @@ def resolve_and_verify_t1c_preservation_by_content_address(
         authorization_identity=authorization_identity,
         reviewed_support_implementation_sha=reviewed_support_implementation_sha,
         state_root=CANONICAL_V8F_T1C_PRESERVATION_STATE_ROOT,
+        output_path=output_path,
         allocation_artifact_path=allocation_artifact_path,
         candidate_partition_manifest_paths=candidate_partition_manifest_paths,
         repository_root=CANONICAL_REPOSITORY_ROOT,
