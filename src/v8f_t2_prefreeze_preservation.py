@@ -298,12 +298,20 @@ def verify_t2_prefreeze_record(
     # Re-run the nine conditions on the record itself; a declared PASS is not
     # evidence without this independent derivation and comparison.
     _validate_nine_conditions({key: record[key] for key in T2_SAFE_CONDITION_FIELDS})
+    # V8F-PREFREEZE-MEDIUM-001: this pure verifier only proves the record is
+    # internally consistent with the *supplied* safe_evidence mapping -- it
+    # never itself reads a committed Git object, so it must not claim
+    # independent provenance derivation.  Only the canonical resolver
+    # (resolve_and_verify_t2_prefreeze_preservation), which actually walks
+    # _resolve_t2_prefreeze_safe_evidence_with_dependencies, may add that
+    # claim, and only after that derivation has genuinely succeeded.
     return {
         "result": "PASS",
         "checkpoint": V8F_T2_PREFREEZE_CHECKPOINT,
         "reviewed_v8f_design_candidate_commit": V8F_REVIEWED_DESIGN_CANDIDATE_COMMIT,
         "nine_conditions_independently_verified": True,
-        "provenance_independently_verified": True,
+        "provenance_values_verified_against_supplied_safe_evidence": True,
+        "provenance_independently_derived": False,
     }
 
 
@@ -971,7 +979,20 @@ def resolve_and_verify_t2_prefreeze_preservation(
     )
     record = build_t2_prefreeze_record(safe)
     verification = verify_t2_prefreeze_record(record, safe_evidence=safe)
-    return {"safe_evidence": safe, "record": record, **verification}
+    # V8F-PREFREEZE-MEDIUM-001: only here, after
+    # _resolve_t2_prefreeze_safe_evidence_with_dependencies above has
+    # genuinely completed its independent Git-object derivation, may the
+    # result claim independent provenance derivation.  This intentionally
+    # overrides the pure verifier's truthful `False` (it only proved
+    # internal consistency against the mapping it was handed); the override
+    # is sound here specifically because `safe` was itself produced by that
+    # derivation, not supplied by a caller.
+    return {
+        "safe_evidence": safe,
+        "record": record,
+        **verification,
+        "provenance_independently_derived": True,
+    }
 
 
 __all__ = [

@@ -426,7 +426,12 @@ def test_correct_synthetic_chronology_and_t1c_artifact_permits_resolver_to_conti
     record = recheck.build_t2_prefreeze_record(safe)
     verification = recheck.verify_t2_prefreeze_record(record, safe_evidence=safe)
     assert verification["result"] == "PASS"
-    assert verification["provenance_independently_verified"] is True
+    # The pure verifier call above only proves record-vs-supplied-evidence
+    # consistency; it does not itself read a Git object, so it must not
+    # claim independent derivation even though `safe` happened to originate
+    # from the resolver in this test.
+    assert verification["provenance_values_verified_against_supplied_safe_evidence"] is True
+    assert verification["provenance_independently_derived"] is False
 
 
 def test_canonical_resolver_has_no_caller_supplied_final_evidence_parameter():
@@ -445,13 +450,134 @@ def test_canonical_resolver_has_no_caller_supplied_final_evidence_parameter():
     assert "reviewed_v8f_t1c_preservation_recheck_commit" in sig2.parameters
 
 
-def test_provenance_independently_verified_requires_real_derivation_chain():
+# ---------------------------------------------------------------------------
+# V8F-PREFREEZE-MEDIUM-001: pure verifier must not claim independent
+# provenance derivation; only the canonical wrapper may, and only after a
+# real derivation succeeded.
+# ---------------------------------------------------------------------------
+
+
+def test_pure_verify_record_does_not_claim_independent_provenance_derivation():
     safe = _safe()
     record = recheck.build_t2_prefreeze_record(safe)
     verification = recheck.verify_t2_prefreeze_record(record, safe_evidence=safe)
-    resolved = _resolve()
-    assert verification["provenance_independently_verified"] is True
-    assert resolved == safe  # canonical derivation reproduces the same facts independently
+    assert set(verification) == {
+        "result",
+        "checkpoint",
+        "reviewed_v8f_design_candidate_commit",
+        "nine_conditions_independently_verified",
+        "provenance_values_verified_against_supplied_safe_evidence",
+        "provenance_independently_derived",
+    }
+    assert verification["provenance_independently_derived"] is False
+    assert verification["provenance_values_verified_against_supplied_safe_evidence"] is True
+    assert "provenance_independently_verified" not in verification
+
+
+def test_pure_bytes_verifier_also_does_not_claim_independent_provenance_derivation():
+    safe = _safe()
+    record = recheck.build_t2_prefreeze_record(safe)
+    raw = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    verification = recheck.verify_t2_prefreeze_record_bytes(raw, safe_evidence=safe)
+    assert verification["provenance_independently_derived"] is False
+    assert verification["provenance_values_verified_against_supplied_safe_evidence"] is True
+
+
+def test_caller_supplied_safe_mapping_cannot_produce_independently_derived_true():
+    """No matter how a caller constructs a syntactically-valid safe_evidence
+    mapping and record, the pure verifier path can never itself set
+    provenance_independently_derived=True -- there is no parameter or code
+    path in verify_t2_prefreeze_record/verify_t2_prefreeze_record_bytes that
+    accepts or is influenced by such a claim."""
+    import inspect
+
+    sig = inspect.signature(recheck.verify_t2_prefreeze_record)
+    assert "provenance_independently_derived" not in sig.parameters
+    assert "independently_derived" not in sig.parameters
+    sig_bytes = inspect.signature(recheck.verify_t2_prefreeze_record_bytes)
+    assert "provenance_independently_derived" not in sig_bytes.parameters
+
+    safe = _safe()
+    record = recheck.build_t2_prefreeze_record(safe)
+    # Even an attempted extra field on the caller's record is rejected by
+    # exact schema validation before any evidence claim could be forged.
+    forged = dict(record)
+    forged["provenance_independently_derived"] = True
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked):
+        recheck.verify_t2_prefreeze_record(forged, safe_evidence=safe)
+    # The legitimate call is unaffected and still reports False.
+    verification = recheck.verify_t2_prefreeze_record(record, safe_evidence=safe)
+    assert verification["provenance_independently_derived"] is False
+
+
+def test_canonical_wrapper_adds_independently_derived_true_only_after_real_derivation(monkeypatch):
+    """Staged synthetic fixture proving the wrapper's own composition logic:
+    monkeypatch _resolve_t2_prefreeze_safe_evidence_with_dependencies itself
+    (that function's own correctness -- real Git-object derivation, HIGH-002
+    stage-order enforcement -- is already fully covered elsewhere via
+    _resolve()/the HIGH-002 test suite) together with the module's Git
+    branch/head lookups, so resolve_and_verify_t2_prefreeze_preservation
+    runs its real internal control flow end-to-end and demonstrably adds
+    provenance_independently_derived=True only after that (mocked-successful)
+    derivation call returns."""
+    calls = []
+
+    def fake_resolver(root, *, verified_head, reviewed_support_implementation_sha, reviewed_v8f_t1c_preservation_recheck_commit):
+        calls.append(
+            (verified_head, reviewed_support_implementation_sha, reviewed_v8f_t1c_preservation_recheck_commit)
+        )
+        return _safe()
+
+    monkeypatch.setattr(recheck, "_resolve_t2_prefreeze_safe_evidence_with_dependencies", fake_resolver)
+    monkeypatch.setattr(
+        recheck,
+        "_git_text",
+        lambda root, args, reason: {
+            ("branch", "--show-current"): recheck.V8F_PRODUCTION_BRANCH,
+            ("rev-parse", "HEAD"): HEAD,
+        }[tuple(args)],
+    )
+
+    result = recheck.resolve_and_verify_t2_prefreeze_preservation(
+        reviewed_support_implementation_sha=SUPPORT_SHA,
+        reviewed_v8f_t1c_preservation_recheck_commit=T1C_COMMIT,
+    )
+    # Confirms the derivation call actually happened (and with the exact
+    # caller-supplied identifiers) before the claim was added.
+    assert calls == [(HEAD, SUPPORT_SHA, T1C_COMMIT)]
+    assert result["provenance_independently_derived"] is True
+    assert result["nine_conditions_independently_verified"] is True
+
+    # The exact same record/evidence, verified through the pure path alone,
+    # still reports False -- the wrapper's claim is not smuggled back into
+    # the pure verifier's own semantics.
+    pure = recheck.verify_t2_prefreeze_record(result["record"], safe_evidence=result["safe_evidence"])
+    assert pure["provenance_independently_derived"] is False
+
+
+def test_canonical_wrapper_never_reaches_claim_when_derivation_raises(monkeypatch):
+    """If the real derivation call fails, provenance_independently_derived
+    must never appear as True anywhere -- the wrapper raises before it can
+    be added."""
+
+    def failing_resolver(*args, **kwargs):
+        raise recheck.V8FT2PrefreezePreservationBlocked("V8F_T2_SAFE_GIT_EVIDENCE_UNAVAILABLE")
+
+    monkeypatch.setattr(recheck, "_resolve_t2_prefreeze_safe_evidence_with_dependencies", failing_resolver)
+    monkeypatch.setattr(
+        recheck,
+        "_git_text",
+        lambda root, args, reason: {
+            ("branch", "--show-current"): recheck.V8F_PRODUCTION_BRANCH,
+            ("rev-parse", "HEAD"): HEAD,
+        }[tuple(args)],
+    )
+
+    with pytest.raises(recheck.V8FT2PrefreezePreservationBlocked):
+        recheck.resolve_and_verify_t2_prefreeze_preservation(
+            reviewed_support_implementation_sha=SUPPORT_SHA,
+            reviewed_v8f_t1c_preservation_recheck_commit=T1C_COMMIT,
+        )
 
 
 # ---------------------------------------------------------------------------
