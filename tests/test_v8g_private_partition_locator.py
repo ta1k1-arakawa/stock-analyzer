@@ -214,17 +214,47 @@ def test_candidate_inside_repo_blocks(tmp_path):
     assert excinfo.value.reason == "V8G_LOCATOR_CANDIDATE_PATH_INVALID"
 
 
-def test_candidate_duplicate_after_normalization_blocks(tmp_path):
+def test_candidate_same_path_twice_deduplicates_to_one_candidate(tmp_path):
+    candidate = tmp_path / "a" / "partition_manifest.json"
+    candidate.parent.mkdir()
+    candidate.write_text("{}", encoding="utf-8")
+    result = locator.validate_candidate_partition_manifest_paths(
+        [candidate, candidate], repository_root=tmp_path / "repo"
+    )
+    assert result == (candidate.resolve(strict=True),)
+
+
+def test_candidate_duplicate_after_normalization_deduplicates_to_one_candidate(tmp_path):
     candidate_dir = tmp_path / "a"
     candidate_dir.mkdir()
     candidate = candidate_dir / "partition_manifest.json"
     candidate.write_text("{}", encoding="utf-8")
     duplicate_via_dotdot = candidate_dir / ".." / "a" / "partition_manifest.json"
+    result = locator.validate_candidate_partition_manifest_paths(
+        [candidate, duplicate_via_dotdot], repository_root=tmp_path / "repo"
+    )
+    assert result == (candidate.resolve(strict=True),)
+
+
+def test_candidate_distinct_paths_with_colliding_hash_fail_closed(tmp_path, monkeypatch):
+    candidate_a = tmp_path / "a" / "partition_manifest.json"
+    candidate_b = tmp_path / "b" / "partition_manifest.json"
+    candidate_a.parent.mkdir()
+    candidate_b.parent.mkdir()
+    candidate_a.write_text("{}", encoding="utf-8")
+    candidate_b.write_text("{}", encoding="utf-8")
+
+    # Simulate a SHA-256 collision: candidate_a and candidate_b resolve to
+    # genuinely distinct canonical_path_text values (real canonicalization is
+    # untouched), but the hash derivation is forced to collide -- exercising
+    # the fail-closed "different text, same hash" branch that real SHA-256
+    # collisions are cryptographically not expected to reach.
+    monkeypatch.setattr(locator, "_path_hash_from_canonical_text", lambda _canonical_text: "colliding-hash")
     with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
         locator.validate_candidate_partition_manifest_paths(
-            [candidate, duplicate_via_dotdot], repository_root=tmp_path / "repo"
+            [candidate_a, candidate_b], repository_root=tmp_path / "repo"
         )
-    assert excinfo.value.reason == "V8G_LOCATOR_CANDIDATE_DUPLICATE_PATH"
+    assert excinfo.value.reason == "V8G_LOCATOR_CANDIDATE_HASH_COLLISION"
 
 
 def test_candidate_list_accepts_valid_unique_paths(tmp_path):
@@ -841,17 +871,21 @@ def test_execute_pre_gate_empty_candidates_zero_reads_zero_gate(tmp_path):
     assert not (tmp_path / "state").exists()
 
 
-def test_execute_pre_gate_duplicate_candidates_zero_reads_zero_gate(tmp_path):
+def test_execute_pre_gate_duplicate_candidates_deduplicate_not_blocked(tmp_path):
     candidate_dir = tmp_path / "outside" / "a"
     candidate_dir.mkdir(parents=True)
     candidate = candidate_dir / "partition_manifest.json"
     candidate.write_text("{}", encoding="utf-8")
     kwargs, reads, gate_calls = _pre_gate_kwargs(tmp_path, candidate_paths=[candidate, candidate])
+    # Deduplicated to one candidate, so execution proceeds past pre-gate
+    # validation and reaches (mocked) gate consumption -- it then blocks
+    # later, on zero content match against the real frozen expected hash,
+    # never on the now-removed duplicate-path pre-gate check.
     with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
         locator._execute_locator_with_dependencies(**kwargs)
-    assert excinfo.value.reason == "V8G_LOCATOR_CANDIDATE_DUPLICATE_PATH"
-    assert reads == []
-    assert gate_calls == []
+    assert excinfo.value.reason == "V8G_LOCATOR_ZERO_MATCHING_CANDIDATES"
+    assert len(reads) == 1
+    assert len(gate_calls) == 1
 
 
 def test_execute_pre_gate_repo_internal_candidate_zero_reads_zero_gate(tmp_path):
@@ -995,6 +1029,32 @@ def test_execute_full_pass_writes_durable_artifact(tmp_path, monkeypatch):
     dumped = json.dumps(written)
     assert "TS_A" not in dumped
     assert str(candidate) not in dumped
+
+
+def test_execute_full_pass_duplicate_candidate_read_exactly_once(tmp_path, monkeypatch):
+    kwargs, manifest, manifest_sha, candidates, output_path, state_root = _full_synthetic_kwargs(
+        tmp_path, monkeypatch, candidate_paths_and_manifests=[("a", None)]
+    )
+    candidate = candidates[0]
+    duplicate_via_dotdot = candidate.parent / ".." / candidate.parent.name / candidate.name
+    read_paths = []
+    original_reader = kwargs["private_reader"]
+
+    def counting_reader(path):
+        read_paths.append(path)
+        return original_reader(path)
+
+    # Same underlying file supplied twice (once via a dot-dot alias) --
+    # candidate_count must reflect the deduplicated count, and the private
+    # reader must observe it exactly once, never twice.
+    kwargs["candidate_enumerator"] = lambda: [candidate, duplicate_via_dotdot]
+    kwargs["private_reader"] = counting_reader
+
+    result = locator._execute_locator_with_dependencies(**kwargs)
+    assert result["result"] == "PASS"
+    assert result["candidate_count"] == 1
+    assert result["exact_match_count"] == 1
+    assert len(read_paths) == 1
 
 
 def test_execute_zero_match_gate_consumed_no_artifact(tmp_path):
@@ -1222,13 +1282,12 @@ def test_enumeration_deduplicates_duplicate_normalized_paths(tmp_path):
         yield manifest
         yield manifest.parent / "." / "partition_manifest.json"
 
-    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
-        locator.enumerate_candidate_partition_manifest_paths(
-            repository_root=tmp_path / "repo",
-            raw_volume_provider=lambda: ((volume, "Fixed"),),
-            file_walker=walker,
-        )
-    assert excinfo.value.reason == "V8G_LOCATOR_CANDIDATE_DUPLICATE_PATH"
+    result = locator.enumerate_candidate_partition_manifest_paths(
+        repository_root=tmp_path / "repo",
+        raw_volume_provider=lambda: ((volume, "Fixed"),),
+        file_walker=walker,
+    )
+    assert result == (manifest.resolve(),)
 
 
 def test_enumeration_zero_candidates_blocks_pre_gate(tmp_path):

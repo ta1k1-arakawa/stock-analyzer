@@ -249,9 +249,13 @@ def canonical_path_text(path: str | os.PathLike[str]) -> str:
     return _canonicalize_resolved_path_text(str(resolved))
 
 
+def _path_hash_from_canonical_text(canonical_text: str) -> str:
+    return hashlib.sha256((_PATH_HASH_DOMAIN + canonical_text).encode("utf-8")).hexdigest()
+
+
 def locator_path_sha256(path: str | os.PathLike[str]) -> str:
     text = canonical_path_text(path)
-    return hashlib.sha256((_PATH_HASH_DOMAIN + text).encode("utf-8")).hexdigest()
+    return _path_hash_from_canonical_text(text)
 
 
 def candidate_set_serialization_v1(hash_list: Sequence[str]) -> bytes:
@@ -297,9 +301,17 @@ def validate_candidate_partition_manifest_paths(
     Every candidate must exist (its metadata is stat'd to canonicalize and
     hash it -- never its content), have exact basename
     `partition_manifest.json`, and lie outside the repository. The
-    normalized (canonical-path-hash) candidate set must be non-empty and
-    free of duplicates. No candidate path is ever printed, logged, or
-    returned in an exception message.
+    normalized (canonical-path-hash) candidate set must be non-empty.
+    Per §2.1.1, a candidate whose canonical path text exactly repeats an
+    already-observed candidate (e.g. the same path supplied twice, or a
+    dot/dot-dot alias resolving to the same location) is a benign duplicate
+    and is silently merged into a single frozen candidate -- never
+    double-counted, never scanned twice. A candidate whose
+    `locator_path_sha256` collides with an already-observed candidate's hash
+    while its canonical path text differs is, per §2.1.2, a fail-closed
+    schema violation rather than a duplicate: this is rejected with a
+    generic collision reason. No candidate path or canonical path text is
+    ever printed, logged, persisted, or returned in an exception message.
     """
     if isinstance(candidate_paths, (str, bytes)):
         raise V8GPrivatePartitionLocatorBlocked("V8G_LOCATOR_CANDIDATE_LIST_INVALID")
@@ -310,7 +322,10 @@ def validate_candidate_partition_manifest_paths(
     if len(candidate_list) == 0:
         raise V8GPrivatePartitionLocatorBlocked("V8G_LOCATOR_CANDIDATE_LIST_EMPTY")
     normalized: list[Path] = []
-    seen_hashes: set[str] = set()
+    # In-memory only, never persisted/printed/logged: path_hash -> the
+    # canonical_path_text that produced it, so a genuine repeated path can be
+    # distinguished from a same-hash/different-text collision.
+    seen_canonical_text_by_hash: dict[str, str] = {}
     for value in candidate_list:
         try:
             resolved = Path(value).resolve(strict=True)
@@ -319,10 +334,14 @@ def validate_candidate_partition_manifest_paths(
         if resolved.name != PARTITION_MANIFEST_BASENAME:
             raise V8GPrivatePartitionLocatorBlocked("V8G_LOCATOR_CANDIDATE_BASENAME_INVALID")
         _require_outside_repository(resolved, repository_root, "V8G_LOCATOR_CANDIDATE_PATH_INVALID")
-        path_hash = locator_path_sha256(resolved)
-        if path_hash in seen_hashes:
-            raise V8GPrivatePartitionLocatorBlocked("V8G_LOCATOR_CANDIDATE_DUPLICATE_PATH")
-        seen_hashes.add(path_hash)
+        canonical_text = _canonicalize_resolved_path_text(str(resolved))
+        path_hash = _path_hash_from_canonical_text(canonical_text)
+        existing_text = seen_canonical_text_by_hash.get(path_hash)
+        if existing_text is not None:
+            if existing_text == canonical_text:
+                continue  # benign duplicate: same normalized path, merged silently
+            raise V8GPrivatePartitionLocatorBlocked("V8G_LOCATOR_CANDIDATE_HASH_COLLISION")
+        seen_canonical_text_by_hash[path_hash] = canonical_text
         normalized.append(resolved)
     return tuple(normalized)
 
