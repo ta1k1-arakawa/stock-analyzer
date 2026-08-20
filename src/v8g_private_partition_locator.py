@@ -15,23 +15,36 @@ Bound to the exact independently reviewed design candidate:
     reviewed_v8g_design_candidate_commit = b9c7014ba72b72efadb1a4be6c5aa4aa71201518
     design_blob = fefbf898a1dda01d852d8d36b1ed8e086c748c7d
 
-This module performs no filesystem-wide discovery of its own: the candidate
-path list is always supplied by the caller (a future PowerShell/runbook
-metadata-only enumeration step), exactly as the design requires. Importing
-this module performs no I/O, no network access, and no gate consumption.
+Section 2.1.1 assigns the metadata-only candidate enumeration itself to
+"a future V8G locator support implementation" -- this module, not an
+external PowerShell/runbook step (unlike V8F's locator, which explicitly
+delegated enumeration externally; V8G's design contains no such
+delegation). `enumerate_candidate_partition_manifest_paths` is the
+authoritative implementation: every ready Fixed/Removable volume,
+recursively, for files named exactly `partition_manifest.json`, excluding
+this repository's own subtree, reading no content and inspecting no ticker
+identity. The production entry point always derives its candidate list from
+this enumerator; a normal caller cannot supply or override it. A
+dependency-injected volume/walk provider exists solely for tests and
+internal DI -- this implementation session and its test suite never invoke
+the real, Windows-only default provider against a real filesystem.
+Importing this module performs no I/O, no network access, and no gate
+consumption.
 """
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
 import re
+import string
 import subprocess
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from src.v8_partition import (
     MANIFEST_FIELDS,
@@ -312,6 +325,111 @@ def validate_candidate_partition_manifest_paths(
         seen_hashes.add(path_hash)
         normalized.append(resolved)
     return tuple(normalized)
+
+
+# ---------------------------------------------------------------------------
+# 2.1.1 -- Authoritative metadata-only candidate enumeration
+# ---------------------------------------------------------------------------
+
+# Win32 GetDriveTypeW return values (metadata only; no content is read to
+# determine either drive type or readiness).
+_WINDOWS_DRIVE_TYPE_LABELS = {2: "Removable", 3: "Fixed", 4: "Network", 5: "CDROM"}
+_ALLOWED_ENUMERATION_DRIVE_TYPES = frozenset({"Fixed", "Removable"})
+
+
+def _default_raw_volume_provider() -> tuple[tuple[Path, str], ...]:
+    """Windows-only production volume provider.
+
+    Enumerates every currently assigned drive letter and its Win32
+    `DriveType` via the metadata-only `GetDriveTypeW` API -- no file content
+    of any kind is read. Every drive type is returned unfiltered, including
+    Network and CD/optical; `_filter_allowed_volumes` applies the
+    Fixed/Removable-only inclusion policy separately, so that policy stays
+    independently unit-testable without depending on this Windows-only call.
+    Never invoked by this implementation's own test suite.
+    """
+    if os.name != "nt":
+        raise V8GPrivatePartitionLocatorBlocked("V8G_ENUMERATION_WINDOWS_ONLY")
+    get_drive_type = ctypes.windll.kernel32.GetDriveTypeW  # type: ignore[attr-defined]
+    volumes: list[tuple[Path, str]] = []
+    for letter in string.ascii_uppercase:
+        root = f"{letter}:\\"
+        drive_type = get_drive_type(ctypes.c_wchar_p(root))
+        label = _WINDOWS_DRIVE_TYPE_LABELS.get(drive_type)
+        if label is not None:
+            volumes.append((Path(root), label))
+    return tuple(volumes)
+
+
+def _filter_allowed_volumes(volumes: Sequence[tuple[Path, str]]) -> tuple[Path, ...]:
+    """Pure, metadata-only `DriveType` filter (design section 2.1.1):
+    `Fixed` and `Removable` are kept; `Network` and CD/optical are excluded
+    by construction. Independent of the Windows-only raw provider so the
+    inclusion/exclusion policy itself is fully unit-testable.
+    """
+    return tuple(root for root, drive_type in volumes if drive_type in _ALLOWED_ENUMERATION_DRIVE_TYPES)
+
+
+def _default_file_walker(volume_root: Path) -> Iterable[Path]:
+    """Production file walker: recursively lists every accessible file
+    under `volume_root`. A volume that is not currently ready, or any
+    subdirectory that is not accessible, is silently skipped -- never
+    logged, never included in any exception -- via `os.walk`'s permissive
+    `onerror` handling; no file content is ever read here. Never invoked by
+    this implementation's own test suite.
+    """
+    for dirpath, _dirnames, filenames in os.walk(volume_root, onerror=lambda _error: None):
+        for filename in filenames:
+            yield Path(dirpath) / filename
+
+
+def enumerate_candidate_partition_manifest_paths(
+    *,
+    repository_root: Path = CANONICAL_REPOSITORY_ROOT,
+    raw_volume_provider: Callable[[], Sequence[tuple[Path, str]]] | None = None,
+    file_walker: Callable[[Path], Iterable[Path]] | None = None,
+) -> tuple[Path, ...]:
+    """The authoritative design section 2.1.1 metadata-only candidate
+    enumerator.
+
+    Scans every ready `Fixed`/`Removable` volume, recursively, for a file
+    named exactly `partition_manifest.json`, excluding this repository's
+    own working-tree subtree. Reads no candidate content, inspects no
+    ticker identity, and never prints/logs/persists a candidate path. The
+    resulting candidate list is normalized, deduplicated, and validated
+    through the same `validate_candidate_partition_manifest_paths` pre-gate
+    check the rest of this module already uses -- a genuine duplicate or an
+    empty result is fail-closed exactly as it already is there. The
+    returned tuple is frozen for the caller's one execution; nothing may be
+    added to or removed from it afterward.
+
+    `raw_volume_provider`/`file_walker` exist solely for tests and internal
+    DI -- production callers must never override them (only the
+    `resolve_and_locate_authorized_partition_manifest` internals may, and
+    they always resolve to the real, Windows-only defaults).
+    """
+    provider = raw_volume_provider or _default_raw_volume_provider
+    walker = file_walker or _default_file_walker
+    resolved_repository_root = Path(repository_root).resolve(strict=False)
+    discovered: list[Path] = []
+    for volume_root in _filter_allowed_volumes(provider()):
+        try:
+            for candidate in walker(volume_root):
+                if candidate.name != PARTITION_MANIFEST_BASENAME:
+                    continue
+                try:
+                    resolved_candidate = candidate.resolve(strict=False)
+                except OSError:
+                    continue
+                try:
+                    resolved_candidate.relative_to(resolved_repository_root)
+                except ValueError:
+                    discovered.append(candidate)
+                # else: inside the repository working-tree subtree -- excluded
+                # from scope entirely, never appended.
+        except OSError:
+            continue
+    return validate_candidate_partition_manifest_paths(discovered, repository_root)
 
 
 # ---------------------------------------------------------------------------
@@ -956,7 +1074,7 @@ def _execute_locator_with_dependencies(
     authorization_identity: str,
     state_root: str | os.PathLike[str],
     output_path: str | os.PathLike[str],
-    candidate_partition_manifest_paths: Sequence[str | os.PathLike[str]],
+    candidate_enumerator: Callable[[], Sequence[str | os.PathLike[str]]],
     repository_root: Path,
     public_preflight: Callable[[], Mapping[str, Any]],
     private_reader: Callable[[Path], bytes],
@@ -981,8 +1099,10 @@ def _execute_locator_with_dependencies(
         expected_partition_manifest_sha256=expected_partition_manifest_sha256,
         expected_partition_implementation_commit=expected_partition_implementation_commit,
     )
-    # Pre-gate, metadata-only: normalize/dedupe/basename/outside-repo only.
-    candidates = validate_candidate_partition_manifest_paths(candidate_partition_manifest_paths, repository_root)
+    # Pre-gate, metadata-only: authoritative enumeration, then
+    # normalize/dedupe/basename/outside-repo validation.
+    raw_candidates = candidate_enumerator()
+    candidates = validate_candidate_partition_manifest_paths(raw_candidates, repository_root)
     state, output = _prepare_locator_execution_paths(
         state_root=state_root, output_path=output_path, candidates=candidates, repository_root=repository_root
     )
@@ -1035,21 +1155,23 @@ def resolve_and_locate_authorized_partition_manifest(
     authorization_identity: str,
     *,
     reviewed_locator_support_implementation_sha: str,
-    candidate_partition_manifest_paths: Sequence[str | os.PathLike[str]],
     output_path: str | os.PathLike[str],
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Prepared future entry point; not executed by this support task.
 
-    ``candidate_partition_manifest_paths`` must already be a metadata-only
-    resolved candidate list (a future PowerShell/runbook step); this module
-    performs no filesystem-wide discovery of its own.
+    Candidates are always derived from the authoritative
+    `enumerate_candidate_partition_manifest_paths` enumerator (design
+    section 2.1.1); a normal production caller cannot supply or override an
+    arbitrary candidate list.
     """
     return _execute_locator_with_dependencies(
         authorization_identity=authorization_identity,
         state_root=CANONICAL_V8G_LOCATOR_GATE_STATE_ROOT,
         output_path=output_path,
-        candidate_partition_manifest_paths=candidate_partition_manifest_paths,
+        candidate_enumerator=lambda: enumerate_candidate_partition_manifest_paths(
+            repository_root=CANONICAL_REPOSITORY_ROOT
+        ),
         repository_root=CANONICAL_REPOSITORY_ROOT,
         public_preflight=lambda: _default_public_preflight(CANONICAL_REPOSITORY_ROOT),
         private_reader=lambda path: path.read_bytes(),
@@ -1082,6 +1204,7 @@ __all__ = [
     "canonical_path_text",
     "compute_locator_gate_receipt_key",
     "consume_gate_once",
+    "enumerate_candidate_partition_manifest_paths",
     "gate_receipt_bytes_sha256",
     "locator_path_sha256",
     "read_gate_receipt",

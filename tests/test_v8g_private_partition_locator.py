@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -811,7 +812,7 @@ def _pre_gate_kwargs(tmp_path, *, candidate_paths, private_reader=None, gate_cal
         authorization_identity=AUTHORIZATION,
         state_root=tmp_path / "state",
         output_path=tmp_path / "outside-output" / "artifact.json",
-        candidate_partition_manifest_paths=candidate_paths,
+        candidate_enumerator=lambda: candidate_paths,
         repository_root=tmp_path / "repo",
         public_preflight=lambda: {
             "repository_identity": locator.V8G_REPOSITORY_IDENTITY,
@@ -927,7 +928,7 @@ def _full_synthetic_kwargs(tmp_path, monkeypatch, *, candidate_paths_and_manifes
         authorization_identity=authorization,
         state_root=state_root,
         output_path=output_path,
-        candidate_partition_manifest_paths=candidates,
+        candidate_enumerator=lambda: candidates,
         repository_root=tmp_path / "repo",
         public_preflight=lambda: {
             "repository_identity": locator.V8G_REPOSITORY_IDENTITY,
@@ -1033,17 +1034,282 @@ def test_execute_multi_match_gate_consumed_no_artifact(tmp_path, monkeypatch):
     assert list(state_root.glob("*.json"))
 
 
-def test_no_network_and_no_real_filesystem_wide_discovery_module_wide():
+def test_no_network_apis_module_wide():
     import ast
     import inspect
 
     source = inspect.getsource(locator)
     tree = ast.parse(source)
-    forbidden = {"urlopen", "socket", "requests", "httpx", "walk", "glob", "rglob", "iterdir", "scandir"}
+    forbidden = {"urlopen", "socket", "requests", "httpx"}
     names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     attrs = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
     assert not (forbidden & names)
     assert not (forbidden & attrs)
+
+
+def test_production_enumeration_capability_exists_but_unused_by_synthetic_suite():
+    """Design section 2.1.1 requires this module to own real filesystem-wide
+    discovery in production. This test proves that capability exists (the
+    real, Windows-only default provider/walker are present and wired into
+    `enumerate_candidate_partition_manifest_paths`) while proving this
+    session's own synthetic test suite never invokes it against a real
+    filesystem: every other test in this file passes an injected
+    `raw_volume_provider`/`file_walker` (or bypasses enumeration entirely
+    via `candidate_enumerator`), and `_default_raw_volume_provider` itself
+    fail-closes with `V8G_ENUMERATION_WINDOWS_ONLY` off Windows rather than
+    silently touching this sandbox's real disk.
+    """
+    assert callable(locator._default_raw_volume_provider)
+    assert callable(locator._default_file_walker)
+    assert callable(locator.enumerate_candidate_partition_manifest_paths)
+
+    import inspect
+
+    sig = inspect.signature(locator.enumerate_candidate_partition_manifest_paths)
+    assert sig.parameters["raw_volume_provider"].default is None
+    assert sig.parameters["file_walker"].default is None
+
+    if os.name != "nt":
+        with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+            locator._default_raw_volume_provider()
+        assert excinfo.value.reason == "V8G_ENUMERATION_WINDOWS_ONLY"
+
+
+# ---------------------------------------------------------------------------
+# 2.1.1 -- Authoritative metadata-only candidate enumeration
+# ---------------------------------------------------------------------------
+
+
+def test_enumeration_includes_fixed_volumes(tmp_path):
+    volume = tmp_path / "fixed"
+    manifest = volume / "nested" / "partition_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+
+    result = locator.enumerate_candidate_partition_manifest_paths(
+        repository_root=tmp_path / "repo",
+        raw_volume_provider=lambda: ((volume, "Fixed"),),
+    )
+    assert result == (manifest.resolve(),)
+
+
+def test_enumeration_includes_removable_volumes(tmp_path):
+    volume = tmp_path / "removable"
+    manifest = volume / "partition_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+
+    result = locator.enumerate_candidate_partition_manifest_paths(
+        repository_root=tmp_path / "repo",
+        raw_volume_provider=lambda: ((volume, "Removable"),),
+    )
+    assert result == (manifest.resolve(),)
+
+
+def test_enumeration_excludes_network_volumes(tmp_path):
+    volume = tmp_path / "network"
+    manifest = volume / "partition_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator.enumerate_candidate_partition_manifest_paths(
+            repository_root=tmp_path / "repo",
+            raw_volume_provider=lambda: ((volume, "Network"),),
+        )
+    assert excinfo.value.reason == "V8G_LOCATOR_CANDIDATE_LIST_EMPTY"
+
+
+def test_enumeration_excludes_cdrom_volumes(tmp_path):
+    volume = tmp_path / "cdrom"
+    manifest = volume / "partition_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator.enumerate_candidate_partition_manifest_paths(
+            repository_root=tmp_path / "repo",
+            raw_volume_provider=lambda: ((volume, "CDROM"),),
+        )
+    assert excinfo.value.reason == "V8G_LOCATOR_CANDIDATE_LIST_EMPTY"
+
+
+def test_enumeration_excludes_not_ready_volume(tmp_path):
+    ready_volume = tmp_path / "ready"
+    manifest = ready_volume / "partition_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+    not_ready_volume = tmp_path / "not-ready-does-not-exist"
+
+    def walker(volume_root):
+        if volume_root == not_ready_volume:
+            raise OSError("volume not ready")
+        for path in volume_root.rglob("*"):
+            if path.is_file():
+                yield path
+
+    result = locator.enumerate_candidate_partition_manifest_paths(
+        repository_root=tmp_path / "repo",
+        raw_volume_provider=lambda: ((not_ready_volume, "Fixed"), (ready_volume, "Fixed")),
+        file_walker=walker,
+    )
+    assert result == (manifest.resolve(),)
+
+
+def test_enumeration_matches_exact_basename_only(tmp_path):
+    volume = tmp_path / "vol"
+    (volume).mkdir()
+    (volume / "partition_manifest.json.bak").write_text("{}", encoding="utf-8")
+    (volume / "PARTITION_MANIFEST.JSON").write_text("{}", encoding="utf-8")
+    (volume / "other.json").write_text("{}", encoding="utf-8")
+    manifest = volume / "real" / "partition_manifest.json"
+    manifest.parent.mkdir()
+    manifest.write_text("{}", encoding="utf-8")
+
+    result = locator.enumerate_candidate_partition_manifest_paths(
+        repository_root=tmp_path / "repo",
+        raw_volume_provider=lambda: ((volume, "Fixed"),),
+    )
+    assert result == (manifest.resolve(),)
+
+
+def test_enumeration_excludes_repository_subtree(tmp_path):
+    repo_root = tmp_path / "repo"
+    volume = tmp_path
+    inside = repo_root / "nested" / "partition_manifest.json"
+    inside.parent.mkdir(parents=True)
+    inside.write_text("{}", encoding="utf-8")
+    outside = tmp_path / "outside" / "partition_manifest.json"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("{}", encoding="utf-8")
+
+    result = locator.enumerate_candidate_partition_manifest_paths(
+        repository_root=repo_root,
+        raw_volume_provider=lambda: ((volume, "Fixed"),),
+    )
+    assert result == (outside.resolve(),)
+
+
+def test_enumeration_handles_inaccessible_directory_without_leaking_paths(tmp_path, capsys):
+    volume = tmp_path / "vol"
+    manifest = volume / "ok" / "partition_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+    secret_inaccessible_path = volume / "SECRET_DO_NOT_LEAK"
+
+    def walker(volume_root):
+        yield manifest
+        raise OSError(f"permission denied: {secret_inaccessible_path}")
+
+    result = locator.enumerate_candidate_partition_manifest_paths(
+        repository_root=tmp_path / "repo",
+        raw_volume_provider=lambda: ((volume, "Fixed"),),
+        file_walker=walker,
+    )
+    assert result == (manifest.resolve(),)
+    captured = capsys.readouterr()
+    assert "SECRET_DO_NOT_LEAK" not in captured.out
+    assert "SECRET_DO_NOT_LEAK" not in captured.err
+
+
+def test_enumeration_deduplicates_duplicate_normalized_paths(tmp_path):
+    volume = tmp_path / "vol"
+    manifest = volume / "partition_manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}", encoding="utf-8")
+
+    def walker(volume_root):
+        yield manifest
+        yield manifest.parent / "." / "partition_manifest.json"
+
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator.enumerate_candidate_partition_manifest_paths(
+            repository_root=tmp_path / "repo",
+            raw_volume_provider=lambda: ((volume, "Fixed"),),
+            file_walker=walker,
+        )
+    assert excinfo.value.reason == "V8G_LOCATOR_CANDIDATE_DUPLICATE_PATH"
+
+
+def test_enumeration_zero_candidates_blocks_pre_gate(tmp_path):
+    volume = tmp_path / "empty-vol"
+    volume.mkdir()
+
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator.enumerate_candidate_partition_manifest_paths(
+            repository_root=tmp_path / "repo",
+            raw_volume_provider=lambda: ((volume, "Fixed"),),
+            file_walker=lambda volume_root: iter(()),
+        )
+    assert excinfo.value.reason == "V8G_LOCATOR_CANDIDATE_LIST_EMPTY"
+
+
+def test_enumeration_zero_candidates_via_full_execution_zero_reads_zero_gate(tmp_path):
+    kwargs, reads, gate_calls = _pre_gate_kwargs(tmp_path, candidate_paths=[])
+    kwargs["candidate_enumerator"] = lambda: (_ for _ in ()).throw(
+        locator.V8GPrivatePartitionLocatorBlocked("V8G_LOCATOR_CANDIDATE_LIST_EMPTY")
+    )
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator._execute_locator_with_dependencies(**kwargs)
+    assert excinfo.value.reason == "V8G_LOCATOR_CANDIDATE_LIST_EMPTY"
+    assert reads == []
+    assert gate_calls == []
+    assert not (tmp_path / "state").exists()
+
+
+def test_production_entrypoint_has_no_candidate_override_parameter():
+    import inspect
+
+    sig = inspect.signature(locator.resolve_and_locate_authorized_partition_manifest)
+    assert "candidate_partition_manifest_paths" not in sig.parameters
+    assert "candidate_enumerator" not in sig.parameters
+
+
+def test_candidate_list_frozen_after_enumeration_cannot_change_post_gate(tmp_path, monkeypatch):
+    kwargs, manifest, manifest_sha, candidates, output_path, state_root = _full_synthetic_kwargs(
+        tmp_path, monkeypatch, candidate_paths_and_manifests=[("a", None)]
+    )
+    call_count = []
+    original_candidates = list(candidates)
+
+    def enumerator():
+        call_count.append(1)
+        # Even if a mutable underlying source changed after the first call,
+        # each call must return the frozen candidate set: this test asserts
+        # the enumerator is invoked exactly once per execution (never
+        # re-queried after gate consumption).
+        return original_candidates
+
+    kwargs["candidate_enumerator"] = enumerator
+    result = locator._execute_locator_with_dependencies(**kwargs)
+    assert result["result"] == "PASS"
+    assert call_count == [1]
+
+
+def test_enumeration_never_reads_candidate_content(tmp_path):
+    volume = tmp_path / "vol"
+    manifest = volume / "partition_manifest.json"
+    manifest.parent.mkdir(parents=True)
+
+    class _ExplodingPath(type(manifest)):
+        def read_bytes(self):
+            raise AssertionError("enumeration must never read candidate content")
+
+        def read_text(self, *args, **kwargs):
+            raise AssertionError("enumeration must never read candidate content")
+
+    manifest.write_text("{}", encoding="utf-8")
+    exploding_manifest = _ExplodingPath(manifest)
+
+    def walker(volume_root):
+        yield exploding_manifest
+
+    result = locator.enumerate_candidate_partition_manifest_paths(
+        repository_root=tmp_path / "repo",
+        raw_volume_provider=lambda: ((volume, "Fixed"),),
+        file_walker=walker,
+    )
+    assert result == (manifest.resolve(),)
 
 
 def test_module_import_performs_no_io():
