@@ -605,6 +605,48 @@ def gate_receipt_bytes_sha256(state_root: str | os.PathLike[str]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _read_and_bind_gate_receipt(
+    state_root: str | os.PathLike[str],
+    *,
+    reviewed_v8g_design_candidate_commit: str,
+    reviewed_locator_support_implementation_sha: str,
+    expected_partition_manifest_sha256: str,
+    expected_partition_implementation_commit: str,
+    authorization_identity: str,
+) -> tuple[dict[str, Any], str]:
+    """Post-gate, pre-artifact-publication receipt semantic binding.
+
+    Reads the exact durable receipt once, validates its structural schema
+    (``_validate_receipt``), then mechanically requires exact equality
+    between every one of its bound fields and this execution's own
+    authorized values -- a structurally well-formed receipt that is bound
+    to a different design candidate, locator-support implementation,
+    expected manifest/implementation identity, or authorization identity is
+    a fail-closed ``POST_GATE`` ``BLOCK``, never silently accepted. The raw
+    authorization identity is hashed locally for comparison and never
+    persisted or logged; the receipt itself is only ever read here, never
+    replaced, reset, or deleted. Returns the validated receipt together
+    with the SHA-256 of the exact validated durable bytes.
+    """
+    path = _receipt_path(state_root)
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise V8GPrivatePartitionLocatorBlocked("V8G_RECEIPT_MISSING") from error
+    receipt = _validate_receipt(_strict_json_object(raw, "V8G_RECEIPT_INVALID_JSON", "V8G_RECEIPT_DUPLICATE_KEY"))
+    if receipt["reviewed_v8g_design_candidate_commit"] != reviewed_v8g_design_candidate_commit:
+        raise V8GPrivatePartitionLocatorBlocked("V8G_RECEIPT_DESIGN_CANDIDATE_MISMATCH")
+    if receipt["reviewed_locator_support_implementation_sha"] != reviewed_locator_support_implementation_sha:
+        raise V8GPrivatePartitionLocatorBlocked("V8G_RECEIPT_IMPLEMENTATION_SHA_MISMATCH")
+    if receipt["expected_partition_manifest_sha256"] != expected_partition_manifest_sha256:
+        raise V8GPrivatePartitionLocatorBlocked("V8G_RECEIPT_MANIFEST_SHA_MISMATCH")
+    if receipt["expected_partition_implementation_commit"] != expected_partition_implementation_commit:
+        raise V8GPrivatePartitionLocatorBlocked("V8G_RECEIPT_IMPLEMENTATION_COMMIT_MISMATCH")
+    if receipt["authorization_identity_sha256"] != authorization_identity_sha256(authorization_identity):
+        raise V8GPrivatePartitionLocatorBlocked("V8G_RECEIPT_AUTHORIZATION_HASH_MISMATCH")
+    return receipt, hashlib.sha256(raw).hexdigest()
+
+
 def consume_gate_once(
     state_root: str | os.PathLike[str],
     authorization_identity: str,
@@ -862,6 +904,14 @@ def verify_locator_artifact_binding(
     SHA" -- never to any other module's own reviewed implementation SHA
     (e.g. a future T1C-preservation-support SHA), so it cannot be misused to
     conflate the two.
+
+    In addition, this verifier mechanically requires the artifact's own
+    ``expected_partition_manifest_sha256``, ``expected_partition_implementation_commit``,
+    and ``locator_gate_receipt_key_sha256`` to exactly equal this module's
+    frozen expected values -- a structurally valid artifact bound to a
+    different manifest identity, partition implementation, or a wrong
+    deterministic receipt key is rejected here, before any future T1C
+    preservation gate could be consumed on the strength of it.
     """
     validated = _validate_locator_artifact(artifact)
     if validated["reviewed_v8g_design_candidate_commit"] != authorized_reviewed_v8g_design_candidate_commit:
@@ -871,6 +921,12 @@ def verify_locator_artifact_binding(
         != authorized_reviewed_locator_support_implementation_sha
     ):
         raise V8GPrivatePartitionLocatorBlocked("V8G_LOCATOR_ARTIFACT_IMPLEMENTATION_MISMATCH")
+    if validated["expected_partition_manifest_sha256"] != EXPECTED_V8_PARTITION_MANIFEST_SHA256:
+        raise V8GPrivatePartitionLocatorBlocked("V8G_LOCATOR_ARTIFACT_MANIFEST_SHA_MISMATCH")
+    if validated["expected_partition_implementation_commit"] != EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT:
+        raise V8GPrivatePartitionLocatorBlocked("V8G_LOCATOR_ARTIFACT_IMPLEMENTATION_COMMIT_MISMATCH")
+    if validated["locator_gate_receipt_key_sha256"] != compute_locator_gate_receipt_key():
+        raise V8GPrivatePartitionLocatorBlocked("V8G_LOCATOR_ARTIFACT_RECEIPT_KEY_MISMATCH")
     return validated
 
 
@@ -1145,7 +1201,17 @@ def _execute_locator_with_dependencies(
     )
 
     receipt_key = compute_locator_gate_receipt_key()
-    receipt_bytes_sha = gate_receipt_bytes_sha256(state)
+    # Post-gate, pre-artifact-publication: the durable receipt must be
+    # semantically bound to this exact execution's authorized values, not
+    # merely structurally well-formed.
+    _receipt, receipt_bytes_sha = _read_and_bind_gate_receipt(
+        state,
+        reviewed_v8g_design_candidate_commit=reviewed_v8g_design_candidate_commit,
+        reviewed_locator_support_implementation_sha=reviewed_impl_sha,
+        expected_partition_manifest_sha256=expected_partition_manifest_sha256,
+        expected_partition_implementation_commit=expected_partition_implementation_commit,
+        authorization_identity=authorization_identity,
+    )
     sorted_hash_list = sorted(locator_path_sha256(candidate) for candidate in candidates)
     artifact = _build_locator_artifact(
         reviewed_v8g_design_candidate_commit=reviewed_v8g_design_candidate_commit,

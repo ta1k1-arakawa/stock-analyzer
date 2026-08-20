@@ -518,6 +518,109 @@ def test_gate_receipt_bytes_sha256(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Receipt: post-gate semantic binding (V8G-LOCATOR-SUPPORT-MEDIUM-002)
+# ---------------------------------------------------------------------------
+
+
+def _consume_real_gate(tmp_path):
+    return locator.consume_gate_once(
+        tmp_path,
+        AUTHORIZATION,
+        clock=_clock,
+        reviewed_v8g_design_candidate_commit=locator.REVIEWED_V8G_DESIGN_CANDIDATE_COMMIT,
+        reviewed_locator_support_implementation_sha=REVIEWED_LOCATOR_SHA,
+        expected_partition_manifest_sha256=locator.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        expected_partition_implementation_commit=locator.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+    )
+
+
+def _binding_kwargs(**overrides):
+    kwargs = dict(
+        reviewed_v8g_design_candidate_commit=locator.REVIEWED_V8G_DESIGN_CANDIDATE_COMMIT,
+        reviewed_locator_support_implementation_sha=REVIEWED_LOCATOR_SHA,
+        expected_partition_manifest_sha256=locator.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        expected_partition_implementation_commit=locator.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        authorization_identity=AUTHORIZATION,
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_receipt_binding_accepts_exact_match(tmp_path):
+    _consume_real_gate(tmp_path)
+    receipt, receipt_bytes_sha = locator._read_and_bind_gate_receipt(tmp_path, **_binding_kwargs())
+    assert receipt["consumed"] is True
+    raw = (tmp_path / (locator.compute_locator_gate_receipt_key() + ".json")).read_bytes()
+    assert receipt_bytes_sha == __import__("hashlib").sha256(raw).hexdigest()
+
+
+def test_receipt_binding_rejects_wrong_design_candidate(tmp_path):
+    _consume_real_gate(tmp_path)
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator._read_and_bind_gate_receipt(
+            tmp_path, **_binding_kwargs(reviewed_v8g_design_candidate_commit="0" * 40)
+        )
+    assert excinfo.value.reason == "V8G_RECEIPT_DESIGN_CANDIDATE_MISMATCH"
+
+
+def test_receipt_binding_rejects_wrong_locator_implementation_sha(tmp_path):
+    _consume_real_gate(tmp_path)
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator._read_and_bind_gate_receipt(
+            tmp_path, **_binding_kwargs(reviewed_locator_support_implementation_sha=OTHER_LOCATOR_SHA)
+        )
+    assert excinfo.value.reason == "V8G_RECEIPT_IMPLEMENTATION_SHA_MISMATCH"
+
+
+def test_receipt_binding_rejects_wrong_manifest_sha(tmp_path):
+    _consume_real_gate(tmp_path)
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator._read_and_bind_gate_receipt(tmp_path, **_binding_kwargs(expected_partition_manifest_sha256="0" * 64))
+    assert excinfo.value.reason == "V8G_RECEIPT_MANIFEST_SHA_MISMATCH"
+
+
+def test_receipt_binding_rejects_wrong_partition_implementation_commit(tmp_path):
+    _consume_real_gate(tmp_path)
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator._read_and_bind_gate_receipt(
+            tmp_path, **_binding_kwargs(expected_partition_implementation_commit="0" * 40)
+        )
+    assert excinfo.value.reason == "V8G_RECEIPT_IMPLEMENTATION_COMMIT_MISMATCH"
+
+
+def test_receipt_binding_rejects_wrong_authorization_identity(tmp_path):
+    _consume_real_gate(tmp_path)
+    different_authorization = _authorization(impl_sha=OTHER_LOCATOR_SHA)
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator._read_and_bind_gate_receipt(tmp_path, **_binding_kwargs(authorization_identity=different_authorization))
+    assert excinfo.value.reason == "V8G_RECEIPT_AUTHORIZATION_HASH_MISMATCH"
+
+
+def test_receipt_binding_structurally_valid_but_semantically_mismatched_blocks(tmp_path):
+    # The durable receipt is fully schema-valid (every field correctly
+    # shaped and independently accepted by `_validate_receipt`), yet still
+    # BLOCKs here because one bound field does not equal this execution's
+    # own authorized value -- structural validity alone is not sufficient.
+    _consume_real_gate(tmp_path)
+    receipt_path = tmp_path / (locator.compute_locator_gate_receipt_key() + ".json")
+    assert locator._validate_receipt(json.loads(receipt_path.read_text(encoding="utf-8")))
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator._read_and_bind_gate_receipt(tmp_path, **_binding_kwargs(reviewed_v8g_design_candidate_commit="f" * 40))
+    assert excinfo.value.reason == "V8G_RECEIPT_DESIGN_CANDIDATE_MISMATCH"
+
+
+def test_receipt_binding_never_persists_or_logs_raw_authorization(tmp_path, capsys):
+    _consume_real_gate(tmp_path)
+    locator._read_and_bind_gate_receipt(tmp_path, **_binding_kwargs())
+    receipt_path = tmp_path / (locator.compute_locator_gate_receipt_key() + ".json")
+    stored = receipt_path.read_text(encoding="utf-8")
+    assert AUTHORIZATION not in stored
+    captured = capsys.readouterr()
+    assert AUTHORIZATION not in captured.out
+    assert AUTHORIZATION not in captured.err
+
+
+# ---------------------------------------------------------------------------
 # Canonical manifest hash/provenance verification + exactly 1/0/>1 matching
 # ---------------------------------------------------------------------------
 
@@ -667,7 +770,7 @@ def _built_artifact(**overrides):
         selected_locator_path_sha256_value="b" * 64,
         expected_partition_manifest_sha256=locator.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
         expected_partition_implementation_commit=locator.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
-        locator_gate_receipt_key_sha256_value="c" * 64,
+        locator_gate_receipt_key_sha256_value=locator.compute_locator_gate_receipt_key(),
         locator_gate_receipt_bytes_sha256_value="d" * 64,
     )
     kwargs.update(overrides)
@@ -724,6 +827,42 @@ def test_artifact_verifier_rejects_wrong_locator_support_sha():
             authorized_reviewed_locator_support_implementation_sha=OTHER_LOCATOR_SHA,
         )
     assert excinfo.value.reason == "V8G_LOCATOR_ARTIFACT_IMPLEMENTATION_MISMATCH"
+
+
+def test_artifact_verifier_rejects_wrong_manifest_sha():
+    # Valid 64-hex shape, but not this module's frozen expected manifest SHA.
+    artifact = _built_artifact(expected_partition_manifest_sha256="e" * 64)
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator.verify_locator_artifact_binding(
+            artifact,
+            authorized_reviewed_v8g_design_candidate_commit=locator.REVIEWED_V8G_DESIGN_CANDIDATE_COMMIT,
+            authorized_reviewed_locator_support_implementation_sha=REVIEWED_LOCATOR_SHA,
+        )
+    assert excinfo.value.reason == "V8G_LOCATOR_ARTIFACT_MANIFEST_SHA_MISMATCH"
+
+
+def test_artifact_verifier_rejects_wrong_partition_implementation_commit():
+    # Valid 40-hex shape, but not this module's frozen expected implementation commit.
+    artifact = _built_artifact(expected_partition_implementation_commit="e" * 40)
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator.verify_locator_artifact_binding(
+            artifact,
+            authorized_reviewed_v8g_design_candidate_commit=locator.REVIEWED_V8G_DESIGN_CANDIDATE_COMMIT,
+            authorized_reviewed_locator_support_implementation_sha=REVIEWED_LOCATOR_SHA,
+        )
+    assert excinfo.value.reason == "V8G_LOCATOR_ARTIFACT_IMPLEMENTATION_COMMIT_MISMATCH"
+
+
+def test_artifact_verifier_rejects_wrong_receipt_key():
+    # Valid 64-hex shape, but not the deterministic compute_locator_gate_receipt_key() value.
+    artifact = _built_artifact(locator_gate_receipt_key_sha256_value="e" * 64)
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator.verify_locator_artifact_binding(
+            artifact,
+            authorized_reviewed_v8g_design_candidate_commit=locator.REVIEWED_V8G_DESIGN_CANDIDATE_COMMIT,
+            authorized_reviewed_locator_support_implementation_sha=REVIEWED_LOCATOR_SHA,
+        )
+    assert excinfo.value.reason == "V8G_LOCATOR_ARTIFACT_RECEIPT_KEY_MISMATCH"
 
 
 def test_artifact_no_ticker_or_path_in_safe_fields():
@@ -1055,6 +1194,85 @@ def test_execute_full_pass_duplicate_candidate_read_exactly_once(tmp_path, monke
     assert result["candidate_count"] == 1
     assert result["exact_match_count"] == 1
     assert len(read_paths) == 1
+
+
+def _durably_publish_tampered_receipt(state_root, **field_overrides):
+    """Test-only: durably publish a structurally valid receipt bound to
+    intentionally wrong field(s), bypassing `consume_gate_once`'s own
+    `validate_authorization_identity` binding check (which would otherwise
+    refuse to build a mismatched receipt in the first place). Simulates a
+    durable receipt on disk that does not actually match the execution's
+    current authorized values, using the same atomic staging/link/fsync
+    write-once pattern as production so it round-trips through the same
+    strict-JSON reader.
+    """
+    receipt = {
+        "schema_version": locator.V8G_LOCATOR_RECEIPT_SCHEMA_VERSION,
+        "artifact_role": locator.V8G_LOCATOR_RECEIPT_ARTIFACT_ROLE,
+        "study": locator.V8G_STUDY_NAME,
+        "gate": locator.V8G_LOCATOR_GATE,
+        "reviewed_v8g_design_candidate_commit": locator.REVIEWED_V8G_DESIGN_CANDIDATE_COMMIT,
+        "reviewed_locator_support_implementation_sha": REVIEWED_LOCATOR_SHA,
+        "expected_partition_manifest_sha256": locator.EXPECTED_V8_PARTITION_MANIFEST_SHA256,
+        "expected_partition_implementation_commit": locator.EXPECTED_V8_PARTITION_IMPLEMENTATION_COMMIT,
+        "authorization_identity_sha256": locator.authorization_identity_sha256(AUTHORIZATION),
+        "consumed": True,
+        "consumption_count": 1,
+        "consumption_boundary": locator.V8G_LOCATOR_GATE_CONSUMPTION_BOUNDARY,
+        "consumption_timestamp_utc": "2026-08-19T00:00:00Z",
+    }
+    receipt.update(field_overrides)
+    payload = locator._canonical_json_bytes(receipt)
+    root = Path(state_root)
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / (locator.compute_locator_gate_receipt_key() + ".json")
+    if path.exists():
+        raise locator.V8GPrivatePartitionLocatorBlocked("V8G_LOCATOR_GATE_ALREADY_CONSUMED")
+    staging = root / (path.name + ".staging-test")
+    staging.write_bytes(payload)
+    os.link(staging, path)
+    staging.unlink()
+    return receipt
+
+
+def test_execute_post_gate_receipt_semantic_corruption_blocks_artifact_publication(tmp_path, monkeypatch):
+    kwargs, manifest, manifest_sha, candidates, output_path, state_root = _full_synthetic_kwargs(
+        tmp_path, monkeypatch, candidate_paths_and_manifests=[("a", None)]
+    )
+
+    def tampering_gate_consumer(
+        state,
+        authorization_identity,
+        *,
+        clock,
+        reviewed_v8g_design_candidate_commit,
+        reviewed_locator_support_implementation_sha,
+        expected_partition_manifest_sha256,
+        expected_partition_implementation_commit,
+    ):
+        # Durably publish a receipt bound to the WRONG manifest SHA --
+        # structurally valid, but not this execution's actual authorized
+        # value.
+        return _durably_publish_tampered_receipt(state, expected_partition_manifest_sha256="f" * 64)
+
+    kwargs["gate_consumer"] = tampering_gate_consumer
+
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo:
+        locator._execute_locator_with_dependencies(**kwargs)
+    assert excinfo.value.reason == "V8G_RECEIPT_MANIFEST_SHA_MISMATCH"
+    assert not output_path.exists()
+    receipt_path = state_root / (locator.compute_locator_gate_receipt_key() + ".json")
+    assert receipt_path.exists()  # gate remains consumed; receipt is never reset or replaced
+    stored_before = receipt_path.read_bytes()
+
+    # No retry/reset behavior: a second execution against the same durable
+    # state fails via the one-shot gate itself, never by re-deriving or
+    # replacing the receipt.
+    with pytest.raises(locator.V8GPrivatePartitionLocatorBlocked) as excinfo_retry:
+        locator._execute_locator_with_dependencies(**kwargs)
+    assert excinfo_retry.value.reason == "V8G_LOCATOR_GATE_ALREADY_CONSUMED"
+    assert receipt_path.read_bytes() == stored_before
+    assert not output_path.exists()
 
 
 def test_execute_zero_match_gate_consumed_no_artifact(tmp_path):
