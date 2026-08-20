@@ -1,6 +1,6 @@
 {
   "schema_version": "V8H_DESIGN_FREEZE_APPROVAL_V1",
-  "artifact_role": "V8H_DESIGN_FREEZE_PREPARATION",
+  "artifact_role": "V8H_DESIGN_FREEZE_APPROVAL",
   "study": "V8H_HISTORICAL_RESEARCH",
 
   "predecessor": "V8G_HISTORICAL_RESEARCH",
@@ -13,6 +13,10 @@
   "reviewed_design_candidate_commit": "543dedf19fe15a94121520e91e441cb751551bc1",
   "reviewed_design_candidate_blob_sha": "c23eb3bdddf320861922e35aa172fa30908a866b",
   "reviewed_design_candidate_blob_sha_resolved_via": "git rev-parse 543dedf19fe15a94121520e91e441cb751551bc1:V8H_FRESH_PRIVATE_PARTITION_SUCCESSOR_DESIGN_DRAFT.md",
+
+  "frozen_design_git_commit": "543dedf19fe15a94121520e91e441cb751551bc1",
+  "frozen_design_git_blob_sha": "c23eb3bdddf320861922e35aa172fa30908a866b",
+  "frozen_design_identity_note": "The frozen design identity is the exact reviewed candidate commit/blob above. It is fixed at the moment of human approval and does not move to any later commit, including the commit that records this approval.",
 
   "final_independent_design_review_result": "PASS",
   "final_independent_design_review_commit": "543dedf19fe15a94121520e91e441cb751551bc1",
@@ -34,26 +38,38 @@
   ],
 
   "explicitly_outside_current_freeze_authority": [
-    "exact name, receipt-key material, and authorization grammar for the V8H membership-disclosure gate",
-    "exact name, receipt-key material, and authorization grammar for the V8H research-opening gate",
-    "the full future V8H stage order and namespace substitution beyond the two gates this design already resolved",
-    "exact future successor/reallocation gate semantics governing any later use of T_spare"
+    "CHATGPT_DECISION_REQUIRED: exact name, receipt-key material, and authorization grammar for the V8H membership-disclosure gate",
+    "CHATGPT_DECISION_REQUIRED: exact name, receipt-key material, and authorization grammar for the V8H research-opening gate",
+    "CHATGPT_DECISION_REQUIRED: the full future V8H stage order and namespace substitution beyond the two gates this design already resolved",
+    "CHATGPT_DECISION_REQUIRED: exact future successor/reallocation gate semantics governing any later use of T_spare"
   ],
   "outside_scope_items_are_chatgpt_decision_required": true,
   "outside_scope_items_silently_resolved_by_this_artifact": false,
+  "outside_scope_items_silently_approved_by_this_freeze": false,
 
-  "approval_status": "AWAITING_HUMAN_FREEZE_APPROVAL",
+  "approval_status": "APPROVED_FROZEN",
   "human_gate": "HUMAN_V8H_DESIGN_FREEZE",
-  "mechanically_verifiable_current_stage_human_authorization_found": false,
+  "human_gate_scope_note": "This authorization covers HUMAN_V8H_DESIGN_FREEZE only. It does not authorize JPX/Yahoo network access, source acquisition, private/sealed reads, partition generation, allocation execution, membership disclosure, research opening, or production trading.",
+  "mechanically_verifiable_current_stage_human_authorization_found": true,
+
+  "human_approval_received": true,
+  "human_approval_statement_persisted_raw": false,
   "human_approval_statement": null,
+  "human_authorization_string_sha256": "e294d567f81887a752fbe0a9f7fde24fdd4ae3be7a5ec336038bad9b6d46397f",
+  "human_authorization_string_sha256_derivation": "SHA-256 over the exact UTF-8 bytes of the human-supplied authorization sentence, verbatim, no trailing newline added. The raw sentence itself is human identity-bearing authorization evidence and is deliberately not persisted; only this digest and the safe commit/blob bindings below are recorded, consistent with the authorization_identity_sha256 pattern already used by V8F/V8E/V8G artifacts.",
+  "human_authorization_binds_commit": "543dedf19fe15a94121520e91e441cb751551bc1",
+  "human_authorization_binds_blob": "c23eb3bdddf320861922e35aa172fa30908a866b",
+
   "human_approval_received_at": null,
   "human_approval_timestamp_repository_grounded": false,
+  "human_approval_timestamp_note": "No mechanically grounded timestamp is available for this approval; none is fabricated. This is consistent with the same null/false pattern already recorded by V8B/V8C's own design-freeze approval artifacts.",
 
-  "design_finalized": false,
-  "human_design_freeze_complete": false,
+  "design_finalized": true,
+  "design_finalized_scope_note": "True only for the frozen_methodology_scope listed above; every item in explicitly_outside_current_freeze_authority remains unresolved and is not finalized by this freeze.",
+  "human_design_freeze_complete": true,
   "approval_artifact_commit_is_not_the_frozen_design_commit": true,
   "semantic_design_change_after_freeze_requires": "NEW_STUDY_REQUIRED",
-  "approval_artifact_authorizes_implementation_phase_only": false,
+  "approval_artifact_authorizes_implementation_phase_only": true,
 
   "implementation_authorized": false,
   "real_network_authorized": false,
@@ -65,7 +81,8 @@
   "membership_disclosure_authorized": false,
   "research_opening_authorized": false,
   "production_authorized": false,
-  "human_gate_consumed": false,
+  "human_gate_consumed": true,
+  "human_gate_consumed_note": "HUMAN_V8H_DESIGN_FREEZE only. No other gate (source-snapshot acquisition, partition-generation, membership-disclosure, or research-opening) is consumed by this artifact.",
 
   "future_profitability_established": false,
 
@@ -75,7 +92,7 @@
   "yahoo_requests_by_this_artifact": 0,
   "private_or_sealed_reads_by_this_artifact": 0,
   "partition_seeds_generated_by_this_artifact": 0,
-  "human_gates_consumed_by_this_artifact": 0,
+  "human_gates_consumed_by_this_artifact": 1,
 
-  "next_required_action": "HUMAN_V8H_DESIGN_FREEZE_APPROVAL_REQUIRED"
+  "next_required_action": "V8H_IMPLEMENTATION_TASK_WITH_INDEPENDENT_REVIEW"
 }
