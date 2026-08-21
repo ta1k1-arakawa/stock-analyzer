@@ -153,9 +153,17 @@ presence/version, an *operational* parser probe (not merely `import
 pandas`), TLS/stdlib initialization, trusted-host request-construction
 initialization (reusing the real
 `scripts/build_v8_partition_manifest.py` production code, not a
-reimplementation), and filesystem/durable-publication primitive usability on
-a disposable probe path that never touches real gate/receipt/evidence state.
-See its module docstring for the exact safe result contract.
+reimplementation), and durable-publication readiness by directly invoking
+the real production exclusive/atomic publication primitive
+(`src.v8i_source_snapshot._atomic_publish_once` -- staging write,
+`os.fsync` the file, atomic no-overwrite `os.link`, `os.fsync` the
+directory) on a disposable probe path that is mechanically proven never to
+overlap real gate/receipt/evidence state. This proves, not merely asserts,
+exclusive/no-overwrite creation, that a second publication to the same
+destination correctly fails, durable byte round-trip, and cleanup of the
+disposable probe artifact only -- an ordinary write/read/unlink on an
+unrelated temp file would not exercise any of that. See its module
+docstring for the exact safe result contract.
 
 ### Operational JPX `.xls` parser probe -- open item
 

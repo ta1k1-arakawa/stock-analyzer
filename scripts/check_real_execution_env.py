@@ -7,10 +7,14 @@ for where this fits in the overall pre-authorization ordering. This script
 is environment-readiness only: it never consumes a human research gate,
 never calls JPX/Yahoo, never accesses private/sealed data, and never
 executes any V8I/V8J real acquisition. It never opens a network socket and
-never reads or writes any real gate receipt or evidence artifact -- it only
-references their canonical path *constants* (imported from
-`src.v8i_source_snapshot`) to prove its own disposable filesystem probe
-never collides with them.
+never reads, writes, resets, or deletes any real gate receipt or evidence
+artifact. The filesystem probe imports and calls the real production
+durable/exclusive publication primitive itself
+(`src.v8i_source_snapshot._atomic_publish_once`) -- not a reimplementation
+of it -- but only ever on a freshly created, disposable temporary path that
+is mechanically proven, via the real gate/private state root path
+*constants* also imported from `src.v8i_source_snapshot`, never to overlap
+real durable state.
 
 This script is safe to run on any platform for static/structural
 validation, but it can only ever report a Windows-grounded
@@ -190,35 +194,92 @@ def check_trusted_host_request_construction() -> dict[str, Any]:
     return {"status": "PASS"}
 
 
-def check_filesystem_probe() -> dict[str, Any]:
-    """Prove disposable filesystem primitives are usable, on a temporary
-    probe path that is mechanically proven never to collide with any real
-    durable gate/private V8I state root. Never reads or writes real gate
-    receipt or evidence state.
+def check_filesystem_durable_publication_probe() -> dict[str, Any]:
+    """Exercise the REAL production durable/exclusive publication primitive
+    (`src.v8i_source_snapshot._atomic_publish_once` -- staging write,
+    `os.fsync` the file, atomic no-overwrite `os.link`, `os.fsync` the
+    directory, staging cleanup) on a disposable temporary path, rather than
+    merely doing an ordinary write/read/unlink on some unrelated file.
+
+    The probe path is mechanically proven never to overlap any real V8I
+    gate or private state root before anything is written. This function
+    never reads, writes, resets, or deletes any real gate receipt, real
+    evidence artifact, or real private state -- every path touched here is
+    freshly created inside a `tempfile.TemporaryDirectory()` and destroyed
+    when this function returns.
+
+    Proves, by reusing the actual primitive rather than reimplementing it:
+      - exclusive/no-overwrite creation semantics (first publish succeeds);
+      - a second publication to the same destination correctly fails, via
+        the primitive's own real collision guard, not a simulated one;
+      - durable byte round-trip;
+      - `os.fsync` (file) and directory-entry fsync, both exercised inside
+        the reused primitive itself;
+      - cleanup of the disposable probe artifact only.
     """
     try:
         if str(REPO_ROOT) not in sys.path:
             sys.path.insert(0, str(REPO_ROOT))
         import src.v8i_source_snapshot as v8i_module
+        from src.v8i_source_snapshot import V8ISourceSnapshotBlocked, _atomic_publish_once
 
         durable_roots = {
             str(v8i_module.CANONICAL_V8I_SOURCE_SNAPSHOT_GATE_STATE_ROOT.resolve()),
             str(v8i_module.CANONICAL_V8I_SOURCE_SNAPSHOT_PRIVATE_STATE_ROOT.resolve()),
         }
         with tempfile.TemporaryDirectory(prefix="real-execution-env-probe-") as probe_directory:
-            resolved_probe = Path(probe_directory).resolve()
+            resolved_probe_root = Path(probe_directory).resolve()
             for durable_root in durable_roots:
-                if str(resolved_probe) == durable_root or str(resolved_probe).startswith(durable_root + os.sep):
+                if str(resolved_probe_root) == durable_root or str(resolved_probe_root).startswith(
+                    durable_root + os.sep
+                ):
                     raise AssertionError("FILESYSTEM_PROBE_COLLIDES_WITH_DURABLE_STATE_ROOT")
-            probe_file = resolved_probe / "probe.txt"
-            probe_file.write_text("real-execution-env-probe", encoding="utf-8")
-            read_back = probe_file.read_text(encoding="utf-8")
-            if read_back != "real-execution-env-probe":
-                raise AssertionError("FILESYSTEM_PROBE_ROUNDTRIP_MISMATCH")
-            probe_file.unlink()
+
+            probe_output_path = resolved_probe_root / "durable-publication-probe.bin"
+            probe_payload = os.urandom(64)
+
+            # Exclusive creation + fsync(file) + atomic no-overwrite link +
+            # fsync(directory) -- the exact real production primitive, not
+            # a reimplementation of it.
+            _atomic_publish_once(probe_payload, probe_output_path, "PROBE_ALREADY_EXISTS", "PROBE_WRITE_FAILED")
+            if not probe_output_path.exists():
+                raise AssertionError("DURABLE_PUBLICATION_PROBE_OUTPUT_MISSING_AFTER_PUBLISH")
+
+            # Durable byte round-trip.
+            read_back_payload = probe_output_path.read_bytes()
+            if read_back_payload != probe_payload:
+                raise AssertionError("DURABLE_PUBLICATION_PROBE_BYTE_ROUNDTRIP_MISMATCH")
+
+            # A second publication to the same destination must fail --
+            # exercises the primitive's own real collision guard.
+            collision_correctly_blocked = False
+            try:
+                _atomic_publish_once(
+                    probe_payload, probe_output_path, "PROBE_ALREADY_EXISTS", "PROBE_WRITE_FAILED"
+                )
+            except V8ISourceSnapshotBlocked as error:
+                collision_correctly_blocked = error.reason == "PROBE_ALREADY_EXISTS"
+            if not collision_correctly_blocked:
+                raise AssertionError("DURABLE_PUBLICATION_PROBE_COLLISION_NOT_BLOCKED")
+
+            # Cleanup of the disposable probe artifact only -- real durable
+            # state is never touched by this function in the first place.
+            probe_output_path.unlink()
+            if probe_output_path.exists():
+                raise AssertionError("DURABLE_PUBLICATION_PROBE_CLEANUP_FAILED")
+    except AssertionError as error:
+        return {"status": "FAIL", "reason": str(error)}
     except Exception as error:  # noqa: BLE001 -- report, never crash the checker
         return {"status": "FAIL", "error": str(error)}
-    return {"status": "PASS"}
+    return {
+        "status": "PASS",
+        "primitive_reused": "src.v8i_source_snapshot._atomic_publish_once",
+        "exclusive_creation_verified": True,
+        "collision_second_publish_blocked": True,
+        "byte_roundtrip_verified": True,
+        "fsync_exercised_via_reused_primitive": True,
+        "cleanup_verified": True,
+    }
 
 
 def run_readiness_checks() -> dict[str, Any]:
@@ -227,7 +288,7 @@ def run_readiness_checks() -> dict[str, Any]:
     xls_probe = check_jpx_xls_parser_synthetic_probe()
     tls_probe = check_tls_stdlib_initialization()
     trusted_host_probe = check_trusted_host_request_construction()
-    filesystem_probe = check_filesystem_probe()
+    filesystem_probe = check_filesystem_durable_publication_probe()
 
     ready = (
         interpreter["platform_windows_grounded"] is True
@@ -253,6 +314,7 @@ def run_readiness_checks() -> dict[str, Any]:
         "TLS_STDLIB_PROBE": tls_probe["status"],
         "TRUSTED_HOST_REQUEST_CONSTRUCTION_PROBE": trusted_host_probe["status"],
         "FILESYSTEM_PROBE": filesystem_probe["status"],
+        "FILESYSTEM_PROBE_DETAIL": filesystem_probe,
         "ENVIRONMENT_LOCK_FINGERPRINT_STATUS": "NOT_YET_ESTABLISHED",
         "REAL_EXECUTION_ENVIRONMENT_FROZEN": False,
         "REAL_NETWORK_REQUESTS": 0,
