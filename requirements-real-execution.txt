@@ -1,0 +1,33 @@
+# Real-execution direct dependency closure for the V8-lineage source-
+# snapshot acquisition path (V8I/V8J): src/v8i_source_snapshot.py,
+# src/v8_partition.py's parse_eligible_universe, and
+# scripts/build_v8_partition_manifest.py's default_parse_source_table /
+# fetch_real_jpx_source. Everything else reachable from that path is Python
+# standard library only (hashlib, json, os, re, subprocess, datetime,
+# pathlib, typing, urllib.request/parse/error, ctypes, tempfile, argparse,
+# sys) -- see REAL_EXECUTION_PYTHON_ENVIRONMENT.md §4 for the full closure.
+#
+# This file is intentionally narrower than the top-level requirement.txt,
+# which also serves the unrelated daily automated trading bot (lightgbm,
+# scikit-learn, scipy, joblib, PyYAML, requests, python-dotenv, pytest).
+# None of those are reachable from the real V8-lineage source-snapshot path.
+#
+# Install only via the canonical interpreter:
+#   .venv\Scripts\python.exe -m pip install --upgrade -r requirements-real-execution.txt
+#
+# pandas is intentionally left unpinned here, matching the repository's own
+# existing requirement.txt (which also does not pin it). No authoritative
+# pandas version is established anywhere in this repository; one is not
+# invented by this task. The Windows-grounded environment lock/fingerprint
+# stage (REAL_EXECUTION_PYTHON_ENVIRONMENT.md §7, a separate, independently
+# reviewed task) is what will record the exact resolved pandas version.
+pandas
+
+# xlrd is pinned, not merely present. xlrd>=2.0 intentionally dropped .xlsx
+# support and reads *only* the legacy OLE2/BIFF .xls format -- which is
+# exactly and only what pandas.read_excel(..., dtype=str) auto-selects for
+# the official JPX `data_j.xls` bytes in default_parse_source_table (no
+# engine= is passed; pandas content-sniffs the OLE2 signature and requires
+# xlrd installed to read it). This exact pin is reused verbatim from this
+# repository's own existing requirement.txt -- it is not invented here.
+xlrd==2.0.2

@@ -64,6 +64,16 @@ present unexpectedly, instruct the user to press Ctrl+C before any further
 execution. Long or one-shot execution must not depend on an AI-agent session
 remaining alive.
 
+A PowerShell `throw` terminates only the current statement/scope -- it does
+not, and cannot, prevent the user from independently pasting and running a
+further, unrelated command afterward in the same shell. This is exactly why
+independent, sequential, standalone snippets are prohibited for protected
+execution: a `throw` on an earlier line does not stop a later, separately
+pasted line from still running. A single reviewed `& { ... }` block (or one
+reviewed `.ps1` file, itself normally wrapped in a single top-level
+`& { ... }` scope) does not have this problem, because control never returns
+to the prompt until the entire scope has completed or failed as one unit.
+
 ## 2. Mandatory preflight before a boundary
 
 Before any irreversible, private, network, or gate boundary, mechanically
@@ -243,8 +253,19 @@ AUTHORIZATION_REUSABLE=<true|false|unknown>
 SECOND_EXECUTION_ALLOWED=<true|false|unknown>
 RAW_ACQUISITION_ALLOWED=<true|false|unknown>
 RESEARCH_OPENING_ALLOWED=<true|false|unknown>
+CANONICAL_ENVIRONMENT_STATUS=<PASS|FAIL|UNKNOWN>
+INTERPRETER_IDENTITY_STATUS=<PASS|FAIL|UNKNOWN>
+PYTHON_VERSION=<safe exact version or omitted when unavailable>
+DEPENDENCY_READINESS=<PASS|FAIL|UNKNOWN>
+SYNTHETIC_PARSER_READINESS=<PASS|FAIL|CHATGPT_DECISION_REQUIRED|UNKNOWN>
+ENVIRONMENT_LOCK_FINGERPRINT_STATUS=<ESTABLISHED_AND_REVIEWED|NOT_YET_ESTABLISHED|UNKNOWN>
+REAL_EXECUTION_ENVIRONMENT_FROZEN=<true|false|unknown>
 NEXT_ACTION=<safe stopping or authority action>
 ```
+
+See §15-§19 for the canonical environment contract, the required
+environment-readiness-before-authorization ordering, environment failure
+classification, and the mandatory reviewer question these fields support.
 
 Never include prohibited private values in a report, including private paths,
 ticker identities, raw URLs, raw payloads, prices, features, outcomes, or raw
@@ -296,3 +317,150 @@ operational safety rules, not permission to retry a consumed experiment.
 
 This rationale is generic and does not establish any study-specific root
 cause or convert a hypothesis into a confirmed fact.
+
+## 15. Canonical Python environment (`.venv`)
+
+For repository Python protected execution:
+
+- the canonical environment directory is `.venv` at the repository root; it
+  is never committed to Git;
+- all protected execution MUST invoke the interpreter explicitly as
+  `.venv\Scripts\python.exe` -- never `python`, `python3`, `py`, PATH
+  activation, or whatever interpreter happens to be currently active;
+- system Python and any WindowsApps-alias Python are prohibited for
+  protected execution;
+- activation (`.venv\Scripts\Activate.ps1`) may be convenient for a human
+  operator but is never the security/provenance mechanism -- an activated
+  shell's `python` can still silently resolve to something other than the
+  canonical interpreter;
+- production code/preflight must verify `sys.executable` resolves to the
+  repository's exact `.venv\Scripts\python.exe` before any gate/network/
+  private boundary. A mismatch is `PRE_GATE_WRONG_PYTHON_ENVIRONMENT` (§17).
+
+See `REAL_EXECUTION_PYTHON_ENVIRONMENT.md` for the full human-readable
+contract (canonical Python version, direct dependency closure, required JPX
+Excel engine, bootstrap/readiness procedures, and the environment
+lock/fingerprint procedure), `requirements-real-execution.txt` for the
+direct dependency specification, `scripts/bootstrap_real_execution_env.ps1`
+for the environment-setup-only bootstrap script, and
+`scripts/check_real_execution_env.py` for the no-network, no-private-data
+readiness checker.
+
+## 16. Environment readiness BEFORE authorization
+
+The standard order for any protected execution is:
+
+```text
+design/freeze PASS
+  -> implementation exact-SHA review PASS
+  -> repo sync/provenance preflight
+  -> canonical .venv existence
+  -> exact interpreter validation
+  -> dependency closure validation
+  -> synthetic operational parser probe
+  -> filesystem/durable readiness
+  -> environment lock/fingerprint verification
+  -> ALL PRE_GATE checks PASS
+  -> only then request/accept fresh point-of-use human authorization
+  -> rerun all non-destructive bindings
+  -> consume gate
+  -> real execution
+```
+
+If authorization was supplied earlier, it still must not be consumed until
+every readiness check passes. Environment readiness is part of preflight
+(§2), not a substitute for it, and does not relax any other preflight
+requirement.
+
+## 17. Environment failure classification
+
+Before the gate's durable receipt is published:
+
+```text
+PRE_GATE_ENVIRONMENT_BLOCK
+```
+
+Examples: `.venv` missing; wrong interpreter (`PRE_GATE_WRONG_PYTHON_
+ENVIRONMENT`); unsupported Python version; missing package; wrong package
+version; missing Excel engine; parser synthetic-probe failure; filesystem
+readiness failure. These may be repaired and the complete preflight rerun
+from the beginning, but only if no protected boundary was crossed (§4).
+
+After the gate's durable receipt is published:
+
+```text
+POST_GATE_ENVIRONMENT_FAILURE
+```
+
+Same underlying causes as above, but discovered only after gate
+consumption. No retry authority is created by this classification -- it is
+still a `POST_GATE_FAILURE` under §4/§10: no retry, no reset, no receipt
+deletion, no reinterpretation of the same human authorization. This is
+exactly the failure class this repository's own V8I terminal record
+documents (`V8I_SOURCE_SNAPSHOT_TERMINAL_ADJUDICATION.json`:
+`failure_class=EXECUTION_ENVIRONMENT_FAILURE`, a missing `pandas`
+dependency discovered only after gate consumption) -- the entire purpose of
+§15-§19 is to make that specific class of failure provable-closed-before-
+the-gate for future protected execution, not to reopen or excuse that
+already-terminal V8I attempt (§20).
+
+## 18. Mandatory reviewer question
+
+For all future protected execution, the reviewer must answer:
+
+```text
+CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE?
+```
+
+Allowed answers: `YES`, `NO`, `UNKNOWN`. `NO` or `UNKNOWN` => STOP; do not
+proceed to authorization or gate consumption until the answer is `YES` with
+mechanical evidence (§15-§16), including the operational synthetic-parser
+probe, not merely `import <package>` succeeding.
+
+## 19. Exact environment lock/fingerprint
+
+A later, explicitly reviewed command, run on the real target Windows
+machine using the canonical interpreter, generates the exact environment
+record:
+
+```powershell
+.venv\Scripts\python.exe -m pip freeze --all
+```
+
+The exact Windows-grounded resolved package set is committed as a dedicated
+environment lock/fingerprint artifact in its own task, subject to its own
+GPT exact-SHA independent review, before any future real execution is
+authorized. A task that runs only in Claude Code Cloud (or any other
+non-Windows environment) must never claim to have produced this
+Windows-grounded lock. Until that lock exists and is independently
+reviewed:
+
+```text
+REAL_EXECUTION_ENVIRONMENT_FROZEN=false
+```
+
+and no future human-gated real execution should be authorized, regardless
+of what any individual readiness check reports.
+
+## 20. Prospective-only; V8I permanence
+
+Sections 15-19 are prospective operational/governance hardening only. They
+do not, by themselves or in combination:
+
+- reopen V8I;
+- authorize a V8I retry or a second JPX request under V8I;
+- reset, delete, or reuse the V8I `HUMAN_V8I_SOURCE_SNAPSHOT_ACQUISITION_
+  GATE` receipt;
+- reuse the V8I human authorization;
+- reconstruct or preserve the raw source bytes lost in the V8I terminal
+  failure; or
+- change V8I's `BLOCK_CLOSED` disposition in any way.
+
+V8I remains permanently `BLOCK_CLOSED`, exactly as recorded in
+`V8I_SOURCE_SNAPSHOT_TERMINAL_ADJUDICATION.json` and
+`V8I_SOURCE_SNAPSHOT_EXECUTION_INCIDENTS.md`. Any future V8-lineage
+source-snapshot attempt is a fresh, independent successor-study identity
+with its own fresh gate, receipt key, and authorization grammar; §15-§19
+exist only so that a future attempt's own gate cannot be consumed while a
+provable, closeable software-environment gap (like V8I's missing `pandas`)
+remains undiscovered.
