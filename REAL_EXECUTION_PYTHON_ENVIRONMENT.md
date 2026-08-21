@@ -156,41 +156,110 @@ initialization (reusing the real
 reimplementation), and durable-publication readiness by directly invoking
 the real production exclusive/atomic publication primitive
 (`src.v8i_source_snapshot._atomic_publish_once` -- staging write,
-`os.fsync` the file, atomic no-overwrite `os.link`, `os.fsync` the
-directory) on a disposable probe path that is mechanically proven never to
-overlap real gate/receipt/evidence state. This proves, not merely asserts,
-exclusive/no-overwrite creation, that a second publication to the same
-destination correctly fails, durable byte round-trip, and cleanup of the
-disposable probe artifact only -- an ordinary write/read/unlink on an
-unrelated temp file would not exercise any of that. See its module
-docstring for the exact safe result contract.
+mandatory `os.fsync` of the file, atomic no-overwrite `os.link`, then a
+best-effort directory fsync) on a disposable probe path that is
+mechanically proven never to overlap real gate/receipt/evidence state. This
+proves, not merely asserts, exclusive/no-overwrite creation, that a second
+publication to the same destination correctly fails, durable byte
+round-trip, and cleanup of the disposable probe artifact only -- an
+ordinary write/read/unlink on an unrelated temp file would not exercise any
+of that. See its module docstring for the exact safe result contract.
 
-### Operational JPX `.xls` parser probe -- open item
+Precise durability semantics, stated exactly as the code behaves:
 
 ```text
-CHATGPT_DECISION_REQUIRED: REAL_EXECUTION_XLS_SYNTHETIC_FIXTURE_STRATEGY
+file_fsync_mandatory_in_atomic_publish_once     = true
+directory_fsync_attempted_best_effort           = true
+directory_fsync_guaranteed_on_every_platform    = false
 ```
 
-The readiness checker's JPX `.xls` operational probe currently reports
-`CHATGPT_DECISION_REQUIRED` rather than `PASS`, because this repository has
-no genuine synthetic `.xls` (OLE2/BIFF) binary fixture, and none can be
-mechanically produced without either (a) adding a new dependency capable of
-*writing* legacy `.xls` bytes (e.g. `xlwt`, which pandas itself no longer
-bundles as a `to_excel` writer engine), or (b) hand-constructing raw
-OLE2/BIFF bytes by hand, which risks silently producing an unrepresentative
-or invalid fixture that would give false confidence rather than real proof.
-This exact gap already exists in the repository today:
-`scripts/build_v8_partition_manifest.py`'s own synthetic-test path
-(`run_synthetic_partition_test`) explicitly injects a fake
-DataFrame-returning callable in place of `default_parse_source_table`,
-precisely because, in its own words, that function "depends on real
-spreadsheet bytes." This task does not unilaterally resolve that gap by
-picking a new dependency on its own initiative -- per this task's own
-explicit instruction, it stops with `CHATGPT_DECISION_REQUIRED` here instead.
-Until this is resolved and independently reviewed, the readiness checker
-cannot report `REAL_EXECUTION_ENVIRONMENT_READY=true`, and no future
-human-gated real execution should be authorized on the strength of this
-environment contract alone.
+The file-level `os.fsync` is unconditional inside `_atomic_publish_once`.
+The directory fsync goes through the production `_fsync_directory()`
+helper, which returns silently when the platform cannot `os.open()` a
+directory -- so a passing probe proves that code path executed, not that a
+directory-entry fsync actually reached the disk on every OS. This document
+does not claim otherwise.
+
+### Operational JPX `.xls` parser probe -- RESOLVED
+
+```text
+former_open_item = "CHATGPT_DECISION_REQUIRED: REAL_EXECUTION_XLS_SYNTHETIC_FIXTURE_STRATEGY"
+status           = RESOLVED_BY_BINDING_GPT_DECISION
+resolution       = COMMITTED_SYNTHETIC_LEGACY_XLS_FIXTURE
+```
+
+The former open item is resolved by binding GPT methodology/operational
+decision: this repository now commits an entirely synthetic, non-sensitive
+legacy `.xls` fixture used solely for pre-gate environment readiness.
+
+```text
+fixture_path   = "tests/fixtures/synthetic_jpx_source_snapshot.xls"
+fixture_sha256 = "c51e3a766534820529a8946bec5c2093d7c90c593ccf0e99556b91d539cbd7cb"
+fixture_format = "legacy OLE2/BIFF .xls (verified D0CF11E0A1B11AE1 signature)"
+```
+
+**Completely synthetic and non-sensitive.** The fixture contains no real JPX
+payload, no real or private ticker membership, no prices, and no outcomes.
+Every row uses an obviously synthetic `9XXX`-style placeholder code paired
+with a `SYNTHETIC_*` name and `SYNTHETIC_SECTOR_*` industry; none is
+asserted to be, or derived from, any real listed instrument. Its columns are
+exactly the minimum the real parser path needs -- `コード`, `銘柄名`,
+`市場・商品区分` (which satisfies the production
+`_find_column(..., ("市場", "区分"))` detection), and `33業種区分`.
+
+It carries 8 synthetic rows: 5 that the production filter must accept, plus
+one row per exclusion branch (non-prime/standard, non-domestic, and a
+non-four-character code), so the probe exercises both the accept and reject
+paths rather than merely proving that parsing returned something.
+
+**Exact production functions exercised** by the readiness probe, in order,
+with no reimplementation of `pandas.read_excel` in the checker:
+
+1. read the committed synthetic `.xls` bytes;
+2. `scripts.build_v8_partition_manifest.default_parse_source_table(raw_bytes)`;
+3. `src.v8_partition.parse_eligible_universe(frame)`.
+
+That mechanically proves the canonical `.venv` Python works, pandas
+imports, `xlrd` imports, pandas can actually parse legacy `.xls` bytes, the
+production `default_parse_source_table` works, and the downstream JPX
+column-detection / eligible-universe reconstruction initializes
+successfully. The checker verifies only safe synthetic properties (a
+DataFrame was returned, the expected synthetic row count, the expected
+eligible reconstruction) and performs no network request, no private read,
+and no gate consumption.
+
+**Generator (dev tool only).**
+
+```text
+generator_script       = "scripts/generate_synthetic_jpx_xls_fixture.py"
+generator_dependency   = "xlwt==1.3.0"
+xlwt_is_production_dep = false
+```
+
+`xlwt==1.3.0` is a fixture-generation/dev dependency ONLY and is
+deliberately **not** added to `requirements-real-execution.txt`: production
+*reads* `.xls` (pandas + `xlrd`) and never writes it, so nothing on the
+real execution path imports `xlwt`. The production direct-dependency set is
+unchanged by this decision (`pandas`, `xlrd==2.0.2`).
+
+**Byte determinism is not claimed.** Regenerating the workbook reproduced
+identical bytes across repeated runs and across fresh interpreter processes
+on the platform and library versions used to author it, but this repository
+has not established that `xlwt`'s output is byte-stable across other
+platforms or versions. Per the governing decision, the committed, reviewed
+fixture bytes and the `fixture_sha256` recorded above are therefore the
+canonical identity; the generator is explanatory/reconstruction tooling
+only. `python3 scripts/generate_synthetic_jpx_xls_fixture.py --check`
+reports whether a fresh rebuild happens to match the committed bytes
+without asserting that it must.
+
+**This resolves the parser probe only.** A genuine
+`JPX_XLS_PARSER_SYNTHETIC_PROBE=PASS` does not by itself make the
+environment ready: Windows-grounded execution inside the canonical `.venv`
+(§2-§3) is still required, and the Windows-grounded environment
+lock/fingerprint (§7) is still required. `REAL_EXECUTION_ENVIRONMENT_FROZEN`
+remains `false` until that lock exists and is independently reviewed, and no
+future human-gated real execution should be authorized before then.
 
 ## 7. Exact environment lock/fingerprint
 

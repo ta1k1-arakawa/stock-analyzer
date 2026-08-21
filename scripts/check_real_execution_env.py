@@ -26,12 +26,13 @@ else (including this repository's own Claude Code Cloud / Linux sessions),
 every other individual check reports -- this script must never claim
 Windows-grounded readiness from a non-Windows run.
 
-Known open item: the JPX ".xls" operational parser probe currently reports
-`CHATGPT_DECISION_REQUIRED`, not `PASS`, because this repository has no
-genuine synthetic ".xls" (OLE2/BIFF) fixture and none can be produced
-without either a new dependency (e.g. `xlwt`) or risky hand-rolled binary
-construction -- see `REAL_EXECUTION_PYTHON_ENVIRONMENT.md` §6. This script
-does not fabricate a `PASS` for that probe.
+The JPX ".xls" operational parser probe runs against the committed, wholly
+synthetic fixture `tests/fixtures/synthetic_jpx_source_snapshot.xls` and
+drives the real production parsing functions end to end, so it can now
+report a genuine `PASS` (resolving the former
+`CHATGPT_DECISION_REQUIRED: REAL_EXECUTION_XLS_SYNTHETIC_FIXTURE_STRATEGY`).
+A `PASS` there still only reports what actually ran -- it is never
+fabricated, and it does not by itself make the overall environment ready.
 
 Exit code is 0 only if `REAL_EXECUTION_ENVIRONMENT_READY` is true; nonzero
 otherwise, always before any protected boundary.
@@ -39,7 +40,7 @@ otherwise, always before any protected boundary.
 
 from __future__ import annotations
 
-import io
+import hashlib
 import json
 import os
 import ssl
@@ -128,34 +129,112 @@ def check_dependency_readiness() -> dict[str, Any]:
 
 def check_jpx_xls_parser_synthetic_probe() -> dict[str, Any]:
     """Operational (not merely `import pandas`) probe for the real JPX
-    ".xls" parsing path. Mirrors default_parse_source_table's exact call
-    (`pandas.read_excel(io.BytesIO(raw_bytes), dtype=str)`, no `engine=`
-    override) against a genuine local synthetic ".xls" fixture, if one
-    exists and is independently reviewed and repository-provided.
+    ".xls" parsing path, run against the committed, wholly synthetic
+    fixture `tests/fixtures/synthetic_jpx_source_snapshot.xls`.
 
-    No such fixture currently exists in this repository -- see
-    REAL_EXECUTION_PYTHON_ENVIRONMENT.md §6. This function reports
-    CHATGPT_DECISION_REQUIRED rather than fabricating a PASS or silently
-    skipping the check.
+    This drives the REAL production functions end to end and never
+    reimplements `pandas.read_excel` here:
+
+      1. read the committed synthetic ".xls" bytes;
+      2. `scripts.build_v8_partition_manifest.default_parse_source_table`;
+      3. `src.v8_partition.parse_eligible_universe`.
+
+    That mechanically proves, before any protected boundary, that the
+    canonical interpreter works, pandas imports, the `xlrd` engine imports
+    and can actually parse legacy OLE2/BIFF ".xls" bytes, the production
+    `default_parse_source_table` works, and the downstream JPX column
+    detection / eligible-universe reconstruction initializes successfully.
+
+    The fixture contains no real JPX payload, no real or private ticker
+    membership, and no prices or outcomes -- only obviously synthetic
+    placeholder rows (see `scripts/generate_synthetic_jpx_xls_fixture.py`).
+    Only safe synthetic properties are verified and reported: no network
+    request, no private read, and no gate consumption occurs here.
     """
     if not SYNTHETIC_XLS_FIXTURE_PATH.exists():
         return {
-            "status": "CHATGPT_DECISION_REQUIRED",
-            "reason": "REAL_EXECUTION_XLS_SYNTHETIC_FIXTURE_STRATEGY",
+            "status": "FAIL",
+            "reason": "SYNTHETIC_XLS_FIXTURE_MISSING",
             "fixture_path_checked": str(SYNTHETIC_XLS_FIXTURE_PATH),
         }
+    try:
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+        # Expected synthetic properties come from the generator module, so
+        # the fixture's contents and this probe's expectations cannot drift.
+        from scripts.generate_synthetic_jpx_xls_fixture import (
+            EXPECTED_ELIGIBLE_CODES,
+            EXPECTED_ELIGIBLE_ROW_COUNT,
+            EXPECTED_TOTAL_ROW_COUNT,
+        )
+    except ImportError as error:
+        return {"status": "FAIL", "reason": "SYNTHETIC_FIXTURE_EXPECTATIONS_UNAVAILABLE", "error": str(error)}
+
     try:
         import pandas as pd
     except ImportError as error:
         return {"status": "FAIL", "reason": "PANDAS_UNAVAILABLE", "error": str(error)}
+
     try:
-        raw_bytes = SYNTHETIC_XLS_FIXTURE_PATH.read_bytes()
-        frame = pd.read_excel(io.BytesIO(raw_bytes), dtype=str)
+        from scripts.build_v8_partition_manifest import default_parse_source_table
+        from src.v8_partition import parse_eligible_universe
+    except ImportError as error:
+        return {"status": "FAIL", "reason": "PRODUCTION_PARSER_IMPORT_FAILED", "error": str(error)}
+
+    raw_bytes = SYNTHETIC_XLS_FIXTURE_PATH.read_bytes()
+    fixture_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+
+    # Step 2: the exact production ".xls" byte parser.
+    try:
+        frame = default_parse_source_table(raw_bytes)
     except Exception as error:  # noqa: BLE001 -- any parser failure is a probe FAIL, not a crash
         return {"status": "FAIL", "reason": "SYNTHETIC_XLS_PARSE_FAILED", "error": str(error)}
-    if not isinstance(frame, pd.DataFrame) or frame.empty:
-        return {"status": "FAIL", "reason": "SYNTHETIC_XLS_PARSE_RESULT_EMPTY_OR_INVALID"}
-    return {"status": "PASS", "fixture_path": str(SYNTHETIC_XLS_FIXTURE_PATH), "parsed_row_count": int(len(frame))}
+    if not isinstance(frame, pd.DataFrame):
+        return {"status": "FAIL", "reason": "SYNTHETIC_XLS_PARSE_RESULT_NOT_DATAFRAME"}
+    parsed_row_count = int(len(frame))
+    if parsed_row_count != EXPECTED_TOTAL_ROW_COUNT:
+        return {
+            "status": "FAIL",
+            "reason": "SYNTHETIC_XLS_PARSED_ROW_COUNT_UNEXPECTED",
+            "parsed_row_count": parsed_row_count,
+            "expected_row_count": EXPECTED_TOTAL_ROW_COUNT,
+        }
+
+    # Step 3: the exact production eligible-universe reconstruction.
+    try:
+        eligible_rows, reasons = parse_eligible_universe(frame)
+    except Exception as error:  # noqa: BLE001 -- any reconstruction failure is a probe FAIL
+        return {"status": "FAIL", "reason": "SYNTHETIC_ELIGIBLE_UNIVERSE_RECONSTRUCTION_FAILED", "error": str(error)}
+
+    eligible_codes = tuple(row["code"] for row in eligible_rows)
+    if eligible_codes != tuple(EXPECTED_ELIGIBLE_CODES):
+        return {
+            "status": "FAIL",
+            "reason": "SYNTHETIC_ELIGIBLE_CODES_UNEXPECTED",
+            "eligible_row_count": len(eligible_codes),
+            "expected_eligible_row_count": EXPECTED_ELIGIBLE_ROW_COUNT,
+        }
+    if int(reasons.get("eligible_current_only", -1)) != EXPECTED_ELIGIBLE_ROW_COUNT:
+        return {
+            "status": "FAIL",
+            "reason": "SYNTHETIC_ELIGIBLE_REASON_COUNT_UNEXPECTED",
+            "reported_eligible_current_only": reasons.get("eligible_current_only"),
+            "expected_eligible_row_count": EXPECTED_ELIGIBLE_ROW_COUNT,
+        }
+
+    return {
+        "status": "PASS",
+        "fixture_path": str(SYNTHETIC_XLS_FIXTURE_PATH),
+        "fixture_sha256": fixture_sha256,
+        "fixture_is_synthetic_non_sensitive": True,
+        "production_functions_exercised": [
+            "scripts.build_v8_partition_manifest.default_parse_source_table",
+            "src.v8_partition.parse_eligible_universe",
+        ],
+        "parsed_row_count": parsed_row_count,
+        "eligible_row_count": len(eligible_codes),
+        "legacy_xls_engine_proven_operational": True,
+    }
 
 
 def check_tls_stdlib_initialization() -> dict[str, Any]:
@@ -197,8 +276,9 @@ def check_trusted_host_request_construction() -> dict[str, Any]:
 def check_filesystem_durable_publication_probe() -> dict[str, Any]:
     """Exercise the REAL production durable/exclusive publication primitive
     (`src.v8i_source_snapshot._atomic_publish_once` -- staging write,
-    `os.fsync` the file, atomic no-overwrite `os.link`, `os.fsync` the
-    directory, staging cleanup) on a disposable temporary path, rather than
+    mandatory `os.fsync` of the file, atomic no-overwrite `os.link`, a
+    best-effort directory fsync via the production `_fsync_directory()`
+    semantics, staging cleanup) on a disposable temporary path, rather than
     merely doing an ordinary write/read/unlink on some unrelated file.
 
     The probe path is mechanically proven never to overlap any real V8I
@@ -213,8 +293,12 @@ def check_filesystem_durable_publication_probe() -> dict[str, Any]:
       - a second publication to the same destination correctly fails, via
         the primitive's own real collision guard, not a simulated one;
       - durable byte round-trip;
-      - `os.fsync` (file) and directory-entry fsync, both exercised inside
-        the reused primitive itself;
+      - the file-level `os.fsync` the primitive performs unconditionally;
+      - the directory fsync the primitive *attempts* via `_fsync_directory()`,
+        which is deliberately best-effort: that helper returns silently when
+        the platform cannot `os.open()` a directory, so a successful probe
+        proves the code path ran, NOT that a directory-entry fsync actually
+        reached the disk on every OS;
       - cleanup of the disposable probe artifact only.
     """
     try:
@@ -277,7 +361,9 @@ def check_filesystem_durable_publication_probe() -> dict[str, Any]:
         "exclusive_creation_verified": True,
         "collision_second_publish_blocked": True,
         "byte_roundtrip_verified": True,
-        "fsync_exercised_via_reused_primitive": True,
+        "file_fsync_mandatory_in_primitive": True,
+        "directory_fsync_attempted_best_effort": True,
+        "directory_fsync_guaranteed_on_every_platform": False,
         "cleanup_verified": True,
     }
 
