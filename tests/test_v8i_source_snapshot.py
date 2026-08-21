@@ -69,6 +69,7 @@ def _preflight(**overrides):
         "worktree_clean": True,
         "reviewed_v8i_design_candidate_commit": snapshot.REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT,
         "reviewed_v8i_design_blob_sha": snapshot.V8I_DESIGN_CANDIDATE_BLOB_SHA,
+        "freeze_record_commit": snapshot.REVIEWED_V8I_FREEZE_RECORD_COMMIT,
         "freeze_approval_blob_sha": snapshot.V8I_FREEZE_APPROVAL_BLOB_SHA,
         "freeze_approved_frozen": True,
     }
@@ -207,6 +208,146 @@ def test_public_preflight_rejects_head_not_authoritative_remote():
     with pytest.raises(snapshot.V8ISourceSnapshotBlocked) as excinfo:
         snapshot._validate_public_preflight(_preflight(authoritative_remote_head="b" * 40))
     assert excinfo.value.reason == "V8I_PUBLIC_HEAD_NOT_AUTHORITATIVE_REMOTE"
+
+
+# ---------------------------------------------------------------------------
+# Regression: FREEZE_APPROVAL_PROVENANCE_RESOLVED_FROM_PRE_FREEZE_DESIGN_COMMIT
+#
+# V8I_DESIGN_FREEZE_APPROVAL.json did not exist at all at
+# REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT (the freeze artifact is necessarily
+# created and approved only *after* that design candidate is independently
+# reviewed). The production default preflight previously tried to resolve
+# both the design blob and the freeze blob from that same pre-freeze
+# commit, which is impossible against real Git history and would have
+# failed against commit 5964a3896518e3fb2c6fe57dd6de5b94df32b31a. These
+# tests exercise the real repository object database (never a synthetic
+# fixture) via src.v8c_git_provenance's own primitives, exactly as
+# `_default_public_preflight` does internally.
+# ---------------------------------------------------------------------------
+
+
+def test_freeze_artifact_does_not_exist_at_design_candidate_commit():
+    """Directly demonstrates the root cause: resolving the freeze artifact
+    from the pre-freeze design-candidate commit fails, because that file
+    was not yet committed at that point in history."""
+    from src.v8c_git_provenance import V8CGitProvenanceBlocked, resolve_git_blob
+
+    with pytest.raises(V8CGitProvenanceBlocked):
+        resolve_git_blob(
+            snapshot.CANONICAL_REPOSITORY_ROOT,
+            snapshot.REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT,
+            snapshot.V8I_FREEZE_APPROVAL_GIT_PATH,
+        )
+
+
+def test_design_artifact_resolves_from_its_own_design_candidate_commit():
+    from src.v8c_git_provenance import resolve_git_blob
+
+    resolved = resolve_git_blob(
+        snapshot.CANONICAL_REPOSITORY_ROOT,
+        snapshot.REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT,
+        snapshot.V8I_DESIGN_DRAFT_GIT_PATH,
+    )
+    assert resolved == snapshot.V8I_DESIGN_CANDIDATE_BLOB_SHA
+
+
+def test_freeze_artifact_resolves_from_its_own_later_freeze_record_commit():
+    from src.v8c_git_provenance import read_git_object_bytes, resolve_git_blob
+
+    resolved = resolve_git_blob(
+        snapshot.CANONICAL_REPOSITORY_ROOT,
+        snapshot.REVIEWED_V8I_FREEZE_RECORD_COMMIT,
+        snapshot.V8I_FREEZE_APPROVAL_GIT_PATH,
+    )
+    assert resolved == snapshot.V8I_FREEZE_APPROVAL_BLOB_SHA
+    raw = read_git_object_bytes(
+        snapshot.CANONICAL_REPOSITORY_ROOT,
+        snapshot.REVIEWED_V8I_FREEZE_RECORD_COMMIT,
+        snapshot.V8I_FREEZE_APPROVAL_GIT_PATH,
+    )
+    assert snapshot._validate_freeze_approval_content(raw) is True
+
+
+def test_freeze_record_commit_is_a_real_ancestor_of_current_branch_history():
+    """The freeze-record commit is not merely asserted -- it must be a
+    genuine, currently reachable ancestor in this branch's real history."""
+    from src.v8c_git_provenance import require_strict_git_ancestor
+
+    head_text = snapshot._git_text(
+        snapshot.CANONICAL_REPOSITORY_ROOT, ["rev-parse", "HEAD"], "unused"
+    )
+    require_strict_git_ancestor(
+        snapshot.CANONICAL_REPOSITORY_ROOT,
+        snapshot.REVIEWED_V8I_FREEZE_RECORD_COMMIT,
+        head_text,
+        "TEST_ANCESTRY_CHECK",
+    )
+
+
+def test_successful_default_style_preflight_with_both_exact_real_bindings():
+    """Reconstructs exactly what `_default_public_preflight` computes from
+    real Git history (design blob from the design-candidate commit,
+    freeze blob/content from the separate later freeze-record commit) and
+    confirms `_validate_public_preflight` now accepts both bindings
+    together -- this is the exact successful path that was previously
+    impossible to reach against real repository history."""
+    from src.v8c_git_provenance import read_git_object_bytes, resolve_git_blob
+
+    design_blob = resolve_git_blob(
+        snapshot.CANONICAL_REPOSITORY_ROOT,
+        snapshot.REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT,
+        snapshot.V8I_DESIGN_DRAFT_GIT_PATH,
+    )
+    freeze_blob = resolve_git_blob(
+        snapshot.CANONICAL_REPOSITORY_ROOT,
+        snapshot.REVIEWED_V8I_FREEZE_RECORD_COMMIT,
+        snapshot.V8I_FREEZE_APPROVAL_GIT_PATH,
+    )
+    freeze_raw = read_git_object_bytes(
+        snapshot.CANONICAL_REPOSITORY_ROOT,
+        snapshot.REVIEWED_V8I_FREEZE_RECORD_COMMIT,
+        snapshot.V8I_FREEZE_APPROVAL_GIT_PATH,
+    )
+    freeze_approved_frozen = snapshot._validate_freeze_approval_content(freeze_raw)
+
+    validated = snapshot._validate_public_preflight(
+        {
+            "repository_identity": snapshot.V8I_REPOSITORY_IDENTITY,
+            "head": "a" * 40,
+            "authoritative_remote_head": "a" * 40,
+            "worktree_clean": True,
+            "reviewed_v8i_design_candidate_commit": snapshot.REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT,
+            "reviewed_v8i_design_blob_sha": design_blob,
+            "freeze_record_commit": snapshot.REVIEWED_V8I_FREEZE_RECORD_COMMIT,
+            "freeze_approval_blob_sha": freeze_blob,
+            "freeze_approved_frozen": freeze_approved_frozen,
+        }
+    )
+    assert validated["reviewed_v8i_design_blob_sha"] == snapshot.V8I_DESIGN_CANDIDATE_BLOB_SHA
+    assert validated["freeze_approval_blob_sha"] == snapshot.V8I_FREEZE_APPROVAL_BLOB_SHA
+    assert validated["freeze_approved_frozen"] is True
+
+
+def test_wrong_freeze_record_commit_rejected_pre_gate():
+    with pytest.raises(snapshot.V8ISourceSnapshotBlocked) as excinfo:
+        snapshot._validate_public_preflight(_preflight(freeze_record_commit="9" * 40))
+    assert excinfo.value.reason == "V8I_FREEZE_RECORD_COMMIT_MISMATCH"
+
+
+def test_default_public_preflight_never_raises_provenance_invalid_for_freeze_binding():
+    """End-to-end call into `_default_public_preflight` itself. Regardless
+    of whether the working tree happens to be clean at test-run time (an
+    artifact of the surrounding development session, not of this fix),
+    the freeze-artifact provenance resolution must never be the failure
+    reason -- only V8I_PUBLIC_GIT_BINDING_INVALID (dirty worktree) is an
+    acceptable outcome here; any provenance-mismatch reason means the
+    regression has returned."""
+    try:
+        snapshot._default_public_preflight(snapshot.CANONICAL_REPOSITORY_ROOT)
+    except snapshot.V8ISourceSnapshotBlocked as error:
+        assert error.reason == "V8I_PUBLIC_GIT_BINDING_INVALID", (
+            f"unexpected failure reason, regression may have returned: {error.reason}"
+        )
 
 
 def test_freeze_approval_content_rejects_non_matching_status():

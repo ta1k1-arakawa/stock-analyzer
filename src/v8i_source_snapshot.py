@@ -79,6 +79,7 @@ from src.v8c_git_provenance import (
     CANONICAL_REPOSITORY_ROOT,
     V8CGitProvenanceBlocked,
     read_git_object_bytes,
+    require_strict_git_ancestor,
     resolve_git_blob,
 )
 from src.v8c_human_gate_consumption import CANONICAL_CONSUMPTION_STATE_ROOT
@@ -91,14 +92,29 @@ V8I_REPOSITORY_IDENTITY = "ta1k1-arakawa/stock-analyzer"
 # and is never checked here -- only the remote-tracking ref matters.
 V8I_AUTHORITATIVE_BRANCH = "v8g-private-partition-locator-successor-design"
 
-# The exact independently reviewed and human-frozen V8I design candidate
-# this implementation is bound to (freeze recorded in
-# V8I_DESIGN_FREEZE_APPROVAL.json).
+# The exact independently reviewed V8I design candidate this
+# implementation is bound to.
 REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT = "ec4c3709afcce24c0a07373b982de5bfd9bb4d23"
 V8I_DESIGN_CANDIDATE_BLOB_SHA = "5ffccc0421d0f58832dca9cc0a3541318281aa76"
 V8I_DESIGN_DRAFT_GIT_PATH = "V8I_SOURCE_SNAPSHOT_RECEIPT_SUCCESSOR_DESIGN_DRAFT.md"
 
+# The freeze-approval artifact is a *separate* file with its own,
+# necessarily *later* history: V8I_DESIGN_FREEZE_APPROVAL.json did not
+# exist at REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT at all (it is created only
+# after that design candidate is independently reviewed) and reaches its
+# final `APPROVED_FROZEN` content only at its own later commit. Binding
+# both the design and the freeze artifact to the same design-candidate
+# commit is therefore not merely imprecise but impossible to satisfy
+# against real repository history -- `_default_public_preflight` would
+# always fail resolving the freeze blob from that commit. The exact
+# freeze-record commit below was found mechanically
+# (`git log --follow -- V8I_DESIGN_FREEZE_APPROVAL.json`) as the commit
+# that introduced the final `APPROVED_FROZEN` content, and independently
+# confirmed a real ancestor of this branch's current HEAD. It is bound
+# and verified completely separately from, and never conflated with,
+# REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT.
 V8I_FREEZE_APPROVAL_GIT_PATH = "V8I_DESIGN_FREEZE_APPROVAL.json"
+REVIEWED_V8I_FREEZE_RECORD_COMMIT = "53c9df2cb9c5b9345037e5570770589007564062"
 V8I_FREEZE_APPROVAL_BLOB_SHA = "2ab7d682f5dfb960d85fe1c0fd16d53df10637ea"
 
 BLOCK_SIZE = 300
@@ -768,6 +784,7 @@ _PUBLIC_PREFLIGHT_FIELDS = frozenset(
         "worktree_clean",
         "reviewed_v8i_design_candidate_commit",
         "reviewed_v8i_design_blob_sha",
+        "freeze_record_commit",
         "freeze_approval_blob_sha",
         "freeze_approved_frozen",
     }
@@ -788,6 +805,12 @@ def _validate_public_preflight(preflight: Mapping[str, Any]) -> dict[str, Any]:
         raise V8ISourceSnapshotBlocked("V8I_DESIGN_CANDIDATE_MISMATCH")
     if preflight["reviewed_v8i_design_blob_sha"] != V8I_DESIGN_CANDIDATE_BLOB_SHA:
         raise V8ISourceSnapshotBlocked("V8I_DESIGN_CANDIDATE_BLOB_MISMATCH")
+    # Independent binding #2: the human-freeze record. Deliberately never
+    # compared to, derived from, or substituted for the design-candidate
+    # binding above -- the freeze artifact has its own, necessarily later,
+    # commit (it cannot exist at the pre-freeze design-candidate commit).
+    if preflight["freeze_record_commit"] != REVIEWED_V8I_FREEZE_RECORD_COMMIT:
+        raise V8ISourceSnapshotBlocked("V8I_FREEZE_RECORD_COMMIT_MISMATCH")
     if preflight["freeze_approval_blob_sha"] != V8I_FREEZE_APPROVAL_BLOB_SHA:
         raise V8ISourceSnapshotBlocked("V8I_FREEZE_APPROVAL_BLOB_MISMATCH")
     if preflight["freeze_approved_frozen"] is not True:
@@ -853,19 +876,42 @@ def _default_public_preflight(repository_root: Path = CANONICAL_REPOSITORY_ROOT)
         "ssh://git@github.com/ta1k1-arakawa/stock-analyzer.git",
     }:
         raise V8ISourceSnapshotBlocked("V8I_PUBLIC_REPOSITORY_IDENTITY_MISMATCH")
+    # Binding #1: the frozen design, resolved from the exact reviewed
+    # design-candidate commit.
     try:
         design_blob = resolve_git_blob(repository_root, REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT, V8I_DESIGN_DRAFT_GIT_PATH)
-        freeze_blob = resolve_git_blob(
-            repository_root, REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT, V8I_FREEZE_APPROVAL_GIT_PATH
-        )
     except V8CGitProvenanceBlocked as error:
         raise V8ISourceSnapshotBlocked("V8I_PUBLIC_PROVENANCE_INVALID") from error
     if design_blob != V8I_DESIGN_CANDIDATE_BLOB_SHA:
         raise V8ISourceSnapshotBlocked("V8I_PUBLIC_PROVENANCE_INVALID")
+
+    # Binding #2: the human-freeze record, resolved from its own, separate,
+    # necessarily later commit -- never from REVIEWED_V8I_DESIGN_CANDIDATE_
+    # COMMIT, at which V8I_DESIGN_FREEZE_APPROVAL.json does not exist at
+    # all. The freeze-record commit must itself be a genuine, currently
+    # reachable ancestor of this branch's authoritative remote HEAD --
+    # never merely asserted.
+    try:
+        require_strict_git_ancestor(
+            repository_root,
+            REVIEWED_V8I_FREEZE_RECORD_COMMIT,
+            authoritative_remote_head,
+            "V8I_FREEZE_RECORD_NOT_ANCESTOR",
+        )
+    except V8CGitProvenanceBlocked as error:
+        raise V8ISourceSnapshotBlocked("V8I_FREEZE_RECORD_NOT_ANCESTOR") from error
+    try:
+        freeze_blob = resolve_git_blob(
+            repository_root, REVIEWED_V8I_FREEZE_RECORD_COMMIT, V8I_FREEZE_APPROVAL_GIT_PATH
+        )
+    except V8CGitProvenanceBlocked as error:
+        raise V8ISourceSnapshotBlocked("V8I_PUBLIC_PROVENANCE_INVALID") from error
     freeze_approved_frozen = False
     if freeze_blob == V8I_FREEZE_APPROVAL_BLOB_SHA:
         try:
-            freeze_raw = read_git_object_bytes(repository_root, REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT, V8I_FREEZE_APPROVAL_GIT_PATH)
+            freeze_raw = read_git_object_bytes(
+                repository_root, REVIEWED_V8I_FREEZE_RECORD_COMMIT, V8I_FREEZE_APPROVAL_GIT_PATH
+            )
         except V8CGitProvenanceBlocked as error:
             raise V8ISourceSnapshotBlocked("V8I_PUBLIC_PROVENANCE_INVALID") from error
         freeze_approved_frozen = _validate_freeze_approval_content(freeze_raw)
@@ -877,6 +923,7 @@ def _default_public_preflight(repository_root: Path = CANONICAL_REPOSITORY_ROOT)
             "worktree_clean": status == "",
             "reviewed_v8i_design_candidate_commit": REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT,
             "reviewed_v8i_design_blob_sha": design_blob,
+            "freeze_record_commit": REVIEWED_V8I_FREEZE_RECORD_COMMIT,
             "freeze_approval_blob_sha": freeze_blob,
             "freeze_approved_frozen": freeze_approved_frozen,
         }
@@ -1111,6 +1158,7 @@ __all__ = [
     "CANONICAL_V8I_SOURCE_SNAPSHOT_PRIVATE_STATE_ROOT",
     "MINIMUM_FRESH_ELIGIBLE_COUNT",
     "REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT",
+    "REVIEWED_V8I_FREEZE_RECORD_COMMIT",
     "V8I_AUTHORITATIVE_BRANCH",
     "V8I_DESIGN_CANDIDATE_BLOB_SHA",
     "V8I_FREEZE_APPROVAL_BLOB_SHA",
