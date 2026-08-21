@@ -1,0 +1,62 @@
+{
+  "schema_version": "V8I_SOURCE_SNAPSHOT_TERMINAL_ADJUDICATION_V1",
+  "artifact_role": "SOURCE_SNAPSHOT_TERMINAL_ADJUDICATION",
+  "study": "V8I_HISTORICAL_RESEARCH",
+  "stage": "V8I_SOURCE_SNAPSHOT_ACQUISITION",
+  "reviewed_v8i_design_candidate_commit": "ec4c3709afcce24c0a07373b982de5bfd9bb4d23",
+  "reviewed_v8i_design_candidate_blob_sha": "5ffccc0421d0f58832dca9cc0a3541318281aa76",
+  "reviewed_source_snapshot_support_implementation_sha": "0dddc380538e405895cbba18d415b32f9ef615c8",
+  "gate": "HUMAN_V8I_SOURCE_SNAPSHOT_ACQUISITION_GATE",
+  "gate_consumed": true,
+  "consumption_count": 1,
+  "authorization_identity_sha256": "346c0c721d180a280aee40a504e66b928ed8ecf7b5f23948bca96762dd7ee422",
+
+  "execution_disposition": "BLOCK_CLOSED",
+  "failure_class": "EXECUTION_ENVIRONMENT_FAILURE",
+  "safe_failure_reason": "MISSING_REQUIRED_PRODUCTION_DEPENDENCY_PANDAS_AFTER_GATE_CONSUMPTION",
+  "failure_exception_type": "ModuleNotFoundError",
+  "failure_missing_module": "pandas",
+  "failure_boundary": "default_parse_source_table:import pandas as pd",
+  "failure_occurred_after_gate_receipt_publication": true,
+  "failure_occurred_after_jpx_raw_bytes_obtained": true,
+
+  "real_jpx_acquisition_occurred": true,
+  "jpx_fetcher_invocations": 1,
+  "jpx_fetcher_invocation_note": "Exactly one authorized jpx_fetcher() call per the frozen V8I execution boundary (IMMEDIATELY_BEFORE_FIRST_JPX_REQUEST, invoked exactly once). The underlying number of raw HTTP requests the fetcher itself issued to produce that one source snapshot is not mechanically provable from this read-only recording task and is not fabricated.",
+  "underlying_http_request_count": "UNKNOWN_NOT_SAFELY_REPORTED",
+
+  "valid_source_snapshot_evidence_exists": false,
+  "private_raw_snapshot_preserved": false,
+  "receipt_exists": true,
+  "evidence_exists": false,
+  "private_raw_file_count": 0,
+
+  "same_study_retry_allowed": false,
+  "second_source_snapshot_acquisition_allowed": false,
+  "receipt_reset_or_reuse_allowed": false,
+  "authorization_reuse_allowed": false,
+
+  "partition_generation_authorized": false,
+  "partition_seed_generated": false,
+  "partition_allocation_performed": false,
+  "membership_disclosure_authorized": false,
+  "research_opening_authorized": false,
+  "production_authorized": false,
+
+  "strategy_failure": false,
+  "profitability_failure": false,
+  "future_profitability_established": false,
+
+  "pre_gate_transport_incident_occurred": true,
+  "pre_gate_transport_incident_consumed_gate": false,
+  "no_same_study_retry": true,
+  "no_gate_reset": true,
+  "no_second_jpx_request": true,
+  "no_provider_or_date_substitution": true,
+  "no_partition_generation": true,
+  "no_membership_disclosure": true,
+  "no_research_opening": true,
+
+  "successor_study_decision_required": true,
+  "next_action": "GPT_EXACT_SHA_INDEPENDENT_REVIEW"
+}
