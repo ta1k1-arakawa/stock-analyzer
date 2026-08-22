@@ -1,19 +1,49 @@
-# V8K Evidence-Tiered, Measurement-First Design Draft
+# V8K Evidence-Tiered, Measurement-First Frozen Design
 
 ```text
 study=V8K_HISTORICAL_RESEARCH
 study_type=METHODOLOGICAL_SUCCESSOR_STUDY
-status=DESIGN_DRAFT_ONLY
+approval_status=APPROVED_FROZEN
 future_profitability_established=false
 ```
 
-This draft records an explicit human methodology decision. It authorizes no
+This human-approved frozen design records an explicit human methodology
+decision. It authorizes no
 implementation, public-network access, raw acquisition, private/sealed read,
 partition seed, T1/T2/T3 exposure, research opening, production action, or
 human-gate consumption. Exact future gate names and authorization grammars
 for T1, T2, T3/reserve, membership disclosure, and research opening are
 `CHATGPT_DECISION_REQUIRED` unless an inherited frozen rule already fixes
 them.
+
+## Human-approved minimal freeze metadata
+
+```text
+frozen_design_commit=7ccc7d1b7045e2e7371007327defbb90ae62fe8b
+frozen_design_git_blob=f4b83e5e6c0a4f0ca0e38d5eb56cf3ce59363a23
+independent_design_review_result=PASS
+independent_design_review_critical=0
+independent_design_review_high=0
+independent_design_review_medium=0
+human_design_freeze_gate=HUMAN_V8K_DESIGN_FREEZE
+human_design_freeze_complete=true
+human_design_freeze_authorization_sha256=19d60f6b56dc07245ccc1326183ee1c53b08764fea85fc692d645ee324130af5
+raw_human_authorization_persisted=false
+methodology_changed_during_freeze=false
+```
+
+The frozen scope is exactly the reviewed methodology below: proportional
+strictness by statistical irreversibility; `RETRIABLE_PUBLIC_PLUMBING` and
+`STANDING_RETRIABLE_PUBLIC_PLUMBING_AUTHORITY`; strict
+`STATISTICALLY_IRREVERSIBLE_GATE`; `DETERMINISTIC_DURABLE_STATE`; the
+first-complete-public-payload content lock; no fetch-until-PASS after
+semantic/DQ failure; Layer A as
+`HYPOTHESIS_GENERATION_AND_VIABILITY_SCREEN` with `EVIDENCE_CAPACITY=ZERO`;
+its separation from evidence-bearing T1/T2/T3; artifact economy; and the
+unchanged evaluator-v2 integrity rules. This freeze grants no JPX/Yahoo
+acquisition, private/sealed access, T1/T2/T3 exposure, membership disclosure,
+partition seed generation, research opening, broker action, or production
+trading.
 
 ## 1. V8J historical disposition
 
@@ -159,9 +189,14 @@ implementation and evidence-bearing frozen designs still require independent
 exact-SHA review.
 
 This design does not alter evaluation periods, labels, costs/slippage,
-thresholds, source semantics, or production authority. It supplies no V8K
-design-freeze approval and makes no deployment or profitability conclusion.
+thresholds, source semantics, search spaces, stopping rules, Layer A evidence
+capacity, T1/T2/T3 protections, V8J historical disposition, or governance
+semantics. It makes no deployment or profitability conclusion. No additional
+source-plumbing or freeze artifact is required before the Layer A task because
+Layer A uses only already exposed/research data and has
+`EVIDENCE_CAPACITY=ZERO`; this does not permit sealed or reference-prohibited
+data access.
 
 ```text
-NEXT_ACTION=GPT_EXACT_SHA_V8K_DESIGN_AND_GOVERNANCE_REVIEW
+NEXT_ACTION=V8K_LAYER_A_FIRST_VIABILITY_MEASUREMENT
 ```
