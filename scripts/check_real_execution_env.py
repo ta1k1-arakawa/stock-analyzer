@@ -230,6 +230,123 @@ _CANDIDATE_REQUIREMENTS_FIELDS = frozenset({"path", "sha256"})
 _CANDIDATE_RESOLVED_LOCK_FIELDS = frozenset({"generated_from", "package_count", "path", "sha256"})
 _CANDIDATE_FIXTURE_FIELDS = frozenset({"path", "sha256"})
 
+# ---------------------------------------------------------------------------
+# Freeze-record check (REAL_EXECUTION_ENVIRONMENT_FREEZE_PROMOTION):
+# promotes the reviewed, Windows-validated lock candidate from
+# CANDIDATE_VERIFIED_NOT_FROZEN to mechanically enforced FROZEN. Binds to
+# hardcoded REVIEWED_* constants -- not merely to whatever
+# REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json currently says -- and
+# independently re-derives the canonical Git blob SHA-256 of the reviewed
+# Windows validation evidence artifact, never trusting the freeze record's
+# self-reported hash alone. REAL_EXECUTION_ENVIRONMENT_FROZEN becomes true
+# only when this check passes AND the full existing readiness/lock checks
+# also pass -- freezing never weakens or replaces any of them.
+# ---------------------------------------------------------------------------
+
+FREEZE_RECORD_PATH = REPO_ROOT / "REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json"
+WINDOWS_VALIDATION_EVIDENCE_PATH = REPO_ROOT / "REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json"
+
+REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA = "84d4512d800b18b858b6f129be9a4ba0ea73d4ca"
+REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA = "f52f31ab6305e321cd9e8e9855d6efd83238f552"
+REVIEWED_WINDOWS_VALIDATION_EVIDENCE_CANONICAL_GIT_SHA256 = (
+    "c0c54866a54cd4901d029b9cc2a8eaed65d51f342c94858b144637b89956afe4"
+)
+REVIEWED_FREEZE_ARTIFACT_STATUS = "REAL_EXECUTION_ENVIRONMENT_FROZEN"
+
+# Complete semantic content of the reviewed freeze record. As with
+# REVIEWED_LOCK_CANDIDATE_SEMANTIC_CONTENT, this is an exhaustive nested
+# object compared with _type_strict_semantic_equal after the exact-schema
+# check -- any mutation of any field (frozen True->False, authorization
+# False->True, a tampered SHA, a dropped/added package, a changed platform
+# value, etc.) fails this binding.
+REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT: dict[str, Any] = {
+    "artifact_status": REVIEWED_FREEZE_ARTIFACT_STATUS,
+    "canonical_environment_directory": ".venv-real-execution",
+    "canonical_interpreter": ".venv-real-execution\\Scripts\\python.exe",
+    "future_protected_execution_authorized": False,
+    "gpt_exact_sha_independent_review_required": True,
+    "package_set": [
+        "numpy==2.5.2",
+        "pandas==3.0.5",
+        "pip==25.0.1",
+        "python-dateutil==2.9.0.post0",
+        "six==1.17.0",
+        "tzdata==2026.3",
+        "xlrd==2.0.2",
+    ],
+    "python": {
+        "implementation": "CPython",
+        "os_name": "nt",
+        "platform_machine": "AMD64",
+        "platform_system": "Windows",
+        "sysconfig_platform": "win-amd64",
+        "version": "3.12.10",
+    },
+    "real_execution_environment_frozen": True,
+    "real_execution_environment_ready": True,
+    "resolved_lock": {
+        "package_count": 7,
+        "path": "requirements-real-execution.lock.txt",
+        "sha256": "b5c063a1cca585fa100fdc0027d6cdbf4ef33ef5a7fe614230599fb882b51f96",
+    },
+    "reviewed_lock_candidate_git_sha": "107430894723c2bdc2f8493cb12c467fccd8665e",
+    "reviewed_windows_validation_evidence": {
+        "canonical_git_sha256": REVIEWED_WINDOWS_VALIDATION_EVIDENCE_CANONICAL_GIT_SHA256,
+        "path": "REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json",
+    },
+    "reviewed_windows_validation_evidence_git_sha": REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA,
+    "safety": {
+        "jpx_requests": 0,
+        "private_or_sealed_reads": 0,
+        "protected_network_requests": 0,
+        "research_gates_consumed": 0,
+        "yahoo_requests": 0,
+    },
+    "schema_version": 1,
+    "source_git_sha": "b74e0f787599475cd9fe719d254202dc9bfc14d5",
+    "source_requirements": {
+        "canonical_git_sha256": "2cdcfd7a87023c4e9c3ec463cf16f77d88f72ccc8d1f0e5de242e6c68b0cf601",
+        "path": "requirements-real-execution.txt",
+    },
+    "synthetic_xls_fixture": {
+        "path": "tests/fixtures/synthetic_jpx_source_snapshot.xls",
+        "sha256": "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7",
+    },
+    "tested_implementation_git_sha": REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA,
+}
+
+_FREEZE_RECORD_TOP_LEVEL_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT)
+_FREEZE_RECORD_PYTHON_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["python"])
+_FREEZE_RECORD_RESOLVED_LOCK_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["resolved_lock"])
+_FREEZE_RECORD_EVIDENCE_REF_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["reviewed_windows_validation_evidence"])
+_FREEZE_RECORD_SAFETY_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["safety"])
+_FREEZE_RECORD_SOURCE_REQUIREMENTS_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["source_requirements"])
+_FREEZE_RECORD_FIXTURE_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["synthetic_xls_fixture"])
+
+# Exact schema the reviewed Windows validation evidence artifact
+# (REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json) must have,
+# and the exact fields inside its "validation"/"safety" blocks this check
+# requires to be PASS/true/zero. Read from the evidence's own canonical Git
+# blob bytes at REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA -- never the
+# working-tree copy -- alongside the working-tree copy for a defense-in-
+# depth cross-check that both agree.
+_EVIDENCE_REQUIRED_VALIDATION_TRUE_FIELDS = (
+    "git_preflight_pass",
+    "read_only_checker_ready",
+    "environment_lock_check_pass",
+    "bootstrap_pass",
+    "working_tree_clean_after",
+)
+_EVIDENCE_REQUIRED_VALIDATION_FALSE_FIELDS = ("package_state_drift", "pip_network_allowed")
+_EVIDENCE_REQUIRED_VALIDATION_ZERO_EXIT_FIELDS = ("read_only_checker_exit_code", "bootstrap_exit_code")
+_EVIDENCE_REQUIRED_SAFETY_ZERO_FIELDS = (
+    "protected_network_requests",
+    "jpx_requests",
+    "yahoo_requests",
+    "private_or_sealed_reads",
+    "research_gates_consumed",
+)
+
 
 def _type_strict_semantic_equal(actual: Any, expected: Any) -> bool:
     """Return whether two JSON-semantic values match in both type and value.
@@ -928,6 +1045,278 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validate_evidence_schema(evidence: Any) -> bool:
+    if not isinstance(evidence, dict):
+        return False
+    top_fields = {
+        "artifact_status",
+        "canonical_environment_directory",
+        "canonical_interpreter",
+        "future_protected_execution_authorized",
+        "gpt_exact_sha_independent_review_required",
+        "package_set",
+        "python",
+        "real_execution_environment_frozen",
+        "real_execution_environment_ready",
+        "resolved_lock",
+        "reviewed_lock_candidate_git_sha",
+        "safety",
+        "schema_version",
+        "source_git_sha",
+        "source_requirements",
+        "synthetic_xls_fixture",
+        "tested_git_sha",
+        "validation",
+    }
+    if set(evidence) != top_fields:
+        return False
+    validation_block = evidence.get("validation")
+    safety_block = evidence.get("safety")
+    if not isinstance(validation_block, dict) or set(validation_block) != {
+        "bootstrap_exit_code",
+        "bootstrap_pass",
+        "environment_lock_check_pass",
+        "git_preflight_pass",
+        "package_state_drift",
+        "pip_network_allowed",
+        "read_only_checker_exit_code",
+        "read_only_checker_ready",
+        "working_tree_clean_after",
+    }:
+        return False
+    if not isinstance(safety_block, dict) or set(safety_block) != set(_EVIDENCE_REQUIRED_SAFETY_ZERO_FIELDS):
+        return False
+    return True
+
+
+def _check_evidence_content(evidence: dict[str, Any], detail: dict[str, Any]) -> str | None:
+    """Validate the reviewed Windows validation evidence's own claimed
+    content. Returns a FAIL reason string, or None if every requirement is
+    satisfied. Populates `detail` regardless of outcome.
+    """
+    if not _validate_evidence_schema(evidence):
+        return "WINDOWS_VALIDATION_EVIDENCE_SCHEMA_INVALID"
+    validation_block = evidence["validation"]
+    safety_block = evidence["safety"]
+
+    detail["evidence_tested_git_sha"] = evidence.get("tested_git_sha")
+    if evidence.get("tested_git_sha") != REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA:
+        return "WINDOWS_VALIDATION_EVIDENCE_TESTED_GIT_SHA_MISMATCH"
+
+    for field in _EVIDENCE_REQUIRED_VALIDATION_TRUE_FIELDS:
+        if validation_block.get(field) is not True:
+            detail["evidence_validation_failure_field"] = field
+            return "WINDOWS_VALIDATION_EVIDENCE_VALIDATION_FIELD_NOT_TRUE"
+    for field in _EVIDENCE_REQUIRED_VALIDATION_FALSE_FIELDS:
+        if validation_block.get(field) is not False:
+            detail["evidence_validation_failure_field"] = field
+            return "WINDOWS_VALIDATION_EVIDENCE_VALIDATION_FIELD_NOT_FALSE"
+    for field in _EVIDENCE_REQUIRED_VALIDATION_ZERO_EXIT_FIELDS:
+        value = validation_block.get(field)
+        if type(value) is not int or value != 0:
+            detail["evidence_validation_failure_field"] = field
+            return "WINDOWS_VALIDATION_EVIDENCE_EXIT_CODE_NOT_ZERO"
+    for field in _EVIDENCE_REQUIRED_SAFETY_ZERO_FIELDS:
+        value = safety_block.get(field)
+        if type(value) is not int or value != 0:
+            detail["evidence_safety_failure_field"] = field
+            return "WINDOWS_VALIDATION_EVIDENCE_SAFETY_COUNT_NOT_ZERO"
+
+    if evidence.get("real_execution_environment_ready") is not True:
+        return "WINDOWS_VALIDATION_EVIDENCE_NOT_READY"
+    if evidence.get("real_execution_environment_frozen") is not False:
+        return "WINDOWS_VALIDATION_EVIDENCE_UNEXPECTED_FROZEN_CLAIM"
+    if evidence.get("future_protected_execution_authorized") is not False:
+        return "WINDOWS_VALIDATION_EVIDENCE_UNEXPECTED_AUTHORIZATION_CLAIM"
+
+    detail["evidence_content_valid"] = True
+    return None
+
+
+def check_freeze_record(interpreter: dict[str, Any], lock_check: dict[str, Any]) -> dict[str, Any]:
+    """Mechanical freeze-record check
+    (REAL_EXECUTION_ENVIRONMENT_FREEZE_PROMOTION).
+
+    `REAL_EXECUTION_ENVIRONMENT_FROZEN` is true only when this check PASSes
+    AND the full existing environment-lock check (`check_environment_lock`)
+    also PASSes -- freezing is strictly additional, it never weakens or
+    bypasses any existing readiness/lock check.
+
+    Fails closed unless, in order:
+      1. the live environment-lock check itself currently PASSes (a stale
+         or invalid lock/candidate/platform means nothing can be frozen);
+      2. `REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json` exists and is
+         structurally valid (exact schema, no missing/extra field);
+      3. the freeze record's complete semantic content recursively,
+         type-strictly matches the reviewed freeze binding -- any mutation
+         (frozen True->False, authorization False->True, a tampered SHA, a
+         changed package/platform value, etc.) fails this;
+      4. the freeze record's lock/source-requirements/fixture/platform
+         identities match the SAME hardcoded REVIEWED_* constants
+         `check_environment_lock` itself uses -- not merely its own,
+         separately-editable copy of them;
+      5. the freeze record's own `package_set` array, independently
+         parsed, matches the on-disk reviewed lock file's independently
+         parsed package set exactly;
+      6. the reviewed Windows validation evidence artifact's canonical Git
+         object bytes at `REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA`
+         (via `git cat-file blob`, never a checked-out working-tree copy)
+         independently hash to `REVIEWED_WINDOWS_VALIDATION_EVIDENCE_
+         CANONICAL_GIT_SHA256` -- never trusting the freeze record's own
+         claimed hash alone;
+      7. that same canonical Git blob, parsed as JSON, has
+         `tested_git_sha == REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA`,
+         reports checker/bootstrap PASS with exit code 0,
+         `package_state_drift == false`, `pip_network_allowed == false`,
+         and every safety count is exactly zero.
+    """
+    detail: dict[str, Any] = {}
+
+    detail["lock_check_status"] = lock_check.get("status")
+    if lock_check.get("status") != "PASS":
+        return {"status": "FAIL", "reason": "ENVIRONMENT_LOCK_CHECK_NOT_PASSING", "detail": detail}
+
+    if not FREEZE_RECORD_PATH.exists():
+        return {"status": "FAIL", "reason": "FREEZE_RECORD_MISSING", "detail": detail}
+
+    try:
+        freeze_record = json.loads(FREEZE_RECORD_PATH.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return {"status": "FAIL", "reason": "FREEZE_RECORD_INVALID_JSON", "error": str(error), "detail": detail}
+
+    if not isinstance(freeze_record, dict) or set(freeze_record) != _FREEZE_RECORD_TOP_LEVEL_FIELDS:
+        return {"status": "FAIL", "reason": "FREEZE_RECORD_SCHEMA_INVALID", "detail": detail}
+    python_block = freeze_record.get("python")
+    resolved_lock_block = freeze_record.get("resolved_lock")
+    evidence_ref_block = freeze_record.get("reviewed_windows_validation_evidence")
+    safety_block = freeze_record.get("safety")
+    source_requirements_block = freeze_record.get("source_requirements")
+    fixture_block = freeze_record.get("synthetic_xls_fixture")
+    if (
+        not isinstance(python_block, dict)
+        or set(python_block) != _FREEZE_RECORD_PYTHON_FIELDS
+        or not isinstance(resolved_lock_block, dict)
+        or set(resolved_lock_block) != _FREEZE_RECORD_RESOLVED_LOCK_FIELDS
+        or not isinstance(evidence_ref_block, dict)
+        or set(evidence_ref_block) != _FREEZE_RECORD_EVIDENCE_REF_FIELDS
+        or not isinstance(safety_block, dict)
+        or set(safety_block) != _FREEZE_RECORD_SAFETY_FIELDS
+        or not isinstance(source_requirements_block, dict)
+        or set(source_requirements_block) != _FREEZE_RECORD_SOURCE_REQUIREMENTS_FIELDS
+        or not isinstance(fixture_block, dict)
+        or set(fixture_block) != _FREEZE_RECORD_FIXTURE_FIELDS
+        or not isinstance(freeze_record.get("package_set"), list)
+    ):
+        return {"status": "FAIL", "reason": "FREEZE_RECORD_SCHEMA_INVALID", "detail": detail}
+    detail["freeze_record_structurally_valid"] = True
+
+    freeze_record_semantic_match = _type_strict_semantic_equal(freeze_record, REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT)
+    detail["freeze_record_semantic_match"] = freeze_record_semantic_match
+    if not freeze_record_semantic_match:
+        return {"status": "FAIL", "reason": "FREEZE_RECORD_DOES_NOT_MATCH_REVIEWED_BINDING", "detail": detail}
+
+    # Cross-check against the SAME hardcoded reviewed constants
+    # check_environment_lock itself uses -- not merely the freeze record's
+    # own, separately-editable copy of the same values.
+    cross_check_match = (
+        freeze_record["reviewed_lock_candidate_git_sha"] == REVIEWED_LOCK_CANDIDATE_GIT_SHA
+        and resolved_lock_block["sha256"] == REVIEWED_LOCK_SHA256
+        and resolved_lock_block["package_count"] == REVIEWED_PACKAGE_COUNT
+        and freeze_record["source_git_sha"] == REVIEWED_SOURCE_GIT_SHA
+        and source_requirements_block["canonical_git_sha256"] == REVIEWED_SOURCE_REQUIREMENTS_GIT_SHA256
+        and fixture_block["sha256"] == REVIEWED_FIXTURE_SHA256
+        and freeze_record["canonical_environment_directory"] == EXPECTED_CANDIDATE_CANONICAL_ENVIRONMENT_DIRECTORY
+        and freeze_record["canonical_interpreter"] == EXPECTED_CANDIDATE_CANONICAL_INTERPRETER
+        and python_block["implementation"] == CANONICAL_PYTHON_IMPLEMENTATION
+        and python_block["platform_system"] == CANONICAL_PLATFORM_SYSTEM
+        and python_block["platform_machine"] == CANONICAL_PLATFORM_MACHINE
+        and python_block["sysconfig_platform"] == CANONICAL_SYSCONFIG_PLATFORM
+        and python_block["os_name"] == "nt"
+        and python_block["version"] == "3.12.10"
+        and evidence_ref_block["canonical_git_sha256"] == REVIEWED_WINDOWS_VALIDATION_EVIDENCE_CANONICAL_GIT_SHA256
+        and freeze_record["reviewed_windows_validation_evidence_git_sha"]
+        == REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA
+        and freeze_record["tested_implementation_git_sha"] == REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA
+    )
+    detail["cross_check_against_lock_check_constants_match"] = cross_check_match
+    if not cross_check_match:
+        return {"status": "FAIL", "reason": "FREEZE_RECORD_CROSS_CHECK_MISMATCH", "detail": detail}
+
+    # The freeze record's own package_set array, independently parsed,
+    # must match the on-disk reviewed lock file's independently parsed
+    # package set exactly (internal self-consistency, not merely a static
+    # string comparison against the reviewed constant list).
+    try:
+        freeze_record_packages = _parse_pinned_lock_lines("\n".join(freeze_record["package_set"]) + "\n")
+    except (TypeError, AttributeError):
+        return {"status": "FAIL", "reason": "FREEZE_RECORD_PACKAGE_SET_UNPARSEABLE", "detail": detail}
+    detail["freeze_record_package_count"] = len(freeze_record_packages)
+    if len(freeze_record_packages) != REVIEWED_PACKAGE_COUNT:
+        return {"status": "FAIL", "reason": "FREEZE_RECORD_PACKAGE_SET_COUNT_UNEXPECTED", "detail": detail}
+
+    if not LOCK_FILE_PATH.exists():
+        return {"status": "FAIL", "reason": "LOCK_FILE_MISSING", "detail": detail}
+    on_disk_lock_packages = _parse_pinned_lock_lines(LOCK_FILE_PATH.read_bytes().decode("utf-8"))
+    package_sets_match = freeze_record_packages == on_disk_lock_packages
+    detail["freeze_record_package_set_matches_lock_file"] = package_sets_match
+    if not package_sets_match:
+        return {"status": "FAIL", "reason": "FREEZE_RECORD_PACKAGE_SET_DOES_NOT_MATCH_LOCK_FILE", "detail": detail}
+
+    # Independently recompute the canonical Git blob SHA-256 of the
+    # reviewed Windows validation evidence artifact -- never trust the
+    # freeze record's or the working-tree copy's self-reported hash alone.
+    evidence_git_blob = _git_blob_bytes(
+        REPO_ROOT,
+        f"{REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA}:REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json",
+    )
+    if evidence_git_blob is None:
+        return {"status": "FAIL", "reason": "WINDOWS_VALIDATION_EVIDENCE_GIT_PROVENANCE_UNAVAILABLE", "detail": detail}
+    evidence_git_sha256_recomputed = hashlib.sha256(evidence_git_blob).hexdigest()
+    detail["evidence_git_sha256_recomputed"] = evidence_git_sha256_recomputed
+    evidence_git_sha256_match = evidence_git_sha256_recomputed == REVIEWED_WINDOWS_VALIDATION_EVIDENCE_CANONICAL_GIT_SHA256
+    detail["evidence_git_sha256_match"] = evidence_git_sha256_match
+    if not evidence_git_sha256_match:
+        return {"status": "FAIL", "reason": "WINDOWS_VALIDATION_EVIDENCE_GIT_PROVENANCE_MISMATCH", "detail": detail}
+
+    # Parse and validate the evidence's own claimed content from those
+    # exact canonical Git bytes (not the working-tree copy).
+    try:
+        evidence_from_git = json.loads(evidence_git_blob.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        return {
+            "status": "FAIL",
+            "reason": "WINDOWS_VALIDATION_EVIDENCE_INVALID_JSON",
+            "error": str(error),
+            "detail": detail,
+        }
+    evidence_failure_reason = _check_evidence_content(evidence_from_git, detail)
+    if evidence_failure_reason is not None:
+        return {"status": "FAIL", "reason": evidence_failure_reason, "detail": detail}
+
+    # Defense-in-depth: the working-tree copy, if present, must agree.
+    if WINDOWS_VALIDATION_EVIDENCE_PATH.exists():
+        try:
+            evidence_working_tree = json.loads(WINDOWS_VALIDATION_EVIDENCE_PATH.read_bytes().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            return {
+                "status": "FAIL",
+                "reason": "WINDOWS_VALIDATION_EVIDENCE_WORKING_TREE_INVALID_JSON",
+                "error": str(error),
+                "detail": detail,
+            }
+        working_tree_matches_git_blob = _type_strict_semantic_equal(evidence_working_tree, evidence_from_git)
+        detail["evidence_working_tree_matches_git_blob"] = working_tree_matches_git_blob
+        if not working_tree_matches_git_blob:
+            return {"status": "FAIL", "reason": "WINDOWS_VALIDATION_EVIDENCE_WORKING_TREE_DRIFTED", "detail": detail}
+
+    return {
+        "status": "PASS",
+        "reviewed_windows_validation_evidence_git_sha": REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA,
+        "tested_implementation_git_sha": REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA,
+        "detail": detail,
+    }
+
+
 def run_readiness_checks() -> dict[str, Any]:
     interpreter = check_interpreter_identity()
     dependencies = check_dependency_readiness()
@@ -950,6 +1339,16 @@ def run_readiness_checks() -> dict[str, Any]:
         and lock_check["status"] == "PASS"
     )
 
+    # Freeze is strictly additional to, and requires, full readiness --
+    # REAL_EXECUTION_ENVIRONMENT_FROZEN can never be true unless `ready` is
+    # also true (dependency/xls/tls/trusted-host/filesystem/lock checks all
+    # PASS on the live, Windows-grounded canonical environment), plus the
+    # freeze record itself binds correctly. On any non-Windows run `ready`
+    # is always False, so FROZEN is always False here too.
+    freeze_check = check_freeze_record(interpreter, lock_check)
+    freeze_detail = freeze_check.get("detail", {})
+    frozen = ready and freeze_check["status"] == "PASS"
+
     return {
         "REAL_EXECUTION_ENVIRONMENT_READY": ready,
         "STATIC_CLOUD_VALIDATION_ONLY": not interpreter["platform_windows_grounded"],
@@ -970,14 +1369,21 @@ def run_readiness_checks() -> dict[str, Any]:
         "ENVIRONMENT_LOCK_CHECK": lock_check["status"],
         "ENVIRONMENT_LOCK_CHECK_DETAIL": lock_check,
         "ENVIRONMENT_LOCK_FINGERPRINT_STATUS": (
-            "CANDIDATE_VERIFIED_NOT_FROZEN" if lock_check["status"] == "PASS" else "CANDIDATE_INVALID_OR_UNVERIFIED"
+            "FROZEN"
+            if frozen
+            else "CANDIDATE_VERIFIED_NOT_FROZEN"
+            if lock_check["status"] == "PASS"
+            else "CANDIDATE_INVALID_OR_UNVERIFIED"
         ),
         "ENVIRONMENT_LOCK_PACKAGE_SET_MATCH": lock_detail.get("package_set_match"),
         "ENVIRONMENT_LOCK_PACKAGE_COUNT": lock_detail.get(
             "lock_package_count_recomputed", lock_detail.get("candidate_package_count")
         ),
         "ENVIRONMENT_LOCK_SHA256_MATCH": lock_detail.get("lock_sha256_match"),
-        "REAL_EXECUTION_ENVIRONMENT_FROZEN": False,
+        "ENVIRONMENT_FREEZE_CHECK": freeze_check["status"],
+        "ENVIRONMENT_FREEZE_CHECK_DETAIL": freeze_check,
+        "ENVIRONMENT_FREEZE_EVIDENCE_GIT_SHA256_MATCH": freeze_detail.get("evidence_git_sha256_match"),
+        "REAL_EXECUTION_ENVIRONMENT_FROZEN": frozen,
         "REAL_NETWORK_REQUESTS": 0,
         "PRIVATE_READS": 0,
         "GATES_CONSUMED": 0,

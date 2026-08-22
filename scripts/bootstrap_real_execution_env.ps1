@@ -366,5 +366,5 @@ raise SystemExit(0 if actual == expected else 1)
         throw "PRE_GATE_ENVIRONMENT_BLOCK: readiness checker reported REAL_EXECUTION_ENVIRONMENT_READY=false (exit code $readinessExitCode). See its JSON output above. No protected boundary was crossed."
     }
 
-    Write-Host "Environment bootstrap and readiness check both PASSED. This does NOT by itself authorize any gated real execution -- see AI_REAL_EXECUTION_RUNBOOK.md SS16 for the full required ordering. REAL_EXECUTION_ENVIRONMENT_FROZEN remains false until a separate, later, explicitly reviewed promotion task."
+    Write-Host "Environment bootstrap and readiness check both PASSED. This does NOT by itself authorize any gated real execution -- see AI_REAL_EXECUTION_RUNBOOK.md SS16 for the full required ordering. The readiness checker also independently verifies REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json (check_freeze_record) and reports whether REAL_EXECUTION_ENVIRONMENT_FROZEN is true for this exact run -- see its own JSON output above for the current value. A frozen environment is still not acquisition authorization: future protected execution still requires its own separate, study-specific human gate."
 }

@@ -258,11 +258,13 @@ INTERPRETER_IDENTITY_STATUS=<PASS|FAIL|UNKNOWN>
 PYTHON_VERSION=<safe exact version or omitted when unavailable>
 DEPENDENCY_READINESS=<PASS|FAIL|UNKNOWN>
 SYNTHETIC_PARSER_READINESS=<PASS|FAIL|CHATGPT_DECISION_REQUIRED|UNKNOWN>
-ENVIRONMENT_LOCK_FINGERPRINT_STATUS=<CANDIDATE_VERIFIED_NOT_FROZEN|CANDIDATE_INVALID_OR_UNVERIFIED|NOT_YET_ESTABLISHED|UNKNOWN>
+ENVIRONMENT_LOCK_FINGERPRINT_STATUS=<FROZEN|CANDIDATE_VERIFIED_NOT_FROZEN|CANDIDATE_INVALID_OR_UNVERIFIED|NOT_YET_ESTABLISHED|UNKNOWN>
 ENVIRONMENT_LOCK_PACKAGE_SET_MATCH=<true|false|unknown>
 ENVIRONMENT_LOCK_PACKAGE_COUNT=<nonnegative count|unknown>
 ENVIRONMENT_LOCK_SHA256_MATCH=<true|false|unknown>
 PYTHON_PATCH_MATCH=<true|false|unknown>
+ENVIRONMENT_FREEZE_CHECK=<PASS|FAIL|UNKNOWN>
+ENVIRONMENT_FREEZE_EVIDENCE_GIT_SHA256_MATCH=<true|false|unknown>
 REAL_EXECUTION_ENVIRONMENT_FROZEN=<true|false|unknown>
 NEXT_ACTION=<safe stopping or authority action>
 ```
@@ -485,29 +487,57 @@ authorized. A task that runs only in Claude Code Cloud (or any other
 non-Windows environment) must never claim to have produced this
 Windows-grounded lock.
 
-A reviewed lock candidate now exists (`artifact_status =
+A reviewed lock candidate was captured (`artifact_status =
 CANDIDATE_NOT_FROZEN`, reviewed at commit
 `107430894723c2bdc2f8493cb12c467fccd8665e`). Per
 `REAL_EXECUTION_ENVIRONMENT_LOCK_ENFORCEMENT` (§15's `requirements-real-
 execution.lock.txt` install-authority rule), that reviewed lock -- not the
-unpinned `requirements-real-execution.txt` -- is now the protected
+unpinned `requirements-real-execution.txt` -- is the protected
 installation/runtime package authority, and
 `scripts/check_real_execution_env.py`'s `check_environment_lock` mechanical
 check (binding to the reviewed manifest/lock/source-provenance/fixture
 hashes and the live `pip freeze --all` package set) must `PASS` before
-`REAL_EXECUTION_ENVIRONMENT_READY` can be `true`. A verified candidate is
-still not the same as *frozen*: this lock-enforcement implementation itself
-still requires its own GPT exact-SHA independent review and a
-Windows-grounded execution test before a later, separate, explicit
-freeze/promotion task. Until that promotion happens:
+`REAL_EXECUTION_ENVIRONMENT_READY` can be `true`.
+
+**`REAL_EXECUTION_ENVIRONMENT_FREEZE_PROMOTION`: explicit freeze/promotion
+completed.** That lock-enforcement implementation was independently GPT
+exact-SHA reviewed and Windows-grounded execution tested at implementation
+commit `84d4512d800b18b858b6f129be9a4ba0ea73d4ca`; that validation was
+itself recorded as a reviewed candidate evidence artifact at commit
+`f52f31ab6305e321cd9e8e9855d6efd83238f552`
+(`REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json`).
+`REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json` mechanically binds all
+three (the reviewed lock candidate, the tested implementation, and the
+reviewed Windows validation evidence) together, and
+`scripts/check_real_execution_env.py`'s `check_freeze_record` mechanically
+enforces that binding: it requires the live environment-lock check to
+itself currently `PASS`, requires the freeze record's complete structural
+and semantic content to exactly match the hardcoded reviewed binding,
+cross-checks every identity against the same reviewed constants
+`check_environment_lock` uses, and independently re-derives the canonical
+Git blob SHA-256 of the reviewed Windows validation evidence artifact
+(`git cat-file blob <sha>:<path>`, never a checked-out working-tree copy)
+rather than trusting any self-reported hash. Only when that check PASSes
+together with every existing readiness/lock/probe check does the checker
+report:
 
 ```text
-REAL_EXECUTION_ENVIRONMENT_FROZEN=false
+REAL_EXECUTION_ENVIRONMENT_FROZEN=true
 ```
 
-and no future human-gated real execution should be authorized, regardless
-of what any individual readiness check reports -- including a genuine
-`ENVIRONMENT_LOCK_FINGERPRINT_STATUS=CANDIDATE_VERIFIED_NOT_FROZEN`.
+This can only ever happen on a live run inside the exact canonical
+`.venv-real-execution`, on the exact reviewed Windows/AMD64/win-amd64
+platform, with the exact reviewed package set -- never from Claude Code
+Cloud or any other non-Windows run, and never when any existing check is
+failing; freezing never weakens, bypasses, or replaces any existing
+environment-lock or readiness check.
+
+**Environment freeze is NOT acquisition authorization.** It governs the
+Python environment only. `future_protected_execution_authorized` remains
+`false` in both the lock candidate and the freeze record. Future protected
+execution still requires all study-specific human gates -- a frozen
+environment is a necessary precondition for a future gated attempt, never
+a substitute for its own separate, study-specific human authorization.
 
 ## 20. Prospective-only; V8I permanence
 

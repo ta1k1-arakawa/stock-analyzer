@@ -402,15 +402,18 @@ environment ready: Windows-grounded execution inside the canonical
 (§7) must exist, be verified, and eventually be promoted before
 `REAL_EXECUTION_ENVIRONMENT_FROZEN` can ever become `true`.
 
-## 7. Exact environment lock/fingerprint
+## 7. Exact environment lock/fingerprint -- FROZEN
 
 ```text
-REAL_EXECUTION_ENVIRONMENT_FROZEN = false
-lock_candidate_status             = "CANDIDATE_NOT_FROZEN"
-lock_candidate_reviewed_git_sha   = "107430894723c2bdc2f8493cb12c467fccd8665e"
+finding_resolved                          = "REAL_EXECUTION_ENVIRONMENT_FREEZE_PROMOTION"
+freeze_record                             = "REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json"
+artifact_status                           = "REAL_EXECUTION_ENVIRONMENT_FROZEN"
+lock_candidate_reviewed_git_sha           = "107430894723c2bdc2f8493cb12c467fccd8665e"
+tested_implementation_git_sha             = "84d4512d800b18b858b6f129be9a4ba0ea73d4ca"
+reviewed_windows_validation_evidence_git_sha = "f52f31ab6305e321cd9e8e9855d6efd83238f552"
 ```
 
-A Windows-grounded package-resolution lock has been captured and reviewed:
+A Windows-grounded package-resolution lock was captured and reviewed:
 `REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json` (the manifest -- exact
 CPython `3.12.10` / Windows / `AMD64` / `win-amd64`, the lock file's
 SHA-256, the source-requirements canonical Git-bytes SHA-256, and the
@@ -424,21 +427,54 @@ general `.venv`:
 .venv-real-execution\Scripts\python.exe -m pip freeze --all
 ```
 
-`REAL_EXECUTION_ENVIRONMENT_LOCK_ENFORCEMENT` (this contract) makes that
-reviewed candidate the actual protected installation/runtime authority
-(§6a) and adds a mechanical lock check
-(`scripts/check_real_execution_env.py`'s `check_environment_lock`) that
-`REAL_EXECUTION_ENVIRONMENT_READY` now requires to `PASS`. This is still
-not the same as *frozen*: this lock-enforcement implementation itself
-still requires its own GPT exact-SHA independent review and a
-Windows-grounded execution test (proving the bootstrap script and checker
-actually behave as designed against the real `.venv-real-execution`) before
-a later, separate, explicit freeze/promotion task can commit
-`REAL_EXECUTION_ENVIRONMENT_FROZEN = true`. Until that promotion happens,
-`REAL_EXECUTION_ENVIRONMENT_FROZEN` remains `false` and no future
-human-gated real execution should be authorized, regardless of what the
-readiness checker itself reports -- including a genuine
-`ENVIRONMENT_LOCK_FINGERPRINT_STATUS=CANDIDATE_VERIFIED_NOT_FROZEN`.
+`REAL_EXECUTION_ENVIRONMENT_LOCK_ENFORCEMENT` made that reviewed candidate
+the actual protected installation/runtime authority (§6a) and added a
+mechanical lock check (`scripts/check_real_execution_env.py`'s
+`check_environment_lock`) that `REAL_EXECUTION_ENVIRONMENT_READY` requires
+to `PASS`. That lock-enforcement implementation was then independently
+GPT exact-SHA reviewed and Windows-grounded execution tested (proving the
+bootstrap script and checker actually behave as designed against the real
+`.venv-real-execution`), and that Windows validation was itself recorded as
+a reviewed candidate evidence artifact,
+`REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json`.
+
+**Explicit environment freeze/promotion completed.**
+`REAL_EXECUTION_ENVIRONMENT_FREEZE_PROMOTION` adds
+`REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json` and a mechanical freeze
+check (`check_freeze_record`) that mechanically binds the freeze together:
+it requires the live environment-lock check to itself currently `PASS`,
+requires the freeze record to structurally and semantically match the
+hardcoded reviewed binding (any mutated SHA, package, platform value,
+`frozen`/`authorized` flag, or missing/extra field fails it), cross-checks
+every identity against the SAME reviewed constants
+`check_environment_lock` itself uses, and independently re-derives the
+canonical Git blob SHA-256 of the reviewed Windows validation evidence
+artifact (`git cat-file blob <sha>:<path>`, never the working-tree copy)
+rather than trusting any self-reported hash. Only when all of that PASSes
+-- together with every existing readiness/lock/probe check -- does
+`scripts/check_real_execution_env.py` report:
+
+```text
+REAL_EXECUTION_ENVIRONMENT_FROZEN = true
+```
+
+Freezing is mechanically bound to the reviewed lock candidate and the
+reviewed Windows validation evidence; it is never a hardcoded or
+self-declared value, and it can only ever become `true` on a live run
+inside the exact canonical `.venv-real-execution` on the exact reviewed
+Windows/AMD64/win-amd64 platform with the exact reviewed package set --
+never from Claude Code Cloud or any other non-Windows run, and never when
+any existing readiness/lock/probe check is failing.
+
+**Environment freeze is NOT acquisition authorization.** This freeze
+governs the *Python environment* only -- interpreter identity, package
+set, platform binding. `future_protected_execution_authorized` remains
+`false` in both the lock candidate and the freeze record, and freezing the
+environment does not itself authorize JPX/Yahoo/private/sealed access or
+consume any research gate. Future protected execution still requires all
+study-specific human gates, exactly as before: a frozen environment is a
+necessary precondition for a future gated attempt, never a substitute for
+its own separate, study-specific human authorization.
 
 ## 8. Authorization ordering
 
