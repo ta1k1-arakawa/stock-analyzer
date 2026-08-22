@@ -1294,6 +1294,14 @@ def _execute_source_snapshot_acquisition_with_dependencies(
     if not isinstance(raw_bytes, (bytes, bytearray)):
         raise V8JSourceSnapshotBlocked("V8J_RAW_SOURCE_BYTES_INVALID")
     raw_bytes = bytes(raw_bytes)
+
+    # After a valid one-shot fetch, preserve the exact bytes before any
+    # further post-fetch dependency (including the clock or parser) can
+    # fail. This digest is deliberately computed here from the fetched byte
+    # object itself rather than taken from later parsing/processing state.
+    fetched_raw_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    preserve_raw_source_bytes_once(private_state, fetched_raw_sha256, raw_bytes)
+
     fetch_utc = clock()
 
     acquisition_result = _perform_source_snapshot_acquisition(
@@ -1305,8 +1313,8 @@ def _execute_source_snapshot_acquisition_with_dependencies(
         block_size=block_size,
         minimum_fresh_eligible_count=minimum_fresh_eligible_count,
     )
-
-    preserve_raw_source_bytes_once(private_state, acquisition_result["source_raw_sha256"], raw_bytes)
+    if acquisition_result.get("source_raw_sha256") != fetched_raw_sha256:
+        raise V8JSourceSnapshotBlocked("V8J_ACQUISITION_RESULT_RAW_SHA_MISMATCH")
 
     # Post-gate, pre-evidence-publication: the durable receipt must be
     # semantically bound to this exact execution's authorized values.

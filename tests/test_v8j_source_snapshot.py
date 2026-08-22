@@ -719,6 +719,8 @@ def _execute(
     fetch_calls=None,
     reviewed_impl_sha=REVIEWED_IMPL_SHA,
     runtime_overrides=None,
+    clock=_clock,
+    parse_source_table=None,
 ):
     fetch_calls = fetch_calls if fetch_calls is not None else []
 
@@ -732,19 +734,39 @@ def _execute(
         private_state_root=tmp_path / "private-state",
         evidence_output_path=tmp_path / "evidence.json",
         jpx_fetcher=fake_fetcher,
-        parse_source_table=lambda _raw: frame,
+        parse_source_table=parse_source_table or (lambda _raw: frame),
         v4_manifest_path=v4_fixture["manifest_path"],
         v4_universe_csv_path=v4_fixture["universe_csv_path"],
         repository_root=snapshot.CANONICAL_REPOSITORY_ROOT,
         public_preflight=lambda: _preflight(),
         gate_consumer=snapshot.consume_gate_once,
-        clock=_clock,
+        clock=clock,
         reviewed_source_snapshot_support_implementation_sha=reviewed_impl_sha,
         runtime_state_reader=lambda *_args: _runtime_state(**(runtime_overrides or {})),
         environment_preflight=lambda _root: _environment_preflight(),
         block_size=BLOCK_SIZE,
         minimum_fresh_eligible_count=MIN_FRESH,
     ), fetch_calls
+
+
+def _preserved_raw_path(tmp_path):
+    return tmp_path / "private-state" / (hashlib.sha256(SYNTHETIC_RAW_BYTES).hexdigest() + ".raw")
+
+
+def test_successful_execution_preserves_exact_raw_bytes_before_parser(tmp_path, v4_fixture, t0_codes, fresh_codes):
+    frame = _build_frame(t0_codes, fresh_codes)
+    parser_calls: list[str] = []
+
+    def parser(raw):
+        parser_calls.append("parser")
+        preserved = _preserved_raw_path(tmp_path)
+        assert preserved.read_bytes() == raw
+        return frame
+
+    result, fetch_calls = _execute(tmp_path, v4_fixture, frame, parse_source_table=parser)
+    assert result["result"] == "PASS"
+    assert fetch_calls == [1]
+    assert parser_calls == ["parser"]
 
 
 def test_t0_mismatch_after_gate_consumption_is_permanent_terminal(tmp_path, v4_fixture, t0_codes, fresh_codes):
@@ -759,6 +781,7 @@ def test_t0_mismatch_after_gate_consumption_is_permanent_terminal(tmp_path, v4_f
     # Gate was already durably consumed before the fetch/T0 check ran.
     receipt = snapshot.read_gate_receipt(tmp_path / "gate-state")
     assert receipt["consumed"] is True
+    assert _preserved_raw_path(tmp_path).read_bytes() == SYNTHETIC_RAW_BYTES
 
     # No retry: a fresh, otherwise-valid attempt still blocks on the
     # already-consumed receipt, never on T0 again.
@@ -777,12 +800,72 @@ def test_fresh_count_below_minimum_after_gate_consumption_is_permanent_terminal(
 
     receipt = snapshot.read_gate_receipt(tmp_path / "gate-state")
     assert receipt["consumed"] is True
+    assert _preserved_raw_path(tmp_path).read_bytes() == SYNTHETIC_RAW_BYTES
 
     second_fetch_calls: list[int] = []
     with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo2:
         _execute(tmp_path, v4_fixture, frame, fetch_calls=second_fetch_calls)
     assert excinfo2.value.reason == "V8J_SOURCE_SNAPSHOT_GATE_ALREADY_CONSUMED"
     assert second_fetch_calls == []
+
+
+def test_parser_failure_after_fetch_preserves_raw_and_blocks_second_fetch(tmp_path, v4_fixture, t0_codes, fresh_codes):
+    parser_calls: list[str] = []
+
+    def raising_parser(_raw):
+        parser_calls.append("parser")
+        raise ValueError("synthetic parser failure")
+
+    with pytest.raises(ValueError, match="synthetic parser failure"):
+        _execute(
+            tmp_path,
+            v4_fixture,
+            _build_frame(t0_codes, fresh_codes),
+            parse_source_table=raising_parser,
+        )
+    assert parser_calls == ["parser"]
+    assert snapshot.read_gate_receipt(tmp_path / "gate-state")["consumed"] is True
+    assert _preserved_raw_path(tmp_path).read_bytes() == SYNTHETIC_RAW_BYTES
+    assert not (tmp_path / "evidence.json").exists()
+
+    second_fetch_calls: list[int] = []
+    with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo:
+        _execute(
+            tmp_path,
+            v4_fixture,
+            _build_frame(t0_codes, fresh_codes),
+            fetch_calls=second_fetch_calls,
+        )
+    assert excinfo.value.reason == "V8J_SOURCE_SNAPSHOT_GATE_ALREADY_CONSUMED"
+    assert second_fetch_calls == []
+
+
+def test_post_fetch_clock_failure_preserves_raw_before_processing(tmp_path, v4_fixture, t0_codes, fresh_codes):
+    class ReceiptThenFailClock:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self):
+            self.calls += 1
+            if self.calls == 1:
+                return _clock()
+            raise RuntimeError("synthetic post-fetch clock failure")
+
+    clock = ReceiptThenFailClock()
+    parser_calls: list[str] = []
+    with pytest.raises(RuntimeError, match="synthetic post-fetch clock failure"):
+        _execute(
+            tmp_path,
+            v4_fixture,
+            _build_frame(t0_codes, fresh_codes),
+            clock=clock,
+            parse_source_table=lambda _raw: parser_calls.append("parser"),
+        )
+    assert clock.calls == 2
+    assert parser_calls == []
+    assert snapshot.read_gate_receipt(tmp_path / "gate-state")["consumed"] is True
+    assert _preserved_raw_path(tmp_path).read_bytes() == SYNTHETIC_RAW_BYTES
+    assert not (tmp_path / "evidence.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -940,15 +1023,41 @@ def test_private_preservation_failure_is_terminal_post_gate(tmp_path, v4_fixture
     private_state.mkdir(parents=True)
     (private_state / (digest + ".raw")).write_bytes(b"already-there")
 
+    parser_calls: list[str] = []
     with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo:
-        _execute(tmp_path, v4_fixture, frame)
+        _execute(
+            tmp_path,
+            v4_fixture,
+            frame,
+            parse_source_table=lambda _raw: parser_calls.append("parser"),
+        )
     assert excinfo.value.reason == "V8J_PRIVATE_RAW_SOURCE_ALREADY_PRESERVED"
+    assert parser_calls == []
 
     receipt = snapshot.read_gate_receipt(tmp_path / "gate-state")
     assert receipt["consumed"] is True
+    second_fetch_calls: list[int] = []
     with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo2:
-        _execute(tmp_path, v4_fixture, frame)
+        _execute(tmp_path, v4_fixture, frame, fetch_calls=second_fetch_calls)
     assert excinfo2.value.reason == "V8J_SOURCE_SNAPSHOT_GATE_ALREADY_CONSUMED"
+    assert second_fetch_calls == []
+
+
+def test_acquisition_result_raw_hash_mismatch_is_terminal_after_preservation(
+    monkeypatch, tmp_path, v4_fixture, t0_codes, fresh_codes
+):
+    monkeypatch.setattr(
+        snapshot,
+        "_perform_source_snapshot_acquisition",
+        lambda **_kwargs: {"source_raw_sha256": "0" * 64},
+    )
+
+    with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo:
+        _execute(tmp_path, v4_fixture, _build_frame(t0_codes, fresh_codes))
+    assert excinfo.value.reason == "V8J_ACQUISITION_RESULT_RAW_SHA_MISMATCH"
+    assert snapshot.read_gate_receipt(tmp_path / "gate-state")["consumed"] is True
+    assert _preserved_raw_path(tmp_path).read_bytes() == SYNTHETIC_RAW_BYTES
+    assert not (tmp_path / "evidence.json").exists()
 
 
 def test_evidence_output_preexisting_before_gate_consumption_is_pre_gate(tmp_path, v4_fixture, t0_codes, fresh_codes):
@@ -1025,6 +1134,8 @@ def test_full_execution_passes_and_calls_fetcher_exactly_once(tmp_path, v4_fixtu
     assert evidence_path.exists()
     published = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert set(published) == set(snapshot.V8J_SOURCE_SNAPSHOT_EVIDENCE_FIELDS)
+    assert published["source_raw_sha256"] == hashlib.sha256(SYNTHETIC_RAW_BYTES).hexdigest()
+    assert _preserved_raw_path(tmp_path).read_bytes() == SYNTHETIC_RAW_BYTES
 
 
 def test_gate_is_consumed_before_fetcher_is_called(tmp_path, v4_fixture, t0_codes, fresh_codes):
