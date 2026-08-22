@@ -194,23 +194,53 @@ legacy `.xls` fixture used solely for pre-gate environment readiness.
 
 ```text
 fixture_path   = "tests/fixtures/synthetic_jpx_source_snapshot.xls"
-fixture_sha256 = "c51e3a766534820529a8946bec5c2093d7c90c593ccf0e99556b91d539cbd7cb"
+fixture_sha256 = "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7"
 fixture_format = "legacy OLE2/BIFF .xls (verified D0CF11E0A1B11AE1 signature)"
 ```
 
+```text
+finding_resolved = "REAL_EXECUTION_XLS_FIXTURE_MEDIUM_1_REAL_TICKER_COLLISION"
+```
+
+An earlier revision of this fixture (SHA-256
+`c51e3a766534820529a8946bec5c2093d7c90c593ccf0e99556b91d539cbd7cb`) used
+plain `9001`-`9007`-style numeric placeholder codes, which collide with real
+JPX security codes (`9001` and `9003` are real listed-instrument
+identities) and therefore did not satisfy "no real ticker identities." That
+SHA-256 is superseded and is **not** current canonical identity. Every code
+is now drawn from an unmistakably artificial `ZZ`-prefixed namespace
+(`ZZA1`, `ZZB2`, `ZZC3`, `ZZD4`, `ZZE5`, `ZZG6`, `ZZF7`, `ZZZZ8`) -- visibly
+synthetic from the code value itself, not merely from the paired company
+name -- and mechanically enforced: both the generator module (at import
+time, via `_assert_synthetic_namespace`) and the readiness checker (before
+parsing) fail if any fixture code does not start with the `ZZ` prefix, so a
+later edit cannot silently reintroduce an ordinary numeric JPX-looking code.
+
 **Completely synthetic and non-sensitive.** The fixture contains no real JPX
 payload, no real or private ticker membership, no prices, and no outcomes.
-Every row uses an obviously synthetic `9XXX`-style placeholder code paired
-with a `SYNTHETIC_*` name and `SYNTHETIC_SECTOR_*` industry; none is
-asserted to be, or derived from, any real listed instrument. Its columns are
-exactly the minimum the real parser path needs -- `コード`, `銘柄名`,
-`市場・商品区分` (which satisfies the production
-`_find_column(..., ("市場", "区分"))` detection), and `33業種区分`.
+Every row pairs a `ZZ`-namespace code with a `SYNTHETIC_*` name and
+`SYNTHETIC_SECTOR_*` industry; none is asserted to be, or derived from, any
+real listed instrument. Its columns are exactly the minimum the real parser
+path needs -- `コード`, `銘柄名`, `市場・商品区分` (which satisfies the
+production `_find_column(..., ("市場", "区分"))` detection), and
+`33業種区分`.
 
-It carries 8 synthetic rows: 5 that the production filter must accept, plus
-one row per exclusion branch (non-prime/standard, non-domestic, and a
-non-four-character code), so the probe exercises both the accept and reject
-paths rather than merely proving that parsing returned something.
+It carries 8 synthetic rows: 5 that the production filter must accept
+(`ZZA1`, `ZZB2`, `ZZC3`, `ZZD4`, `ZZE5`), plus one row per exclusion branch
+-- non-prime/standard (`ZZG6`), non-domestic (`ZZF7`), and a
+non-four-character code (`ZZZZ8`) -- so the probe exercises both the accept
+and reject paths rather than merely proving that parsing returned
+something.
+
+**The checker mechanically verifies the fixture SHA-256 before parsing.**
+`check_jpx_xls_parser_synthetic_probe` computes the committed fixture
+bytes' SHA-256 and compares it against `EXPECTED_FIXTURE_SHA256` (recorded
+in `scripts/generate_synthetic_jpx_xls_fixture.py`, the single source of
+truth for the canonical identity) before calling any production parser
+function. A mismatch -- tampered bytes, a stale recorded SHA after
+regeneration, or any other divergence -- fails the probe immediately as
+`FIXTURE_SHA256_MISMATCH`, rather than silently parsing whatever happens to
+be on disk.
 
 **Exact production functions exercised** by the readiness probe, in order,
 with no reimplementation of `pandas.read_excel` in the checker:

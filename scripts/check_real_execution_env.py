@@ -162,13 +162,48 @@ def check_jpx_xls_parser_synthetic_probe() -> dict[str, Any]:
             sys.path.insert(0, str(REPO_ROOT))
         # Expected synthetic properties come from the generator module, so
         # the fixture's contents and this probe's expectations cannot drift.
+        # Importing this module also re-runs its own module-level
+        # `_assert_synthetic_namespace` guard, which raises at import time
+        # if any fixture code does not start with the synthetic namespace
+        # prefix -- so a later edit cannot silently reintroduce an ordinary
+        # numeric JPX-looking code.
         from scripts.generate_synthetic_jpx_xls_fixture import (
             EXPECTED_ELIGIBLE_CODES,
             EXPECTED_ELIGIBLE_ROW_COUNT,
+            EXPECTED_FIXTURE_SHA256,
             EXPECTED_TOTAL_ROW_COUNT,
+            SYNTHETIC_TICKER_NAMESPACE_PREFIX,
         )
     except ImportError as error:
         return {"status": "FAIL", "reason": "SYNTHETIC_FIXTURE_EXPECTATIONS_UNAVAILABLE", "error": str(error)}
+    except AssertionError as error:
+        return {"status": "FAIL", "reason": "SYNTHETIC_FIXTURE_CODE_OUTSIDE_NAMESPACE", "error": str(error)}
+
+    # Defense-in-depth restatement of the same namespace guarantee, against
+    # the exact expected codes this probe is about to assert on.
+    for expected_code in EXPECTED_ELIGIBLE_CODES:
+        if not expected_code.startswith(SYNTHETIC_TICKER_NAMESPACE_PREFIX):
+            return {
+                "status": "FAIL",
+                "reason": "SYNTHETIC_FIXTURE_CODE_OUTSIDE_NAMESPACE",
+                "offending_code": expected_code,
+            }
+
+    raw_bytes = SYNTHETIC_XLS_FIXTURE_PATH.read_bytes()
+    fixture_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+
+    # Mechanically verify the committed fixture bytes match the recorded
+    # canonical identity BEFORE parsing anything -- a fixture whose bytes
+    # were tampered with (or a stale/mismatched EXPECTED_FIXTURE_SHA256
+    # after a regeneration) must FAIL here, not silently parse whatever is
+    # on disk.
+    if fixture_sha256 != EXPECTED_FIXTURE_SHA256:
+        return {
+            "status": "FAIL",
+            "reason": "FIXTURE_SHA256_MISMATCH",
+            "fixture_sha256": fixture_sha256,
+            "expected_fixture_sha256": EXPECTED_FIXTURE_SHA256,
+        }
 
     try:
         import pandas as pd
@@ -180,9 +215,6 @@ def check_jpx_xls_parser_synthetic_probe() -> dict[str, Any]:
         from src.v8_partition import parse_eligible_universe
     except ImportError as error:
         return {"status": "FAIL", "reason": "PRODUCTION_PARSER_IMPORT_FAILED", "error": str(error)}
-
-    raw_bytes = SYNTHETIC_XLS_FIXTURE_PATH.read_bytes()
-    fixture_sha256 = hashlib.sha256(raw_bytes).hexdigest()
 
     # Step 2: the exact production ".xls" byte parser.
     try:
@@ -226,7 +258,10 @@ def check_jpx_xls_parser_synthetic_probe() -> dict[str, Any]:
         "status": "PASS",
         "fixture_path": str(SYNTHETIC_XLS_FIXTURE_PATH),
         "fixture_sha256": fixture_sha256,
+        "fixture_sha256_verified_against_canonical": True,
         "fixture_is_synthetic_non_sensitive": True,
+        "synthetic_ticker_namespace_prefix": SYNTHETIC_TICKER_NAMESPACE_PREFIX,
+        "synthetic_namespace_verified": True,
         "production_functions_exercised": [
             "scripts.build_v8_partition_manifest.default_parse_source_table",
             "src.v8_partition.parse_eligible_universe",
