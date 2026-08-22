@@ -161,7 +161,7 @@ except (OSError, UnicodeDecodeError, json.JSONDecodeError, subprocess.Subprocess
 
 raise SystemExit(0 if type_strict_equal(working_candidate, reviewed_candidate) else 1)
 '@
-        & $PythonInterpreter -c $semanticCheckCode $ReviewedCandidateGitSha $CandidatePath
+        $semanticCheckCode | & $PythonInterpreter - $ReviewedCandidateGitSha $CandidatePath
         if ($LASTEXITCODE -ne 0) {
             throw "PRE_GATE_ENVIRONMENT_BLOCK: REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json does not type-strictly match the canonical reviewed Git candidate. Refusing to install protected packages."
         }
@@ -201,7 +201,7 @@ actual = {
 }
 raise SystemExit(0 if actual == expected else 1)
 '@
-        & $PythonInterpreter -c $platformCheckCode
+        $platformCheckCode | & $PythonInterpreter -
         if ($LASTEXITCODE -ne 0) {
             throw "PRE_GATE_ENVIRONMENT_BLOCK: canonical .venv-real-execution interpreter does not match the complete reviewed live platform binding. Refusing to install protected packages."
         }
