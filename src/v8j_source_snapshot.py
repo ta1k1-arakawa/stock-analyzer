@@ -52,6 +52,7 @@ authority, and no default production fetcher is wired here.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -1025,7 +1026,6 @@ _ENVIRONMENT_PREFLIGHT_FIELDS = frozenset(
         "REAL_NETWORK_REQUESTS",
         "PRIVATE_READS",
         "GATES_CONSUMED",
-        "CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE",
     }
 )
 
@@ -1054,7 +1054,6 @@ def _validate_environment_preflight(preflight: Mapping[str, Any]) -> dict[str, A
         "REAL_NETWORK_REQUESTS": 0,
         "PRIVATE_READS": 0,
         "GATES_CONSUMED": 0,
-        "CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE": "YES",
     }
     for key, value in expected.items():
         if preflight[key] != value or type(preflight[key]) is not type(value):
@@ -1105,7 +1104,6 @@ def _default_environment_preflight(repository_root: Path) -> dict[str, Any]:
     values: dict[str, Any] = {
         "canonical_interpreter": V8J_CANONICAL_INTERPRETER_RELATIVE_PATH,
         "checker_exit_code": result.returncode,
-        "CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE": "YES",
     }
     for field in _ENVIRONMENT_PREFLIGHT_FIELDS - set(values):
         if field not in payload:
@@ -1121,6 +1119,67 @@ def _require_frozen_environment_pre_gate(
 ) -> dict[str, Any]:
     _verify_environment_critical_git_blobs(repository_root)
     return _validate_environment_preflight((environment_preflight or _default_environment_preflight)(repository_root))
+
+
+CANONICAL_JPX_SOURCE_MODULE = "scripts.build_v8_partition_manifest"
+CANONICAL_JPX_SOURCE_GIT_PATH = "scripts/build_v8_partition_manifest.py"
+
+
+def _require_canonical_post_gate_callable_binding(
+    *,
+    jpx_fetcher: Callable[..., Any],
+    parse_source_table: Callable[..., Any],
+    repository_root: Path,
+    reviewed_source_snapshot_support_implementation_sha: str,
+) -> dict[str, str]:
+    """Bind the only production post-gate callables before receipt publication.
+
+    Internal test DI is deliberately outside this function. The public entry
+    point invokes it unconditionally, so arbitrary callbacks cannot convert
+    dependency readiness into a pre-gate affirmative result.
+    """
+    try:
+        from scripts.build_v8_partition_manifest import default_parse_source_table, fetch_real_jpx_source
+    except ImportError as error:
+        raise V8JSourceSnapshotBlocked("V8J_CANONICAL_CALLABLE_IMPORT_UNAVAILABLE") from error
+    if parse_source_table is not default_parse_source_table:
+        raise V8JSourceSnapshotBlocked("V8J_CANONICAL_PARSER_BINDING_INVALID")
+    if jpx_fetcher is not fetch_real_jpx_source:
+        raise V8JSourceSnapshotBlocked("V8J_CANONICAL_FETCHER_BINDING_INVALID")
+
+    canonical_path = (repository_root / CANONICAL_JPX_SOURCE_GIT_PATH).resolve(strict=False)
+    for callable_value, expected_name in (
+        (default_parse_source_table, "default_parse_source_table"),
+        (fetch_real_jpx_source, "fetch_real_jpx_source"),
+    ):
+        if (
+            getattr(callable_value, "__module__", None) != CANONICAL_JPX_SOURCE_MODULE
+            or getattr(callable_value, "__name__", None) != expected_name
+        ):
+            raise V8JSourceSnapshotBlocked("V8J_CANONICAL_CALLABLE_PROVENANCE_INVALID")
+        try:
+            source_path = Path(inspect.getsourcefile(callable_value) or "").resolve(strict=False)
+        except (OSError, TypeError) as error:
+            raise V8JSourceSnapshotBlocked("V8J_CANONICAL_CALLABLE_PROVENANCE_INVALID") from error
+        if source_path != canonical_path:
+            raise V8JSourceSnapshotBlocked("V8J_CANONICAL_CALLABLE_PROVENANCE_INVALID")
+
+    reviewed_sha = _require_hex(
+        reviewed_source_snapshot_support_implementation_sha,
+        40,
+        "V8J_SOURCE_SNAPSHOT_IMPLEMENTATION_SHA_MALFORMED",
+    )
+    try:
+        source_blob = resolve_git_blob(repository_root, reviewed_sha, CANONICAL_JPX_SOURCE_GIT_PATH)
+        head = _git_text(repository_root, ["rev-parse", "HEAD"], "V8J_CANONICAL_CALLABLE_GIT_PROVENANCE_UNAVAILABLE")
+        head_blob = resolve_git_blob(repository_root, head, CANONICAL_JPX_SOURCE_GIT_PATH)
+    except V8CGitProvenanceBlocked as error:
+        raise V8JSourceSnapshotBlocked("V8J_CANONICAL_CALLABLE_GIT_PROVENANCE_UNAVAILABLE") from error
+    if source_blob != head_blob:
+        raise V8JSourceSnapshotBlocked("V8J_CANONICAL_CALLABLE_GIT_PROVENANCE_MISMATCH")
+    return {
+        "CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE": "YES"
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1146,7 +1205,7 @@ def _execute_source_snapshot_acquisition_with_dependencies(
     gate_state_root: str | os.PathLike[str],
     private_state_root: str | os.PathLike[str],
     evidence_output_path: str | os.PathLike[str],
-    jpx_fetcher: Callable[[], bytes],
+    jpx_fetcher: Callable[[], Any],
     parse_source_table: Callable[[bytes], Any],
     v4_manifest_path: str | os.PathLike[str],
     v4_universe_csv_path: str | os.PathLike[str],
@@ -1157,6 +1216,7 @@ def _execute_source_snapshot_acquisition_with_dependencies(
     reviewed_source_snapshot_support_implementation_sha: str,
     runtime_state_reader: Callable[[Path, str], Mapping[str, Any]] | None = None,
     environment_preflight: Callable[[Path], Mapping[str, Any]] | None = None,
+    require_canonical_post_gate_callables: bool = False,
     reviewed_v8j_design_candidate_commit: str = REVIEWED_V8J_DESIGN_CANDIDATE_COMMIT,
     block_size: int = BLOCK_SIZE,
     minimum_fresh_eligible_count: int = MINIMUM_FRESH_ELIGIBLE_COUNT,
@@ -1175,6 +1235,13 @@ def _execute_source_snapshot_acquisition_with_dependencies(
         repository_root, reviewed_source_snapshot_support_implementation_sha, runtime_state_reader=runtime_state_reader
     )
     _require_frozen_environment_pre_gate(repository_root, environment_preflight=environment_preflight)
+    if require_canonical_post_gate_callables:
+        _require_canonical_post_gate_callable_binding(
+            jpx_fetcher=jpx_fetcher,
+            parse_source_table=parse_source_table,
+            repository_root=repository_root,
+            reviewed_source_snapshot_support_implementation_sha=reviewed_impl_sha,
+        )
     validate_authorization_identity(
         authorization_identity,
         reviewed_source_snapshot_support_implementation_sha=reviewed_impl_sha,
@@ -1206,6 +1273,15 @@ def _execute_source_snapshot_acquisition_with_dependencies(
 
     # The one authorized official-JPX snapshot request. Called exactly once.
     raw_bytes = jpx_fetcher()
+    if require_canonical_post_gate_callables:
+        if (
+            not isinstance(raw_bytes, tuple)
+            or len(raw_bytes) != 2
+            or not isinstance(raw_bytes[0], (bytes, bytearray))
+            or not isinstance(raw_bytes[1], str)
+        ):
+            raise V8JSourceSnapshotBlocked("V8J_CANONICAL_FETCHER_RESULT_INVALID")
+        raw_bytes = raw_bytes[0]
     if not isinstance(raw_bytes, (bytes, bytearray)):
         raise V8JSourceSnapshotBlocked("V8J_RAW_SOURCE_BYTES_INVALID")
     raw_bytes = bytes(raw_bytes)
@@ -1253,7 +1329,7 @@ def resolve_and_acquire_source_snapshot(
     authorization_identity: str,
     *,
     reviewed_source_snapshot_support_implementation_sha: str,
-    jpx_fetcher: Callable[[], bytes],
+    jpx_fetcher: Callable[[], Any],
     parse_source_table: Callable[[bytes], Any],
     v4_manifest_path: str | os.PathLike[str],
     v4_universe_csv_path: str | os.PathLike[str],
@@ -1282,6 +1358,7 @@ def resolve_and_acquire_source_snapshot(
         gate_consumer=consume_gate_once,
         clock=clock or (lambda: datetime.now(timezone.utc)),
         reviewed_source_snapshot_support_implementation_sha=reviewed_source_snapshot_support_implementation_sha,
+        require_canonical_post_gate_callables=True,
     )
 
 

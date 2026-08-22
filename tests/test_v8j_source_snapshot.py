@@ -75,7 +75,6 @@ def _environment_preflight(**overrides):
         "REAL_NETWORK_REQUESTS": 0,
         "PRIVATE_READS": 0,
         "GATES_CONSUMED": 0,
-        "CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE": "YES",
     }
     value.update(overrides)
     return value
@@ -1232,7 +1231,6 @@ def test_environment_critical_blob_mismatch_is_pre_gate(monkeypatch):
         ("REAL_NETWORK_REQUESTS", 1),
         ("PRIVATE_READS", 1),
         ("GATES_CONSUMED", 1),
-        ("CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE", "NO"),
     ],
 )
 def test_each_environment_pre_gate_requirement_fails_closed(field, bad_value):
@@ -1255,7 +1253,6 @@ def _checker_payload(**overrides):
     payload = _environment_preflight()
     payload.pop("canonical_interpreter")
     payload.pop("checker_exit_code")
-    payload.pop("CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE")
     payload.update(overrides)
     return payload
 
@@ -1341,6 +1338,146 @@ def test_v8i_authority_and_key_cannot_satisfy_v8j():
             reviewed_source_snapshot_support_implementation_sha=REVIEWED_IMPL_SHA,
         )
     assert excinfo.value.reason == "V8J_AUTHORIZATION_GRAMMAR_MISMATCH"
+
+
+def _canonical_callable_binding():
+    from scripts.build_v8_partition_manifest import default_parse_source_table, fetch_real_jpx_source
+
+    return snapshot._require_canonical_post_gate_callable_binding(
+        jpx_fetcher=fetch_real_jpx_source,
+        parse_source_table=default_parse_source_table,
+        repository_root=snapshot.CANONICAL_REPOSITORY_ROOT,
+        reviewed_source_snapshot_support_implementation_sha="db3bff1dea20ef9d5c31c4f9df04a69d3aefb947",
+    )
+
+
+def test_canonical_parser_and_fetcher_provenance_are_accepted_without_network():
+    binding = _canonical_callable_binding()
+    assert binding == {
+        "CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE": "YES"
+    }
+
+
+def test_arbitrary_parser_is_rejected_before_gate():
+    from scripts.build_v8_partition_manifest import fetch_real_jpx_source
+
+    with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo:
+        snapshot._require_canonical_post_gate_callable_binding(
+            jpx_fetcher=fetch_real_jpx_source,
+            parse_source_table=lambda _raw: None,
+            repository_root=snapshot.CANONICAL_REPOSITORY_ROOT,
+            reviewed_source_snapshot_support_implementation_sha="db3bff1dea20ef9d5c31c4f9df04a69d3aefb947",
+        )
+    assert excinfo.value.reason == "V8J_CANONICAL_PARSER_BINDING_INVALID"
+
+
+def test_arbitrary_or_wrapped_fetcher_is_rejected_before_gate():
+    from scripts.build_v8_partition_manifest import default_parse_source_table, fetch_real_jpx_source
+
+    def wrapper():
+        return fetch_real_jpx_source()
+
+    for fetcher in (lambda: (b"synthetic", "https://www.jpx.co.jp/"), wrapper):
+        with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo:
+            snapshot._require_canonical_post_gate_callable_binding(
+                jpx_fetcher=fetcher,
+                parse_source_table=default_parse_source_table,
+                repository_root=snapshot.CANONICAL_REPOSITORY_ROOT,
+                reviewed_source_snapshot_support_implementation_sha="db3bff1dea20ef9d5c31c4f9df04a69d3aefb947",
+            )
+        assert excinfo.value.reason == "V8J_CANONICAL_FETCHER_BINDING_INVALID"
+
+
+def test_wrong_canonical_callable_source_provenance_is_rejected(monkeypatch):
+    def wrong_source(_callable):
+        return str(snapshot.CANONICAL_REPOSITORY_ROOT / "unreviewed.py")
+
+    monkeypatch.setattr(snapshot.inspect, "getsourcefile", wrong_source)
+    with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo:
+        _canonical_callable_binding()
+    assert excinfo.value.reason == "V8J_CANONICAL_CALLABLE_PROVENANCE_INVALID"
+
+
+def test_callable_git_provenance_mismatch_is_rejected(monkeypatch):
+    original = snapshot.resolve_git_blob
+    calls = []
+
+    def mismatched_blob(repository_root, commit, git_path):
+        if git_path == snapshot.CANONICAL_JPX_SOURCE_GIT_PATH:
+            calls.append((commit, git_path))
+            return "a" * 40 if len(calls) == 1 else "b" * 40
+        return original(repository_root, commit, git_path)
+
+    monkeypatch.setattr(snapshot, "resolve_git_blob", mismatched_blob)
+    with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo:
+        _canonical_callable_binding()
+    assert excinfo.value.reason == "V8J_CANONICAL_CALLABLE_GIT_PROVENANCE_MISMATCH"
+
+
+def test_callable_binding_failure_creates_no_receipt_and_performs_no_fetch(tmp_path, v4_fixture, t0_codes, fresh_codes):
+    from scripts.build_v8_partition_manifest import fetch_real_jpx_source
+
+    frame = _build_frame(t0_codes, fresh_codes)
+    calls: list[str] = []
+
+    def forbidden_fetch():
+        calls.append("fetch")
+        return fetch_real_jpx_source()
+
+    with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo:
+        snapshot._execute_source_snapshot_acquisition_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            gate_state_root=tmp_path / "gate-state",
+            private_state_root=tmp_path / "private-state",
+            evidence_output_path=tmp_path / "evidence.json",
+            jpx_fetcher=forbidden_fetch,
+            parse_source_table=lambda _raw: frame,
+            v4_manifest_path=v4_fixture["manifest_path"],
+            v4_universe_csv_path=v4_fixture["universe_csv_path"],
+            repository_root=snapshot.CANONICAL_REPOSITORY_ROOT,
+            public_preflight=lambda: _preflight(),
+            gate_consumer=snapshot.consume_gate_once,
+            clock=_clock,
+            reviewed_source_snapshot_support_implementation_sha=REVIEWED_IMPL_SHA,
+            runtime_state_reader=lambda *_args: _runtime_state(),
+            environment_preflight=lambda _root: _environment_preflight(),
+            require_canonical_post_gate_callables=True,
+            block_size=BLOCK_SIZE,
+            minimum_fresh_eligible_count=MIN_FRESH,
+        )
+    assert excinfo.value.reason == "V8J_CANONICAL_PARSER_BINDING_INVALID"
+    assert calls == []
+    assert not (tmp_path / "gate-state").exists() or not any((tmp_path / "gate-state").iterdir())
+
+
+def test_public_entry_forces_callable_binding_without_a_test_bypass(monkeypatch, tmp_path):
+    captured = {}
+
+    def capture_boundary(**kwargs):
+        captured.update(kwargs)
+        return {"result": "not-executed"}
+
+    monkeypatch.setattr(snapshot, "_execute_source_snapshot_acquisition_with_dependencies", capture_boundary)
+    result = snapshot.resolve_and_acquire_source_snapshot(
+        "opaque",
+        reviewed_source_snapshot_support_implementation_sha="1" * 40,
+        jpx_fetcher=lambda: b"synthetic",
+        parse_source_table=lambda _raw: None,
+        v4_manifest_path=tmp_path / "manifest.json",
+        v4_universe_csv_path=tmp_path / "universe.csv",
+        evidence_output_path=tmp_path / "evidence.json",
+    )
+    assert result == {"result": "not-executed"}
+    assert captured["require_canonical_post_gate_callables"] is True
+
+
+def test_dependency_yes_is_not_an_environment_preflight_value():
+    assert "CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE" not in (
+        snapshot._ENVIRONMENT_PREFLIGHT_FIELDS
+    )
+    assert _canonical_callable_binding()[
+        "CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE"
+    ] == "YES"
 
 
 def test_module_grants_no_partition_generation_or_membership_disclosure_authority(v4_fixture, t0_codes, fresh_codes):
