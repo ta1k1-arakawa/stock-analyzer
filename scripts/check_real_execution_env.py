@@ -63,7 +63,10 @@ requirements' canonical Git object SHA-256) rather than merely trusting
 whatever those mutable files currently say, then further requires the live
 interpreter, the live platform (exact CPython 3.12.10 / Windows / AMD64 /
 win-amd64), and the live `python -m pip freeze --all` package set to match
-exactly -- no extra package, no missing package, no version drift.
+exactly -- no extra package, no missing package, no version drift, and
+every non-empty freeze line must itself be a valid exact `name==version`
+pin (a direct-URL, editable/VCS, malformed, or duplicate-named entry is
+never silently skipped -- it is a hard FAIL of the exact-set check).
 Source-requirements provenance is established from canonical Git object
 bytes (`git cat-file blob <sha>:<path>`), never from a checked-out
 working-tree copy, so Windows CRLF line-ending conversion can never
@@ -82,6 +85,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import ssl
 import subprocess
 import sys
@@ -582,15 +586,32 @@ def _git_blob_bytes(repo_root: Path, git_ref: str) -> bytes | None:
     return result.stdout
 
 
+_SEPARATOR_RUN_PATTERN = re.compile(r"[-_.]+")
+
+
 def _normalize_package_name(name: str) -> str:
-    """PEP 503 style normalization: case- and separator-insensitive."""
-    return name.strip().lower().replace("_", "-").replace(".", "-")
+    """Proper PEP 503 normalization: collapse any run of `-`, `_`, `.` into
+    a single `-`, then lowercase (https://peps.python.org/pep-0503/#normalized-names).
+    `foo__bar`, `foo.bar`, and `foo--bar` all normalize to the same
+    `foo-bar`, matching how PyPI/pip themselves treat these as identical.
+    """
+    return _SEPARATOR_RUN_PATTERN.sub("-", name.strip()).lower()
 
 
 def _parse_pinned_lock_lines(text: str) -> dict[str, str]:
-    """Parse `name==version` lines (as in a lock file or `pip freeze`
-    output) into {normalized_name: exact_version}. Handles both LF and
-    CRLF line endings via `splitlines()`, and strips any stray `\\r`.
+    """Parse `name==version` lines out of the REVIEWED lock file into
+    {normalized_name: exact_version}. Handles both LF and CRLF line
+    endings via `splitlines()`, and strips any stray `\\r`.
+
+    This lenient parser (silently skipping any non-`==` line) is safe ONLY
+    because it is applied exclusively to `requirements-real-execution.lock.txt`,
+    whose exact bytes are independently SHA-256-verified against the
+    reviewed hash immediately before this function is ever called, and
+    whose exact reviewed content is known to be clean `name==version`
+    lines with no comments or blanks. It must NEVER be used to parse live
+    `pip freeze --all` output -- use `_parse_exact_pinned_freeze_lines`
+    for that, which fails closed on anything that is not an exact pinned
+    entry instead of silently skipping it.
     """
     parsed: dict[str, str] = {}
     for line in text.splitlines():
@@ -600,6 +621,58 @@ def _parse_pinned_lock_lines(text: str) -> dict[str, str]:
         name, version = stripped.split("==", 1)
         parsed[_normalize_package_name(name)] = version.strip()
     return parsed
+
+
+# A live `pip freeze --all` entry is accepted ONLY in the exact pinned
+# `name==version` form pip itself emits for a normal installed
+# distribution. This deliberately rejects, by construction (no `==`
+# substring can appear inside a version token that also contains `@`,
+# whitespace, or `/`):
+#   - direct URL forms:   "name @ file:///..." / "name @ https://..."
+#   - editable/VCS forms: "-e ..." / "git+https://..."
+#   - any other malformed or non-pinned entry (e.g. a bare "name" with no
+#     version, "name == version" with stray whitespace, a `-f`/`--find-links`
+#     option line, etc.)
+# so none of those can silently vanish from the exact-set comparison the
+# way a lenient "skip if no '==' substring" parser would let them.
+_EXACT_PIN_LINE_PATTERN = re.compile(
+    r"^(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)==(?P<version>[A-Za-z0-9](?:[A-Za-z0-9._+!-]*[A-Za-z0-9])?)$"
+)
+
+
+def _parse_exact_pinned_freeze_lines(text: str) -> tuple[dict[str, str], list[str], list[str]]:
+    """Strictly parse live `pip freeze --all` output.
+
+    Returns `(packages, invalid_lines, duplicate_lines)`:
+      - `packages`: {normalized_name: exact_version} for every line that IS
+        an exact `name==version` pinned entry;
+      - `invalid_lines`: every non-empty, non-comment line that is NOT an
+        exact pinned entry (direct URL, editable/VCS, malformed, or any
+        other non-`name==version` form) -- never silently dropped;
+      - `duplicate_lines`: every line whose normalized name already
+        appeared earlier -- never silently overwrites the first occurrence.
+
+    The caller must treat ANY non-empty `invalid_lines` or `duplicate_lines`
+    as a hard FAIL of the exact-set check, not merely omit them from the
+    comparison.
+    """
+    packages: dict[str, str] = {}
+    invalid_lines: list[str] = []
+    duplicate_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = _EXACT_PIN_LINE_PATTERN.match(stripped)
+        if match is None:
+            invalid_lines.append(stripped)
+            continue
+        normalized_name = _normalize_package_name(match.group("name"))
+        if normalized_name in packages:
+            duplicate_lines.append(stripped)
+            continue
+        packages[normalized_name] = match.group("version")
+    return packages, invalid_lines, duplicate_lines
 
 
 def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
@@ -753,7 +826,11 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
         return {"status": "FAIL", "reason": "PLATFORM_BINDING_MISMATCH", "detail": detail}
 
     # Live `pip freeze --all` must contain EXACTLY the reviewed seven
-    # entries: no extra package, no missing package, no version drift.
+    # entries: no extra package, no missing package, no version drift, and
+    # -- per PIP_FREEZE_EXACT_SET_CHECK_IGNORES_NON_EQUALS_ENTRIES -- every
+    # single non-empty line must itself be a valid exact `name==version`
+    # pin; a direct-URL, editable/VCS, malformed, or duplicate-named entry
+    # is never silently skipped, it is a hard FAIL.
     try:
         freeze_result = subprocess.run(
             [sys.executable, "-m", "pip", "freeze", "--all"],
@@ -767,17 +844,27 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
     if freeze_result.returncode != 0:
         return {"status": "FAIL", "reason": "PIP_FREEZE_FAILED", "detail": detail}
 
-    live_packages = _parse_pinned_lock_lines(freeze_result.stdout)
+    live_packages, invalid_freeze_lines, duplicate_freeze_lines = _parse_exact_pinned_freeze_lines(
+        freeze_result.stdout
+    )
     extra_packages = sorted(set(live_packages) - set(lock_packages))
     missing_packages = sorted(set(lock_packages) - set(live_packages))
     version_mismatched_packages = sorted(
         name for name in (set(lock_packages) & set(live_packages)) if lock_packages[name] != live_packages[name]
     )
-    package_set_match = not extra_packages and not missing_packages and not version_mismatched_packages
+    package_set_match = (
+        not extra_packages
+        and not missing_packages
+        and not version_mismatched_packages
+        and not invalid_freeze_lines
+        and not duplicate_freeze_lines
+    )
     detail["live_package_count"] = len(live_packages)
     detail["extra_packages"] = extra_packages
     detail["missing_packages"] = missing_packages
     detail["version_mismatched_packages"] = version_mismatched_packages
+    detail["invalid_freeze_lines"] = invalid_freeze_lines
+    detail["duplicate_freeze_lines"] = duplicate_freeze_lines
     detail["package_set_match"] = package_set_match
     if not package_set_match:
         return {"status": "FAIL", "reason": "PIP_FREEZE_PACKAGE_SET_MISMATCH", "detail": detail}
