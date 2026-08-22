@@ -266,6 +266,51 @@ never be silently reused for another attempt. Pre-network failure and
 post-network authorization-consumption semantics must follow the
 relevant frozen study design.
 
+### 6.1 Proportional evidence-tier governance
+
+For future studies, strictness MUST be proportional to statistical
+irreversibility. A frozen design must classify every relevant operation as
+one of the following; this prospective rule does not rewrite a historical
+frozen study.
+
+- `RETRIABLE_PUBLIC_PLUMBING`: public JPX transport, DNS/TLS/HTTP failure,
+  package/environment setup, parser execution, persistence plumbing, and
+  deterministic processing of already-acquired public bytes. A design may
+  grant standing public-network plumbing authority. This never covers a
+  sealed/private source, broker action, production trading, or holdout
+  exposure.
+- `STATISTICALLY_IRREVERSIBLE_GATE`: first use of T1, T2, T3/reserve where
+  applicable, sealed membership/outcome access, irreversible research
+  opening, or production trading. These require fresh one-shot authority
+  unless frozen methodology defines deterministic continuation without new
+  information exposure.
+- `DETERMINISTIC_DURABLE_STATE`: generate and persist authoritative state
+  (such as a partition seed) once, then rerun only from that exact state.
+  A crash after persistence requires reuse, never rerolling or a new study
+  merely because deterministic regeneration is needed.
+
+For a public source, a retriable transport failure occurs only before the
+first complete payload. The canonical provider/endpoint is frozen in
+advance; immediately preserve and hash that first complete payload before
+semantic inspection. Parser or software repair must reprocess that same raw
+payload. T0, eligibility, or other semantic/data-quality failure is
+`DATA_QUALITY_FAILURE`, not permission to fetch until PASS or substitute a
+provider/date. Classify failures as `PLUMBING_FAILURE_RETRIABLE`,
+`DATA_QUALITY_FAILURE`, `GOVERNANCE_FAILURE`, `IMPLEMENTATION_FAILURE`,
+`STRATEGY_FAILURE`, or `PROFITABILITY_FAILURE`; a successor study is needed
+only for a scientific-identity/methodology change or an irreversible
+information boundary.
+
+### 6.2 Evidence-bearing artifacts
+
+Do not create a freeze/review/evidence artifact merely to prove that another
+artifact exists. Durable artifacts must protect scientific identity, a
+leakage boundary, irreversible statistical exposure, material
+reproducibility/provenance, or real production/private authority. Routine
+public plumbing may be compactly logged and retried under its frozen scope.
+Important implementation and evidence-bearing frozen designs still require
+independent exact-SHA review.
+
 ---
 
 ## 7. Fail closed

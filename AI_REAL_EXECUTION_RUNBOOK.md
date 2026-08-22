@@ -135,6 +135,30 @@ methodology authority and human authority for the next decision.
 When the exact boundary cannot be proven, fail closed and do not assume
 `PRE_GATE_FAILURE`.
 
+### 4.1 Proportional irreversibility and recovery
+
+For future designs, classify the operation before applying one-shot failure
+discipline. `RETRIABLE_PUBLIC_PLUMBING` covers only explicitly public,
+non-sealed transport and its setup/parser/filesystem processing; it may use
+standing authority specified by the frozen design. It never covers private
+or sealed data, broker actions, production trading, or holdout exposure.
+`STATISTICALLY_IRREVERSIBLE_GATE` covers first sealed membership/outcome
+exposure (including T1/T2/T3 where applicable), irreversible research
+opening, and production authority; its one-shot rule remains intact.
+
+A public source must be content-locked: use the frozen provider/endpoint,
+retry transport only until the first complete payload, immediately preserve
+and hash that payload before semantic inspection, then repair/reprocess only
+that same payload. A parser, T0, eligibility, or other semantic/data-quality
+failure is not authority to re-fetch until PASS or substitute provider/date.
+Classify it separately as `DATA_QUALITY_FAILURE`; transport/setup failure
+before complete payload is `PLUMBING_FAILURE_RETRIABLE`.
+
+For `DETERMINISTIC_DURABLE_STATE`, persist authoritative state (for example,
+a partition seed) before dependent computation. After a crash, reuse that
+exact state and verify deterministic regeneration; never reroll merely to
+obtain PASS. Existing frozen studies retain their own approved semantics.
+
 ## 5. Private path and file discovery
 
 Never guess a private path. Never ask the user to paste a private path into
