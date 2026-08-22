@@ -231,6 +231,29 @@ _CANDIDATE_RESOLVED_LOCK_FIELDS = frozenset({"generated_from", "package_count", 
 _CANDIDATE_FIXTURE_FIELDS = frozenset({"path", "sha256"})
 
 
+def _type_strict_semantic_equal(actual: Any, expected: Any) -> bool:
+    """Return whether two JSON-semantic values match in both type and value.
+
+    Ordinary Python equality is insufficient for a reviewed JSON artifact:
+    `True == 1`, `False == 0`, and `1 == 1.0` all evaluate true.  This
+    comparator rejects those type-confusion cases recursively.  JSON object
+    keys are strings after `json.loads`; their exact sets, every nested
+    value, list order, and scalar type/value are all bound here.
+    """
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(
+            _type_strict_semantic_equal(actual[key], expected[key]) for key in expected
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _type_strict_semantic_equal(actual_value, expected_value)
+            for actual_value, expected_value in zip(actual, expected)
+        )
+    return actual == expected
+
+
 def _parse_pinned_requirement(requirements_path: Path, package_name: str) -> str | None:
     """Read an exact `name==version` pin out of a requirements file.
 
@@ -734,8 +757,8 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
       1. the candidate manifest and lock file both exist;
       2. the candidate manifest is structurally valid (exact schema, every
          required field present, no unexpected extra field);
-      3. the candidate's complete semantic content exactly matches the
-         reviewed candidate binding;
+      3. the candidate's complete semantic content recursively matches the
+         reviewed candidate binding with exact JSON types and values;
       4. the on-disk lock file's independently recomputed SHA-256 matches
          the reviewed lock hash;
       5. the on-disk lock file parses to exactly the reviewed package
@@ -787,7 +810,7 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
     detail["candidate_status"] = candidate.get("artifact_status")
     detail["candidate_package_count"] = resolved_lock_block.get("package_count")
 
-    candidate_semantic_match = candidate == REVIEWED_LOCK_CANDIDATE_SEMANTIC_CONTENT
+    candidate_semantic_match = _type_strict_semantic_equal(candidate, REVIEWED_LOCK_CANDIDATE_SEMANTIC_CONTENT)
     detail["candidate_semantic_match"] = candidate_semantic_match
     # Retain the existing detail key for callers that consume prior
     # readiness-check output; it now denotes complete semantic equality.
