@@ -65,14 +65,10 @@
     # hardcoded here, not merely trusted from the mutable candidate/lock
     # files, so a tampered or stale file is independently detectable
     # before any protected package installation.
+    $reviewedLockCandidateGitSha = "107430894723c2bdc2f8493cb12c467fccd8665e"
     $reviewedSourceGitSha = "b74e0f787599475cd9fe719d254202dc9bfc14d5"
     $reviewedLockSha256 = "b5c063a1cca585fa100fdc0027d6cdbf4ef33ef5a7fe614230599fb882b51f96"
     $reviewedSourceRequirementsGitSha256 = "2cdcfd7a87023c4e9c3ec463cf16f77d88f72ccc8d1f0e5de242e6c68b0cf601"
-    $reviewedFixtureSha256 = "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7"
-    $reviewedPackageCount = 7
-    $reviewedArtifactStatus = "CANDIDATE_NOT_FROZEN"
-    $expectedCanonicalEnvironmentDirectory = ".venv-real-execution"
-    $expectedCanonicalInterpreter = ".venv-real-execution\Scripts\python.exe"
 
     Write-Host "== Real-execution environment bootstrap (environment setup stage only) =="
     Write-Host "Target: CANONICAL_PROTECTED_REAL_EXECUTION_ENVIRONMENT = .venv-real-execution"
@@ -109,6 +105,66 @@
         $sha256Provider = [System.Security.Cryptography.SHA256]::Create()
         $hashBytes = $sha256Provider.ComputeHash($blobBytes)
         return [System.BitConverter]::ToString($hashBytes).Replace("-", "").ToLowerInvariant()
+    }
+
+    # ------------------------------------------------------------------
+    # Compare the working candidate with the canonical reviewed Git blob,
+    # using the canonical interpreter's standard library only. Python's
+    # ordinary `==` is NOT sufficient here: True == 1, False == 0, and
+    # 1 == 1.0. This recursive comparator requires exact type/value
+    # equality at every JSON node, including object keys and list order.
+    # Parsing the Git blob and working-tree file makes CRLF irrelevant.
+    # ------------------------------------------------------------------
+    function Test-ReviewedLockCandidateSemanticBinding {
+        param(
+            [Parameter(Mandatory = $true)][string]$PythonInterpreter,
+            [Parameter(Mandatory = $true)][string]$CandidatePath,
+            [Parameter(Mandatory = $true)][string]$ReviewedCandidateGitSha
+        )
+        $semanticCheckCode = @'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+
+def type_strict_equal(actual, expected):
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            type_strict_equal(actual[key], expected[key]) for key in expected
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            type_strict_equal(actual_value, expected_value)
+            for actual_value, expected_value in zip(actual, expected)
+        )
+    return actual == expected
+
+
+reviewed_ref = sys.argv[1] + ":REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json"
+candidate_path = Path(sys.argv[2])
+try:
+    git_result = subprocess.run(
+        ["git", "cat-file", "blob", reviewed_ref],
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if git_result.returncode != 0:
+        raise RuntimeError("reviewed candidate Git blob unavailable")
+    reviewed_candidate = json.loads(git_result.stdout.decode("utf-8"))
+    working_candidate = json.loads(candidate_path.read_bytes().decode("utf-8"))
+except (OSError, UnicodeDecodeError, json.JSONDecodeError, subprocess.SubprocessError, RuntimeError):
+    raise SystemExit(2)
+
+raise SystemExit(0 if type_strict_equal(working_candidate, reviewed_candidate) else 1)
+'@
+        & $PythonInterpreter -c $semanticCheckCode $ReviewedCandidateGitSha $CandidatePath
+        if ($LASTEXITCODE -ne 0) {
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json does not type-strictly match the canonical reviewed Git candidate. Refusing to install protected packages."
+        }
     }
 
     # ------------------------------------------------------------------
@@ -192,50 +248,8 @@
         throw "PRE_GATE_ENVIRONMENT_BLOCK: requirements-real-execution.lock.txt not found at $realExecutionLockPath."
     }
 
-    $lockCandidateJson = Get-Content -LiteralPath $lockCandidatePath -Raw | ConvertFrom-Json
-
-    $requiredCandidateFields = @(
-        "artifact_status", "canonical_environment_directory", "canonical_interpreter",
-        "future_protected_execution_authorized", "gpt_exact_sha_independent_review_required",
-        "pip_version", "private_or_sealed_reads", "python", "real_execution_environment_frozen",
-        "real_execution_environment_ready_observed", "real_network_requests_to_protected_hosts",
-        "requirements_real_execution", "research_gates_consumed", "resolved_lock", "schema_version",
-        "source_git_sha", "synthetic_xls_fixture", "windows_grounded"
-    )
-    foreach ($requiredField in $requiredCandidateFields) {
-        if (-not ($lockCandidateJson.PSObject.Properties.Name -contains $requiredField)) {
-            throw "PRE_GATE_ENVIRONMENT_BLOCK: REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json is missing required field '$requiredField' -- manifest is structurally invalid."
-        }
-    }
-
-    if ($lockCandidateJson.artifact_status -ne $reviewedArtifactStatus) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: lock candidate artifact_status is '$($lockCandidateJson.artifact_status)', expected '$reviewedArtifactStatus'. Refusing to install from an unreviewed or promoted candidate."
-    }
-    if ($lockCandidateJson.source_git_sha -ne $reviewedSourceGitSha) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: lock candidate source_git_sha does not match the reviewed binding. Refusing to proceed."
-    }
-    if ($lockCandidateJson.canonical_environment_directory -ne $expectedCanonicalEnvironmentDirectory) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: lock candidate canonical_environment_directory does not match the reviewed canonical environment identity ($expectedCanonicalEnvironmentDirectory)."
-    }
-    if ($lockCandidateJson.canonical_interpreter -ne $expectedCanonicalInterpreter) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: lock candidate canonical_interpreter does not match the reviewed canonical interpreter identity ($expectedCanonicalInterpreter)."
-    }
-    if ($lockCandidateJson.real_execution_environment_frozen -ne $false) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: lock candidate real_execution_environment_frozen is not false -- refusing to proceed under an unexpected frozen claim."
-    }
-    if ($lockCandidateJson.resolved_lock.sha256 -ne $reviewedLockSha256) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: lock candidate resolved_lock.sha256 does not match the reviewed lock hash."
-    }
-    if ($lockCandidateJson.resolved_lock.package_count -ne $reviewedPackageCount) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: lock candidate resolved_lock.package_count is $($lockCandidateJson.resolved_lock.package_count), expected exactly $reviewedPackageCount."
-    }
-    if ($lockCandidateJson.requirements_real_execution.sha256 -ne $reviewedSourceRequirementsGitSha256) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: lock candidate requirements_real_execution.sha256 does not match the reviewed canonical Git-bytes source-requirements hash."
-    }
-    if ($lockCandidateJson.synthetic_xls_fixture.sha256 -ne $reviewedFixtureSha256) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: lock candidate synthetic_xls_fixture.sha256 does not match the reviewed fixture hash."
-    }
-    Write-Host "Lock candidate manifest structurally valid and matches the reviewed binding."
+    Test-ReviewedLockCandidateSemanticBinding -PythonInterpreter $canonicalInterpreterPath -CandidatePath $lockCandidatePath -ReviewedCandidateGitSha $reviewedLockCandidateGitSha
+    Write-Host "Lock candidate manifest type-strictly matches the canonical reviewed Git binding."
 
     # Independently recompute the on-disk lock file's SHA-256 -- never
     # trust the candidate JSON's self-reported hash alone.
