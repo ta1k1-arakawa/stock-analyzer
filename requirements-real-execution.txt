@@ -12,8 +12,16 @@
 # scikit-learn, scipy, joblib, PyYAML, requests, python-dotenv, pytest).
 # None of those are reachable from the real V8-lineage source-snapshot path.
 #
-# Install only via the canonical interpreter:
-#   .venv-real-execution\Scripts\python.exe -m pip install -r requirements-real-execution.txt
+# REAL_EXECUTION_ENVIRONMENT_LOCK_ENFORCEMENT: this file is the direct-
+# dependency SPECIFICATION only. It is no longer the protected installation
+# authority. Once a reviewed environment lock exists
+# (requirements-real-execution.lock.txt, bound to
+# REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json), protected packages are
+# resolved and installed exclusively from that reviewed, exact-pinned lock
+# -- never from this unpinned file -- via:
+#   .venv-real-execution\Scripts\python.exe -m pip install --no-deps -r requirements-real-execution.lock.txt
+# See REAL_EXECUTION_PYTHON_ENVIRONMENT.md SS6a and AI_REAL_EXECUTION_RUNBOOK.md
+# SS19 for the full lock-authority contract.
 #
 # pandas is intentionally left unpinned here, matching the repository's own
 # existing requirement.txt (which also does not pin it). No authoritative

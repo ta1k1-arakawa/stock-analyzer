@@ -258,7 +258,11 @@ INTERPRETER_IDENTITY_STATUS=<PASS|FAIL|UNKNOWN>
 PYTHON_VERSION=<safe exact version or omitted when unavailable>
 DEPENDENCY_READINESS=<PASS|FAIL|UNKNOWN>
 SYNTHETIC_PARSER_READINESS=<PASS|FAIL|CHATGPT_DECISION_REQUIRED|UNKNOWN>
-ENVIRONMENT_LOCK_FINGERPRINT_STATUS=<ESTABLISHED_AND_REVIEWED|NOT_YET_ESTABLISHED|UNKNOWN>
+ENVIRONMENT_LOCK_FINGERPRINT_STATUS=<CANDIDATE_VERIFIED_NOT_FROZEN|CANDIDATE_INVALID_OR_UNVERIFIED|NOT_YET_ESTABLISHED|UNKNOWN>
+ENVIRONMENT_LOCK_PACKAGE_SET_MATCH=<true|false|unknown>
+ENVIRONMENT_LOCK_PACKAGE_COUNT=<nonnegative count|unknown>
+ENVIRONMENT_LOCK_SHA256_MATCH=<true|false|unknown>
+PYTHON_PATCH_MATCH=<true|false|unknown>
 REAL_EXECUTION_ENVIRONMENT_FROZEN=<true|false|unknown>
 NEXT_ACTION=<safe stopping or authority action>
 ```
@@ -365,14 +369,26 @@ feature), and unrelated development/trading-bot dependency upgrades in
 `.venv` must never silently alter the frozen research execution
 environment.
 
+Once a reviewed environment lock exists (§19),
+`requirements-real-execution.lock.txt` -- not the unpinned
+`requirements-real-execution.txt` -- is the protected installation/runtime
+package authority: protected packages are resolved and installed
+exclusively from that reviewed, exact-pinned lock, with `--no-deps`, so pip
+cannot silently add or resolve any package outside the complete reviewed
+lock. `requirements-real-execution.txt` remains the direct-dependency
+*specification* (§4's traced import closure), not the install source, once
+a lock has been captured.
+
 See `REAL_EXECUTION_PYTHON_ENVIRONMENT.md` for the full human-readable
 contract (canonical Python version, direct dependency closure, required JPX
 Excel engine, bootstrap/readiness procedures, and the environment
-lock/fingerprint procedure), `requirements-real-execution.txt` for the
-direct dependency specification, `scripts/bootstrap_real_execution_env.ps1`
-for the environment-setup-only bootstrap script, and
+lock/fingerprint procedure, including §6a's lock-authority contract),
+`requirements-real-execution.txt` for the direct dependency specification,
+`requirements-real-execution.lock.txt` for the reviewed exact-pinned
+installation authority, `scripts/bootstrap_real_execution_env.ps1` for the
+environment-setup-only bootstrap script, and
 `scripts/check_real_execution_env.py` for the no-network, no-private-data
-readiness checker.
+readiness checker (including its mechanical environment-lock check).
 
 ## 16. Environment readiness BEFORE authorization
 
@@ -410,10 +426,15 @@ PRE_GATE_ENVIRONMENT_BLOCK
 
 Examples: `.venv-real-execution` missing; wrong interpreter
 (`PRE_GATE_WRONG_PYTHON_ENVIRONMENT`, including resolving to the general
-`.venv`); unsupported Python version; missing package; wrong package
-version; missing Excel engine; parser synthetic-probe failure; filesystem
-readiness failure. These may be repaired and the complete preflight rerun
-from the beginning, but only if no protected boundary was crossed (§4).
+`.venv`); Python version not exactly `3.12.10`; missing package; wrong
+package version; missing Excel engine; parser synthetic-probe failure;
+filesystem readiness failure; environment-lock mismatch (reviewed lock
+candidate manifest missing/invalid/not matching the reviewed binding, lock
+file SHA-256 mismatch, source-requirements canonical Git-bytes provenance
+mismatch, or live `pip freeze --all` package set diverging from the
+reviewed lock -- extra, missing, or version-drifted). These may be repaired
+and the complete preflight rerun from the beginning, but only if no
+protected boundary was crossed (§4).
 
 After the gate's durable receipt is published:
 
@@ -448,28 +469,45 @@ probe, not merely `import <package>` succeeding.
 
 ## 19. Exact environment lock/fingerprint
 
-A later, explicitly reviewed command, run on the real target Windows
-machine using the canonical interpreter ONLY (never the general `.venv`),
-generates the exact environment record:
+An explicitly reviewed command, run on the real target Windows machine
+using the canonical interpreter ONLY (never the general `.venv`), generates
+the exact environment record:
 
 ```powershell
 .venv-real-execution\Scripts\python.exe -m pip freeze --all
 ```
 
 The exact Windows-grounded resolved package set is committed as a dedicated
-environment lock/fingerprint artifact in its own task, subject to its own
-GPT exact-SHA independent review, before any future real execution is
+environment lock/fingerprint artifact (`REAL_EXECUTION_ENVIRONMENT_LOCK_
+CANDIDATE.json` and `requirements-real-execution.lock.txt`), subject to its
+own GPT exact-SHA independent review, before any future real execution is
 authorized. A task that runs only in Claude Code Cloud (or any other
 non-Windows environment) must never claim to have produced this
-Windows-grounded lock. Until that lock exists and is independently
-reviewed:
+Windows-grounded lock.
+
+A reviewed lock candidate now exists (`artifact_status =
+CANDIDATE_NOT_FROZEN`, reviewed at commit
+`107430894723c2bdc2f8493cb12c467fccd8665e`). Per
+`REAL_EXECUTION_ENVIRONMENT_LOCK_ENFORCEMENT` (§15's `requirements-real-
+execution.lock.txt` install-authority rule), that reviewed lock -- not the
+unpinned `requirements-real-execution.txt` -- is now the protected
+installation/runtime package authority, and
+`scripts/check_real_execution_env.py`'s `check_environment_lock` mechanical
+check (binding to the reviewed manifest/lock/source-provenance/fixture
+hashes and the live `pip freeze --all` package set) must `PASS` before
+`REAL_EXECUTION_ENVIRONMENT_READY` can be `true`. A verified candidate is
+still not the same as *frozen*: this lock-enforcement implementation itself
+still requires its own GPT exact-SHA independent review and a
+Windows-grounded execution test before a later, separate, explicit
+freeze/promotion task. Until that promotion happens:
 
 ```text
 REAL_EXECUTION_ENVIRONMENT_FROZEN=false
 ```
 
 and no future human-gated real execution should be authorized, regardless
-of what any individual readiness check reports.
+of what any individual readiness check reports -- including a genuine
+`ENVIRONMENT_LOCK_FINGERPRINT_STATUS=CANDIDATE_VERIFIED_NOT_FROZEN`.
 
 ## 20. Prospective-only; V8I permanence
 

@@ -190,13 +190,74 @@ readiness_checker = "scripts/check_real_execution_env.py"
 
 `scripts/bootstrap_real_execution_env.ps1` is a fail-closed, environment-only
 PowerShell script: it exclusively creates or verifies
-`.venv-real-execution`, installs only from
-`requirements-real-execution.txt` via
-`.venv-real-execution\Scripts\python.exe -m pip ...`, and finally runs the
-readiness checker. It never consumes a human research gate, never calls
-JPX/Yahoo, never accesses private/sealed data, never executes any V8I/V8J
-real acquisition, and never reads, alters, uninstalls from, or copies
-packages out of the separate general `.venv`.
+`.venv-real-execution` (requiring exact Python `3.12.10`, not merely
+`3.12`), runs the reviewed-lock preflight (§6a), installs the complete
+reviewed lock via
+`.venv-real-execution\Scripts\python.exe -m pip install --no-deps -r requirements-real-execution.lock.txt`,
+and finally runs the readiness checker. It never consumes a human research
+gate, never calls JPX/Yahoo, never accesses private/sealed data, never
+executes any V8I/V8J real acquisition, and never reads, alters, uninstalls
+from, or copies packages out of the separate general `.venv`.
+
+### 6a. Reviewed lock is the installation/runtime package authority
+
+```text
+finding_resolved = "REAL_EXECUTION_ENVIRONMENT_LOCK_ENFORCEMENT"
+protected_installation_authority = "requirements-real-execution.lock.txt"
+requirements_real_execution_txt_role = "DIRECT_DEPENDENCY_SPECIFICATION_ONLY_NOT_INSTALL_AUTHORITY"
+```
+
+Once a reviewed environment lock exists
+(`requirements-real-execution.lock.txt`, bound to
+`REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json` -- see §7), it is the sole
+protected installation and runtime package authority. Protected packages
+are resolved and installed exclusively from that reviewed, exact-pinned
+lock, with `--no-deps` so pip cannot silently add or resolve any package
+outside the complete reviewed lock:
+
+```powershell
+.venv-real-execution\Scripts\python.exe -m pip install --no-deps -r requirements-real-execution.lock.txt
+```
+
+`requirements-real-execution.txt` (unpinned `pandas` + pinned
+`xlrd==2.0.2`) remains the human-readable direct-dependency
+*specification* -- it still documents and mechanically traces the real
+import closure (§4) -- but it is **not** the protected installation
+authority after a reviewed lock is captured. Its own executable dependency
+semantics are unchanged (`pandas`, `xlrd==2.0.2`); only its instructional
+comment was updated for accuracy.
+
+Before any protected package installation, both the bootstrap script and
+the readiness checker fail closed unless all of the following are exactly
+the reviewed values -- hardcoded as constants in each, not merely trusted
+from whatever the mutable candidate/lock files currently say on disk:
+
+- the reviewed lock candidate manifest is structurally valid and its
+  self-reported fields exactly match the reviewed binding (including
+  `artifact_status == "CANDIDATE_NOT_FROZEN"`, `package_count == 7`);
+- the on-disk lock file's independently recomputed SHA-256 matches the
+  reviewed lock hash;
+- the source requirements file's independently recomputed **canonical Git
+  object bytes** (`git cat-file blob <sha>:<path>`, captured via a raw
+  byte stream, never a checked-out working-tree copy or PowerShell's
+  text/console pipeline) hash to the reviewed source-requirements SHA-256
+  -- this is the line-ending-independent provenance mechanism; a Windows
+  CRLF checkout can never silently pass or fail it, per
+  `REAL_EXECUTION_WINDOWS_LOCK_CANDIDATE_MEDIUM_1`;
+- the canonical environment directory/interpreter identity matches
+  `.venv-real-execution` / `.venv-real-execution\Scripts\python.exe`;
+- the live platform is exactly CPython `3.12.10` / Windows / `AMD64` /
+  `win-amd64` (not merely `3.12`).
+
+The readiness checker additionally requires the live
+`python -m pip freeze --all` package set to equal **exactly** the reviewed
+seven entries -- no extra package, no missing package, no version drift --
+before it can report `REAL_EXECUTION_ENVIRONMENT_READY=true`. See its
+`check_environment_lock` function and module docstring for the exact
+mechanics and safe result contract
+(`ENVIRONMENT_LOCK_FINGERPRINT_STATUS`, `ENVIRONMENT_LOCK_PACKAGE_SET_MATCH`,
+`ENVIRONMENT_LOCK_PACKAGE_COUNT`, `ENVIRONMENT_LOCK_SHA256_MATCH`,
+`PYTHON_PATCH_MATCH`).
 
 `scripts/check_real_execution_env.py` is a no-network, no-private-data
 readiness checker. It verifies interpreter identity, dependency
@@ -337,34 +398,47 @@ without asserting that it must.
 **This resolves the parser probe only.** A genuine
 `JPX_XLS_PARSER_SYNTHETIC_PROBE=PASS` does not by itself make the
 environment ready: Windows-grounded execution inside the canonical
-`.venv-real-execution` (§2-§3) is still required, and the Windows-grounded
-environment lock/fingerprint (§7) is still required.
-`REAL_EXECUTION_ENVIRONMENT_FROZEN` remains `false` until that lock exists
-and is independently reviewed, and no future human-gated real execution
-should be authorized before then.
+`.venv-real-execution` (§2-§3) is still required, and the environment lock
+(§7) must exist, be verified, and eventually be promoted before
+`REAL_EXECUTION_ENVIRONMENT_FROZEN` can ever become `true`.
 
 ## 7. Exact environment lock/fingerprint
 
 ```text
 REAL_EXECUTION_ENVIRONMENT_FROZEN = false
+lock_candidate_status             = "CANDIDATE_NOT_FROZEN"
+lock_candidate_reviewed_git_sha   = "107430894723c2bdc2f8493cb12c467fccd8665e"
 ```
 
-This task (Claude Code Cloud) does not and cannot produce a Windows-grounded
-package-resolution lock. A later, separate, explicitly reviewed task must run
-on the real target Windows machine, using the canonical interpreter ONLY --
-never the general `.venv`:
+A Windows-grounded package-resolution lock has been captured and reviewed:
+`REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json` (the manifest -- exact
+CPython `3.12.10` / Windows / `AMD64` / `win-amd64`, the lock file's
+SHA-256, the source-requirements canonical Git-bytes SHA-256, and the
+fixture SHA-256) and `requirements-real-execution.lock.txt` (the exact
+resolved seven-package set: `numpy`, `pandas`, `pip`,
+`python-dateutil`, `six`, `tzdata`, `xlrd`), both generated on the real
+target Windows machine via the canonical interpreter ONLY -- never the
+general `.venv`:
 
 ```powershell
 .venv-real-execution\Scripts\python.exe -m pip freeze --all
 ```
 
-and commit the exact resolved package set as a dedicated environment
-lock/fingerprint artifact, subject to its own GPT exact-SHA independent
-review, before any future real execution is authorized. Until that
-Windows-grounded lock exists and is independently reviewed,
+`REAL_EXECUTION_ENVIRONMENT_LOCK_ENFORCEMENT` (this contract) makes that
+reviewed candidate the actual protected installation/runtime authority
+(§6a) and adds a mechanical lock check
+(`scripts/check_real_execution_env.py`'s `check_environment_lock`) that
+`REAL_EXECUTION_ENVIRONMENT_READY` now requires to `PASS`. This is still
+not the same as *frozen*: this lock-enforcement implementation itself
+still requires its own GPT exact-SHA independent review and a
+Windows-grounded execution test (proving the bootstrap script and checker
+actually behave as designed against the real `.venv-real-execution`) before
+a later, separate, explicit freeze/promotion task can commit
+`REAL_EXECUTION_ENVIRONMENT_FROZEN = true`. Until that promotion happens,
 `REAL_EXECUTION_ENVIRONMENT_FROZEN` remains `false` and no future
 human-gated real execution should be authorized, regardless of what the
-readiness checker itself reports.
+readiness checker itself reports -- including a genuine
+`ENVIRONMENT_LOCK_FINGERPRINT_STATUS=CANDIDATE_VERIFIED_NOT_FROZEN`.
 
 ## 8. Authorization ordering
 

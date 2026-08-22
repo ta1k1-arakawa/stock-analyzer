@@ -54,6 +54,24 @@ report a genuine `PASS` (resolving the former
 A `PASS` there still only reports what actually ran -- it is never
 fabricated, and it does not by itself make the overall environment ready.
 
+`check_environment_lock` (REAL_EXECUTION_ENVIRONMENT_LOCK_ENFORCEMENT) is a
+mechanical environment-lock check that `REAL_EXECUTION_ENVIRONMENT_READY`
+requires to PASS. It binds to hardcoded REVIEWED_* constants (the reviewed
+`REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json` candidate, the reviewed
+`requirements-real-execution.lock.txt` lock hash, and the reviewed source
+requirements' canonical Git object SHA-256) rather than merely trusting
+whatever those mutable files currently say, then further requires the live
+interpreter, the live platform (exact CPython 3.12.10 / Windows / AMD64 /
+win-amd64), and the live `python -m pip freeze --all` package set to match
+exactly -- no extra package, no missing package, no version drift.
+Source-requirements provenance is established from canonical Git object
+bytes (`git cat-file blob <sha>:<path>`), never from a checked-out
+working-tree copy, so Windows CRLF line-ending conversion can never
+silently pass or fail this check. `REAL_EXECUTION_ENVIRONMENT_FROZEN`
+remains hardcoded `false` regardless of this check's result -- promoting
+the environment to frozen is a separate, later, explicitly reviewed task,
+not something this checker declares on its own.
+
 Exit code is 0 only if `REAL_EXECUTION_ENVIRONMENT_READY` is true; nonzero
 otherwise, always before any protected boundary.
 """
@@ -63,8 +81,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import ssl
+import subprocess
 import sys
+import sysconfig
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -88,6 +109,76 @@ CANONICAL_PYTHON_MAJOR_MINOR = (3, 12)  # .github/workflows/daily_ai_trade.yml: 
 SYNTHETIC_XLS_FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "synthetic_jpx_source_snapshot.xls"
 
 _REQUIRED_DIRECT_DEPENDENCIES = ("pandas", "xlrd")
+
+# ---------------------------------------------------------------------------
+# Environment-lock check (REAL_EXECUTION_ENVIRONMENT_LOCK_ENFORCEMENT):
+# reviewed binding, hardcoded here -- not merely trusted from the mutable
+# REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json / requirements-real-
+# execution.lock.txt files on disk -- so a tampered or stale candidate/lock
+# is independently, mechanically detectable. Mirrors the same
+# hardcoded-reviewed-constant pattern already used by
+# src/v8i_source_snapshot.py's REVIEWED_V8I_DESIGN_CANDIDATE_COMMIT.
+# ---------------------------------------------------------------------------
+
+LOCK_CANDIDATE_PATH = REPO_ROOT / "REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json"
+LOCK_FILE_PATH = REPO_ROOT / "requirements-real-execution.lock.txt"
+
+REVIEWED_LOCK_CANDIDATE_GIT_SHA = "107430894723c2bdc2f8493cb12c467fccd8665e"
+REVIEWED_SOURCE_GIT_SHA = "b74e0f787599475cd9fe719d254202dc9bfc14d5"
+REVIEWED_LOCK_SHA256 = "b5c063a1cca585fa100fdc0027d6cdbf4ef33ef5a7fe614230599fb882b51f96"
+REVIEWED_SOURCE_REQUIREMENTS_GIT_SHA256 = "2cdcfd7a87023c4e9c3ec463cf16f77d88f72ccc8d1f0e5de242e6c68b0cf601"
+REVIEWED_FIXTURE_SHA256 = "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7"
+REVIEWED_PACKAGE_COUNT = 7
+REVIEWED_ARTIFACT_STATUS = "CANDIDATE_NOT_FROZEN"
+
+# Plain literal strings, not derived from a live pathlib.Path -- a Path's
+# str() renders with OS-native separators, which would silently mismatch
+# the JSON's fixed Windows-style backslash literal on a non-Windows run.
+EXPECTED_CANDIDATE_CANONICAL_ENVIRONMENT_DIRECTORY = ".venv-real-execution"
+EXPECTED_CANDIDATE_CANONICAL_INTERPRETER = ".venv-real-execution\\Scripts\\python.exe"
+
+CANONICAL_PYTHON_EXACT_VERSION = (3, 12, 10)
+CANONICAL_PYTHON_IMPLEMENTATION = "CPython"
+CANONICAL_PLATFORM_MACHINE = "AMD64"
+CANONICAL_PLATFORM_SYSTEM = "Windows"
+CANONICAL_SYSCONFIG_PLATFORM = "win-amd64"
+
+_CANDIDATE_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "artifact_status",
+        "canonical_environment_directory",
+        "canonical_interpreter",
+        "future_protected_execution_authorized",
+        "gpt_exact_sha_independent_review_required",
+        "pip_version",
+        "private_or_sealed_reads",
+        "python",
+        "real_execution_environment_frozen",
+        "real_execution_environment_ready_observed",
+        "real_network_requests_to_protected_hosts",
+        "requirements_real_execution",
+        "research_gates_consumed",
+        "resolved_lock",
+        "schema_version",
+        "source_git_sha",
+        "synthetic_xls_fixture",
+        "windows_grounded",
+    }
+)
+_CANDIDATE_PYTHON_FIELDS = frozenset(
+    {
+        "implementation",
+        "os_name",
+        "platform_machine",
+        "platform_release",
+        "platform_system",
+        "sysconfig_platform",
+        "version",
+    }
+)
+_CANDIDATE_REQUIREMENTS_FIELDS = frozenset({"path", "sha256"})
+_CANDIDATE_RESOLVED_LOCK_FIELDS = frozenset({"generated_from", "package_count", "path", "sha256"})
+_CANDIDATE_FIXTURE_FIELDS = frozenset({"path", "sha256"})
 
 
 def _parse_pinned_requirement(requirements_path: Path, package_name: str) -> str | None:
@@ -151,6 +242,10 @@ def check_interpreter_identity() -> dict[str, Any]:
     version_info = sys.version_info
     python_version = f"{version_info.major}.{version_info.minor}.{version_info.micro}"
     python_major_minor_match = (version_info.major, version_info.minor) == CANONICAL_PYTHON_MAJOR_MINOR
+    # Stricter than python_major_minor_match: the reviewed environment lock
+    # binds to exact CPython 3.12.10, not merely "3.12" (a 3.12.x other
+    # than .10 must not silently satisfy the reviewed lock binding).
+    python_patch_match = (version_info.major, version_info.minor, version_info.micro) == CANONICAL_PYTHON_EXACT_VERSION
 
     return {
         "platform_windows_grounded": is_windows,
@@ -161,6 +256,7 @@ def check_interpreter_identity() -> dict[str, Any]:
         "interpreter_failure_class": interpreter_failure_class,
         "python_version": python_version,
         "python_major_minor_match": python_major_minor_match,
+        "python_patch_match": python_patch_match,
     }
 
 
@@ -461,6 +557,238 @@ def check_filesystem_durable_publication_probe() -> dict[str, Any]:
     }
 
 
+def _git_blob_bytes(repo_root: Path, git_ref: str) -> bytes | None:
+    """Canonical Git object bytes for a `<sha>:<path>` ref.
+
+    Bypasses any working-tree checkout entirely -- including whatever
+    line-ending conversion a Windows checkout might apply -- by asking Git
+    for the exact committed blob bytes. This is the line-ending-independent
+    provenance mechanism: never compare against a checked-out working-tree
+    copy for Git-bound provenance. Returns None on any failure (git
+    unavailable, ref unresolvable, timeout) rather than raising, so the
+    caller can report a safe FAIL reason instead of crashing.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "cat-file", "blob", git_ref],
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def _normalize_package_name(name: str) -> str:
+    """PEP 503 style normalization: case- and separator-insensitive."""
+    return name.strip().lower().replace("_", "-").replace(".", "-")
+
+
+def _parse_pinned_lock_lines(text: str) -> dict[str, str]:
+    """Parse `name==version` lines (as in a lock file or `pip freeze`
+    output) into {normalized_name: exact_version}. Handles both LF and
+    CRLF line endings via `splitlines()`, and strips any stray `\\r`.
+    """
+    parsed: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "==" not in stripped:
+            continue
+        name, version = stripped.split("==", 1)
+        parsed[_normalize_package_name(name)] = version.strip()
+    return parsed
+
+
+def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
+    """Mechanical environment-lock check.
+
+    Binds to the hardcoded REVIEWED_* constants above -- not merely to
+    whatever `REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json` and
+    `requirements-real-execution.lock.txt` currently say on disk -- so a
+    tampered, stale, or accidentally-promoted candidate/lock is
+    independently, mechanically detectable rather than silently trusted.
+
+    Fails closed unless, in order:
+      1. the candidate manifest and lock file both exist;
+      2. the candidate manifest is structurally valid (exact schema, every
+         required field present, no unexpected extra field);
+      3. the candidate's own self-reported values exactly match the
+         reviewed binding (status remains CANDIDATE_NOT_FROZEN, package
+         count is exactly 7, recorded hashes/paths/platform match);
+      4. the on-disk lock file's independently recomputed SHA-256 matches
+         the reviewed lock hash;
+      5. the on-disk lock file parses to exactly the reviewed package
+         count;
+      6. the source requirements file's canonical Git object bytes at the
+         reviewed source commit (via `git cat-file blob`, never a
+         checked-out working-tree copy) independently hash to the reviewed
+         source-requirements SHA-256;
+      7. the committed fixture's raw bytes independently hash to the
+         reviewed fixture SHA-256;
+      8. the live interpreter is the exact canonical
+         `.venv-real-execution\\Scripts\\python.exe`;
+      9. the live platform is exactly CPython 3.12.10 / Windows / AMD64 /
+         win-amd64;
+      10. the live `python -m pip freeze --all` package set exactly equals
+          the reviewed seven entries -- no extra package, no missing
+          package, no version drift.
+    """
+    detail: dict[str, Any] = {}
+
+    if not LOCK_CANDIDATE_PATH.exists():
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_MISSING", "detail": detail}
+    if not LOCK_FILE_PATH.exists():
+        return {"status": "FAIL", "reason": "LOCK_FILE_MISSING", "detail": detail}
+
+    try:
+        candidate = json.loads(LOCK_CANDIDATE_PATH.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_INVALID_JSON", "error": str(error), "detail": detail}
+
+    if not isinstance(candidate, dict) or set(candidate) != _CANDIDATE_TOP_LEVEL_FIELDS:
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_SCHEMA_INVALID", "detail": detail}
+    python_block = candidate.get("python")
+    resolved_lock_block = candidate.get("resolved_lock")
+    requirements_block = candidate.get("requirements_real_execution")
+    fixture_block = candidate.get("synthetic_xls_fixture")
+    if (
+        not isinstance(python_block, dict)
+        or set(python_block) != _CANDIDATE_PYTHON_FIELDS
+        or not isinstance(resolved_lock_block, dict)
+        or set(resolved_lock_block) != _CANDIDATE_RESOLVED_LOCK_FIELDS
+        or not isinstance(requirements_block, dict)
+        or set(requirements_block) != _CANDIDATE_REQUIREMENTS_FIELDS
+        or not isinstance(fixture_block, dict)
+        or set(fixture_block) != _CANDIDATE_FIXTURE_FIELDS
+    ):
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_SCHEMA_INVALID", "detail": detail}
+    detail["candidate_structurally_valid"] = True
+    detail["candidate_status"] = candidate.get("artifact_status")
+    detail["candidate_package_count"] = resolved_lock_block.get("package_count")
+
+    candidate_matches_reviewed = (
+        candidate["source_git_sha"] == REVIEWED_SOURCE_GIT_SHA
+        and candidate["artifact_status"] == REVIEWED_ARTIFACT_STATUS
+        and candidate["canonical_environment_directory"] == EXPECTED_CANDIDATE_CANONICAL_ENVIRONMENT_DIRECTORY
+        and candidate["canonical_interpreter"] == EXPECTED_CANDIDATE_CANONICAL_INTERPRETER
+        and candidate["real_execution_environment_frozen"] is False
+        and candidate["future_protected_execution_authorized"] is False
+        and resolved_lock_block["sha256"] == REVIEWED_LOCK_SHA256
+        and resolved_lock_block["package_count"] == REVIEWED_PACKAGE_COUNT
+        and resolved_lock_block["path"] == "requirements-real-execution.lock.txt"
+        and requirements_block["sha256"] == REVIEWED_SOURCE_REQUIREMENTS_GIT_SHA256
+        and requirements_block["path"] == "requirements-real-execution.txt"
+        and fixture_block["sha256"] == REVIEWED_FIXTURE_SHA256
+        and python_block["implementation"] == CANONICAL_PYTHON_IMPLEMENTATION
+        and python_block["version"] == "3.12.10"
+        and python_block["os_name"] == "nt"
+        and python_block["platform_machine"] == CANONICAL_PLATFORM_MACHINE
+        and python_block["platform_system"] == CANONICAL_PLATFORM_SYSTEM
+        and python_block["sysconfig_platform"] == CANONICAL_SYSCONFIG_PLATFORM
+    )
+    detail["candidate_matches_reviewed_binding"] = candidate_matches_reviewed
+    if not candidate_matches_reviewed:
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_DOES_NOT_MATCH_REVIEWED_BINDING", "detail": detail}
+
+    # Independently recompute the on-disk lock file's SHA-256 -- never
+    # trust the candidate JSON's self-reported hash alone.
+    lock_bytes = LOCK_FILE_PATH.read_bytes()
+    lock_sha256_recomputed = hashlib.sha256(lock_bytes).hexdigest()
+    detail["lock_sha256_recomputed"] = lock_sha256_recomputed
+    lock_sha256_match = lock_sha256_recomputed == REVIEWED_LOCK_SHA256
+    detail["lock_sha256_match"] = lock_sha256_match
+    if not lock_sha256_match:
+        return {"status": "FAIL", "reason": "LOCK_SHA256_MISMATCH", "detail": detail}
+
+    lock_packages = _parse_pinned_lock_lines(lock_bytes.decode("utf-8"))
+    detail["lock_package_count_recomputed"] = len(lock_packages)
+    if len(lock_packages) != REVIEWED_PACKAGE_COUNT:
+        return {"status": "FAIL", "reason": "LOCK_PACKAGE_COUNT_UNEXPECTED", "detail": detail}
+
+    # Independently recompute canonical Git object bytes for the source
+    # requirements file at the reviewed source commit -- CRLF-independent.
+    git_blob = _git_blob_bytes(REPO_ROOT, f"{REVIEWED_SOURCE_GIT_SHA}:requirements-real-execution.txt")
+    if git_blob is None:
+        return {"status": "FAIL", "reason": "SOURCE_REQUIREMENTS_GIT_PROVENANCE_UNAVAILABLE", "detail": detail}
+    source_requirements_git_sha256 = hashlib.sha256(git_blob).hexdigest()
+    detail["source_requirements_git_sha256_recomputed"] = source_requirements_git_sha256
+    source_requirements_provenance_match = source_requirements_git_sha256 == REVIEWED_SOURCE_REQUIREMENTS_GIT_SHA256
+    detail["source_requirements_provenance_match"] = source_requirements_provenance_match
+    if not source_requirements_provenance_match:
+        return {"status": "FAIL", "reason": "SOURCE_REQUIREMENTS_GIT_PROVENANCE_MISMATCH", "detail": detail}
+
+    # Independently recompute the fixture's raw-byte SHA-256.
+    if not SYNTHETIC_XLS_FIXTURE_PATH.exists():
+        return {"status": "FAIL", "reason": "SYNTHETIC_XLS_FIXTURE_MISSING", "detail": detail}
+    fixture_sha256_recomputed = hashlib.sha256(SYNTHETIC_XLS_FIXTURE_PATH.read_bytes()).hexdigest()
+    detail["fixture_sha256_recomputed"] = fixture_sha256_recomputed
+    fixture_sha256_match = fixture_sha256_recomputed == REVIEWED_FIXTURE_SHA256
+    detail["fixture_sha256_match"] = fixture_sha256_match
+    if not fixture_sha256_match:
+        return {"status": "FAIL", "reason": "FIXTURE_SHA256_MISMATCH", "detail": detail}
+
+    # Live interpreter identity: exact canonical .venv-real-execution path.
+    detail["interpreter_match"] = interpreter["interpreter_match"]
+    if interpreter["interpreter_match"] is not True:
+        return {"status": "FAIL", "reason": "INTERPRETER_NOT_CANONICAL", "detail": detail}
+
+    # Live platform: exact CPython 3.12.10 / Windows / AMD64 / win-amd64.
+    detail["python_patch_match"] = interpreter["python_patch_match"]
+    platform_binding_match = (
+        interpreter["python_patch_match"] is True
+        and platform.python_implementation() == CANONICAL_PYTHON_IMPLEMENTATION
+        and platform.system() == CANONICAL_PLATFORM_SYSTEM
+        and platform.machine() == CANONICAL_PLATFORM_MACHINE
+        and sysconfig.get_platform() == CANONICAL_SYSCONFIG_PLATFORM
+        and os.name == "nt"
+    )
+    detail["platform_binding_match"] = platform_binding_match
+    detail["live_platform_system"] = platform.system()
+    detail["live_platform_machine"] = platform.machine()
+    detail["live_sysconfig_platform"] = sysconfig.get_platform()
+    if not platform_binding_match:
+        return {"status": "FAIL", "reason": "PLATFORM_BINDING_MISMATCH", "detail": detail}
+
+    # Live `pip freeze --all` must contain EXACTLY the reviewed seven
+    # entries: no extra package, no missing package, no version drift.
+    try:
+        freeze_result = subprocess.run(
+            [sys.executable, "-m", "pip", "freeze", "--all"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"status": "FAIL", "reason": "PIP_FREEZE_UNAVAILABLE", "error": str(error), "detail": detail}
+    if freeze_result.returncode != 0:
+        return {"status": "FAIL", "reason": "PIP_FREEZE_FAILED", "detail": detail}
+
+    live_packages = _parse_pinned_lock_lines(freeze_result.stdout)
+    extra_packages = sorted(set(live_packages) - set(lock_packages))
+    missing_packages = sorted(set(lock_packages) - set(live_packages))
+    version_mismatched_packages = sorted(
+        name for name in (set(lock_packages) & set(live_packages)) if lock_packages[name] != live_packages[name]
+    )
+    package_set_match = not extra_packages and not missing_packages and not version_mismatched_packages
+    detail["live_package_count"] = len(live_packages)
+    detail["extra_packages"] = extra_packages
+    detail["missing_packages"] = missing_packages
+    detail["version_mismatched_packages"] = version_mismatched_packages
+    detail["package_set_match"] = package_set_match
+    if not package_set_match:
+        return {"status": "FAIL", "reason": "PIP_FREEZE_PACKAGE_SET_MISMATCH", "detail": detail}
+
+    return {
+        "status": "PASS",
+        "reviewed_lock_candidate_git_sha": REVIEWED_LOCK_CANDIDATE_GIT_SHA,
+        "detail": detail,
+    }
+
+
 def run_readiness_checks() -> dict[str, Any]:
     interpreter = check_interpreter_identity()
     dependencies = check_dependency_readiness()
@@ -468,16 +796,19 @@ def run_readiness_checks() -> dict[str, Any]:
     tls_probe = check_tls_stdlib_initialization()
     trusted_host_probe = check_trusted_host_request_construction()
     filesystem_probe = check_filesystem_durable_publication_probe()
+    lock_check = check_environment_lock(interpreter)
+    lock_detail = lock_check.get("detail", {})
 
     ready = (
         interpreter["platform_windows_grounded"] is True
         and interpreter["interpreter_match"] is True
-        and interpreter["python_major_minor_match"] is True
+        and interpreter["python_patch_match"] is True
         and dependencies["status"] == "PASS"
         and xls_probe["status"] == "PASS"
         and tls_probe["status"] == "PASS"
         and trusted_host_probe["status"] == "PASS"
         and filesystem_probe["status"] == "PASS"
+        and lock_check["status"] == "PASS"
     )
 
     return {
@@ -488,6 +819,7 @@ def run_readiness_checks() -> dict[str, Any]:
         "GENERAL_PROJECT_VENV_REJECTED": interpreter["general_project_venv_rejected"],
         "PYTHON_VERSION": interpreter["python_version"],
         "PYTHON_MAJOR_MINOR_MATCH": interpreter["python_major_minor_match"],
+        "PYTHON_PATCH_MATCH": interpreter["python_patch_match"],
         "DEPENDENCY_READINESS": dependencies["status"],
         "DEPENDENCY_DETAIL": dependencies["packages"],
         "JPX_XLS_PARSER_SYNTHETIC_PROBE": xls_probe["status"],
@@ -496,7 +828,16 @@ def run_readiness_checks() -> dict[str, Any]:
         "TRUSTED_HOST_REQUEST_CONSTRUCTION_PROBE": trusted_host_probe["status"],
         "FILESYSTEM_PROBE": filesystem_probe["status"],
         "FILESYSTEM_PROBE_DETAIL": filesystem_probe,
-        "ENVIRONMENT_LOCK_FINGERPRINT_STATUS": "NOT_YET_ESTABLISHED",
+        "ENVIRONMENT_LOCK_CHECK": lock_check["status"],
+        "ENVIRONMENT_LOCK_CHECK_DETAIL": lock_check,
+        "ENVIRONMENT_LOCK_FINGERPRINT_STATUS": (
+            "CANDIDATE_VERIFIED_NOT_FROZEN" if lock_check["status"] == "PASS" else "CANDIDATE_INVALID_OR_UNVERIFIED"
+        ),
+        "ENVIRONMENT_LOCK_PACKAGE_SET_MATCH": lock_detail.get("package_set_match"),
+        "ENVIRONMENT_LOCK_PACKAGE_COUNT": lock_detail.get(
+            "lock_package_count_recomputed", lock_detail.get("candidate_package_count")
+        ),
+        "ENVIRONMENT_LOCK_SHA256_MATCH": lock_detail.get("lock_sha256_match"),
         "REAL_EXECUTION_ENVIRONMENT_FROZEN": False,
         "REAL_NETWORK_REQUESTS": 0,
         "PRIVATE_READS": 0,
