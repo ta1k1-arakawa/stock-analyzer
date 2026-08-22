@@ -13,7 +13,7 @@
 # None of those are reachable from the real V8-lineage source-snapshot path.
 #
 # Install only via the canonical interpreter:
-#   .venv\Scripts\python.exe -m pip install --upgrade -r requirements-real-execution.txt
+#   .venv-real-execution\Scripts\python.exe -m pip install -r requirements-real-execution.txt
 #
 # pandas is intentionally left unpinned here, matching the repository's own
 # existing requirement.txt (which also does not pin it). No authoritative
