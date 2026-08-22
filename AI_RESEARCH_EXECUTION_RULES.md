@@ -261,10 +261,16 @@ No real:
 
 access merely because it is technically possible.
 
-Explicit authorization must name the exact scope. One authorization must
-never be silently reused for another attempt. Pre-network failure and
-post-network authorization-consumption semantics must follow the
-relevant frozen study design.
+Authorization must be explicit and scope-bound. It is either
+`ONE_SHOT_AUTHORITY` for a statistically irreversible, private, or production
+boundary, or `STANDING_RETRIABLE_PUBLIC_PLUMBING_AUTHORITY` when a
+human-approved frozen design explicitly grants it. Standing authority is not
+silent reuse of a one-shot authorization: it is bounded by the frozen study,
+provider/endpoint, source semantics, content-lock rule, retry conditions, and
+stopping conditions. It never authorizes private/sealed data, T1/T2/T3
+exposure, membership disclosure, broker action, or production trading.
+Pre-network failure and authorization-consumption semantics must follow the
+operation class and the relevant frozen study design.
 
 ### 6.1 Proportional evidence-tier governance
 

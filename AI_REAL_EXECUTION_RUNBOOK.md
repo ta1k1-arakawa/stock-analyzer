@@ -48,7 +48,7 @@ The atomic scope MUST set the stop mode inside the scope:
     $ErrorActionPreference = "Stop"
     # Read-only provenance and state preflight.
     # Stop before the private/network/gate boundary unless every check passes.
-    # Consume the one-shot gate only at the frozen boundary.
+    # Consume a one-shot gate only when the frozen operation requires one.
     try {
         # Authorized operation.
     }
@@ -88,7 +88,7 @@ verify every item applicable to the frozen design:
 - frozen-design binding;
 - reviewed-implementation binding;
 - human-authority prerequisites;
-- one-shot gate not already consumed;
+- for a one-shot operation, its gate not already consumed;
 - no conflicting durable execution binding, audit, or receipt;
 - required private input exists and resolves uniquely.
 
@@ -120,9 +120,10 @@ entire preflight from the beginning after an allowed sync.
 Classify the boundary before deciding authorization status or recovery. First
 perform read-only state verification.
 
-`PRE_GATE_FAILURE` means the one-shot gate was not consumed, the applicable
-private or network boundary was not crossed, and real request count is zero
-where that count is provable. Do not automatically declare a still-unused
+For a `STATISTICALLY_IRREVERSIBLE_GATE` or another explicitly one-shot,
+private, or production operation, `PRE_GATE_FAILURE` means its gate was not
+consumed, the applicable boundary was not crossed, and real request count is
+zero where provable. Do not automatically declare a still-unused
 authorization consumed. Only non-methodological, safe preflight repair may
 be proposed; then run preflight again from the beginning.
 
@@ -140,8 +141,12 @@ When the exact boundary cannot be proven, fail closed and do not assume
 For future designs, classify the operation before applying one-shot failure
 discipline. `RETRIABLE_PUBLIC_PLUMBING` covers only explicitly public,
 non-sealed transport and its setup/parser/filesystem processing; it may use
-standing authority specified by the frozen design. It never covers private
-or sealed data, broker actions, production trading, or holdout exposure.
+`STANDING_RETRIABLE_PUBLIC_PLUMBING_AUTHORITY` explicitly granted by the
+human-approved frozen design. That authority is bounded by study,
+provider/endpoint, source semantics, content lock, retry conditions, and
+stopping conditions; it is not reuse of a one-shot authorization. It never
+covers private/sealed data, broker actions, production trading, or holdout
+exposure.
 `STATISTICALLY_IRREVERSIBLE_GATE` covers first sealed membership/outcome
 exposure (including T1/T2/T3 where applicable), irreversible research
 opening, and production authority; its one-shot rule remains intact.
@@ -416,9 +421,10 @@ environment-setup-only bootstrap script, and
 `scripts/check_real_execution_env.py` for the no-network, no-private-data
 readiness checker (including its mechanical environment-lock check).
 
-## 16. Environment readiness BEFORE authorization
+## 16. Environment readiness before the applicable authority boundary
 
-The standard order for any protected execution is:
+For a `STATISTICALLY_IRREVERSIBLE_GATE` or another explicitly one-shot,
+private, or production-gated operation, the required order is:
 
 ```text
 design/freeze PASS
@@ -442,9 +448,27 @@ every readiness check passes. Environment readiness is part of preflight
 (§2), not a substitute for it, and does not relax any other preflight
 requirement.
 
+For `RETRIABLE_PUBLIC_PLUMBING` with valid frozen standing authority, there
+is no artificial one-shot gate merely because transport uses a real public
+network. The required order is:
+
+```text
+design/freeze PASS
+  -> implementation review as applicable
+  -> repo/provenance preflight
+  -> canonical environment/readiness checks as applicable
+  -> verify exact standing-authority scope
+  -> verify public-source content-lock state
+  -> execute/retry only under frozen transport retry conditions
+  -> on first complete payload: preserve/hash immediately
+  -> later repair/retries use only the exact preserved raw bytes
+  -> semantic/DQ failure STOPs; it never authorizes re-fetch
+```
+
 ## 17. Environment failure classification
 
-Before the gate's durable receipt is published:
+For a one-shot/private/production-gated operation, before the gate's durable
+receipt is published:
 
 ```text
 PRE_GATE_ENVIRONMENT_BLOCK
@@ -462,7 +486,8 @@ reviewed lock -- extra, missing, or version-drifted). These may be repaired
 and the complete preflight rerun from the beginning, but only if no
 protected boundary was crossed (§4).
 
-After the gate's durable receipt is published:
+For that same one-shot/private/production-gated operation, after the gate's
+durable receipt is published:
 
 ```text
 POST_GATE_ENVIRONMENT_FAILURE
@@ -480,7 +505,15 @@ dependency discovered only after gate consumption) -- the entire purpose of
 the-gate for future protected execution, not to reopen or excuse that
 already-terminal V8I attempt (§20).
 
-## 18. Mandatory reviewer question
+For standing `RETRIABLE_PUBLIC_PLUMBING`, classify transport/setup failure
+before the first complete payload as `PLUMBING_FAILURE_RETRIABLE`. After the
+first payload, software/parser repair must use the same content-locked raw
+bytes. A semantic or data-quality failure is `DATA_QUALITY_FAILURE` and
+STOPs; it never authorizes fetch-until-PASS, provider substitution, or date
+substitution. These classifications do not create or consume a one-shot
+receipt.
+
+## 18. Mandatory dependency-readiness question
 
 For all future protected execution, the reviewer must answer:
 
@@ -489,9 +522,11 @@ CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE?
 ```
 
 Allowed answers: `YES`, `NO`, `UNKNOWN`. `NO` or `UNKNOWN` => STOP; do not
-proceed to authorization or gate consumption until the answer is `YES` with
-mechanical evidence (§15-§16), including the operational synthetic-parser
-probe, not merely `import <package>` succeeding.
+proceed across the applicable authority boundary until the answer is `YES`
+with mechanical evidence (§15-§16), including the operational
+synthetic-parser probe, not merely `import <package>` succeeding. This is a
+readiness control; it does not prove that each public transport attempt
+requires a one-shot statistical gate.
 
 ## 19. Exact environment lock/fingerprint
 
@@ -559,9 +594,10 @@ environment-lock or readiness check.
 **Environment freeze is NOT acquisition authorization.** It governs the
 Python environment only. `future_protected_execution_authorized` remains
 `false` in both the lock candidate and the freeze record. Future protected
-execution still requires all study-specific human gates -- a frozen
-environment is a necessary precondition for a future gated attempt, never
-a substitute for its own separate, study-specific human authorization.
+execution still requires the applicable study-specific authority: a strict
+human gate for one-shot/private/production work, or explicitly frozen
+standing public-plumbing authority for the limited retriable class. A frozen
+environment is never itself an authority substitute.
 
 ## 20. Prospective-only; V8I permanence
 
@@ -585,3 +621,8 @@ with its own fresh gate, receipt key, and authorization grammar; §15-§19
 exist only so that a future attempt's own gate cannot be consumed while a
 provable, closeable software-environment gap (like V8I's missing `pandas`)
 remains undiscovered.
+
+V8J likewise remains immutable historical evidence under its recorded frozen
+gate semantics. The evidence-tier wording above is prospective only and
+applies only when a later human-approved frozen design explicitly selects it;
+it does not reopen or reinterpret V8I or V8J.
