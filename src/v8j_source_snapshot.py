@@ -252,6 +252,11 @@ def _timestamp_text(value: datetime) -> str:
     return utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _utc_clock() -> datetime:
+    """The sole production post-gate clock, using reviewed stdlib only."""
+    return datetime.now(timezone.utc)
+
+
 def _validate_timestamp(value: object) -> str:
     if not isinstance(value, str) or not (_TIMESTAMP_SECONDS.fullmatch(value) or _TIMESTAMP_MICROS.fullmatch(value)):
         raise V8JSourceSnapshotBlocked("V8J_TIMESTAMP_INVALID")
@@ -1129,6 +1134,7 @@ def _require_canonical_post_gate_callable_binding(
     *,
     jpx_fetcher: Callable[..., Any],
     parse_source_table: Callable[..., Any],
+    clock: Callable[[], datetime],
     repository_root: Path,
     reviewed_source_snapshot_support_implementation_sha: str,
 ) -> dict[str, str]:
@@ -1146,6 +1152,8 @@ def _require_canonical_post_gate_callable_binding(
         raise V8JSourceSnapshotBlocked("V8J_CANONICAL_PARSER_BINDING_INVALID")
     if jpx_fetcher is not fetch_real_jpx_source:
         raise V8JSourceSnapshotBlocked("V8J_CANONICAL_FETCHER_BINDING_INVALID")
+    if clock is not _utc_clock:
+        raise V8JSourceSnapshotBlocked("V8J_CANONICAL_CLOCK_BINDING_INVALID")
 
     canonical_path = (repository_root / CANONICAL_JPX_SOURCE_GIT_PATH).resolve(strict=False)
     for callable_value, expected_name in (
@@ -1239,6 +1247,7 @@ def _execute_source_snapshot_acquisition_with_dependencies(
         _require_canonical_post_gate_callable_binding(
             jpx_fetcher=jpx_fetcher,
             parse_source_table=parse_source_table,
+            clock=clock,
             repository_root=repository_root,
             reviewed_source_snapshot_support_implementation_sha=reviewed_impl_sha,
         )
@@ -1334,7 +1343,6 @@ def resolve_and_acquire_source_snapshot(
     v4_manifest_path: str | os.PathLike[str],
     v4_universe_csv_path: str | os.PathLike[str],
     evidence_output_path: str | os.PathLike[str],
-    clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Prepared future entry point; not executed by this support task.
 
@@ -1356,7 +1364,7 @@ def resolve_and_acquire_source_snapshot(
         repository_root=CANONICAL_REPOSITORY_ROOT,
         public_preflight=lambda: _default_public_preflight(CANONICAL_REPOSITORY_ROOT),
         gate_consumer=consume_gate_once,
-        clock=clock or (lambda: datetime.now(timezone.utc)),
+        clock=_utc_clock,
         reviewed_source_snapshot_support_implementation_sha=reviewed_source_snapshot_support_implementation_sha,
         require_canonical_post_gate_callables=True,
     )

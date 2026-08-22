@@ -1177,6 +1177,7 @@ def test_resolve_and_acquire_source_snapshot_requires_explicit_fetcher_and_parse
     signature = inspect.signature(snapshot.resolve_and_acquire_source_snapshot)
     assert signature.parameters["jpx_fetcher"].default is inspect.Parameter.empty
     assert signature.parameters["parse_source_table"].default is inspect.Parameter.empty
+    assert "clock" not in signature.parameters
 
 
 # ---------------------------------------------------------------------------
@@ -1340,22 +1341,41 @@ def test_v8i_authority_and_key_cannot_satisfy_v8j():
     assert excinfo.value.reason == "V8J_AUTHORIZATION_GRAMMAR_MISMATCH"
 
 
-def _canonical_callable_binding():
+def _canonical_callable_binding(*, clock=snapshot._utc_clock):
     from scripts.build_v8_partition_manifest import default_parse_source_table, fetch_real_jpx_source
 
     return snapshot._require_canonical_post_gate_callable_binding(
         jpx_fetcher=fetch_real_jpx_source,
         parse_source_table=default_parse_source_table,
+        clock=clock,
         repository_root=snapshot.CANONICAL_REPOSITORY_ROOT,
         reviewed_source_snapshot_support_implementation_sha="db3bff1dea20ef9d5c31c4f9df04a69d3aefb947",
     )
 
 
-def test_canonical_parser_and_fetcher_provenance_are_accepted_without_network():
+def test_canonical_parser_fetcher_and_clock_provenance_are_accepted_without_network():
     binding = _canonical_callable_binding()
     assert binding == {
         "CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE": "YES"
     }
+
+
+def test_arbitrary_or_stateful_clock_is_rejected_before_gate():
+    def wrapper_clock():
+        return snapshot._utc_clock()
+
+    class StatefulClock:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self):
+            self.calls += 1
+            return snapshot._utc_clock()
+
+    for clock in (lambda: snapshot._utc_clock(), wrapper_clock, StatefulClock()):
+        with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo:
+            _canonical_callable_binding(clock=clock)
+        assert excinfo.value.reason == "V8J_CANONICAL_CLOCK_BINDING_INVALID"
 
 
 def test_arbitrary_parser_is_rejected_before_gate():
@@ -1365,6 +1385,7 @@ def test_arbitrary_parser_is_rejected_before_gate():
         snapshot._require_canonical_post_gate_callable_binding(
             jpx_fetcher=fetch_real_jpx_source,
             parse_source_table=lambda _raw: None,
+            clock=snapshot._utc_clock,
             repository_root=snapshot.CANONICAL_REPOSITORY_ROOT,
             reviewed_source_snapshot_support_implementation_sha="db3bff1dea20ef9d5c31c4f9df04a69d3aefb947",
         )
@@ -1382,6 +1403,7 @@ def test_arbitrary_or_wrapped_fetcher_is_rejected_before_gate():
             snapshot._require_canonical_post_gate_callable_binding(
                 jpx_fetcher=fetcher,
                 parse_source_table=default_parse_source_table,
+                clock=snapshot._utc_clock,
                 repository_root=snapshot.CANONICAL_REPOSITORY_ROOT,
                 reviewed_source_snapshot_support_implementation_sha="db3bff1dea20ef9d5c31c4f9df04a69d3aefb947",
             )
@@ -1450,6 +1472,46 @@ def test_callable_binding_failure_creates_no_receipt_and_performs_no_fetch(tmp_p
     assert not (tmp_path / "gate-state").exists() or not any((tmp_path / "gate-state").iterdir())
 
 
+def test_clock_binding_failure_creates_no_receipt_and_performs_no_fetch(monkeypatch, tmp_path):
+    from scripts.build_v8_partition_manifest import default_parse_source_table, fetch_real_jpx_source
+
+    gate_calls: list[str] = []
+
+    def forbidden_gate(*_args, **_kwargs):
+        gate_calls.append("gate")
+        raise AssertionError("gate must not be consumed")
+
+    monkeypatch.setattr(snapshot, "_validate_public_preflight", lambda _value: None)
+    monkeypatch.setattr(
+        snapshot,
+        "_validate_reviewed_source_snapshot_support_implementation_binding",
+        lambda *_args, **_kwargs: "47ff573c7fba26f7a2410436e1bd6b0e049063d6",
+    )
+    monkeypatch.setattr(snapshot, "_require_frozen_environment_pre_gate", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(snapshot.V8JSourceSnapshotBlocked) as excinfo:
+        snapshot._execute_source_snapshot_acquisition_with_dependencies(
+            authorization_identity=AUTHORIZATION,
+            gate_state_root=tmp_path / "gate-state",
+            private_state_root=tmp_path / "private-state",
+            evidence_output_path=tmp_path / "evidence.json",
+            jpx_fetcher=fetch_real_jpx_source,
+            parse_source_table=default_parse_source_table,
+            v4_manifest_path=tmp_path / "manifest.json",
+            v4_universe_csv_path=tmp_path / "universe.csv",
+            repository_root=snapshot.CANONICAL_REPOSITORY_ROOT,
+            public_preflight=lambda: _preflight(),
+            gate_consumer=forbidden_gate,
+            clock=lambda: snapshot._utc_clock(),
+            reviewed_source_snapshot_support_implementation_sha=REVIEWED_IMPL_SHA,
+            require_canonical_post_gate_callables=True,
+        )
+    assert excinfo.value.reason == "V8J_CANONICAL_CLOCK_BINDING_INVALID"
+    assert gate_calls == []
+    assert not (tmp_path / "gate-state").exists()
+    assert not (tmp_path / "evidence.json").exists()
+
+
 def test_public_entry_forces_callable_binding_without_a_test_bypass(monkeypatch, tmp_path):
     captured = {}
 
@@ -1469,6 +1531,49 @@ def test_public_entry_forces_callable_binding_without_a_test_bypass(monkeypatch,
     )
     assert result == {"result": "not-executed"}
     assert captured["require_canonical_post_gate_callables"] is True
+    assert captured["clock"] is snapshot._utc_clock
+
+
+def test_public_entry_rejects_stateful_clock_argument_before_any_boundary(monkeypatch, tmp_path):
+    boundary_calls: list[object] = []
+
+    def forbidden_boundary(**_kwargs):
+        boundary_calls.append("boundary")
+        raise AssertionError("public boundary must not be reached")
+
+    class OneThenRaiseClock:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("post-gate clock failure")
+            return _clock()
+
+    clock = OneThenRaiseClock()
+    monkeypatch.setattr(snapshot, "_execute_source_snapshot_acquisition_with_dependencies", forbidden_boundary)
+    with pytest.raises(TypeError):
+        snapshot.resolve_and_acquire_source_snapshot(
+            "opaque",
+            reviewed_source_snapshot_support_implementation_sha="1" * 40,
+            jpx_fetcher=lambda: b"synthetic",
+            parse_source_table=lambda _raw: None,
+            v4_manifest_path=tmp_path / "manifest.json",
+            v4_universe_csv_path=tmp_path / "universe.csv",
+            evidence_output_path=tmp_path / "evidence.json",
+            clock=clock,
+        )
+    assert boundary_calls == []
+    assert clock.calls == 0
+
+
+def test_private_synthetic_di_retains_clock_injection_only_without_canonical_enforcement(
+    tmp_path, v4_fixture, t0_codes, fresh_codes
+):
+    result, fetch_calls = _execute(tmp_path, v4_fixture, _build_frame(t0_codes, fresh_codes))
+    assert result["result"] == "PASS"
+    assert fetch_calls == [1]
 
 
 def test_dependency_yes_is_not_an_environment_preflight_value():
