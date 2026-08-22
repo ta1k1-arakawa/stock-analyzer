@@ -111,25 +111,29 @@
     }
 
     # ------------------------------------------------------------------
-    # 5. Install/upgrade dependencies ONLY from the repository-controlled
+    # 5. Install dependencies ONLY from the repository-controlled
     #    real-execution requirements specification, via the exact
     #    canonical .venv-real-execution interpreter (never bare
     #    pip/python/py, and never the general .venv's interpreter or its
-    #    packages -- nothing is read from or copied out of ".venv").
+    #    packages -- nothing is read from or copied out of ".venv"). Uses
+    #    pip exactly as created by the Python 3.12 venv -- no separate
+    #    "pip install --upgrade pip" step, since that would mutate the
+    #    canonical protected environment using a pip package/version not
+    #    controlled by requirements-real-execution.txt and could pull a
+    #    different latest pip on every bootstrap. The future Windows-
+    #    grounded environment lock records the exact pip version together
+    #    with the complete resolved package set.
     # ------------------------------------------------------------------
     if (-not (Test-Path -LiteralPath $realExecutionRequirementsPath -PathType Leaf)) {
         throw "PRE_GATE_ENVIRONMENT_BLOCK: requirements-real-execution.txt not found at $realExecutionRequirementsPath."
     }
-    Write-Host "Installing/upgrading real-execution dependencies via $canonicalInterpreterPath ..."
-    & $canonicalInterpreterPath -m pip install --upgrade pip
+    Write-Host "Installing real-execution dependencies via $canonicalInterpreterPath ..."
+    Write-Host "Using pip exactly as created by the Python 3.12 venv -- no separate pip upgrade is performed; the future Windows-grounded environment lock records the exact pip version alongside the complete resolved package set."
+    & $canonicalInterpreterPath -m pip install -r $realExecutionRequirementsPath
     if ($LASTEXITCODE -ne 0) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: '$canonicalInterpreterPath -m pip install --upgrade pip' failed."
+        throw "PRE_GATE_ENVIRONMENT_BLOCK: '$canonicalInterpreterPath -m pip install -r requirements-real-execution.txt' failed."
     }
-    & $canonicalInterpreterPath -m pip install --upgrade -r $realExecutionRequirementsPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: '$canonicalInterpreterPath -m pip install --upgrade -r requirements-real-execution.txt' failed."
-    }
-    Write-Host "Dependency installation completed (.venv-real-execution only)."
+    Write-Host "Dependency installation completed (.venv-real-execution only, from requirements-real-execution.txt only)."
 
     # ------------------------------------------------------------------
     # 6. Run the readiness checker (no network, no private data, no gate
