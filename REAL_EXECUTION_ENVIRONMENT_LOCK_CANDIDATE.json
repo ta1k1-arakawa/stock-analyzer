@@ -20,7 +20,7 @@
   "real_network_requests_to_protected_hosts": 0,
   "requirements_real_execution": {
     "path": "requirements-real-execution.txt",
-    "sha256": "9c5e634ab620ea2ae1f8f66eeabecd6a3b25a00ea386107575fe0bae6b77a16a"
+    "sha256": "2cdcfd7a87023c4e9c3ec463cf16f77d88f72ccc8d1f0e5de242e6c68b0cf601"
   },
   "research_gates_consumed": 0,
   "resolved_lock": {
