@@ -4,11 +4,20 @@
 # and AI_REAL_EXECUTION_RUNBOOK.md SS15-19 for where this fits in the overall
 # pre-authorization ordering.
 #
+# This script exclusively creates/verifies the CANONICAL_PROTECTED_REAL_
+# EXECUTION_ENVIRONMENT, ".venv-real-execution". It never touches the
+# repository's separate, existing ".venv"
+# (GENERAL_PROJECT_ENVIRONMENT_NOT_AUTHORIZED_FOR_PROTECTED_EXECUTION, used
+# for ordinary project development and the unrelated daily trading bot):
+# this script does not read, alter, uninstall from, or copy packages out of
+# ".venv" anywhere below.
+#
 # This script does NOT:
 #   - consume any human research gate
 #   - call JPX/Yahoo or any other real production network host
 #   - access private/sealed data
 #   - execute any V8I/V8J real acquisition
+#   - touch the general ".venv" in any way
 #
 # The only network activity this script performs is ordinary PyPI package
 # installation (pip), which is standard software-supply-chain activity, not
@@ -30,12 +39,14 @@
         "AI_REAL_EXECUTION_RUNBOOK.md"
     )
     $canonicalPythonMajorMinor = "3.12"
-    $canonicalVenvDirectory = Join-Path (Get-Location) ".venv"
+    $canonicalVenvDirectory = Join-Path (Get-Location) ".venv-real-execution"
     $canonicalInterpreterPath = Join-Path $canonicalVenvDirectory "Scripts\python.exe"
     $realExecutionRequirementsPath = Join-Path (Get-Location) "requirements-real-execution.txt"
     $readinessCheckerPath = Join-Path (Get-Location) "scripts\check_real_execution_env.py"
 
     Write-Host "== Real-execution environment bootstrap (environment setup stage only) =="
+    Write-Host "Target: CANONICAL_PROTECTED_REAL_EXECUTION_ENVIRONMENT = .venv-real-execution"
+    Write-Host "This script never touches the separate general '.venv' project environment."
 
     # ------------------------------------------------------------------
     # 1. Verify correct repository root.
@@ -50,7 +61,8 @@
 
     # ------------------------------------------------------------------
     # 2. Verify required base Python launcher/version (used only to CREATE
-    #    the venv -- not itself the protected execution interpreter).
+    #    .venv-real-execution -- not itself the protected execution
+    #    interpreter).
     # ------------------------------------------------------------------
     $baseLauncherCommand = Get-Command "py" -ErrorAction SilentlyContinue
     if ($null -eq $baseLauncherCommand) {
@@ -64,32 +76,34 @@
     Write-Host "Base launcher resolved: py -$canonicalPythonMajorMinor -> Python $resolvedBaseVersion"
 
     # ------------------------------------------------------------------
-    # 3/4. Create .venv only if absent; if present, verify it belongs to
-    #      this repository and the expected Python version rather than
-    #      silently recreating it. Mismatch => STOP, no auto-delete.
+    # 3/4. Create .venv-real-execution only if absent; if present, verify
+    #      it belongs to this repository and the expected Python version
+    #      rather than silently recreating it. Mismatch => STOP, no
+    #      auto-delete. The separate general ".venv" is never inspected,
+    #      read from, or written to by this step or any other step below.
     # ------------------------------------------------------------------
     if (-not (Test-Path -LiteralPath $canonicalVenvDirectory -PathType Container)) {
-        Write-Host "No existing .venv found; creating one with py -$canonicalPythonMajorMinor ..."
+        Write-Host "No existing .venv-real-execution found; creating one with py -$canonicalPythonMajorMinor ..."
         & py "-$canonicalPythonMajorMinor" -m venv $canonicalVenvDirectory
         if ($LASTEXITCODE -ne 0) {
-            throw "PRE_GATE_ENVIRONMENT_BLOCK: 'py -$canonicalPythonMajorMinor -m venv' failed while creating .venv."
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: 'py -$canonicalPythonMajorMinor -m venv' failed while creating .venv-real-execution."
         }
-        Write-Host ".venv created."
+        Write-Host ".venv-real-execution created."
     }
     else {
-        Write-Host "Existing .venv found; verifying it (never auto-recreating on mismatch) ..."
+        Write-Host "Existing .venv-real-execution found; verifying it (never auto-recreating on mismatch) ..."
         if (-not (Test-Path -LiteralPath $canonicalInterpreterPath -PathType Leaf)) {
-            throw "PRE_GATE_ENVIRONMENT_BLOCK: .venv exists but $canonicalInterpreterPath is missing. This does not look like a valid venv for this repository. Remediate manually; this script will not delete or recreate it automatically."
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: .venv-real-execution exists but $canonicalInterpreterPath is missing. This does not look like a valid venv for this repository. Remediate manually; this script will not delete or recreate it automatically."
         }
         $existingVenvVersionOutput = & $canonicalInterpreterPath -c "import sys; print('.'.join(str(part) for part in sys.version_info[:2]))"
         if ($LASTEXITCODE -ne 0) {
-            throw "PRE_GATE_ENVIRONMENT_BLOCK: existing .venv interpreter at $canonicalInterpreterPath failed to run. Remediate manually; this script will not delete or recreate it automatically."
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: existing .venv-real-execution interpreter at $canonicalInterpreterPath failed to run. Remediate manually; this script will not delete or recreate it automatically."
         }
         $existingVenvMajorMinor = $existingVenvVersionOutput.Trim()
         if ($existingVenvMajorMinor -ne $canonicalPythonMajorMinor) {
-            throw "PRE_GATE_ENVIRONMENT_BLOCK: existing .venv is Python $existingVenvMajorMinor, expected $canonicalPythonMajorMinor. This script will not delete or recreate a mismatched .venv automatically -- remediate manually (e.g. remove .venv yourself after confirming nothing depends on it, then re-run)."
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: existing .venv-real-execution is Python $existingVenvMajorMinor, expected $canonicalPythonMajorMinor. This script will not delete or recreate a mismatched .venv-real-execution automatically -- remediate manually (e.g. remove .venv-real-execution yourself after confirming nothing depends on it, then re-run)."
         }
-        Write-Host "Existing .venv verified: Python $existingVenvMajorMinor at $canonicalInterpreterPath"
+        Write-Host "Existing .venv-real-execution verified: Python $existingVenvMajorMinor at $canonicalInterpreterPath"
     }
 
     if (-not (Test-Path -LiteralPath $canonicalInterpreterPath -PathType Leaf)) {
@@ -99,7 +113,9 @@
     # ------------------------------------------------------------------
     # 5. Install/upgrade dependencies ONLY from the repository-controlled
     #    real-execution requirements specification, via the exact
-    #    canonical interpreter (never bare pip/python/py).
+    #    canonical .venv-real-execution interpreter (never bare
+    #    pip/python/py, and never the general .venv's interpreter or its
+    #    packages -- nothing is read from or copied out of ".venv").
     # ------------------------------------------------------------------
     if (-not (Test-Path -LiteralPath $realExecutionRequirementsPath -PathType Leaf)) {
         throw "PRE_GATE_ENVIRONMENT_BLOCK: requirements-real-execution.txt not found at $realExecutionRequirementsPath."
@@ -113,11 +129,12 @@
     if ($LASTEXITCODE -ne 0) {
         throw "PRE_GATE_ENVIRONMENT_BLOCK: '$canonicalInterpreterPath -m pip install --upgrade -r requirements-real-execution.txt' failed."
     }
-    Write-Host "Dependency installation completed."
+    Write-Host "Dependency installation completed (.venv-real-execution only)."
 
     # ------------------------------------------------------------------
     # 6. Run the readiness checker (no network, no private data, no gate
-    #    consumption) via the exact canonical interpreter.
+    #    consumption) via the exact canonical .venv-real-execution
+    #    interpreter.
     # ------------------------------------------------------------------
     if (-not (Test-Path -LiteralPath $readinessCheckerPath -PathType Leaf)) {
         throw "PRE_GATE_ENVIRONMENT_BLOCK: readiness checker not found at $readinessCheckerPath."
@@ -133,6 +150,7 @@
     Write-Host "== Bootstrap complete =="
     Write-Host "CANONICAL_VENV_DIRECTORY=$canonicalVenvDirectory"
     Write-Host "CANONICAL_INTERPRETER=$canonicalInterpreterPath"
+    Write-Host "GENERAL_VENV_TOUCHED=false"
     Write-Host "BASE_LAUNCHER_RESOLVED_VERSION=$resolvedBaseVersion"
     Write-Host "READINESS_CHECKER_EXIT_CODE=$readinessExitCode"
     Write-Host "REAL_NETWORK_REQUESTS_TO_PROTECTED_HOSTS=0"

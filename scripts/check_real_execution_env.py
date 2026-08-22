@@ -19,12 +19,32 @@ real durable state.
 This script is safe to run on any platform for static/structural
 validation, but it can only ever report a Windows-grounded
 `REAL_EXECUTION_ENVIRONMENT_READY=true` when actually run on Windows, inside
-the canonical `.venv`, via `.venv\\Scripts\\python.exe`. When run anywhere
-else (including this repository's own Claude Code Cloud / Linux sessions),
+the canonical `.venv-real-execution`, via
+`.venv-real-execution\\Scripts\\python.exe`. When run anywhere else
+(including this repository's own Claude Code Cloud / Linux sessions),
 `platform_windows_grounded` is always `false` and
 `REAL_EXECUTION_ENVIRONMENT_READY` is always `false`, regardless of what
 every other individual check reports -- this script must never claim
 Windows-grounded readiness from a non-Windows run.
+
+This repository also has an existing, separate `.venv` used for ordinary
+project development and the unrelated daily trading bot -- it mixes in
+dependencies (`yfinance`, `lightgbm`, `pytest`, `requests`, `curl_cffi`,
+`scikit-learn`, and more) that have nothing to do with, and were never
+reviewed for, protected real execution.
+
+```text
+.venv                 = GENERAL_PROJECT_ENVIRONMENT_NOT_AUTHORIZED_FOR_PROTECTED_EXECUTION
+.venv-real-execution   = CANONICAL_PROTECTED_REAL_EXECUTION_ENVIRONMENT
+```
+
+`.venv` is never accepted for protected execution, even when it happens to
+be Python 3.12 with pandas/xlrd installed and every other probe would
+otherwise pass: `check_interpreter_identity` rejects any interpreter that
+is not the exact resolved `.venv-real-execution\Scripts\python.exe` path,
+and reports `interpreter_failure_class="PRE_GATE_WRONG_PYTHON_ENVIRONMENT"`
+whenever a Windows run resolves to a different interpreter -- including,
+explicitly, the general `.venv`.
 
 The JPX ".xls" operational parser probe runs against the committed, wholly
 synthetic fixture `tests/fixtures/synthetic_jpx_source_snapshot.xls` and
@@ -50,8 +70,19 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CANONICAL_VENV_DIR = REPO_ROOT / ".venv"
+
+# CANONICAL_PROTECTED_REAL_EXECUTION_ENVIRONMENT -- the only environment
+# ever accepted for protected real/network/private/human-gated execution.
+CANONICAL_VENV_DIR = REPO_ROOT / ".venv-real-execution"
 CANONICAL_WINDOWS_INTERPRETER = CANONICAL_VENV_DIR / "Scripts" / "python.exe"
+
+# GENERAL_PROJECT_ENVIRONMENT_NOT_AUTHORIZED_FOR_PROTECTED_EXECUTION -- the
+# repository's existing, separate general-development/trading-bot
+# environment. Never deleted, modified, or reinterpreted by this script;
+# referenced here ONLY so the interpreter-identity check can explicitly
+# detect and reject it (see `check_interpreter_identity`).
+GENERAL_PROJECT_VENV_DIR = REPO_ROOT / ".venv"
+
 REQUIREMENTS_REAL_EXECUTION_FILE = REPO_ROOT / "requirements-real-execution.txt"
 CANONICAL_PYTHON_MAJOR_MINOR = (3, 12)  # .github/workflows/daily_ai_trade.yml: python-version: '3.12'
 SYNTHETIC_XLS_FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "synthetic_jpx_source_snapshot.xls"
@@ -80,17 +111,42 @@ def _parse_pinned_requirement(requirements_path: Path, package_name: str) -> str
 
 
 def check_interpreter_identity() -> dict[str, Any]:
+    """Interpreter identity for protected execution.
+
+    Accepts ONLY the exact resolved `.venv-real-execution\\Scripts\\python.exe`
+    path. This explicitly and mechanically rejects the repository's separate
+    general-development `.venv` -- even when that `.venv` happens to be
+    Python 3.12 with pandas/xlrd installed -- because `interpreter_match`
+    compares the resolved executable path only, never version or package
+    state. A Windows run from any interpreter other than the canonical one
+    (including, explicitly, the general `.venv`) reports
+    `interpreter_failure_class="PRE_GATE_WRONG_PYTHON_ENVIRONMENT"`.
+    """
     is_windows = os.name == "nt"
     actual_executable = str(Path(sys.executable).resolve())
     expected_executable = str(CANONICAL_WINDOWS_INTERPRETER.resolve()) if is_windows else None
+    general_project_venv_executable = (
+        str((GENERAL_PROJECT_VENV_DIR / "Scripts" / "python.exe").resolve()) if is_windows else None
+    )
 
     if is_windows:
         interpreter_match = actual_executable.casefold() == (expected_executable or "").casefold()
+        general_project_venv_rejected = (
+            not interpreter_match
+            and general_project_venv_executable is not None
+            and actual_executable.casefold() == general_project_venv_executable.casefold()
+        )
     else:
         # The canonical protected interpreter is a Windows path by design
         # (REAL_EXECUTION_PYTHON_ENVIRONMENT.md §2). A non-Windows run can
         # never match it; this is reported explicitly, not silently skipped.
         interpreter_match = False
+        general_project_venv_rejected = False
+
+    # Distinct from "not running on Windows at all" (platform_windows_
+    # grounded=false, handled separately): this specifically flags a
+    # Windows run that resolved to the wrong interpreter.
+    interpreter_failure_class = "PRE_GATE_WRONG_PYTHON_ENVIRONMENT" if is_windows and not interpreter_match else None
 
     version_info = sys.version_info
     python_version = f"{version_info.major}.{version_info.minor}.{version_info.micro}"
@@ -101,6 +157,8 @@ def check_interpreter_identity() -> dict[str, Any]:
         "actual_interpreter": actual_executable,
         "expected_interpreter": expected_executable,
         "interpreter_match": interpreter_match,
+        "general_project_venv_rejected": general_project_venv_rejected,
+        "interpreter_failure_class": interpreter_failure_class,
         "python_version": python_version,
         "python_major_minor_match": python_major_minor_match,
     }
@@ -426,6 +484,8 @@ def run_readiness_checks() -> dict[str, Any]:
         "REAL_EXECUTION_ENVIRONMENT_READY": ready,
         "STATIC_CLOUD_VALIDATION_ONLY": not interpreter["platform_windows_grounded"],
         "INTERPRETER_MATCH": interpreter["interpreter_match"],
+        "INTERPRETER_FAILURE_CLASS": interpreter["interpreter_failure_class"],
+        "GENERAL_PROJECT_VENV_REJECTED": interpreter["general_project_venv_rejected"],
         "PYTHON_VERSION": interpreter["python_version"],
         "PYTHON_MAJOR_MINOR_MATCH": interpreter["python_major_minor_match"],
         "DEPENDENCY_READINESS": dependencies["status"],

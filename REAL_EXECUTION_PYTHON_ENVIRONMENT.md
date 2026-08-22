@@ -17,38 +17,87 @@ document; this file explains the environment piece of that contract in one
 place, and `scripts/check_real_execution_env.py` is the mechanical
 enforcement of it.
 
+## 0. Environment isolation (binding decision)
+
+```text
+finding_resolved = "REAL_EXECUTION_ENVIRONMENT_ISOLATION / CANONICAL_REAL_EXECUTION_ENVIRONMENT_NOT_ISOLATED"
+existing_general_environment                    = ".venv"
+canonical_protected_real_execution_environment  = ".venv-real-execution"
+```
+
+Windows-grounded inspection established that the repository-root `.venv`
+is Python 3.12.10 and operationally passes the readiness checker, but
+carries 46 packages including unrelated development/trading dependencies
+(`yfinance`, `lightgbm`, `pytest`, `requests`, `curl_cffi`, `scikit-learn`,
+and more) that have nothing to do with, and were never reviewed for,
+protected real execution. By binding operational decision:
+
+```text
+.venv                 = GENERAL_PROJECT_ENVIRONMENT_NOT_AUTHORIZED_FOR_PROTECTED_EXECUTION
+.venv-real-execution   = CANONICAL_PROTECTED_REAL_EXECUTION_ENVIRONMENT
+```
+
+`.venv` remains available, untouched, for ordinary project
+development/trading workflows -- this contract does not delete, modify,
+clean, or reinterpret it. Only `.venv-real-execution` may be accepted for
+future protected real network execution, private/sealed access,
+human-gated execution, or durable research-state execution. This
+separation exists because:
+
+- `.venv` is a general mixed project environment, not a reviewed
+  real-execution environment;
+- the protected environment should minimize dependency drift and attack
+  surface -- every package inside it should be traceable to the real
+  execution import closure (§4), not incidentally present because some
+  unrelated bot feature needed it;
+- unrelated bot/development dependency upgrades in `.venv` (a new
+  `yfinance` release, a `lightgbm` bump, etc.) must never silently alter
+  the frozen research execution environment.
+
+This is operational/governance hardening only, not a research methodology
+change.
+
 ## 1. Canonical environment directory
 
 ```text
-canonical_environment_directory = ".venv"   (repository root)
+canonical_environment_directory = ".venv-real-execution"   (repository root)
 ```
 
-`.venv` is never committed to Git. `.gitignore` already ignores `.venv/`
-(verified; no change was required for this task).
+`.venv-real-execution` is never committed to Git. `.gitignore` ignores both
+`.venv/` (the general environment) and `.venv-real-execution/` (the
+canonical protected environment).
 
 ## 2. Canonical interpreter invocation
 
 ```text
-canonical_windows_interpreter = ".venv\Scripts\python.exe"   (exact, repo-root-relative)
+canonical_windows_interpreter = ".venv-real-execution\Scripts\python.exe"   (exact, repo-root-relative)
 ```
 
 All future Windows real/network/private/human-gated Python execution MUST
 invoke this exact interpreter path explicitly. It MUST NOT rely on:
 
+- `.venv\Scripts\python.exe` (the general, unauthorized project environment)
 - `python`
 - `python3`
 - `py`
-- PATH activation (`.venv\Scripts\Activate.ps1`)
+- PATH activation (`.venv-real-execution\Scripts\Activate.ps1`)
 - whatever interpreter happens to be active in the current shell
 
 Activation may be convenient for a human operator, but it is never the
 security/provenance mechanism: an activated shell's `python` can silently
-resolve to something other than `.venv\Scripts\python.exe` (a stale PATH
-entry, a WindowsApps alias, a differently-versioned interpreter). Production
-code must instead verify `sys.executable` itself resolves to the repository's
-exact `.venv\Scripts\python.exe` before any gate/network/private boundary.
-A mismatch is `PRE_GATE_WRONG_PYTHON_ENVIRONMENT` (see
-`AI_REAL_EXECUTION_RUNBOOK.md` §17).
+resolve to something other than `.venv-real-execution\Scripts\python.exe`
+(a stale PATH entry, a WindowsApps alias, the general `.venv`, a
+differently-versioned interpreter). Production code must instead verify
+`sys.executable` itself resolves to the repository's exact
+`.venv-real-execution\Scripts\python.exe` before any gate/network/private
+boundary. This rejection is unconditional on interpreter *path* identity --
+it applies even when the general `.venv` happens to be Python 3.12 with
+pandas/xlrd installed and every other probe would otherwise pass. A
+mismatch is `PRE_GATE_WRONG_PYTHON_ENVIRONMENT` (see
+`AI_REAL_EXECUTION_RUNBOOK.md` §17), and
+`scripts/check_real_execution_env.py` reports this exact failure class
+(`INTERPRETER_FAILURE_CLASS`) together with `GENERAL_PROJECT_VENV_REJECTED`
+when the rejected interpreter is specifically the general `.venv`.
 
 ## 3. Canonical Python version
 
@@ -140,12 +189,14 @@ readiness_checker = "scripts/check_real_execution_env.py"
 ```
 
 `scripts/bootstrap_real_execution_env.ps1` is a fail-closed, environment-only
-PowerShell script: it creates or verifies `.venv`, installs only from
+PowerShell script: it exclusively creates or verifies
+`.venv-real-execution`, installs only from
 `requirements-real-execution.txt` via
-`.venv\Scripts\python.exe -m pip ...`, and finally runs the readiness
-checker. It never consumes a human research gate, never calls JPX/Yahoo,
-never accesses private/sealed data, and never executes any V8I/V8J real
-acquisition.
+`.venv-real-execution\Scripts\python.exe -m pip ...`, and finally runs the
+readiness checker. It never consumes a human research gate, never calls
+JPX/Yahoo, never accesses private/sealed data, never executes any V8I/V8J
+real acquisition, and never reads, alters, uninstalls from, or copies
+packages out of the separate general `.venv`.
 
 `scripts/check_real_execution_env.py` is a no-network, no-private-data
 readiness checker. It verifies interpreter identity, dependency
@@ -249,8 +300,8 @@ with no reimplementation of `pandas.read_excel` in the checker:
 2. `scripts.build_v8_partition_manifest.default_parse_source_table(raw_bytes)`;
 3. `src.v8_partition.parse_eligible_universe(frame)`.
 
-That mechanically proves the canonical `.venv` Python works, pandas
-imports, `xlrd` imports, pandas can actually parse legacy `.xls` bytes, the
+That mechanically proves the canonical `.venv-real-execution` Python works,
+pandas imports, `xlrd` imports, pandas can actually parse legacy `.xls` bytes, the
 production `default_parse_source_table` works, and the downstream JPX
 column-detection / eligible-universe reconstruction initializes
 successfully. The checker verifies only safe synthetic properties (a
@@ -285,11 +336,12 @@ without asserting that it must.
 
 **This resolves the parser probe only.** A genuine
 `JPX_XLS_PARSER_SYNTHETIC_PROBE=PASS` does not by itself make the
-environment ready: Windows-grounded execution inside the canonical `.venv`
-(§2-§3) is still required, and the Windows-grounded environment
-lock/fingerprint (§7) is still required. `REAL_EXECUTION_ENVIRONMENT_FROZEN`
-remains `false` until that lock exists and is independently reviewed, and no
-future human-gated real execution should be authorized before then.
+environment ready: Windows-grounded execution inside the canonical
+`.venv-real-execution` (§2-§3) is still required, and the Windows-grounded
+environment lock/fingerprint (§7) is still required.
+`REAL_EXECUTION_ENVIRONMENT_FROZEN` remains `false` until that lock exists
+and is independently reviewed, and no future human-gated real execution
+should be authorized before then.
 
 ## 7. Exact environment lock/fingerprint
 
@@ -299,10 +351,11 @@ REAL_EXECUTION_ENVIRONMENT_FROZEN = false
 
 This task (Claude Code Cloud) does not and cannot produce a Windows-grounded
 package-resolution lock. A later, separate, explicitly reviewed task must run
-on the real target Windows machine, using the canonical interpreter:
+on the real target Windows machine, using the canonical interpreter ONLY --
+never the general `.venv`:
 
 ```powershell
-.venv\Scripts\python.exe -m pip freeze --all
+.venv-real-execution\Scripts\python.exe -m pip freeze --all
 ```
 
 and commit the exact resolved package set as a dedicated environment

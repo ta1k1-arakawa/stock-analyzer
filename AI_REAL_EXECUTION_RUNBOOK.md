@@ -318,24 +318,52 @@ operational safety rules, not permission to retry a consumed experiment.
 This rationale is generic and does not establish any study-specific root
 cause or convert a hypothesis into a confirmed fact.
 
-## 15. Canonical Python environment (`.venv`)
+## 15. Canonical Python environment (`.venv-real-execution`)
+
+This repository has two distinct Python environments. Only one is ever
+accepted for protected execution:
+
+```text
+.venv                 = GENERAL_PROJECT_ENVIRONMENT_NOT_AUTHORIZED_FOR_PROTECTED_EXECUTION
+.venv-real-execution   = CANONICAL_PROTECTED_REAL_EXECUTION_ENVIRONMENT
+```
+
+The existing `.venv` is a general mixed project/trading-bot environment
+(Windows-grounded inspection found it to be Python 3.12.10 with 46
+packages, including unrelated dependencies such as `yfinance`, `lightgbm`,
+`pytest`, `requests`, `curl_cffi`, `scikit-learn`). It remains available,
+untouched, for ordinary project development and is never deleted,
+modified, cleaned, or reinterpreted by real-execution tooling -- it is
+simply never accepted as the protected interpreter, regardless of its
+Python version or which packages happen to be installed in it.
 
 For repository Python protected execution:
 
-- the canonical environment directory is `.venv` at the repository root; it
-  is never committed to Git;
+- the canonical environment directory is `.venv-real-execution` at the
+  repository root; it is never committed to Git;
 - all protected execution MUST invoke the interpreter explicitly as
-  `.venv\Scripts\python.exe` -- never `python`, `python3`, `py`, PATH
+  `.venv-real-execution\Scripts\python.exe` -- never `.venv\Scripts\
+  python.exe` (the general environment), `python`, `python3`, `py`, PATH
   activation, or whatever interpreter happens to be currently active;
 - system Python and any WindowsApps-alias Python are prohibited for
   protected execution;
-- activation (`.venv\Scripts\Activate.ps1`) may be convenient for a human
-  operator but is never the security/provenance mechanism -- an activated
-  shell's `python` can still silently resolve to something other than the
-  canonical interpreter;
+- activation (`.venv-real-execution\Scripts\Activate.ps1`) may be
+  convenient for a human operator but is never the security/provenance
+  mechanism -- an activated shell's `python` can still silently resolve to
+  something other than the canonical interpreter, including the general
+  `.venv`;
 - production code/preflight must verify `sys.executable` resolves to the
-  repository's exact `.venv\Scripts\python.exe` before any gate/network/
-  private boundary. A mismatch is `PRE_GATE_WRONG_PYTHON_ENVIRONMENT` (§17).
+  repository's exact `.venv-real-execution\Scripts\python.exe` before any
+  gate/network/private boundary. A mismatch is `PRE_GATE_WRONG_PYTHON_
+  ENVIRONMENT` (§17) -- including, explicitly, when the resolved
+  interpreter is the general `.venv`.
+
+Rationale: the protected environment should minimize dependency drift and
+attack surface (every package in it should be traceable to the real
+execution import closure, not incidentally present for an unrelated bot
+feature), and unrelated development/trading-bot dependency upgrades in
+`.venv` must never silently alter the frozen research execution
+environment.
 
 See `REAL_EXECUTION_PYTHON_ENVIRONMENT.md` for the full human-readable
 contract (canonical Python version, direct dependency closure, required JPX
@@ -354,7 +382,7 @@ The standard order for any protected execution is:
 design/freeze PASS
   -> implementation exact-SHA review PASS
   -> repo sync/provenance preflight
-  -> canonical .venv existence
+  -> canonical .venv-real-execution existence
   -> exact interpreter validation
   -> dependency closure validation
   -> synthetic operational parser probe
@@ -380,8 +408,9 @@ Before the gate's durable receipt is published:
 PRE_GATE_ENVIRONMENT_BLOCK
 ```
 
-Examples: `.venv` missing; wrong interpreter (`PRE_GATE_WRONG_PYTHON_
-ENVIRONMENT`); unsupported Python version; missing package; wrong package
+Examples: `.venv-real-execution` missing; wrong interpreter
+(`PRE_GATE_WRONG_PYTHON_ENVIRONMENT`, including resolving to the general
+`.venv`); unsupported Python version; missing package; wrong package
 version; missing Excel engine; parser synthetic-probe failure; filesystem
 readiness failure. These may be repaired and the complete preflight rerun
 from the beginning, but only if no protected boundary was crossed (§4).
@@ -420,11 +449,11 @@ probe, not merely `import <package>` succeeding.
 ## 19. Exact environment lock/fingerprint
 
 A later, explicitly reviewed command, run on the real target Windows
-machine using the canonical interpreter, generates the exact environment
-record:
+machine using the canonical interpreter ONLY (never the general `.venv`),
+generates the exact environment record:
 
 ```powershell
-.venv\Scripts\python.exe -m pip freeze --all
+.venv-real-execution\Scripts\python.exe -m pip freeze --all
 ```
 
 The exact Windows-grounded resolved package set is committed as a dedicated

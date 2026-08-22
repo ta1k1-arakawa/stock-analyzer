@@ -1,4 +1,5 @@
 .venv/
+.venv-real-execution/
 log/
 .claude/
 __pycache__
