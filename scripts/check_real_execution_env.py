@@ -135,6 +135,52 @@ REVIEWED_FIXTURE_SHA256 = "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9
 REVIEWED_PACKAGE_COUNT = 7
 REVIEWED_ARTIFACT_STATUS = "CANDIDATE_NOT_FROZEN"
 
+# Complete semantic content of the reviewed candidate at
+# REVIEWED_LOCK_CANDIDATE_GIT_SHA.  This is deliberately an exhaustive,
+# nested object rather than a partial selection of fields: after the exact
+# schema check below, semantic equality binds every reviewed field/value and
+# rejects any otherwise-schema-valid mutation.  It is a Python semantic
+# object, not a hash of working-tree bytes, so CRLF conversion is irrelevant.
+REVIEWED_LOCK_CANDIDATE_SEMANTIC_CONTENT: dict[str, Any] = {
+    "artifact_status": "CANDIDATE_NOT_FROZEN",
+    "canonical_environment_directory": ".venv-real-execution",
+    "canonical_interpreter": ".venv-real-execution\\Scripts\\python.exe",
+    "future_protected_execution_authorized": False,
+    "gpt_exact_sha_independent_review_required": True,
+    "pip_version": "25.0.1",
+    "private_or_sealed_reads": 0,
+    "python": {
+        "implementation": "CPython",
+        "os_name": "nt",
+        "platform_machine": "AMD64",
+        "platform_release": "11",
+        "platform_system": "Windows",
+        "sysconfig_platform": "win-amd64",
+        "version": "3.12.10",
+    },
+    "real_execution_environment_frozen": False,
+    "real_execution_environment_ready_observed": True,
+    "real_network_requests_to_protected_hosts": 0,
+    "requirements_real_execution": {
+        "path": "requirements-real-execution.txt",
+        "sha256": "2cdcfd7a87023c4e9c3ec463cf16f77d88f72ccc8d1f0e5de242e6c68b0cf601",
+    },
+    "research_gates_consumed": 0,
+    "resolved_lock": {
+        "generated_from": ".venv-real-execution\\Scripts\\python.exe -m pip freeze --all",
+        "package_count": 7,
+        "path": "requirements-real-execution.lock.txt",
+        "sha256": "b5c063a1cca585fa100fdc0027d6cdbf4ef33ef5a7fe614230599fb882b51f96",
+    },
+    "schema_version": 1,
+    "source_git_sha": "b74e0f787599475cd9fe719d254202dc9bfc14d5",
+    "synthetic_xls_fixture": {
+        "path": "tests/fixtures/synthetic_jpx_source_snapshot.xls",
+        "sha256": "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7",
+    },
+    "windows_grounded": True,
+}
+
 # Plain literal strings, not derived from a live pathlib.Path -- a Path's
 # str() renders with OS-native separators, which would silently mismatch
 # the JSON's fixed Windows-style backslash literal on a non-Windows run.
@@ -688,9 +734,8 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
       1. the candidate manifest and lock file both exist;
       2. the candidate manifest is structurally valid (exact schema, every
          required field present, no unexpected extra field);
-      3. the candidate's own self-reported values exactly match the
-         reviewed binding (status remains CANDIDATE_NOT_FROZEN, package
-         count is exactly 7, recorded hashes/paths/platform match);
+      3. the candidate's complete semantic content exactly matches the
+         reviewed candidate binding;
       4. the on-disk lock file's independently recomputed SHA-256 matches
          the reviewed lock hash;
       5. the on-disk lock file parses to exactly the reviewed package
@@ -742,28 +787,12 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
     detail["candidate_status"] = candidate.get("artifact_status")
     detail["candidate_package_count"] = resolved_lock_block.get("package_count")
 
-    candidate_matches_reviewed = (
-        candidate["source_git_sha"] == REVIEWED_SOURCE_GIT_SHA
-        and candidate["artifact_status"] == REVIEWED_ARTIFACT_STATUS
-        and candidate["canonical_environment_directory"] == EXPECTED_CANDIDATE_CANONICAL_ENVIRONMENT_DIRECTORY
-        and candidate["canonical_interpreter"] == EXPECTED_CANDIDATE_CANONICAL_INTERPRETER
-        and candidate["real_execution_environment_frozen"] is False
-        and candidate["future_protected_execution_authorized"] is False
-        and resolved_lock_block["sha256"] == REVIEWED_LOCK_SHA256
-        and resolved_lock_block["package_count"] == REVIEWED_PACKAGE_COUNT
-        and resolved_lock_block["path"] == "requirements-real-execution.lock.txt"
-        and requirements_block["sha256"] == REVIEWED_SOURCE_REQUIREMENTS_GIT_SHA256
-        and requirements_block["path"] == "requirements-real-execution.txt"
-        and fixture_block["sha256"] == REVIEWED_FIXTURE_SHA256
-        and python_block["implementation"] == CANONICAL_PYTHON_IMPLEMENTATION
-        and python_block["version"] == "3.12.10"
-        and python_block["os_name"] == "nt"
-        and python_block["platform_machine"] == CANONICAL_PLATFORM_MACHINE
-        and python_block["platform_system"] == CANONICAL_PLATFORM_SYSTEM
-        and python_block["sysconfig_platform"] == CANONICAL_SYSCONFIG_PLATFORM
-    )
-    detail["candidate_matches_reviewed_binding"] = candidate_matches_reviewed
-    if not candidate_matches_reviewed:
+    candidate_semantic_match = candidate == REVIEWED_LOCK_CANDIDATE_SEMANTIC_CONTENT
+    detail["candidate_semantic_match"] = candidate_semantic_match
+    # Retain the existing detail key for callers that consume prior
+    # readiness-check output; it now denotes complete semantic equality.
+    detail["candidate_matches_reviewed_binding"] = candidate_semantic_match
+    if not candidate_semantic_match:
         return {"status": "FAIL", "reason": "LOCK_CANDIDATE_DOES_NOT_MATCH_REVIEWED_BINDING", "detail": detail}
 
     # Independently recompute the on-disk lock file's SHA-256 -- never
