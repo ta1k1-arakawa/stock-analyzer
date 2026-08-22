@@ -168,6 +168,46 @@ raise SystemExit(0 if type_strict_equal(working_candidate, reviewed_candidate) e
     }
 
     # ------------------------------------------------------------------
+    # Establish the complete reviewed LIVE platform binding from the exact
+    # canonical interpreter that would run protected pip. This deliberately
+    # does not trust the candidate, PowerShell host architecture, an
+    # environment variable, or the interpreter path's name.
+    # ------------------------------------------------------------------
+    function Test-ReviewedLivePlatformBinding {
+        param(
+            [Parameter(Mandatory = $true)][string]$PythonInterpreter
+        )
+        $platformCheckCode = @'
+import os
+import platform
+import sysconfig
+
+
+expected = {
+    "implementation": "CPython",
+    "version": "3.12.10",
+    "os_name": "nt",
+    "platform_system": "Windows",
+    "platform_machine": "AMD64",
+    "sysconfig_platform": "win-amd64",
+}
+actual = {
+    "implementation": platform.python_implementation(),
+    "version": platform.python_version(),
+    "os_name": os.name,
+    "platform_system": platform.system(),
+    "platform_machine": platform.machine(),
+    "sysconfig_platform": sysconfig.get_platform(),
+}
+raise SystemExit(0 if actual == expected else 1)
+'@
+        & $PythonInterpreter -c $platformCheckCode
+        if ($LASTEXITCODE -ne 0) {
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: canonical .venv-real-execution interpreter does not match the complete reviewed live platform binding. Refusing to install protected packages."
+        }
+    }
+
+    # ------------------------------------------------------------------
     # 1. Verify correct repository root.
     # ------------------------------------------------------------------
     foreach ($markerFile in $expectedRepositoryMarkerFiles) {
@@ -250,6 +290,9 @@ raise SystemExit(0 if type_strict_equal(working_candidate, reviewed_candidate) e
 
     Test-ReviewedLockCandidateSemanticBinding -PythonInterpreter $canonicalInterpreterPath -CandidatePath $lockCandidatePath -ReviewedCandidateGitSha $reviewedLockCandidateGitSha
     Write-Host "Lock candidate manifest type-strictly matches the canonical reviewed Git binding."
+
+    Test-ReviewedLivePlatformBinding -PythonInterpreter $canonicalInterpreterPath
+    Write-Host "Canonical interpreter complete live platform binding verified."
 
     # Independently recompute the on-disk lock file's SHA-256 -- never
     # trust the candidate JSON's self-reported hash alone.
