@@ -1,0 +1,829 @@
+<title>stock-analyzer の現在地</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@600;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+
+<style>
+  :root {
+    --ground: #F2F3F7;
+    --surface: #FBFBFD;
+    --surface-2: #E9ECF4;
+    --ink: #151A22;
+    --muted: #5C6575;
+    --line: #D5D9E3;
+    --line-strong: #B8BFCE;
+    --accent: #2C4E86;
+    --accent-soft: #E2E8F4;
+    --block: #A83A2C;
+    --block-soft: #F5E3E0;
+    --ok: #2F6B4E;
+    --ok-soft: #E0EDE6;
+    --hold: #8A6410;
+    --hold-soft: #F4EBD8;
+
+    --f-display: "Shippori Mincho B1", "Hiragino Mincho ProN", "Yu Mincho", serif;
+    --f-body: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+    --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+
+    --col: 74ch;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0E1117;
+      --surface: #161B23;
+      --surface-2: #1D2430;
+      --ink: #E2E6EE;
+      --muted: #949DAE;
+      --line: #2A313D;
+      --line-strong: #3A4353;
+      --accent: #8FB0E8;
+      --accent-soft: #1B2739;
+      --block: #E28A7C;
+      --block-soft: #33211E;
+      --ok: #6DBF97;
+      --ok-soft: #17291F;
+      --hold: #D8AC4E;
+      --hold-soft: #2C2415;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0E1117;
+    --surface: #161B23;
+    --surface-2: #1D2430;
+    --ink: #E2E6EE;
+    --muted: #949DAE;
+    --line: #2A313D;
+    --line-strong: #3A4353;
+    --accent: #8FB0E8;
+    --accent-soft: #1B2739;
+    --block: #E28A7C;
+    --block-soft: #33211E;
+    --ok: #6DBF97;
+    --ok-soft: #17291F;
+    --hold: #D8AC4E;
+    --hold-soft: #2C2415;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 16px;
+    line-height: 1.85;
+    margin: 0;
+    padding: 0 20px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: var(--col);
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 56px;
+  }
+
+  .wide { max-width: 108ch; margin: 0 auto; width: 100%; }
+
+  /* ---------- masthead ---------- */
+
+  .masthead {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    padding: 72px 0 32px;
+    border-bottom: 2px solid var(--ink);
+  }
+
+  .kicker {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    font-family: var(--f-display);
+    font-weight: 800;
+    font-size: clamp(34px, 6vw, 54px);
+    line-height: 1.25;
+    letter-spacing: 0.01em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .standfirst {
+    font-size: 17px;
+    color: var(--muted);
+    margin: 0;
+    max-width: 62ch;
+  }
+
+  .meta-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    font-family: var(--f-mono);
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  /* ---------- sections ---------- */
+
+  section { display: flex; flex-direction: column; gap: 20px; }
+
+  .sec-head { display: flex; flex-direction: column; gap: 6px; }
+
+  .sec-label {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .sec-label::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+
+  h2 {
+    font-family: var(--f-display);
+    font-weight: 800;
+    font-size: clamp(23px, 3.4vw, 30px);
+    line-height: 1.45;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  h3 {
+    font-family: var(--f-body);
+    font-weight: 700;
+    font-size: 16px;
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+
+  p { margin: 0; }
+
+  .stack { display: flex; flex-direction: column; gap: 16px; }
+
+  strong { font-weight: 700; }
+
+  em {
+    font-style: normal;
+    background: linear-gradient(transparent 62%, var(--accent-soft) 62%);
+    padding: 0 2px;
+  }
+
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.85em;
+    background: var(--surface-2);
+    border-radius: 3px;
+    padding: 1px 5px;
+    word-break: break-word;
+  }
+
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+  /* ---------- callout ---------- */
+
+  .callout {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    padding: 22px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .callout.warn { border-left-color: var(--block); }
+
+  .callout h3 { font-size: 15px; }
+
+  /* ---------- two-world split ---------- */
+
+  .split {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+  }
+
+  .split > div {
+    background: var(--surface);
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .split .tag {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .tag-live { color: var(--ok); }
+  .tag-lab { color: var(--accent); }
+
+  .split p { font-size: 15px; color: var(--muted); }
+  .split .big { font-family: var(--f-display); font-size: 19px; color: var(--ink); font-weight: 600; line-height: 1.6; }
+
+  /* ---------- pipeline ---------- */
+
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  .step {
+    display: grid;
+    grid-template-columns: 62px 1fr;
+    gap: 16px;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--line);
+    align-items: baseline;
+  }
+
+  .step:last-child { border-bottom: none; }
+
+  .step .num {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: 0.08em;
+  }
+
+  .step .what { display: flex; flex-direction: column; gap: 4px; }
+  .step .what b { font-weight: 700; font-size: 15px; }
+  .step .what span { font-size: 14px; color: var(--muted); }
+
+  /* ---------- stats ---------- */
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+  }
+
+  .stat {
+    background: var(--surface);
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .stat .v {
+    font-family: var(--f-mono);
+    font-size: 24px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+  }
+
+  .stat .k {
+    font-size: 12px;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+  }
+
+  .v.pos { color: var(--ok); }
+  .v.neg { color: var(--block); }
+
+  /* ---------- table ---------- */
+
+  .table-scroll { overflow-x: auto; border: 1px solid var(--line); background: var(--surface); }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 14px;
+    min-width: 520px;
+  }
+
+  th, td {
+    text-align: left;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+
+  th {
+    font-family: var(--f-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  td.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* ---------- chain ---------- */
+
+  .chain { display: flex; flex-direction: column; gap: 0; }
+
+  .link {
+    display: grid;
+    grid-template-columns: 96px 1fr;
+    gap: 0 24px;
+    padding: 0 0 26px 0;
+    position: relative;
+  }
+
+  .link::before {
+    content: "";
+    position: absolute;
+    left: 96px;
+    top: 10px;
+    bottom: -4px;
+    width: 1px;
+    background: var(--line-strong);
+  }
+
+  .link:last-child::before { display: none; }
+
+  .link .id {
+    font-family: var(--f-display);
+    font-weight: 800;
+    font-size: 20px;
+    text-align: right;
+    padding-right: 0;
+    line-height: 1.4;
+  }
+
+  .link .body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-left: 24px;
+    position: relative;
+  }
+
+  .link .body::before {
+    content: "";
+    position: absolute;
+    left: -4.5px;
+    top: 9px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--block);
+    border: 2px solid var(--ground);
+  }
+
+  .link.current .body::before { background: var(--hold); }
+
+  .link .title { font-weight: 700; font-size: 15px; }
+  .link .desc { font-size: 14.5px; color: var(--muted); }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--f-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    padding: 3px 8px;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+
+  .chip-block { background: var(--block-soft); color: var(--block); }
+  .chip-hold { background: var(--hold-soft); color: var(--hold); }
+  .chip-ok { background: var(--ok-soft); color: var(--ok); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  /* ---------- glossary ---------- */
+
+  dl.gloss {
+    display: grid;
+    grid-template-columns: minmax(150px, 210px) 1fr;
+    gap: 0;
+    margin: 0;
+    border: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  dl.gloss dt {
+    font-family: var(--f-mono);
+    font-size: 12.5px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+    color: var(--accent);
+    line-height: 1.6;
+    word-break: break-word;
+  }
+
+  dl.gloss dd {
+    margin: 0;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+    border-left: 1px solid var(--line);
+    font-size: 14.5px;
+  }
+
+  dl.gloss dt:nth-last-of-type(1), dl.gloss dd:nth-last-of-type(1) { border-bottom: none; }
+
+  @media (max-width: 620px) {
+    dl.gloss { grid-template-columns: 1fr; }
+    dl.gloss dd { border-left: none; }
+    .link { grid-template-columns: 62px 1fr; }
+    .link::before { left: 62px; }
+    .link .id { font-size: 17px; }
+  }
+
+  ul.plain {
+    margin: 0;
+    padding-left: 1.2em;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 15px;
+  }
+
+  ul.plain li::marker { color: var(--accent); }
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 24px;
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  footer code { font-size: 12px; }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="kicker">ta1k1-arakawa / stock-analyzer</div>
+    <h1>いま、このリポジトリで<br>何が起きているのか</h1>
+    <p class="standfirst">1つのリポジトリの中で、<strong>毎日動いている小さな売買ボット</strong>と、<strong>その先を探す厳格な研究プログラム</strong>という性格の違う2つが並走しています。この文書は、リポジトリと全ブランチの記録から現在地を読み取ったものです。</p>
+    <div class="meta-line">
+      <span>作成日 2026-08-22</span>
+      <span>参照 main / v8系 全51ブランチ</span>
+      <span>研究段階 V8J（草案）</span>
+    </div>
+  </header>
+
+  <!-- ============ 1. 全体像 ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-label">全体像</div>
+      <h2>2つの層が並走している</h2>
+    </div>
+
+    <div class="split">
+      <div>
+        <div class="tag tag-live">稼働中 — main ブランチ</div>
+        <div class="big">日本株のペーパートレード・ボット</div>
+        <p>Yahoo Finance から株価を取り、テクニカル指標を作り、LightGBM で「2営業日以内に1%上がる確率」を出す。平日16時にGitHub Actionsが自動実行し、条件を満たせばSlackに通知して結果をCSVに記録します。README に書かれているのはこの層です。</p>
+      </div>
+      <div>
+        <div class="tag tag-lab">研究中 — v8系ブランチ群</div>
+        <div class="big">V8 歴史データ研究ライン</div>
+        <p>「その戦略は本当に儲かるのか」を、統計的に信用できるやり方で決着させるための研究。設計を凍結し、人間の承認（ゲート）を1回ずつ消費しながら進みます。<strong>まだデータ取得の入口で止まっており、収益に関する結論は一切出ていません。</strong></p>
+      </div>
+    </div>
+
+    <div class="callout">
+      <h3>ここを取り違えないこと</h3>
+      <p>mainで毎日回っているボットは、<strong>研究の結論として採用されたものではありません</strong>。過去の研究ライン（V3〜V6）は <code>PROJECT_RESEARCH_CONCLUSION.md</code> で <code>research_status: CLOSED</code> / <code>deployment_status: NO_CANDIDATE</code>（配備候補なし）と結論済みです。mainのボットは、その結論より前から続いている実運用手前の記録用パイプラインという位置づけです。</p>
+    </div>
+  </section>
+
+  <!-- ============ 2. 毎日動いているもの ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-label">稼働層</div>
+      <h2>毎日16時に走っている処理</h2>
+    </div>
+
+    <div class="stack">
+      <p><code>.github/workflows/daily_ai_trade.yml</code> が平日 16:00 JST（cron <code>0 7 * * 1-5</code>）に起動し、次の順で動きます。</p>
+    </div>
+
+    <div class="pipeline">
+      <div class="step">
+        <div class="num">TRAIN</div>
+        <div class="what"><b>train.py — モデル学習</b><span>2020-01-01以降の株価で、銘柄ごとにLightGBMを学習。モデルは毎回作り直し、Gitには保存しません。</span></div>
+      </div>
+      <div class="step">
+        <div class="num">PREDICT</div>
+        <div class="what"><b>main.py → src/predict.py — 予測</b><span>最新データで「買いシグナル確率」を計算。11個の特徴量（SMA乖離、RSI、MACD、ボリンジャー位置、ATR、ADX、騰落率、出来高変化）を使用。</span></div>
+      </div>
+      <div class="step">
+        <div class="num">NOTIFY</div>
+        <div class="what"><b>src/notifier.py — Slack通知</b><span>確率がしきい値（既定0.15）以上で、<code>notify_slack: true</code> の銘柄のみ通知。</span></div>
+      </div>
+      <div class="step">
+        <div class="num">LOG</div>
+        <div class="what"><b>src/tracker.py — 結果記録</b><span>シグナルを <code>data/trade_log_&lt;code&gt;.csv</code> に PENDING で追加し、2営業日後に損益を確定して DONE へ。CSVはActionsが自動コミットします（"Update trade log [skip ci]" の大量のコミットはこれ）。</span></div>
+      </div>
+    </div>
+
+    <h3>いまの設定</h3>
+    <div class="stats">
+      <div class="stat"><div class="v">8</div><div class="k">config.yaml の登録銘柄</div></div>
+      <div class="stat"><div class="v">3</div><div class="k">ペーパートレード中（7211 / 8306 / 5020）</div></div>
+      <div class="stat"><div class="v">300,000</div><div class="k">仮想予算（円）</div></div>
+      <div class="stat"><div class="v">2営業日</div><div class="k">判定期間（future_days）</div></div>
+      <div class="stat"><div class="v">+1.0%</div><div class="k">成功とみなす上昇幅</div></div>
+      <div class="stat"><div class="v">0.15</div><div class="k">通知するしきい値確率</div></div>
+    </div>
+
+    <h3>ペーパートレードの成績（CSVから集計）</h3>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>銘柄</th><th>期間</th><th>決済済</th><th>勝率</th><th>通算損益</th><th>保留</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>8306 三菱UFJ</td><td class="num">2026-05-27 →</td><td class="num">36</td><td class="num">50.0%</td><td class="num" style="color:var(--block)">−8,478円</td><td class="num">1</td></tr>
+          <tr><td>5020 ENEOS</td><td class="num">2026-07-15 →</td><td class="num">17</td><td class="num">64.7%</td><td class="num" style="color:var(--ok)">+22,902円</td><td class="num">2</td></tr>
+          <tr><td>7211 三菱自動車</td><td class="num">2026-07-16 →</td><td class="num">5</td><td class="num">40.0%</td><td class="num" style="color:var(--ok)">+15,496円</td><td class="num">1</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:14px;color:var(--muted)">試行回数が数十件しかないため、この数字は戦略の良し悪しの証拠にはなりません。「数字が足りないから信じない」というのが、まさに下のV8研究が存在する理由です。直近では 8306 が 08-18 に STOP で −5.10%、08-20 のシグナルが PENDING のまま残っています。</p>
+  </section>
+
+  <!-- ============ 3. なぜ研究ラインがあるのか ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-label">背景</div>
+      <h2>V3〜V7で分かってしまったこと</h2>
+    </div>
+
+    <div class="stack">
+      <p>研究ラインは、モデルを良くする前に<em>評価器そのものを信用できる状態にする</em>ところから始まっています。初期の評価には、銘柄ごとに同じ資金を二重に使う、未来データが混ざる、学習ラベルと実際の約定条件がずれる、といった利益を過大評価する欠陥がありました。それを潰したのが <code>evaluator-v2.0</code> です。</p>
+      <p>その厳密な評価器の上で LOOP-000〜004 を回した結果は、<code>PROJECT_RESEARCH_CONCLUSION.md</code> にこう記録されています。</p>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>実験</th><th>内容</th><th>判定</th></tr></thead>
+        <tbody>
+          <tr><td class="num">LOOP-000</td><td>確率順の基準戦略</td><td>BASELINE</td></tr>
+          <tr><td class="num">LOOP-001</td><td>実現収益率の回帰</td><td>REJECT</td></tr>
+          <tr><td class="num">LOOP-002</td><td>期待payoff順位</td><td>REJECT（月次勝率未達）</td></tr>
+          <tr><td class="num">LOOP-003</td><td>リスク調整スコア</td><td>当時ACCEPT → 後の監査でスコアの意味不整合が判明し配備不可</td></tr>
+          <tr><td class="num">LOOP-004</td><td>校正済み期待収益</td><td>REJECT</td></tr>
+          <tr><td class="num">V4</td><td>メタラベル分類器</td><td>NOT_PROMISING（AUC 0.508）</td></tr>
+          <tr><td class="num">V5-A / A2 / B</td><td>ポートフォリオ・ストップ・ランカー</td><td>いずれも NOT_PROMISING</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout warn">
+      <h3>研究終了報告の結論</h3>
+      <p><code>further_loop_on_same_data: PROHIBITED</code> — <strong>同じデータで改良を回し続けることを自ら禁止した</strong>のが最大のポイントです。何度も見たデータで良い成績が出ても、それは偶然を拾っただけかもしれない。だから次の研究をやるなら「新しい仮説・新しい事前登録・一度も見ていない評価データ」が要る、と自分たちで縛りをかけました。</p>
+    </div>
+
+    <p>その縛りを満たすために作られたのが、<strong>V7（未来に向けて記録だけ取る前向き研究）</strong>と<strong>V8（過去データで探索するが、確認は未使用銘柄だけで行う研究）</strong>の2本です。両者は相互に参照禁止で、完全に分離されています。</p>
+  </section>
+
+  <!-- ============ 4. V8とは何か ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-label">V8の設計</div>
+      <h2>V8がやろうとしていること</h2>
+    </div>
+
+    <div class="stack">
+      <p>V8の目的は「バックテスト利益の最大化」ではなく、<em>コスト差引後に再現性のあるプラス期待値</em>を持つ戦略を1つ見つけることです（<code>V8_HISTORICAL_RESEARCH_DESIGN.md</code> §2.2）。そのために、日本株の universe を役割の違う塊に分割します。</p>
+    </div>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>ブロック</th><th>銘柄数</th><th>役割</th></tr></thead>
+        <tbody>
+          <tr><td class="num">T0</td><td class="num">300</td><td>過去研究で既に見てしまった銘柄。<strong>仮説を思いつくためだけ</strong>に使い、成績の証拠能力はゼロ（evidential_weight = NONE）</td></tr>
+          <tr><td class="num">T1</td><td class="num">300</td><td>新規の検証用。開けられるのは<strong>1回だけ</strong>。開けた瞬間に「使用済み」になる</td></tr>
+          <tr><td class="num">T2</td><td class="num">300</td><td>封印したままの最終ホールドアウト。候補1つだけを最後に1回試す</td></tr>
+          <tr><td class="num">T3 / T_spare</td><td class="num">300 / 残り</td><td>予備。将来別の仮説を検証する必要が出たとき用</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="stack">
+      <p>この「一度しか開けられない」を機械的に守らせるために、実行の各段階に<strong>人間のワンショット承認（ゲート）</strong>が置かれています。ゲートは通信の直前に領収書（receipt）を発行して消費され、消費後にプログラムが落ちても<strong>承認は戻ってきません</strong>。同じ研究IDでのリトライは禁止で、やり直したければ番号を進めた<strong>新しい研究（successor study）</strong>を立てるしかない ── これがv8系ブランチが V8B, V8C, V8D… と増えていく理由です。</p>
+      <p>役割分担も <code>AI_RESEARCH_EXECUTION_RULES.md</code> で明文化されています。人間が最終権限（ゲート）、ChatGPTが研究設計と判断、Claude Code / Codex が実装・実行・記録。実行側は凍結済み設計の曖昧さを勝手に解釈してはならない、というルールです。</p>
+    </div>
+  </section>
+
+  <!-- ============ 5. 連鎖 ============ -->
+  <section class="wide">
+    <div class="sec-head">
+      <div class="sec-label">現在進行中</div>
+      <h2>V8 から V8J へ ── 9回連続の BLOCK</h2>
+    </div>
+
+    <p style="max-width:74ch">2026-08-09にV8の設計が凍結されてから今日までの2週間で、研究は9回「閉じて」います。重要なのは、<strong>そのどれも戦略が負けた記録ではない</strong>ことです。全て、本命のデータ取得にたどり着く前の取得基盤・記録契約・実行環境の失敗で、各終了記録には <code>strategy_failure=false</code> / <code>profitability_failure=false</code> が明記されています。</p>
+
+    <div class="chain">
+
+      <div class="link">
+        <div class="id">V8</div>
+        <div class="body">
+          <div class="chips"><span class="chip chip-block">BLOCK_CLOSED</span><span class="chip chip-block">MALFORMED_OHLCV</span></div>
+          <div class="title">T1の株価取得が2回とも品質ゲートで停止</div>
+          <div class="desc">1回目は300件中298件目で不正な行を検出、2回目は新設した「不正行1%まで許容」ポリシーの下でも比率超過。結果を見た後にポリシーを変えるのは事後調整にあたるため、V8のまま直すことを禁止し新研究へ。</div>
+        </div>
+      </div>
+
+      <div class="link">
+        <div class="id">V8B</div>
+        <div class="body">
+          <div class="chips"><span class="chip chip-block">BLOCK_CLOSED</span><span class="chip chip-block">HTTP 400</span></div>
+          <div class="title">データ品質しきい値を較正し直したが、通信境界の先で HTTP 400</div>
+          <div class="desc">許容不正行率の較正、配分権限の整備、信頼ピンなどを実装。実行に進んだところで取得先から400が返り、通信レイヤの問題として終了。</div>
+        </div>
+      </div>
+
+      <div class="link">
+        <div class="id">V8C</div>
+        <div class="body">
+          <div class="chips"><span class="chip chip-block">BLOCK_CLOSED</span><span class="chip chip-block">READINESS</span></div>
+          <div class="title">通信のリトライ耐性を作り直したが、事前チェックで停止</div>
+          <div class="desc">再試行可能なエラー種別だけを再試行する設計を導入。T1Cの準備チェックが通らず終了。</div>
+        </div>
+      </div>
+
+      <div class="link">
+        <div class="id">V8D</div>
+        <div class="body">
+          <div class="chips"><span class="chip chip-block">BLOCK_CLOSED</span><span class="chip chip-block">DESIGN_AUDITABILITY</span></div>
+          <div class="title">通信監査の設計自体が監査不能と判定</div>
+          <div class="desc">データ品質の証拠をどう残すかの契約に穴があり、後から検証できない設計だったため、実行せず設計段階で終了。</div>
+        </div>
+      </div>
+
+      <div class="link">
+        <div class="id">V8E</div>
+        <div class="body">
+          <div class="chips"><span class="chip chip-block">BLOCK_CLOSED</span><span class="chip chip-block">TRANSPORT_PARSER</span></div>
+          <div class="title">証拠契約を作り直したが、パーサ側で失敗</div>
+          <div class="desc">取得した応答の解釈で失敗。通信の読み取り仕様（窓の意味）の見直しが必要と判断。</div>
+        </div>
+      </div>
+
+      <div class="link">
+        <div class="id">V8F</div>
+        <div class="body">
+          <div class="chips"><span class="chip chip-block">BLOCK_CLOSED</span><span class="chip chip-block">LOCATOR_ZERO_MATCH</span></div>
+          <div class="title">過去に作った非公開パーティションが見つからない</div>
+          <div class="desc">封印済みの銘柄分割（マニフェストハッシュ <code>0a86…0ca62</code>）を保管場所から特定しようとしたが、条件に一致する候補が0件。</div>
+        </div>
+      </div>
+
+      <div class="link">
+        <div class="id">V8G</div>
+        <div class="body">
+          <div class="chips"><span class="chip chip-block">BLOCK_CLOSED</span><span class="chip chip-block">LOCATOR_ZERO_MATCH</span></div>
+          <div class="title">探索方法を変えて再挑戦、やはり0件</div>
+          <div class="desc">ワンショットの探索ゲートを消費して0件。ここで「昔のパーティションはもう手に入らない」と確定し、探し直しは永久禁止に。</div>
+        </div>
+      </div>
+
+      <div class="link">
+        <div class="id">V8H</div>
+        <div class="body">
+          <div class="chips"><span class="chip chip-block">BLOCK（実装レビュー）</span><span class="chip chip-ok">通信 0 / ゲート未消費</span></div>
+          <div class="title">パーティションを新規に作り直す方針へ。設計の自己矛盾で差し戻し</div>
+          <div class="desc">凍結設計が「最初の通信の直前に領収書を発行せよ」と「その領収書に通信後にしか分からない値を含めよ」を同時に要求していた。実装側は正しく矛盾を検知し分割案を作ったが、実行エージェントが凍結設計を独断で解釈するのはルール違反のため差し戻し。</div>
+        </div>
+      </div>
+
+      <div class="link">
+        <div class="id">V8I</div>
+        <div class="body">
+          <div class="chips"><span class="chip chip-block">BLOCK_CLOSED</span><span class="chip chip-block">pandas 未インストール</span></div>
+          <div class="title">実際にJPXへ取りに行った直後、pandas が無くて落ちた</div>
+          <div class="desc">領収書と証拠を前後に分ける契約に直して実行。承認を消費し、JPXへの正式リクエストは成功して生データを取得したが、その直後の <code>import pandas as pd</code> で <code>ModuleNotFoundError</code>。生データは保存前に消え、証拠は残らず、ワンショット承認だけが消費された。<strong>この研究で最も痛い失敗。</strong></div>
+        </div>
+      </div>
+
+      <div class="link current">
+        <div class="id">V8J</div>
+        <div class="body">
+          <div class="chips"><span class="chip chip-hold">設計草案</span><span class="chip chip-hold">凍結前・ゲート未消費</span></div>
+          <div class="title">現在ここ ── 「実行環境が証明されるまでゲートを消費しない」</div>
+          <div class="desc">科学的な方法論はV8Iから<strong>一切変更なし</strong>（<code>scientific_methodological_change=NONE</code>）。追加したのは運用上の前提条件1つだけ：専用の <code>.venv-real-execution</code> で <code>scripts/check_real_execution_env.py</code> が終了コード0を返し、環境ロックとフリーズ記録のハッシュが一致すること。これが機械的にPASSしない限り、JPXへの1回の通信もゲート消費も行わない。</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============ 6. いまの立ち位置 ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-label">現在地</div>
+      <h2>いま止まっている場所と、次の一手</h2>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="v">0</div><div class="k">V8系で完了したデータ取得</div></div>
+      <div class="stat"><div class="v">0</div><div class="k">開封された検証ブロック</div></div>
+      <div class="stat"><div class="v">0</div><div class="k">V8系で測定された損益</div></div>
+      <div class="stat"><div class="v">9</div><div class="k">閉じた研究ID（V8〜V8I）</div></div>
+    </div>
+
+    <div class="stack">
+      <p>V8系はまだ<strong>「銘柄リストの元になるJPXの公式スナップショットを1回取ってくる」段階</strong>にいます。その先に、非公開パーティションの生成 → 株価の生データ取得 → Layer A（仮説探索）→ Layer B（T1で1回だけ検証）→ Layer C（T2で最終1回）と続きますが、どれも未着手です。</p>
+      <p>次の一手は、V8J草案に対するGPTの独立レビューと人間の設計凍結承認（<code>V8J_DESIGN_FREEZE_APPROVAL</code>）です。凍結後に環境チェックがPASSして初めて、V8Iで失った1回の取得をV8Jとしてやり直せます。</p>
+    </div>
+
+    <div class="callout warn">
+      <h3>この2週間の教訓を一行で</h3>
+      <p>失敗の中身は「戦略が弱い」ではなく<strong>「取得基盤と実行環境が、一発勝負に耐えるほど固まっていなかった」</strong>。V8Jが環境の事前証明を足したのは、この直接の帰結です。</p>
+    </div>
+  </section>
+
+  <!-- ============ 7. 用語 ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-label">用語</div>
+      <h2>記録に頻出する言葉</h2>
+    </div>
+
+    <dl class="gloss">
+      <dt>gate</dt>
+      <dd>人間が1回だけ与える実行許可。通信や封印データへのアクセスの直前で消費され、消費後は失敗しても復活しない。</dd>
+
+      <dt>receipt / evidence</dt>
+      <dd>ゲート消費の証跡。receiptは通信「前」に分かる値だけ、evidenceは通信「後」の結果を書く。V8Hはこの2つが1つの文書に混ざっていたことで差し戻された。</dd>
+
+      <dt>BLOCK_CLOSED</dt>
+      <dd>その研究IDは失敗して永久に閉じた、という終了状態。リトライ・ゲート再利用・記録の書き換えは全て禁止。</dd>
+
+      <dt>successor study</dt>
+      <dd>閉じた研究を継ぐ新しい研究ID。前の結論や記録には一切手を触れず、方法論だけを引き継ぐ。V8B〜V8Jは全てこれ。</dd>
+
+      <dt>evidential_weight<br>= NONE</dt>
+      <dd>「この数字は証拠として使ってはいけない」という印。既に見てしまったデータ（T0）の成績に付く。</dd>
+
+      <dt>PRE_GATE /<br>POST_GATE</dt>
+      <dd>失敗がゲート消費の前か後か。前ならやり直せる、後なら研究IDごと終わり。V8Iは後だった。</dd>
+
+      <dt>T0 / T1 / T2 / T3</dt>
+      <dd>300銘柄ずつの universe の分割。既出・検証用・最終封印・予備。</dd>
+    </dl>
+  </section>
+
+  <!-- ============ 8. 読む順 ============ -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-label">案内</div>
+      <h2>自分で追いかけるときの順路</h2>
+    </div>
+
+    <ul class="plain">
+      <li><strong>稼働中のボットを知りたい</strong> → main ブランチの <code>README.md</code> と <code>config.yaml</code>。</li>
+      <li><strong>なぜ研究をやり直しているか</strong> → <code>PROJECT_RESEARCH_CONCLUSION.md</code>（V3〜V6の終了報告、日本語）。</li>
+      <li><strong>V8の全体設計</strong> → まず <code>V8_START_HERE.md</code>、次に <code>V8_STATE.json</code>、詳細は <code>V8_HISTORICAL_RESEARCH_DESIGN.md</code>。</li>
+      <li><strong>いまの最前線</strong> → ブランチ <code>v8g-private-partition-locator-successor-design</code>（最新の文書群がここに集約）の <code>V8J_SOURCE_SNAPSHOT_ENVIRONMENT_SUCCESSOR_DESIGN_DRAFT.md</code>。</li>
+      <li><strong>各研究がどう終わったか</strong> → <code>V8*_TERMINAL_ADJUDICATION.json</code> と <code>V8*_EXECUTION_INCIDENTS.md</code>。</li>
+      <li><strong>AIと人間の役割分担ルール</strong> → <code>AI_RESEARCH_EXECUTION_RULES.md</code>、実行手順は <code>AI_REAL_EXECUTION_RUNBOOK.md</code>。</li>
+    </ul>
+
+    <p style="font-size:14px;color:var(--muted)">補足：ブランチ名は研究IDと必ずしも一致しません。V8H〜V8Jの文書はいずれも <code>v8g-…</code> ブランチ上に置かれています。日々のログ更新（"Update trade log [skip ci]"）は main にのみ入り、研究ブランチとは独立です。</p>
+  </section>
+
+  <footer>
+    <div>この文書は、リポジトリの全ブランチ（main および v3〜v8系）に含まれる設計文書・終了記録・実行記録・CSVログを読み取って構成したものです。数値は参照した時点のファイル内容そのままで、推定値は含みません。</div>
+    <div><code>docs/stock-analyzer-overview-ja.html</code> ／ 参照コミット <code>addc467</code>（main）, <code>f26c413</code>（v8i）, <code>V8G</code>ブランチ最新</div>
+  </footer>
+
+</div>
