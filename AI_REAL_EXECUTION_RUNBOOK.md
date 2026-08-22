@@ -308,21 +308,48 @@ authorization identity.
 
 ## 12. Recovery state machine
 
-The generic recovery flow is:
+Select the recovery branch from the frozen operation class; merely crossing a
+public network boundary does not itself consume a statistical one-shot
+authority.
+
+For a `STATISTICALLY_IRREVERSIBLE_GATE` or another explicitly one-shot,
+private, or production operation, the strict recovery flow is:
 
 ```text
 STOP
-  -> determine whether private/network/gate boundary was reached
+  -> determine whether the applicable private/gate boundary was reached
   -> read-only inspect durable state
   -> classify PRE_GATE or POST_GATE
   -> PRE_GATE: propose only non-methodological safe preflight repair
   -> PRE_GATE: re-run preflight from the beginning
-  -> POST_GATE: no second execution unless frozen design explicitly authorizes it
+  -> POST_GATE: authority is not restored; no retry/reset/delete/reuse unless frozen design explicitly permits
   -> return to GPT methodology authority and human authority for next study decision
 ```
 
 If a state transition is not provable, STOP. A POST_GATE crash, BLOCK, or
 partial result never becomes a PRE_GATE failure through cleanup.
+
+For `RETRIABLE_PUBLIC_PLUMBING` with valid
+`STANDING_RETRIABLE_PUBLIC_PLUMBING_AUTHORITY`, recovery instead follows the
+frozen content-lock state:
+
+```text
+no complete public payload
+  -> PLUMBING_FAILURE_RETRIABLE
+  -> retry transport only under frozen provider/endpoint/retry/stopping conditions
+
+first complete payload preserved and content-locked
+  -> never re-fetch because of a downstream failure
+  -> environment/parser/software repair reruns only against the exact preserved raw bytes
+
+semantic/T0/eligibility/data-quality failure
+  -> DATA_QUALITY_FAILURE
+  -> STOP; no additional fetch to seek PASS
+```
+
+Provider/date substitution is prohibited. Historical V8I and V8J remain
+governed by their immutable recorded one-shot semantics and are not
+reinterpreted by this prospective branch.
 
 ## 13. Command quality checklist
 
