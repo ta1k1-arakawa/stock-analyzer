@@ -1,0 +1,39 @@
+{
+  "artifact_status": "CANDIDATE_NOT_FROZEN",
+  "canonical_environment_directory": ".venv-real-execution",
+  "canonical_interpreter": ".venv-real-execution\\Scripts\\python.exe",
+  "future_protected_execution_authorized": false,
+  "gpt_exact_sha_independent_review_required": true,
+  "pip_version": "25.0.1",
+  "private_or_sealed_reads": 0,
+  "python": {
+    "implementation": "CPython",
+    "os_name": "nt",
+    "platform_machine": "AMD64",
+    "platform_release": "11",
+    "platform_system": "Windows",
+    "sysconfig_platform": "win-amd64",
+    "version": "3.12.10"
+  },
+  "real_execution_environment_frozen": false,
+  "real_execution_environment_ready_observed": true,
+  "real_network_requests_to_protected_hosts": 0,
+  "requirements_real_execution": {
+    "path": "requirements-real-execution.txt",
+    "sha256": "9c5e634ab620ea2ae1f8f66eeabecd6a3b25a00ea386107575fe0bae6b77a16a"
+  },
+  "research_gates_consumed": 0,
+  "resolved_lock": {
+    "generated_from": ".venv-real-execution\\Scripts\\python.exe -m pip freeze --all",
+    "package_count": 7,
+    "path": "requirements-real-execution.lock.txt",
+    "sha256": "b5c063a1cca585fa100fdc0027d6cdbf4ef33ef5a7fe614230599fb882b51f96"
+  },
+  "schema_version": 1,
+  "source_git_sha": "b74e0f787599475cd9fe719d254202dc9bfc14d5",
+  "synthetic_xls_fixture": {
+    "path": "tests/fixtures/synthetic_jpx_source_snapshot.xls",
+    "sha256": "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7"
+  },
+  "windows_grounded": true
+}
