@@ -123,20 +123,23 @@ all_eligible_pooled_spearman=0.009806632523639723
 
 ## Freeze boundary
 
-After human approval of a later reviewed preregistration, the following are
-forbidden before and after T1: changing the 5/20 volume windows or score sign;
+After the completed human approval/freeze, the following remain forbidden
+before and after T1: changing the 5/20 volume windows or score sign;
 adding thresholds; combining Measurement 001-005 scores; changing eligibility,
 top20, execution/cost/slippage, or capacity; feature engineering based on T1;
 or retry/redraw/substitution based on outcome.
 
 ```text
-T1_CONFIRMATION_DESIGN=CHATGPT_DECISION_REQUIRED
+T1_CONFIRMATION_DESIGN=APPROVED_FROZEN
 T1_HUMAN_AUTHORIZATION=REQUIRED_FRESH_AT_POINT_OF_USE
 ```
 
-This draft does not invent T1 pass thresholds, T1 partition/allocation, T1
-gate grammar, T1 retry rules, or promotion rules. A separate ChatGPT
-methodology decision is required before T1.
+This preregistration does not define V8K partition/allocation, point-of-use
+T1 gate grammar, retry authority, or T2/promotion criteria. The six T1
+confirmation PASS criteria are human-approved and frozen in the bound
+V8K_LAYER_B_T1_CONFIRMATION_DESIGN. A separate ChatGPT methodology decision
+is still required specifically for V8K partition establishment and T1
+point-of-use authority before T1.
 
 ```text
 NEXT_ACTION=CHATGPT_DECISION_REQUIRED_FOR_V8K_T1_PARTITION_AND_POINT_OF_USE_AUTHORITY
