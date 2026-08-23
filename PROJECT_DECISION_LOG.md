@@ -71,3 +71,7 @@ transitions. This public log must not contain protected material.
 - V9_005 HIGH-1 is RESOLVED; HIGH-2 remains the only V9_005 design blocker.
 - HIGH-2 remediation binds official JPX calendar evidence, exact Yahoo expected/returned-date equality, and exact JPX-versus-Yahoo split/consolidation multiset comparison.
 - No network, data, T1, design-freeze, or purchase authority is created.
+- GPT exact-SHA review of `6f29b674a6962c84324f699c18e94fcd494ec684`: `CRITICAL=0`, `HIGH=1`, `MEDIUM=0`, `RESULT=BLOCK`.
+- Finding `V9_005_HIGH_2B_PREFREEZE_PROBE_ENDPOINT_REFERENCES_NONEXISTENT_FROZEN_V9_SIGNAL_GRID`: the probe's Stage-A calendar-lock endpoint referenced a `last_frozen_V9_signal_grid_D0`, which cannot mechanically exist while `V9_design_frozen=false`.
+- HIGH-2B remediation binds the probe's `FINAL_SIGNAL_D0` calculation to the exact already-decided signal-grid cadence rule in Section 9 of `V9_CROSS_SECTIONAL_CLOSE_AUCTION_DESIGN_DRAFT.md` at exact blob SHA `9135183b7fc5097602fa40fcda8f1b0448220244`, explicitly recorded as a narrow prefreeze methodology binding and not a V9 design freeze, with a point-of-use blob-SHA check that fails closed as `PROBE_SIGNAL_GRID_CONTRACT_MISMATCH` if that file changes before Stage A.
+- No network, data, T1, or design-freeze authority is created. `V9_005_HIGH_2B` is `REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW`, not PASS/RESOLVED.

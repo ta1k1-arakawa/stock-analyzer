@@ -64,10 +64,36 @@ price/return field may be printed.
 The calendar source family exists solely to define Stage-B expected market
 dates. Stage-A execution must acquire and lock enough official JPX calendar
 material to cover 2016-09-01 through the final possible HIGH-2/V9 exit-tail
-date. Do not hard-code that endpoint. Derive it mechanically:
+date. Do not hard-code that endpoint. Derive it mechanically.
+
+### Signal-grid endpoint binding (prefreeze methodology binding, not a V9 design freeze)
+
+`FINAL_SIGNAL_D0` below must not require the overall V9 design to already be
+frozen (`V9_design_frozen=false` remains unchanged by this probe). Instead,
+this probe endpoint calculation is mechanically bound to the exact
+already-decided signal-grid rule recorded in Section 9 ("Training
+signal-date cadence") of the following exact file/blob:
 
 ```text
-FINAL_SIGNAL_D0=last_frozen_V9_signal_grid_D0_lte_2025-12-31
+BOUND_SIGNAL_GRID_PATH=V9_CROSS_SECTIONAL_CLOSE_AUCTION_DESIGN_DRAFT.md
+BOUND_SIGNAL_GRID_BLOB_SHA=9135183b7fc5097602fa40fcda8f1b0448220244
+PREFREEZE_BINDING=true
+GLOBAL_V9_FREEZE_REQUIRED=false
+```
+
+This is a narrow, mechanical binding to one already-decided rule inside that
+draft for the sole purpose of computing this probe's calendar-lock endpoint.
+It is not a claim that the overall V9 design is frozen, finally reviewed, or
+execution-authorized, and it creates no design-freeze authority. Do not
+reinterpret, extend, or otherwise alter the bound rule.
+
+Mechanical derivation, using the locked official JPX trading calendar
+required elsewhere in this Stage:
+
+```text
+j0=calendar_index(first_JPX_trading_day >= 2018-01-01)
+D0_at_calendar_index_j iff (j - j0) mod 3 == 0
+FINAL_SIGNAL_D0=last_such_D0_lte_2025-12-31
 FINAL_PLANNED_D3=third_JPX_business_day_after(FINAL_SIGNAL_D0)
 FINAL_POSSIBLE_EXIT_DAY=20th_JPX_business_day_exit_attempt_date(
   counting_FINAL_PLANNED_D3_as_attempt_day_1)
@@ -79,7 +105,27 @@ The locked calendar material must derive this endpoint unambiguously. Any
 unresolved required historical calendar-archive gap fails Stage A. No national
 holiday library, pandas holiday calendar, exchange calendar, Yahoo timestamp,
 or inferred weekday-only calendar may replace locked official JPX calendar
-evidence.
+evidence. Do not hard-code the resulting calendar date.
+
+### Point-of-use signal-grid contract check
+
+Before any Stage-A network boundary, mechanically verify that
+`V9_CROSS_SECTIONAL_CLOSE_AUCTION_DESIGN_DRAFT.md` at the exact commit in use
+still resolves to Git blob SHA `9135183b7fc5097602fa40fcda8f1b0448220244`
+(for example, `git ls-tree <commit-ish> -- V9_CROSS_SECTIONAL_CLOSE_AUCTION_
+DESIGN_DRAFT.md`, or `git cat-file -p <commit-ish>:V9_CROSS_SECTIONAL_CLOSE_
+AUCTION_DESIGN_DRAFT.md | git hash-object --stdin`). If the resolved blob SHA
+differs from the bound value above:
+
+```text
+failure_class=PROBE_SIGNAL_GRID_CONTRACT_MISMATCH
+```
+
+STOP before any Stage-A network boundary. Do not silently bind to a newer
+version of that file, and do not proceed with Stage A under the mismatched
+binding. A blob-SHA mismatch requires a fresh GPT methodology
+review/rebinding decision -- not execution-agent discretion -- before any
+further execution.
 
 For calendar date `d`, `JPX_BUSINESS_DAY(d)=true` iff the locked official JPX
 calendar contract classifies TSE cash-equity auction trading as open on `d`.
