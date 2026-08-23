@@ -14,3 +14,9 @@ transitions. This public log must not contain protected material.
 - GPT exact-SHA review of `65e6aa02d9d790c3a02ebd9c3f67492744d8e236`: `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, `RESULT=PASS`.
 - V9 bootstrap/durable-memory stage: PASS. Next stage: repository-only reuse/data/execution feasibility audit.
 - SBI execution facts and point-in-time-universe feasibility status are prefreeze evidence, not frozen methodology.
+- GPT exact-SHA review of `7730b17fddebd03fddbe75ed1b679e67019a1cb9`: `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, `RESULT=PASS`.
+- V9_001 reuse/data/execution feasibility audit: PASS.
+- J-Quants Standard is the preferred point-in-time historical-data path; paid access remains unauthorized.
+- Same-close sale-proceeds reuse is rejected as an operational assumption.
+- Primary V9 portfolio decision: 10 positions, two close-to-close intervals, and next-entry D4 cash-gap architecture.
+- V9 remains prefreeze and profitability is unestablished.

@@ -1,0 +1,46 @@
+# V9_002 External-Source Evidence
+
+```text
+source_verification_date=2026-08-23
+status=PREFREEZE_EVIDENCE_ONLY
+profitability_evidence=false
+```
+
+## Official J-Quants individual-service facts
+
+```text
+source_class=GPT_WEB_VERIFIED_OFFICIAL_JQUANTS
+standard_plan_price=3300_JPY_PER_MONTH_TAX_INCLUDED
+standard_history=10_YEARS
+standard_includes=LISTED_ISSUE_MASTER,FULL_DAY_STOCK_PRICES_OHLC,INDICES_INCLUDING_TOPIX
+listed_issue_information_supports=HISTORICAL_AND_AS_OF_INFORMATION
+cancellation=ANY_TIME_EFFECTIVE_END_OF_BILLING_PERIOD
+raw_data_redistribution_prohibited_or_private_use_constraints_apply=true
+post_cancellation_raw_data_retention_rights_mechanically_verified=false
+
+JQUANTS_STANDARD_SELECTED_AS_PREFERRED_V9_HISTORICAL_SOURCE=true
+JQUANTS_PAID_ACCESS_AUTHORIZED=false
+JQUANTS_DATA_ACQUISITION_AUTHORIZED=false
+POST_CANCELLATION_RETENTION_VERIFIED=false
+```
+
+## Official SBI facts
+
+```text
+source_class=GPT_WEB_VERIFIED_OFFICIAL_SBI
+S_share_internet_buy_sell_commission_yen=0
+applicable_TSE_S_share_orders_10_30_to_14_00=TARGET_SAME_DAY_CLOSING_AUCTION_OR_CLOSING_PRICE
+accepted_S_share_order_may_fail_to_execute=true
+sale_proceeds_buying_power_after_sale_order_actually_executed=true
+same_day_same_custody_category_same_ticker_multiple_S_share_orders_prohibited=true
+SAME_CLOSE_FULL_PORTFOLIO_SELF_FUNDING_ASSUMPTION=false
+```
+
+Consequently, a new full portfolio cannot assume funding from sales executing
+at that same future closing auction. These are current operational facts, not
+evidence of profitability.
+
+## Boundary
+
+This evidence does not authorize a J-Quants purchase, API access, raw-data
+acquisition, broker activity, historical evaluation, or T1 access.

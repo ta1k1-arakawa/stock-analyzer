@@ -5,9 +5,9 @@ document_role=PROJECT_LEVEL_EXTERNAL_MEMORY
 as_of_base_sha=3791dfa421c54555acc066346c810ee4cf8c95b5
 
 current_study=V9_CROSS_SECTIONAL_CLOSE_AUCTION
-current_stage=PREFREEZE_REUSE_DATA_EXECUTION_FEASIBILITY_AUDIT
+current_stage=PREFREEZE_METHODOLOGY_DESIGN_DRAFT
 authoritative_branch=v9-cross-sectional-close-auction-design
-last_gpt_reviewed_sha=65e6aa02d9d790c3a02ebd9c3f67492744d8e236
+last_gpt_reviewed_sha=7730b17fddebd03fddbe75ed1b679e67019a1cb9
 last_gpt_review_result=PASS
 
 V8K_STATUS=TERMINATED_PRE_PRIVATE_PARTITION
@@ -30,6 +30,7 @@ real_order_execution_authorized=false
 V9_design_frozen=false
 V9_historical_evaluation_authorized=false
 V9_private_or_sealed_access_authorized=false
+JQUANTS_PURCHASE_AUTHORIZED=false
 ```
 
 ## Current navigation
