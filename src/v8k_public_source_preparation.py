@@ -178,7 +178,15 @@ def _prepare_for_test(*, state_root: str | os.PathLike[str], raw_authorization: 
     if evidence_path is not None: _atomic_once(Path(evidence_path), canonical_bytes(result), "EVIDENCE_ALREADY_EXISTS")
     return result
 
-def prepare(*, raw_authorization: str, fetcher: Callable[[str], tuple[bytes,str]], parser: Callable[[bytes], Any], v4_manifest_path: str | os.PathLike[str], v4_universe_path: str | os.PathLike[str], implementation_commit: str, now: Callable[[], datetime], sleep: Callable[[int],None]=lambda _n: None, evidence_path: str | os.PathLike[str] | None=None) -> dict[str, Any]:
+def _production_dependencies() -> tuple[Callable[[str], tuple[bytes, str]], Callable[[bytes], Any], Path, Path]:
+    from scripts.build_v8_partition_manifest import PRODUCTION_USER_AGENT, _default_trusted_jpx_opener, _read_response, default_parse_source_table
+    import urllib.request
+    def fetcher(url: str) -> tuple[bytes, str]:
+        response = _default_trusted_jpx_opener(urllib.request.Request(url, headers={"User-Agent": PRODUCTION_USER_AGENT}))
+        return _read_response(response), url
+    return fetcher, default_parse_source_table, CANONICAL_REPOSITORY_ROOT / "V4_UNIVERSE_MANIFEST.json", CANONICAL_REPOSITORY_ROOT / "V4_UNIVERSE.csv"
+
+def prepare(*, raw_authorization: str, fetcher: Callable[[str], tuple[bytes,str]] | None = None, parser: Callable[[bytes], Any] | None = None, v4_manifest_path: str | os.PathLike[str] | None = None, v4_universe_path: str | os.PathLike[str] | None = None, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc), sleep: Callable[[int],None]=lambda _n: None, evidence_path: str | os.PathLike[str] | None=None) -> dict[str, Any]:
     """Production-facing API: fixed canonical machine-local state only."""
     try:
         root = CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT
@@ -187,4 +195,6 @@ def prepare(*, raw_authorization: str, fetcher: Callable[[str], tuple[bytes,str]
     except Exception as exc:
         raise V8KPublicSourceBlocked("GOVERNANCE_FAILURE") from exc
     head = production_provenance()
-    return _prepare_for_test(state_root=root, raw_authorization=raw_authorization, support_sha=head, fetcher=fetcher, parser=parser, v4_manifest_path=v4_manifest_path, v4_universe_path=v4_universe_path, implementation_commit=implementation_commit, now=now, sleep=sleep, evidence_path=evidence_path)
+    if fetcher is None or parser is None or v4_manifest_path is None or v4_universe_path is None:
+        fetcher, parser, v4_manifest_path, v4_universe_path = _production_dependencies()
+    return _prepare_for_test(state_root=root, raw_authorization=raw_authorization, support_sha=head, fetcher=fetcher, parser=parser, v4_manifest_path=v4_manifest_path, v4_universe_path=v4_universe_path, implementation_commit=head, now=now, sleep=sleep, evidence_path=evidence_path)
