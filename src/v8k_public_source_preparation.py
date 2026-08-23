@@ -202,6 +202,13 @@ def _read_locked(root: Path) -> tuple[bytes, dict[str, Any]] | None:
         raise V8KPublicSourceBlocked("LOCKED_STATE_INTEGRITY_FAILURE")
     return raw, meta
 
+def _is_durably_locked(root: Path) -> bool:
+    """Conservative check: true only if a complete, valid durable lock actually exists on disk."""
+    try:
+        return _read_locked(root) is not None
+    except Exception:
+        return False
+
 def _lock(root: Path, raw: bytes, auth_hash: str, now: Callable[[], datetime]) -> dict[str, Any]:
     if not raw:
         raise V8KPublicSourceBlocked("EMPTY_COMPLETE_PAYLOAD")
@@ -228,11 +235,18 @@ def fetch_first_complete(fetcher: Callable[[str], tuple[bytes, str]], sleep: Cal
             exc.network_request_count = requests
             raise
         except Exception as exc:
-            _classification, retryable = classify_transport_exception(exc)
+            try:
+                _classification, retryable = classify_transport_exception(exc)
+            except Exception as classifier_exc:
+                raise V8KPublicSourceBlocked(IMPLEMENTATION_FAILURE, network_request_count=requests, first_complete_payload_locked=False) from classifier_exc
             if not retryable:
                 raise V8KPublicSourceBlocked(IMPLEMENTATION_FAILURE, network_request_count=requests, first_complete_payload_locked=False) from exc
             last = exc
-            if attempt < MAX_RETRIES: sleep(BACKOFF_SECONDS[attempt])
+            if attempt < MAX_RETRIES:
+                try:
+                    sleep(BACKOFF_SECONDS[attempt])
+                except Exception as sleep_exc:
+                    raise V8KPublicSourceBlocked(IMPLEMENTATION_FAILURE, network_request_count=requests, first_complete_payload_locked=False) from sleep_exc
     raise V8KPublicSourceBlocked("PLUMBING_FAILURE_RETRIABLE", network_request_count=requests) from last
 
 def _prepare_for_test(*, state_root: str | os.PathLike[str], raw_authorization: str, support_sha: str, fetcher: Callable[[str], tuple[bytes,str]], parser: Callable[[bytes], Any], v4_manifest_path: str | os.PathLike[str], v4_universe_path: str | os.PathLike[str], implementation_commit: str, now: Callable[[], datetime], sleep: Callable[[int],None]=lambda _n: None, evidence_path: str | os.PathLike[str] | None=None) -> dict[str, Any]:
@@ -246,6 +260,8 @@ def _prepare_for_test(*, state_root: str | os.PathLike[str], raw_authorization: 
         except V8KPublicSourceBlocked as exc:
             exc.network_request_count = requests
             raise
+        except Exception as exc:
+            raise V8KPublicSourceBlocked(IMPLEMENTATION_FAILURE, network_request_count=requests, first_complete_payload_locked=_is_durably_locked(root)) from exc
         first_complete_payload_locked = True
     else:
         raw, lock = locked; source_url = JPX_PAGE
@@ -254,15 +270,17 @@ def _prepare_for_test(*, state_root: str | os.PathLike[str], raw_authorization: 
         source = verify_partition_source_preflight(raw_source_bytes=raw, parse_source_table=parser, v4_manifest_path=v4_manifest_path, v4_universe_csv_path=v4_universe_path, source_url=source_url, source_acquisition_utc=now(), partition_implementation_git_commit=implementation_commit)
     except Exception as exc:
         raise V8KPublicSourceBlocked("DATA_QUALITY_FAILURE", network_request_count=requests, first_complete_payload_locked=first_complete_payload_locked) from exc
-    result = {"schema_version":"V8K_PUBLIC_SOURCE_PREPARATION_EVIDENCE_V1","artifact_role":"PUBLIC_SOURCE_PREPARATION_EVIDENCE","study":STUDY,"stage":"PUBLIC_SOURCE_PREPARATION","gate":GATE,"frozen_design_commit":FROZEN_DESIGN_COMMIT,"frozen_design_blob":FROZEN_DESIGN_BLOB,"reviewed_support_implementation_sha":support_sha,"authorization_identity_sha256":auth_hash,"receipt_key_sha256":receipt_key(),"source_raw_sha256":source["source_raw_sha256"],"source_acquisition_utc":lock["source_acquisition_utc"],"eligible_ticker_count":source["eligible_ticker_count"],"eligible_ticker_list_sha256":source["eligible_ticker_list_sha256"],"t0_reproduction_status":source["t0_reproduction_status"],"first_complete_payload_locked":True,"network_request_count":requests,"result_classification":"COMPLETE"}
-    if evidence_path is not None:
-        try:
+    try:
+        result = {"schema_version":"V8K_PUBLIC_SOURCE_PREPARATION_EVIDENCE_V1","artifact_role":"PUBLIC_SOURCE_PREPARATION_EVIDENCE","study":STUDY,"stage":"PUBLIC_SOURCE_PREPARATION","gate":GATE,"frozen_design_commit":FROZEN_DESIGN_COMMIT,"frozen_design_blob":FROZEN_DESIGN_BLOB,"reviewed_support_implementation_sha":support_sha,"authorization_identity_sha256":auth_hash,"receipt_key_sha256":receipt_key(),"source_raw_sha256":source["source_raw_sha256"],"source_acquisition_utc":lock["source_acquisition_utc"],"eligible_ticker_count":source["eligible_ticker_count"],"eligible_ticker_list_sha256":source["eligible_ticker_list_sha256"],"t0_reproduction_status":source["t0_reproduction_status"],"first_complete_payload_locked":True,"network_request_count":requests,"result_classification":"COMPLETE"}
+        if evidence_path is not None:
             _atomic_once(Path(evidence_path), canonical_bytes(result), "EVIDENCE_ALREADY_EXISTS")
-        except V8KPublicSourceBlocked as exc:
-            exc.network_request_count = requests
-            exc.first_complete_payload_locked = first_complete_payload_locked
-            raise
-    return result
+        return result
+    except V8KPublicSourceBlocked as exc:
+        exc.network_request_count = requests
+        exc.first_complete_payload_locked = first_complete_payload_locked
+        raise
+    except Exception as exc:
+        raise V8KPublicSourceBlocked(IMPLEMENTATION_FAILURE, network_request_count=requests, first_complete_payload_locked=first_complete_payload_locked) from exc
 
 def _production_dependencies() -> tuple[Callable[[str], tuple[bytes, str]], Callable[[bytes], Any], Path, Path]:
     from scripts.build_v8_partition_manifest import PRODUCTION_USER_AGENT, _default_trusted_jpx_opener, _read_response, default_parse_source_table

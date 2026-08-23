@@ -476,3 +476,90 @@ def test_runner_never_raises_keyboard_interrupt_or_system_exit_as_implementation
  monkeypatch.setattr(runner,"prepare",lambda **_kw:(_ for _ in ()).throw(SystemExit("unrelated")))
  with pytest.raises(SystemExit,match="unrelated"):
   runner.main()
+
+# --- HIGH-5B: preserve post-network safe failure metadata instead of erasing it to 0/false ---
+
+def test_ordinary_lock_exception_after_acquisition_is_implementation_failure(state_root,monkeypatch):
+ def fetch(url): return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
+ def broken_lock(*_a,**_kw):
+  raise RuntimeError("synthetic lock bug with /private/path")
+ monkeypatch.setattr(m,"_lock",broken_lock)
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=fetch,parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ assert excinfo.value.failure_class=="IMPLEMENTATION_FAILURE"
+ assert excinfo.value.network_request_count==2
+ assert excinfo.value.first_complete_payload_locked is False
+ assert "synthetic lock bug" not in str(excinfo.value) and "/private/path" not in str(excinfo.value)
+
+def test_lock_exception_reports_locked_true_when_durable_lock_actually_completed(state_root,monkeypatch):
+ real_lock=m._lock
+ def lock_then_fail(*args,**kwargs):
+  value=real_lock(*args,**kwargs)
+  raise RuntimeError("synthetic post-write bug")
+ monkeypatch.setattr(m,"_lock",lock_then_fail)
+ def fetch(url): return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=fetch,parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ assert excinfo.value.failure_class=="IMPLEMENTATION_FAILURE"
+ assert excinfo.value.network_request_count==2
+ assert excinfo.value.first_complete_payload_locked is True
+
+def test_post_lock_result_construction_failure_is_implementation_failure(state_root,monkeypatch):
+ monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **_kw:{"source_raw_sha256":"c"*64})
+ def fetch(url): return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=fetch,parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ assert excinfo.value.failure_class=="IMPLEMENTATION_FAILURE"
+ assert excinfo.value.network_request_count==2
+ assert excinfo.value.first_complete_payload_locked is True
+ assert "eligible_ticker_count" not in str(excinfo.value)
+
+def test_reprocessing_locked_bytes_result_construction_failure_reports_zero_requests(state_root,monkeypatch):
+ m._lock(state_root,b"raw","b"*64,lambda:datetime(2026,1,1,tzinfo=timezone.utc))
+ monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **_kw:{"source_raw_sha256":"c"*64})
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("refetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ assert excinfo.value.failure_class=="IMPLEMENTATION_FAILURE"
+ assert excinfo.value.network_request_count==0
+ assert excinfo.value.first_complete_payload_locked is True
+
+def test_classifier_failure_after_first_fetch_is_implementation_failure(monkeypatch):
+ waits=[]; calls=[]
+ def flaky(_):
+  calls.append(1); raise TimeoutError("timeout")
+ def broken_classifier(_exc):
+  raise RuntimeError("synthetic classifier bug")
+ monkeypatch.setattr(m,"classify_transport_exception",broken_classifier)
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m.fetch_first_complete(flaky,waits.append)
+ assert calls==[1] and waits==[]
+ assert excinfo.value.failure_class=="IMPLEMENTATION_FAILURE"
+ assert excinfo.value.network_request_count==1
+ assert excinfo.value.first_complete_payload_locked is False
+ assert "synthetic classifier bug" not in str(excinfo.value)
+
+def test_backoff_sleep_failure_after_first_retryable_failure_is_implementation_failure():
+ calls=[]
+ def flaky(_):
+  calls.append(1); raise TimeoutError("timeout")
+ def broken_sleep(_seconds):
+  raise RuntimeError("synthetic sleep bug")
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m.fetch_first_complete(flaky,broken_sleep)
+ assert calls==[1]
+ assert excinfo.value.failure_class=="IMPLEMENTATION_FAILURE"
+ assert excinfo.value.network_request_count==1
+ assert excinfo.value.first_complete_payload_locked is False
+ assert "synthetic sleep bug" not in str(excinfo.value)
+
+def test_data_quality_and_plumbing_retriable_semantics_are_unchanged(state_root):
+ monkeypatch_free_fetch=lambda url:(b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
+ with pytest.raises(m.V8KPublicSourceBlocked) as dq:
+  m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=monkeypatch_free_fetch,parser=lambda _raw:(_ for _ in ()).throw(ValueError("bad parse")),v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ assert dq.value.failure_class=="DATA_QUALITY_FAILURE" and dq.value.network_request_count==2 and dq.value.first_complete_payload_locked is True
+ calls=[]
+ def timeout(_):
+  calls.append(1); raise TimeoutError("timeout")
+ with pytest.raises(m.V8KPublicSourceBlocked) as plumbing:
+  m.fetch_first_complete(timeout,lambda _n:None)
+ assert plumbing.value.failure_class=="PLUMBING_FAILURE_RETRIABLE" and plumbing.value.network_request_count==3 and calls==[1,1,1]
