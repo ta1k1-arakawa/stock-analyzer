@@ -197,15 +197,31 @@ def arm_metrics(trades: pd.DataFrame, equity: pd.DataFrame) -> dict[str, Any]:
             "maximum_industry_positive_profit_share": float(shares.max()) if len(shares) else 0.0, "mtm_drawdown_by_year": mtm, "book_cost_drawdown_by_year": book}
 
 
-def _with_realized_return(rows: pd.DataFrame, prices: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
-    frames = {canonical_ticker(ticker): frame for ticker, frame in prices.items()}
+def _normalized_d5_target(frame: pd.DataFrame, signal_date: pd.Timestamp) -> float | None:
+    """Exact d5_target semantics for an already-normalized frame."""
+    try:
+        index = frame.index.get_loc(pd.Timestamp(signal_date)); entry = index + 1; exit_ = index + 5
+        if exit_ >= len(frame) or float(frame.iloc[entry].Open) > float(frame.iloc[index].Close) * 1.01:
+            return None
+        return float(frame.iloc[exit_].Open * .9997 / (frame.iloc[entry].Open * 1.0003) - 1)
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _realized_d5_state(rows: pd.DataFrame, frames: Mapping[str, pd.DataFrame]) -> dict[tuple[pd.Timestamp, str], float | None]:
+    """Compute each needed causal D5 target once from normalized frames."""
+    keys = sorted({(pd.Timestamp(day), canonical_ticker(ticker)) for ticker, day in zip(rows.ticker, rows.signal_date)}, key=lambda item: (item[0], item[1]))
+    return {(day, ticker): _normalized_d5_target(frames[ticker], day) for day, ticker in keys}
+
+
+def _with_realized_return(rows: pd.DataFrame, outcomes: Mapping[tuple[pd.Timestamp, str], float | None]) -> pd.DataFrame:
     result = rows.copy()
-    result["realized_d5_net_return"] = [d5_target(frames[canonical_ticker(ticker)], pd.Timestamp(day)) for ticker, day in zip(result.ticker, result.signal_date)]
+    result["realized_d5_net_return"] = [outcomes[(pd.Timestamp(day), canonical_ticker(ticker))] for ticker, day in zip(result.ticker, result.signal_date)]
     return result
 
 
-def _discrimination(rows: pd.DataFrame, prices: Mapping[str, pd.DataFrame]) -> dict[str, Any]:
-    valid = _with_realized_return(rows, prices).dropna(subset=["relative_selloff_score", "realized_d5_net_return"])
+def _discrimination(rows: pd.DataFrame, outcomes: Mapping[tuple[pd.Timestamp, str], float | None]) -> dict[str, Any]:
+    valid = _with_realized_return(rows, outcomes).dropna(subset=["relative_selloff_score", "realized_d5_net_return"])
     def corr(frame: pd.DataFrame) -> float | None:
         value = frame.relative_selloff_score.corr(frame.realized_d5_net_return, method="spearman") if len(frame) >= 2 else np.nan
         return None if pd.isna(value) else float(value)
@@ -213,9 +229,9 @@ def _discrimination(rows: pd.DataFrame, prices: Mapping[str, pd.DataFrame]) -> d
     return {"available_row_count": int(rows.reversal_status.eq("REVERSAL_SCORE_AVAILABLE").sum()), "valid_row_count": int(len(valid)), "pooled_spearman": corr(valid), "yearly": yearly}
 
 
-def _all_eligible_discrimination(scored: pd.DataFrame, prices: Mapping[str, pd.DataFrame]) -> dict[str, Any]:
-    result = _discrimination(scored, prices)
-    valid = _with_realized_return(scored, prices).dropna(subset=["relative_selloff_score", "realized_d5_net_return"]).copy()
+def _all_eligible_discrimination(scored: pd.DataFrame, outcomes: Mapping[tuple[pd.Timestamp, str], float | None]) -> dict[str, Any]:
+    result = _discrimination(scored, outcomes)
+    valid = _with_realized_return(scored, outcomes).dropna(subset=["relative_selloff_score", "realized_d5_net_return"]).copy()
     quintiles = {str(number): {"count": 0, "mean_realized_d5_net_return": None, "positive_rate": None} for number in range(1, 6)}
     if len(valid):
         valid["quintile"] = pd.qcut(valid.relative_selloff_score.rank(method="first"), 5, labels=False) + 1
@@ -258,10 +274,15 @@ def _metric_differences(baseline: Mapping[str, Any], reversal: Mapping[str, Any]
 
 
 def build_scorecard(prices: Mapping[str, pd.DataFrame], universe: pd.DataFrame, splits: Mapping[str, set[pd.Timestamp]] | None = None, provenance: Mapping[str, Any] | None = None, repository_commit: str = "SYNTHETIC") -> dict[str, Any]:
-    eligible, baseline_rows, reversal_rows = build_ranked_arms(prices, universe, splits)
+    frames = _normalized_price_frames(prices)
+    eligible = generate_eligible_candidates(prices, universe, splits, _normalized_frames=frames)
+    baseline_rows = rank_baseline(eligible)
+    scored = attach_reversal_scores(eligible, prices, universe, frames)
+    reversal_rows = rank_reversal(scored)
+    outcomes = _realized_d5_state(scored, frames)
     baseline_trades, baseline_equity, reversal_trades, reversal_equity = execute_arms(baseline_rows, reversal_rows, prices)
     baseline, reversal = arm_metrics(baseline_trades, baseline_equity), arm_metrics(reversal_trades, reversal_equity)
-    return {"schema_version": SCHEMA_VERSION, "study": "V8K_HISTORICAL_RESEARCH", "layer_a_role": "HYPOTHESIS_GENERATION_AND_VIABILITY_SCREEN", "evidence_capacity": "ZERO", "exploratory_only": True, "measurement_status": "COMPLETE", "interpretation": "GPT_DECISION_REQUIRED", "promotion_thresholds_defined": False, "deployment_allowed": False, "future_profitability_established": False, "parameter_neighbor_robustness_status": "NOT_RUN_NO_FREE_PARAMETER_SEARCH", "repository_commit": repository_commit, "provenance": dict(provenance or {}), "safe_row_counts": {"eligible_pre_top20": int(len(eligible)), "baseline_selected": int(len(baseline_rows)), "reversal_selected": int(len(reversal_rows))}, "baseline": baseline, "reversal": reversal, "baseline_vs_reversal_difference": _metric_differences(baseline, reversal), "all_eligible_discrimination": _all_eligible_discrimination(attach_reversal_scores(eligible, prices, universe), prices), "selected_discrimination": _discrimination(reversal_rows, prices), "top20_mechanism": top20_mechanism(baseline_rows, reversal_rows), "fill_mechanism": fill_mechanism(baseline_trades, reversal_trades)}
+    return {"schema_version": SCHEMA_VERSION, "study": "V8K_HISTORICAL_RESEARCH", "layer_a_role": "HYPOTHESIS_GENERATION_AND_VIABILITY_SCREEN", "evidence_capacity": "ZERO", "exploratory_only": True, "measurement_status": "COMPLETE", "interpretation": "GPT_DECISION_REQUIRED", "promotion_thresholds_defined": False, "deployment_allowed": False, "future_profitability_established": False, "parameter_neighbor_robustness_status": "NOT_RUN_NO_FREE_PARAMETER_SEARCH", "repository_commit": repository_commit, "provenance": dict(provenance or {}), "safe_row_counts": {"eligible_pre_top20": int(len(eligible)), "baseline_selected": int(len(baseline_rows)), "reversal_selected": int(len(reversal_rows))}, "baseline": baseline, "reversal": reversal, "baseline_vs_reversal_difference": _metric_differences(baseline, reversal), "all_eligible_discrimination": _all_eligible_discrimination(scored, outcomes), "selected_discrimination": _discrimination(reversal_rows, outcomes), "top20_mechanism": top20_mechanism(baseline_rows, reversal_rows), "fill_mechanism": fill_mechanism(baseline_trades, reversal_trades)}
 
 
 def canonical_scorecard_bytes(scorecard: Mapping[str, Any]) -> bytes:

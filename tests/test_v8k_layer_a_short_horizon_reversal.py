@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 import src.v8k_layer_a_short_horizon_reversal as reversal
+import src.v5_b_candidate_ranker as v5_module
 from src.v5_b_candidate_ranker import BASELINE_ARM, generate_candidates, simulate_portfolio
 from src.v8k_layer_a_short_horizon_reversal import (
     MAX_CANDIDATES, attach_reversal_scores, build_ranked_arms, build_scorecard,
@@ -146,6 +147,54 @@ def test_precompute_normalizes_once_per_ticker(monkeypatch):
     monkeypatch.setattr(reversal, "_as_frame", counted)
     attach_reversal_scores(eligible, prices, universe)
     assert len(calls) == len(prices) == len(set(calls))
+
+
+def test_fast_outcomes_match_existing_d5_target_on_edge_cases():
+    prices, _, day = _inputs(2)
+    valid, gap, boundary = prices["1000"].copy(), prices["1000"].copy(), prices["1001"].copy()
+    position = gap.index.get_loc(day); gap.iloc[position + 1, gap.columns.get_loc("Open")] = gap.iloc[position].Close * 1.0101
+    boundary_position = boundary.index.get_loc(day); boundary.iloc[boundary_position + 1, boundary.columns.get_loc("Open")] = boundary.iloc[boundary_position].Close * 1.01
+    missing = valid.drop(day); insufficient = valid.iloc[: position + 3].copy(); insufficient_day = insufficient.index[-3]
+    frames = reversal._normalized_price_frames({"VALID": valid, "GAP": gap, "BOUNDARY": boundary, "MISSING": missing, "SHORT": insufficient})
+    rows = pd.DataFrame({"ticker": ["VALID", "GAP", "BOUNDARY", "MISSING", "SHORT", "VALID"], "signal_date": [day, day, day, day, insufficient_day, valid.index[269]]})
+    actual = reversal._realized_d5_state(rows, frames)
+    raw = {"VALID": valid, "GAP": gap, "BOUNDARY": boundary, "MISSING": missing, "SHORT": insufficient}
+    expected = {(pd.Timestamp(signal), ticker): v5_module.d5_target(raw[ticker], pd.Timestamp(signal)) for ticker, signal in zip(rows.ticker, rows.signal_date)}
+    assert actual.keys() == expected.keys()
+    for key in actual:
+        if expected[key] is None: assert actual[key] is None
+        else: assert actual[key] == pytest.approx(expected[key], rel=1e-12, abs=1e-12)
+
+
+def test_diagnostics_reuse_one_outcome_state_without_slow_d5_target(monkeypatch):
+    prices, universe, day = _inputs(); eligible = generate_eligible_candidates(prices, universe, signal_from=day, signal_to=day)
+    unique = len({(pd.Timestamp(signal), ticker) for ticker, signal in zip(eligible.ticker, eligible.signal_date)})
+    normalized_calls, outcome_calls = [], []
+    original_normalize, original_outcome = reversal._as_frame, reversal._normalized_d5_target
+    def counted_normalize(frame): normalized_calls.append(id(frame)); return original_normalize(frame)
+    def counted_outcome(frame, signal): outcome_calls.append((id(frame), pd.Timestamp(signal))); return original_outcome(frame, signal)
+    monkeypatch.setattr(reversal, "_as_frame", counted_normalize)
+    monkeypatch.setattr(reversal, "_normalized_d5_target", counted_outcome)
+    monkeypatch.setattr(reversal, "d5_target", lambda *_: (_ for _ in ()).throw(AssertionError("slow D5 path used")))
+    build_scorecard(prices, universe, provenance={"safe": 1})
+    assert len(normalized_calls) == len(prices) == len(set(normalized_calls))
+    assert len(outcome_calls) == unique == len(set(outcome_calls))
+
+
+def test_diagnostic_and_scorecard_bytes_match_slow_d5_reference(monkeypatch):
+    prices, universe, day = _inputs(); eligible = generate_eligible_candidates(prices, universe, signal_from=day, signal_to=day)
+    scored = attach_reversal_scores(eligible, prices, universe)
+    fast = reversal._realized_d5_state(scored, reversal._normalized_price_frames(prices))
+    slow = {(pd.Timestamp(signal), ticker): v5_module.d5_target(prices[ticker], pd.Timestamp(signal)) for ticker, signal in zip(scored.ticker, scored.signal_date)}
+    assert reversal._all_eligible_discrimination(scored, fast) == reversal._all_eligible_discrimination(scored, slow)
+    selected = rank_reversal(scored)
+    assert reversal._discrimination(selected, fast) == reversal._discrimination(selected, slow)
+    optimized = canonical_scorecard_bytes(build_scorecard(prices, universe, provenance={"safe": 1}))
+    def slow_state(rows, frames):
+        return {(pd.Timestamp(signal), ticker): v5_module.d5_target(prices[ticker], pd.Timestamp(signal)) for ticker, signal in zip(rows.ticker, rows.signal_date)}
+    monkeypatch.setattr(reversal, "_realized_d5_state", slow_state)
+    reference = canonical_scorecard_bytes(build_scorecard(prices, universe, provenance={"safe": 1}))
+    assert optimized == reference
 
 
 def test_output_guards_no_2026_and_no_network_client(tmp_path: Path):
