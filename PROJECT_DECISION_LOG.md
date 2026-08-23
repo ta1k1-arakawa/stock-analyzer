@@ -40,3 +40,9 @@ transitions. This public log must not contain protected material.
 - HIGH-4 core portfolio mechanics were substantially implemented; the remaining issue is the stale unresolved-carry contradiction plus the exact buying-power transition.
 - A successful D0 exit may fund D1, but no same-closing-auction exit proceeds may fund entries from that same close.
 - No purchase, data, T1, or design-freeze authority is created.
+- HIGH-4B exact-SHA review at `2b46cf50ac9d95633f2f6f2d59410014e7aa9c71`: `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, `RESULT=PASS`; original HIGH-1 through HIGH-4 are all resolved.
+- GPT then performed complete V9 design cross-review at the same exact SHA: `CRITICAL=0`, `HIGH=6`, `MEDIUM=2`, `RESULT=BLOCK`.
+- Findings: HIGH_FULL_1, HIGH_FULL_2, HIGH_FULL_3, HIGH_FULL_4, HIGH_FULL_5, HIGH_FULL_6, MEDIUM_FULL_1, and MEDIUM_FULL_2.
+- HIGH_FULL_1 remediation removes future listing-duration conditioning from the fresh T1 pool.
+- T1 remains size 600; a fresh pool below 600 fails `DATA_QUALITY_FAILURE` rather than redraw.
+- No purchase, data, T1, or design-freeze authority is created.

@@ -39,11 +39,28 @@ finite positive required OHLCV; 60-trading-day median trading value
 `T0_DEVELOPMENT` is existing FIXED_V4_300 codes only. Its historical outcomes
 are contaminated development evidence with `evidential_weight=NONE`.
 
-The fresh metadata-only candidate pool is historical point-in-time domestic
-common-stock codes excluding every ticker classified exposed by
-`V8_DATA_EXPOSURE_AUDIT.md`. It requires at least 500 listed JPX trading days
-during 2017-01-01..2025-12-31 using security-master metadata only; ambiguous or
-reused codes are excluded.
+The fresh metadata-only candidate pool is the UNION of canonical security
+identities that have at least one point-in-time membership record as a
+TSE-listed domestic ordinary common stock during 2017-01-01 through
+2025-12-31, subject only to:
+
+- exclude every security identity classified exposed or unknown-exposure where
+  the V8 exposure governance requires exclusion;
+- exclude ETFs/ETPs, REITs, foreign issues, preferred/special securities;
+- exclude ambiguous/reused security-code identities unless the source contract
+  can prove one unambiguous canonical security identity;
+- do not require survival through any later date;
+- do not require a minimum total listed lifetime;
+- do not require being listed at 2025-12-31 or 2026; and
+- do not inspect price returns/outcomes for partition construction.
+
+The fact that a code enters or leaves the historical point-in-time universe is
+metadata only. At each D0, actual scoreability remains controlled by the
+already-frozen point-in-time daily eligibility rules: actually listed on D0,
+>=252 prior valid observations, and OHLCV/feature/liquidity requirements. A
+later IPO contributes nothing before its listing date and a delisted security
+contributes nothing after delisting, without exclusion merely because it did
+not survive the entire study period.
 
 ```text
 allocation_key=SHA256(UTF8("V9_T1_PARTITION_V1\0" + canonical_code))
@@ -55,6 +72,16 @@ redraw=false
 balancing=false
 manual_substitution=false
 ```
+
+```text
+if fresh_candidate_pool_count < 600:
+    failure_class=DATA_QUALITY_FAILURE
+    reason=INSUFFICIENT_FRESH_PARTITION_POOL
+    T1 partition is NOT created
+```
+
+Do not reduce T1 size, substitute exposed names, or redraw. No T1 identities
+may be printed in public artifacts.
 
 Allocation occurs without observing prices/outcomes. T1 identities/membership
 must not appear in public artifacts. No T1 price/outcome access before
