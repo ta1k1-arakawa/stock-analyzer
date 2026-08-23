@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
-import errno, hashlib, inspect, json, os, socket, subprocess, sys, tempfile, urllib.error, pytest
+import errno, hashlib, http.client, inspect, json, os, socket, subprocess, sys, tempfile, urllib.error, urllib.request, pytest
 from src import v8k_public_source_preparation as m
 from src import v8_partition as partition
 from scripts import build_v8_partition_manifest as partition_runner
@@ -10,6 +10,14 @@ def auth(s="a"*40): return m.authorization_identity(m.FROZEN_DESIGN_COMMIT,s)
 @pytest.fixture
 def state_root():
  with tempfile.TemporaryDirectory(dir=Path.cwd()) as value: yield Path(value)
+
+@pytest.fixture(autouse=True)
+def no_real_network(monkeypatch):
+ def blocked(*_args,**_kwargs): raise AssertionError("REAL_NETWORK_FORBIDDEN")
+ monkeypatch.setattr(socket,"create_connection",blocked)
+ monkeypatch.setattr(urllib.request,"urlopen",blocked)
+ monkeypatch.setattr(http.client.HTTPConnection,"connect",blocked)
+ monkeypatch.setattr(http.client.HTTPSConnection,"connect",blocked)
 
 def test_constants_and_authorization():
  assert m.FROZEN_DESIGN_BLOB=="e203ec6ade9d917d2e23d22528e0b41fed28c09a"
@@ -68,6 +76,29 @@ def test_jpx_url_and_link():
  assert m.extract_xls_url(b'<a href="/x/data_j.xls">x</a>')=="https://www.jpx.co.jp/x/data_j.xls"
  for u in ("http://www.jpx.co.jp/x","https://evil/x","https://u@www.jpx.co.jp/x","https://www.jpx.co.jp:444/x"):
   with pytest.raises(m.V8KPublicSourceBlocked): m._trusted(u)
+
+def test_actual_offhost_redirect_handler_blocks_before_offhost_request(monkeypatch):
+ handler=partition_runner.TrustedJpxRedirectHandler(); request=urllib.request.Request(partition_runner.JPX_PAGE)
+ monkeypatch.setattr(urllib.request.HTTPRedirectHandler,"redirect_request",lambda *_:(_ for _ in ()).throw(AssertionError("OFFHOST_REQUEST_MUST_NOT_ISSUE")))
+ with pytest.raises(partition_runner.V8PartitionBlocked,match="V8_PARTITION_SOURCE_HOST_INVALID"):
+  handler.redirect_request(request,None,302,"redirect",{},"https://evil.example/data_j.xls")
+
+def test_incomplete_durable_states_hash_mismatch_and_overwrite_fail_closed(state_root):
+ raw_path,meta_path=m._state(state_root)
+ raw_path.write_bytes(b"raw")
+ with pytest.raises(m.V8KPublicSourceBlocked,match="LOCKED_STATE_INCOMPLETE"): m._read_locked(state_root)
+ raw_path.unlink(); meta_path.write_text("{}",encoding="utf-8")
+ with pytest.raises(m.V8KPublicSourceBlocked,match="LOCKED_STATE_INCOMPLETE"): m._read_locked(state_root)
+ meta_path.unlink(); m._lock(state_root,b"raw","b"*64,lambda:datetime(2026,1,1,tzinfo=timezone.utc))
+ raw_path.write_bytes(b"tampered")
+ with pytest.raises(m.V8KPublicSourceBlocked,match="LOCKED_STATE_INTEGRITY_FAILURE"): m._read_locked(state_root)
+ with pytest.raises(m.V8KPublicSourceBlocked,match="LOCKED_RAW_ALREADY_EXISTS"): m._lock(state_root,b"second","b"*64,lambda:datetime(2026,1,1,tzinfo=timezone.utc))
+
+def test_stage_one_semantic_path_has_no_partition_seed_or_membership_operations():
+ source=inspect.getsource(m._prepare_for_test)
+ assert "allocate_fresh_blocks" not in source and "seed" not in source
+ assert all(not hasattr(m,name) for name in ("allocate_fresh_blocks","create_partition_seed","read_t1_membership","read_t2_membership","read_t3_membership"))
+ assert not hasattr(partition,"create_partition_seed")
 
 def test_plain_public_preflight_dict_is_propagated_without_tuple_unpack(state_root,monkeypatch):
  source={"source_raw_sha256":"b"*64,"eligible_ticker_count":300,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"}
