@@ -344,7 +344,166 @@ Stress C remains report-only.
 Carry-position/capacity semantics after an exit no-fill are not resolved here;
 they remain HIGH-4.
 
-## 11. T1 promotion criteria
+## 11. Verdict metric and IC aggregation semantics
+
+### Daily cross-sectional IC
+
+For every valid D0 and model, use all finite scoreable rows in the model's
+applicable study block before K=10 selection. Let `s_i` be prediction/score and
+`y_i` the frozen target percentile rank. `daily_IC(D0)` is Spearman correlation
+of s and y: ascending numeric ranks, average rank for ties, then ordinary
+Pearson correlation of the two rank vectors. Although raw target return has the
+same Spearman ordering, frozen target percentile rank is authoritative.
+
+Fewer than two finite rows fails closed as
+`DATA_QUALITY_FAILURE: INSUFFICIENT_ROWS_FOR_DAILY_IC`. If either rank vector
+has zero variance, `daily_IC(D0)=0.0`. A valid D0 is never dropped for an
+unfavorable IC.
+
+### IC aggregation and model selection
+
+For exactly 2018, 2019, 2020, 2021, 2022, 2023, 2024, and 2025:
+
+```text
+yearly_IC(Y)=arithmetic_mean(daily_IC(D0) where calendar_year(D0)=Y)
+positive_IC_year(Y)=(yearly_IC(Y)>0.0)
+positive_IC_year_count=sum_over_exact_8_years(positive_IC_year(Y))
+mean_daily_IC=arithmetic_mean(all_daily_IC_values_2018_to_2025)
+median_yearly_IC=(sort(yearly_IC_values)[3]+sort(yearly_IC_values)[4])/2
+```
+
+Every valid D0 has equal weight; do not pool ticker rows across a year. A year
+with zero valid D0 dates is `DATA_QUALITY_FAILURE: YEAR_WITH_NO_VALID_IC_DATES`.
+LightGBM beats Ridge only if all hold: higher mean daily IC, higher median
+yearly IC, and positive-IC-year count at least Ridge's. Equality on either
+strict comparison means LightGBM does not win and Ridge wins by simplicity.
+The selected model still requires mean daily IC >0 and positive IC in >=5 of 8
+years, otherwise existing `V9_REJECT_PRE_T1` behavior applies.
+
+### Continuous equity and aggregate return
+
+Each strategy/random-K scenario has one continuous cash/portfolio/equity path,
+with no calendar-year capital reset. Start at frozen starting capital before the
+first permitted 2018 cycle and continue through the 2018..2025 signal window
+and exit-resolution tail:
+
+```text
+portfolio_equity(t)=available_cash + frozen_pending_cash
+ + sum(current_economic_quantity_j * official_raw_close_j(t) for open j)
+```
+
+Use HIGH-2 economic quantity. An unavailable required MTM close for an open
+listed position fails closed as `DATA_QUALITY_FAILURE: MTM_PRICE_UNAVAILABLE`;
+do not use future, fabricated, or stale favorable price, and issue no
+strategy-confirmation verdict from that attempt.
+
+After final signals stop and all positions validly close in the tail,
+`terminal_equity` is final available cash with no open positions:
+
+```text
+aggregate_net_price_return=terminal_equity / starting_capital - 1
+```
+
+It includes frozen execution prices, commission, slippage/stress, no-fill, and
+cash constraints; excludes tax and dividends. It is not annual compounding, a
+sum of trade returns, or a yearly-reset result. Existing strategy gate
+`aggregate_net_price_return > 0` uses exactly this metric.
+
+### Yearly returns and Random-K yearly excess
+
+At official close of the last JPX trading day in Y, calculate
+`YEAR_END_EQUITY(Y)` with the continuous MTM definition. Set
+`BASE_EQUITY(2018)=starting_capital`; for later years,
+`BASE_EQUITY(Y)=YEAR_END_EQUITY(Y-1)`.
+
+```text
+yearly_portfolio_return(Y)=YEAR_END_EQUITY(Y)/BASE_EQUITY(Y)-1
+randomK_yearly_median(Y)=(sort(randomK_returns_Y)[499]+sort(randomK_returns_Y)[500])/2
+strategy_yearly_excess(Y)=strategy_yearly_portfolio_return(Y)-randomK_yearly_median(Y)
+positive_yearly_excess=(strategy_yearly_excess(Y)>0)
+```
+
+Apply identically to all r=0..999 Random-K simulations. This is a continuous
+path, not independent annual simulations. The post-2025 exit tail creates no
+ninth yearly gate, but remains in aggregate return and maximum DD. Existing
+requirement is positive yearly excess in >=5 of 8 years; equality is not
+positive.
+
+### Random-K aggregate percentile and drawdown
+
+Let S be strategy aggregate return and `R_0..R_999` corresponding Random-K
+aggregate returns. With `L=count(R_i<S)` and `E=count(R_i==S)`:
+
+```text
+strategy_randomK_return_percentile=100*(L+0.5*E)/1000
+```
+
+No interpolation or scipy/numpy percentile convention applies; existing gate
+is >=70. Include starting capital as initial equity. For every JPX trading day
+in evaluation/tail:
+
+```text
+running_peak(t)=max(starting_capital,portfolio_equity(u) for u<=t)
+drawdown(t)=(running_peak(t)-portfolio_equity(t))/running_peak(t)
+maximum_MTM_DD=max(drawdown(t))
+randomK_DD_P75=sort(1000_randomK_maximum_MTM_DD)[749]
+```
+
+Maximum DD is the authoritative fraction (percent optional), no yearly reset.
+`randomK_DD_P75` is nearest-rank 75th percentile (750th one-based), not an
+interpolated quantile. Existing `strategy.maximum_MTM_DD <= randomK_DD_P75`
+passes on equality.
+
+### 300k robustness and combined Stress A+B
+
+For existing robustness, run frozen mechanics with `starting_capital=300000_JPY`
+only. Reuse model/scores and deterministic Random-K order; do not refit.
+Rankings differ only where frozen feasibility mechanics naturally prevent order:
+
+```text
+robustness_aggregate_return=terminal_equity/300000-1
+randomK_300k_median=(sort(randomK_returns)[499]+sort(randomK_returns)[500])/2
+robustness_excess=strategy_300k_aggregate_return-randomK_300k_median
+```
+
+Existing `robustness_excess >=0` passes on equality. For existing Stress A+B at
+400000 JPY, apply simultaneous A (2.5 bp adverse each side) and HIGH-1 B (2%
+deterministic no-fill), with no new stream. Compute aggregate returns
+identically:
+
+```text
+stress_AB_randomK_median=(sort(randomK_stress_AB_returns)[499]+sort(randomK_stress_AB_returns)[500])/2
+stress_AB_excess=strategy_stress_AB_aggregate_return-stress_AB_randomK_median
+```
+
+Existing `stress_AB_excess >=0` passes on equality.
+
+### Reporting-only TOPIX and equal-weight benchmarks
+
+TOPIX is reporting-only, using J-Quants TOPIX PRICE (not total-return) index:
+
+```text
+TOPIX_period_return=TOPIX_close(last_evaluation_signal_window_JPX_day)
+ / TOPIX_close(first_evaluation_signal_window_JPX_day)-1
+```
+
+Do not apply portfolio exit tail to TOPIX; disclose strategy aggregate may have
+tail effects. Equal weight is reporting-only: for each D0, use the exact same
+pre-score daily scoreable/eligible universe and every constituent's frozen
+D1-to-D3 split-neutral PRICE return. Its cycle return is arithmetic mean of all
+valid constituent returns. It uses no future membership, capital weighting,
+K=10, or executability claim, and is named
+`EQUAL_WEIGHT_SIGNAL_COHORT_PRICE_BENCHMARK`.
+
+### Invalid formal attempts
+
+An attempt invalidated by `DATA_QUALITY_FAILURE`, `GOVERNANCE_FAILURE`,
+`IMPLEMENTATION_FAILURE`, or `OPERATIONAL_EXECUTION_FAILURE` yields
+`strategy_confirmation_verdict=NOT_AVAILABLE`, not `V9_T1_REJECT`.
+`V9_T1_REJECT` applies only to valid completed T1 evaluation failing one or
+more frozen confirmation criteria.
+
+## 12. T1 promotion criteria
 
 One-shot T1 PASS requires all:
 
@@ -359,14 +518,14 @@ TOPIX/equal-weight comparisons are mandatory reporting, not independent PASS
 gates. Any valid criterion failure is `V9_T1_REJECT`. Do not change thresholds,
 features, model, holding period, K, or rerun within V9 after T1.
 
-## 12. Failure taxonomy
+## 13. Failure taxonomy
 
 Separate `DATA_QUALITY_FAILURE`, `GOVERNANCE_FAILURE`,
 `IMPLEMENTATION_FAILURE`, `OPERATIONAL_EXECUTION_FAILURE`, and
 `STRATEGY_CONFIRMATION_FAILURE`. Transport/data/implementation failures are
 not strategy failures.
 
-## 13. Forward progression
+## 14. Forward progression
 
 Only after T1 PASS: PAPER is later of three calendar months or 20 completed
 portfolio cycles; no tuning. It measures real S-share fills/prices/operations.
@@ -381,7 +540,7 @@ capital-risk stop, not proof of strategy invalidity. Full 300,000–400,000 JPY
 use requires another fresh human authorization and independent forward-evidence
 review.
 
-## Paid-data boundary
+## 15. Paid-data boundary
 
 ```text
 HUMAN_V9_JQUANTS_STANDARD_PURCHASE_GATE_REQUIRED=true

@@ -28,3 +28,7 @@ transitions. This public log must not contain protected material.
 - HIGH-1 is RESOLVED. V9_002 remains BLOCK with HIGH-2/HIGH-3/HIGH-4.
 - HIGH-2 remediation defined: causal split normalization, raw execution, fail-closed noninteger entitlements/unmodeled actions, and bounded 20-JPX-day exit resolution.
 - No purchase, data, T1, or design-freeze authority is created.
+- GPT exact-SHA review of `e723a5d8f2bfd7cb5a04d4c1c17abd93c5486199`: `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, `RESULT=PASS` for HIGH-2.
+- HIGH-2 is RESOLVED. V9_002 remains BLOCK with HIGH-3/HIGH-4.
+- HIGH-3 remediation defines exact IC, return, yearly excess, random-K percentile, DD percentile, 300k robustness, and Stress A+B arithmetic.
+- No purchase, data, T1, or design-freeze authority is created.
