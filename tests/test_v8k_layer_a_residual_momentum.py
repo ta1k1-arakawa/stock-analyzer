@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from src.v5_b_candidate_ranker import BASELINE_ARM, generate_candidates, simulate_portfolio
+import src.v8k_layer_a_residual_momentum as residual_module
 from src.v8k_layer_a_residual_momentum import (
     MAX_CANDIDATES,
     arm_metrics,
@@ -52,6 +53,103 @@ def _manual_eligible(count: int = 21) -> pd.DataFrame:
          "candidate_status": "CANDIDATE"}
         for index in range(count)
     ])
+
+
+def _slow_attach_residual_scores(eligible, prices, universe, _normalized_frames=None):
+    """Test-only copy of the reviewed candidate-by-candidate scorer."""
+    normalized = residual_module.normalize_universe(universe)
+    industry_by_ticker = normalized.set_index("ticker")["industry"].to_dict()
+    universe_tickers = set(normalized.ticker)
+    frames = {residual_module.canonical_ticker(ticker): frame for ticker, frame in prices.items()}
+    output = eligible.copy()
+    medians, scores, statuses, peer_counts = [], [], [], []
+    for _, row in output.iterrows():
+        ticker, day = residual_module.canonical_ticker(row["ticker"]), pd.Timestamp(row["signal_date"])
+        industry = industry_by_ticker.get(ticker, "")
+        if not industry:
+            medians.append(np.nan); scores.append(np.nan); statuses.append("RESIDUAL_SCORE_UNAVAILABLE"); peer_counts.append(0)
+            continue
+        peers = []
+        for peer in universe_tickers:
+            if peer == ticker or industry_by_ticker.get(peer, "") != industry or peer not in frames:
+                continue
+            frame = residual_module._as_frame(frames[peer])
+            try:
+                position = frame.index.get_loc(day)
+            except KeyError:
+                continue
+            if not isinstance(position, (int, np.integer)) or position < 60:
+                continue
+            value = float(frame.iloc[position]["AdjClose"]) / float(frame.iloc[position - 60]["AdjClose"]) - 1.0
+            if np.isfinite(value):
+                peers.append(value)
+        if peers:
+            median = float(np.median(peers))
+            medians.append(median); scores.append(float(row["return_60d"]) - median)
+            statuses.append("RESIDUAL_SCORE_AVAILABLE"); peer_counts.append(len(peers))
+        else:
+            medians.append(np.nan); scores.append(np.nan); statuses.append("RESIDUAL_SCORE_UNAVAILABLE"); peer_counts.append(0)
+    output["industry_peer_median_60d"] = medians
+    output["residual_momentum"] = scores
+    output["residual_status"] = statuses
+    output["industry_peer_count"] = peer_counts
+    return output
+
+
+def _equivalence_inputs():
+    day = _frame(.1).index[270]
+    slopes = {"A0": .10, "A1": .11, "A2": .12, "A3": .13, "AMISS": .14, "ASHORT": .15,
+              "ANAN": .16, "B0": .17, "B1": .18, "B2": .19, "C0": .20, "C1": .21, "EMPTY": .22}
+    prices = {ticker: _frame(slope) for ticker, slope in slopes.items()}
+    prices["AMISS"] = prices["AMISS"].drop(day)
+    prices["ASHORT"] = prices["ASHORT"].iloc[:59].copy()
+    prices["ANAN"].loc[day, "Adj Close"] = np.nan
+    industries = {"A0": "A", "A1": "A", "A2": "A", "A3": "A", "AMISS": "A", "ASHORT": "A", "ANAN": "A",
+                  "B0": "B", "B1": "B", "B2": "B", "C0": "C", "C1": "C", "EMPTY": ""}
+    universe = pd.DataFrame({"ticker": list(slopes), "industry": [industries[ticker] for ticker in slopes]})
+    eligible = pd.DataFrame({"ticker": list(slopes), "signal_date": day, "return_60d": np.linspace(.1, .22, len(slopes))})
+    return prices, universe, eligible
+
+
+def test_precomputed_scores_match_reviewed_reference_for_peer_edge_cases():
+    prices, universe, eligible = _equivalence_inputs()
+    actual = attach_residual_scores(eligible, prices, universe)
+    expected = _slow_attach_residual_scores(eligible, prices, universe)
+    assert list(actual.industry_peer_count) == list(expected.industry_peer_count)
+    assert list(actual.residual_status) == list(expected.residual_status)
+    np.testing.assert_allclose(actual.industry_peer_median_60d, expected.industry_peer_median_60d, rtol=1e-12, atol=1e-12, equal_nan=True)
+    np.testing.assert_allclose(actual.residual_momentum, expected.residual_momentum, rtol=1e-12, atol=1e-12, equal_nan=True)
+
+
+def test_precomputed_residual_top20_matches_reviewed_reference():
+    prices, universe, day = _inputs(25)
+    eligible = generate_eligible_candidates(prices, universe, signal_from=day, signal_to=day)
+    actual = rank_residual(attach_residual_scores(eligible, prices, universe))
+    expected = rank_residual(_slow_attach_residual_scores(eligible, prices, universe))
+    assert list(actual.ticker) == list(expected.ticker)
+    assert list(actual.ai_rank) == list(expected.ai_rank)
+
+
+def test_scorecard_bytes_match_reviewed_reference_scoring(monkeypatch):
+    prices, universe, _ = _inputs()
+    optimized = canonical_scorecard_bytes(build_scorecard(prices, universe, provenance={"safe": 1}))
+    monkeypatch.setattr(residual_module, "attach_residual_scores", _slow_attach_residual_scores)
+    reference = canonical_scorecard_bytes(build_scorecard(prices, universe, provenance={"safe": 1}))
+    assert optimized == reference
+
+
+def test_residual_scoring_normalizes_each_ticker_once(monkeypatch):
+    prices, universe, day = _inputs(25)
+    eligible = generate_eligible_candidates(prices, universe, signal_from=day, signal_to=day)
+    calls = []
+    original = residual_module._as_frame
+    def counted(frame):
+        calls.append(id(frame))
+        return original(frame)
+    monkeypatch.setattr(residual_module, "_as_frame", counted)
+    attach_residual_scores(eligible, prices, universe)
+    assert len(calls) == len(prices)
+    assert len(set(calls)) == len(prices)
 
 
 def test_baseline_top20_matches_existing_v5b_and_preserves_pre_cutoff_eligibility():

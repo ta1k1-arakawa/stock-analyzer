@@ -51,6 +51,7 @@ def generate_eligible_candidates(
     splits: Mapping[str, set[pd.Timestamp]] | None = None,
     signal_from: str | pd.Timestamp = "2020-01-01",
     signal_to: str | pd.Timestamp = "2025-12-31",
+    _normalized_frames: Mapping[str, pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """Return every V5-A2/V5-B eligible row before its absolute top-20 cut.
 
@@ -69,7 +70,7 @@ def generate_eligible_candidates(
         ticker = canonical_ticker(raw_ticker)
         if ticker not in allowed:
             continue
-        frame = _as_frame(raw)
+        frame = _normalized_frames[ticker] if _normalized_frames is not None else _as_frame(raw)
         adjusted_close = frame["AdjClose"].astype(float)
         raw_close = frame["Close"].astype(float)
         factor = adjusted_close / raw_close
@@ -122,23 +123,32 @@ def rank_baseline(eligible: pd.DataFrame) -> pd.DataFrame:
     return selected.reset_index(drop=True)
 
 
-def _peer_return_60(frame: pd.DataFrame, day: pd.Timestamp) -> float | None:
-    normalized = _as_frame(frame)
-    try:
-        position = normalized.index.get_loc(pd.Timestamp(day))
-    except KeyError:
-        return None
-    if not isinstance(position, (int, np.integer)) or position < 60:
-        return None
-    now, prior = float(normalized.iloc[position]["AdjClose"]), float(normalized.iloc[position - 60]["AdjClose"])
-    value = now / prior - 1.0
-    return value if np.isfinite(value) else None
+def _normalized_price_frames(prices: Mapping[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Normalize each supplied ticker once for a residual-scoring core."""
+    return {
+        canonical_ticker(ticker): _as_frame(frame)
+        for ticker, frame in prices.items()
+    }
+
+
+def _peer_return_state(
+    frames: Mapping[str, pd.DataFrame],
+    universe_tickers: set[str],
+) -> dict[str, pd.Series]:
+    """Precompute exact-observation 60-day returns for available universe frames."""
+    state = {}
+    for ticker, frame in frames.items():
+        if ticker in universe_tickers:
+            adjusted_close = frame["AdjClose"].astype(float)
+            state[ticker] = adjusted_close / adjusted_close.shift(60) - 1.0
+    return state
 
 
 def attach_residual_scores(
     eligible: pd.DataFrame,
     prices: Mapping[str, pd.DataFrame],
     universe: pd.DataFrame,
+    _normalized_frames: Mapping[str, pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """Score every eligible row against all same-industry universe peers.
 
@@ -148,8 +158,29 @@ def attach_residual_scores(
     normalized = normalize_universe(universe)
     industry_by_ticker = normalized.set_index("ticker")["industry"].to_dict()
     universe_tickers = set(normalized.ticker)
-    frames = {canonical_ticker(ticker): frame for ticker, frame in prices.items()}
+    frames = dict(_normalized_frames) if _normalized_frames is not None else _normalized_price_frames(prices)
+    peer_members = {
+        industry: tuple(sorted(ticker for ticker in universe_tickers if industry_by_ticker.get(ticker, "") == industry))
+        for industry in sorted({industry for industry in industry_by_ticker.values() if industry})
+    }
+    returns_60 = _peer_return_state(frames, universe_tickers)
     output = eligible.copy()
+    needed = {
+        (industry_by_ticker.get(canonical_ticker(row["ticker"]), ""), pd.Timestamp(row["signal_date"]))
+        for _, row in output.iterrows()
+        if industry_by_ticker.get(canonical_ticker(row["ticker"]), "")
+    }
+    peer_values: dict[tuple[str, pd.Timestamp], dict[str, float]] = {}
+    for industry, day in sorted(needed, key=lambda item: (item[0], item[1])):
+        values: dict[str, float] = {}
+        for ticker in peer_members[industry]:
+            series = returns_60.get(ticker)
+            if series is None or day not in series.index:
+                continue
+            value = float(series.at[day])
+            if np.isfinite(value):
+                values[ticker] = value
+        peer_values[(industry, day)] = values
     medians: list[float] = []
     scores: list[float] = []
     statuses: list[str] = []
@@ -160,13 +191,7 @@ def attach_residual_scores(
         if not industry:
             medians.append(np.nan); scores.append(np.nan); statuses.append("RESIDUAL_SCORE_UNAVAILABLE"); peer_counts.append(0)
             continue
-        peers = []
-        for peer in universe_tickers:
-            if peer == ticker or industry_by_ticker.get(peer, "") != industry or peer not in frames:
-                continue
-            value = _peer_return_60(frames[peer], day)
-            if value is not None:
-                peers.append(value)
+        peers = [value for peer, value in peer_values[(industry, day)].items() if peer != ticker]
         if not peers:
             medians.append(np.nan); scores.append(np.nan); statuses.append("RESIDUAL_SCORE_UNAVAILABLE"); peer_counts.append(0)
             continue
@@ -198,9 +223,12 @@ def build_ranked_arms(
     signal_from: str | pd.Timestamp = "2020-01-01",
     signal_to: str | pd.Timestamp = "2025-12-31",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    eligible = generate_eligible_candidates(prices, universe, splits, signal_from, signal_to)
+    normalized_frames = _normalized_price_frames(prices)
+    eligible = generate_eligible_candidates(
+        prices, universe, splits, signal_from, signal_to, normalized_frames,
+    )
     baseline = rank_baseline(eligible)
-    residual = rank_residual(attach_residual_scores(eligible, prices, universe))
+    residual = rank_residual(attach_residual_scores(eligible, prices, universe, normalized_frames))
     return eligible, baseline, residual
 
 
