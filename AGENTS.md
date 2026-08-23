@@ -47,3 +47,14 @@ rule.
 - Generate only when intentionally refreshing the frozen input: `python scripts/generate_benchmark.py`.
 - Normal benchmark code must use `FixedOHLCVLoader`; it never falls back to HTTP.
 - Validate before use with `python scripts/validate_benchmark.py`. Do not hand-edit CSVs or `manifest.json`.
+
+## Durable project memory
+
+- `PROJECT_STATE.md` is the rolling current-stage external-memory source.
+- `PROJECT_DECISION_LOG.md` is append-only for important durable decisions and exact-SHA review/stage transitions.
+- Every important task must read `PROJECT_STATE.md` in addition to existing governance and task-specific documents.
+- After any material methodology/design decision, design freeze, exact-SHA independent review, PASS/BLOCK that changes the next action, human-gate issuance or consumption, real execution, stage transition, or study termination, update project state in Git at the next authorized repo-writing task; do not rely on chat memory.
+- Task-specific frozen design, evidence, and code remain authoritative over summary state if they conflict.
+- Never place raw authorization, private paths, private ticker identities, sealed memberships, raw payloads, or other protected material in these public memory documents.
+- Keep `PROJECT_STATE.md` compact; place detailed immutable history in task/study documents and `PROJECT_DECISION_LOG.md`.
+- Record exact SHA/provenance whenever material.
