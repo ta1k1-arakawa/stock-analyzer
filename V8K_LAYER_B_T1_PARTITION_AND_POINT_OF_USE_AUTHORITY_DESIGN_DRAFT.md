@@ -165,7 +165,7 @@ V8K_HUMAN_AUTHORIZE_T1_CONFIRMATION_OPENING_AT_
   <t1_ticker_list_sha256>
 ```
 
-Raw authorization, identities, membership lists, private paths, raw prices, and results are never printed or publicly persisted. Only authorization SHA-256 and public-safe evidence may be recorded. Fixed receipt-key material is UTF-8 of:
+Raw authorization, identities, membership lists, private paths, and raw price payloads are never printed or publicly persisted. Fixed receipt-key material is UTF-8 of:
 
 ```text
 V8K_T1_CONFIRMATION_OPENING_GATE_RECEIPT_KEY_V1\0
@@ -174,7 +174,49 @@ V8K_HISTORICAL_RESEARCH\0
 HUMAN_V8K_T1_CONFIRMATION_OPENING_GATE
 ```
 
-At first private membership-content or result exposure, set `T1_CONSUMED=true`; access remains exactly one. Evaluation uses the six primary criteria already frozen in `V8K_LAYER_B_T1_CONFIRMATION_DESIGN_DRAFT.md`, without restatement or reinterpretation. Secondary diagnostics remain nondecisional. A scientifically valid result with any primary criterion failing is `T1_CONFIRMATION_REJECT`; transport, data-quality, governance, or implementation failure is not strategy rejection.
+Durable publication/consumption of this fixed one-shot receipt is the
+irreversible T1 consumption event. It occurs immediately before the first
+private T1 membership-content read and must durably establish
+`T1_CONSUMED=true` and `consumption_count=1` before that read. A failure
+before durable receipt publication is `PRE_GATE_FAILURE` and leaves
+`T1_CONSUMED=false`. Every failure after receipt consumption is `POST_GATE`
+with respect to this T1 gate: authorization never becomes reusable; the
+receipt cannot be deleted, reset, or replaced; and no second T1 opening is
+permitted. The absence of later membership or result exposure does not restore
+authorization. Membership/result exposure remains relevant to
+`max_validation_access=1` accounting, but cannot delay or undo consumption.
+
+### T1 public-safe confirmation evidence
+
+The public-safe T1 confirmation evidence artifact must be sufficient for an
+exact-SHA independent review of the frozen six criteria without revealing T1
+membership. It may contain only safe aggregates and provenance: schema/version
+and artifact role; study and candidate identifiers; exact reviewed/frozen Git
+commit and blob bindings; `authorization_identity_sha256`; gate receipt-key
+SHA-256, consumed boolean, and consumption count; `source_raw_sha256`;
+`eligible_ticker_list_sha256` where applicable; `private_manifest_sha256`;
+`t1_ticker_list_sha256`; T1 ticker count `300`; safe timestamps, counts,
+booleans, hashes, and failure-classification enums.
+
+It may also contain the baseline and candidate aggregate metrics required by
+the frozen primary criteria: net profit, profit factor, MTM maximum drawdown,
+book-cost maximum drawdown, and positive-year count; each of the six
+primary-condition PASS/FAIL booleans; and `T1_RESULT`. The frozen secondary
+aggregate diagnostics listed in `V8K_LAYER_B_T1_CONFIRMATION_DESIGN_DRAFT.md`
+may be recorded, but remain nondecisional.
+
+Public persistence or output is prohibited for ticker identities, membership
+lists or ordering, private paths, raw seed, raw partition manifest, raw
+authorization text, raw Yahoo/price payloads, per-ticker price rows,
+per-ticker or per-trade private outcomes that could reveal membership, and any
+other membership-reconstructing information.
+
+Evaluation uses the six primary criteria already frozen in
+`V8K_LAYER_B_T1_CONFIRMATION_DESIGN_DRAFT.md`, without restatement or
+reinterpretation. Secondary diagnostics remain nondecisional. A scientifically
+valid result with any primary criterion failing is `T1_CONFIRMATION_REJECT`;
+transport, data-quality, governance, or implementation failure is not strategy
+rejection.
 
 No redraw, resample, successor selection, or post-T1 tuning is allowed. A T1 pass does not establish future profitability or authorize T2, T3, deployment, production, candidate modification, or another candidate.
 
