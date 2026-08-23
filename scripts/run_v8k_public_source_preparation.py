@@ -1,6 +1,14 @@
 """V8K public-source production boundary; authorization is never accepted on argv."""
 from __future__ import annotations
-import json, os
+import json
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from src.v8k_public_source_preparation import V8KPublicSourceBlocked, prepare
 
 AUTH_ENV = "V8K_PUBLIC_SOURCE_PREPARATION_AUTHORIZATION"
