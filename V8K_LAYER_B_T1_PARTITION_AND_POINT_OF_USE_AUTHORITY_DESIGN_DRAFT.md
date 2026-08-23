@@ -2,7 +2,7 @@
 
 ```text
 document_type=V8K_LAYER_B_T1_PARTITION_AND_POINT_OF_USE_AUTHORITY_DESIGN
-status=PROPOSED_NOT_FROZEN
+status=APPROVED_FROZEN
 study=V8K_HISTORICAL_RESEARCH
 layer_b_reviewed_freeze_sha=9f91ad00ce86eba3b0b990476744f98253d11474
 candidate_preregistration_blob=1a087bb93b947be4e93855b3c0b2d5b1b5b1b2d1
@@ -13,9 +13,28 @@ T1_CONSUMED=false
 T2_AUTHORIZED=false
 future_profitability_established=false
 deployment_allowed=false
+frozen_design_input_commit=eaf22d13c6a87f6bdc8ef4814f65a87581614fd4
+frozen_design_input_blob=cda62b693cca4da82549ec1da0315a173c435f71
+independent_freeze_input_review_result=PASS
+independent_freeze_input_review_critical=0
+independent_freeze_input_review_high=0
+independent_freeze_input_review_medium=0
+human_freeze_gate=HUMAN_V8K_T1_PARTITION_AUTHORITY_DESIGN_FREEZE
+human_freeze_complete=true
+human_freeze_authorization_sha256=6460fd6f3c03c6581116e02b0d10f815c278e4a230061af4ba5c3f6a803c5034
+raw_human_authorization_persisted=false
+methodology_changed_during_freeze=false
+partition_authority_design_frozen=true
 ```
 
-This proposed design binds the human-frozen Layer-B candidate and T1 confirmation methodology above. It grants no public-network, private/sealed-data, partition-generation, membership-disclosure, price-acquisition, research-opening, T2, T3, deployment, or production authority. No V8H seed, membership, receipt, authorization, or private state is reused.
+This human-approved frozen design binds the human-frozen Layer-B candidate and
+T1 confirmation methodology above. This freeze grants zero network,
+PUBLIC_SOURCE_PREPARATION, PRIVATE_PARTITION_ESTABLISHMENT,
+T1_POINT_OF_USE, membership, price-acquisition, T2, T3, deployment, or
+production authority. No V8H seed, membership, receipt, authorization, or
+private state is reused. Each later stage still requires dedicated
+implementation, targeted tests/static checks, commit/push, GPT exact-SHA
+independent review, and its applicable fresh point-of-use human authorization.
 
 ## 1. Frozen stage order
 
@@ -242,5 +261,5 @@ gate_consumption=0
 T1_ACCESS_AUTHORIZED=false
 T1_CONSUMED=false
 T2_AUTHORIZED=false
-NEXT_ACTION=GPT_EXACT_SHA_V8K_T1_PARTITION_AUTHORITY_DESIGN_REVIEW
+NEXT_ACTION=V8K_PUBLIC_SOURCE_PREPARATION_SUPPORT_IMPLEMENTATION
 ```
