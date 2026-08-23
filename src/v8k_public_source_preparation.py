@@ -1,6 +1,6 @@
 """V8K Stage-1 public-source preparation support; no network is wired by default."""
 from __future__ import annotations
-import hashlib, json, os, re
+import hashlib, json, os, re, subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -23,6 +23,10 @@ KEY_MATERIAL = ("V8K_PUBLIC_SOURCE_PREPARATION_GATE_RECEIPT_KEY_V1\0"
 DATA_LINK = re.compile(r"href=[\"']([^\"']*data_j\.xls)[\"']", re.I)
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT = CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8k-public-source-preparation"
+REPOSITORY_IDENTITY = "ta1k1-arakawa/stock-analyzer"
+AUTHORITATIVE_BRANCH = "v8g-private-partition-locator-successor-design"
+DESIGN_PATH = "V8K_LAYER_B_T1_PARTITION_AND_POINT_OF_USE_AUTHORITY_DESIGN_DRAFT.md"
+CANONICAL_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 class V8KPublicSourceBlocked(RuntimeError):
     pass
@@ -48,6 +52,30 @@ def validate_authorization(raw: str, *, design_commit: str, support_sha: str) ->
     if not isinstance(raw, str) or raw != expected:
         raise V8KPublicSourceBlocked("AUTHORIZATION_GRAMMAR_INVALID")
     return sha256(raw)
+
+def production_provenance(git: Callable[[list[str]], str] | None = None) -> str:
+    """Return verified HEAD or fail closed before the network seam."""
+    if git is None:
+        def git(args: list[str]) -> str:
+            try:
+                return subprocess.run(["git", *args], cwd=CANONICAL_REPOSITORY_ROOT, check=True, text=True, capture_output=True).stdout.strip()
+            except (OSError, subprocess.CalledProcessError) as exc:
+                raise V8KPublicSourceBlocked("GOVERNANCE_FAILURE") from exc
+    try:
+        origin = git(["config","--get","remote.origin.url"])
+        branch = git(["branch","--show-current"])
+        clean = git(["status","--porcelain"])
+        head = git(["rev-parse","HEAD"])
+        remote = git(["rev-parse",f"refs/remotes/origin/{AUTHORITATIVE_BRANCH}"])
+        blob = git(["rev-parse",f"HEAD:{DESIGN_PATH}"])
+        ancestor = git(["merge-base","--is-ancestor",FROZEN_DESIGN_COMMIT,head])
+    except V8KPublicSourceBlocked:
+        raise
+    except Exception as exc:
+        raise V8KPublicSourceBlocked("GOVERNANCE_FAILURE") from exc
+    if REPOSITORY_IDENTITY not in origin or branch != AUTHORITATIVE_BRANCH or clean or not HEX40.fullmatch(head) or remote != head or blob != FROZEN_DESIGN_BLOB or ancestor not in ("","0","true"):
+        raise V8KPublicSourceBlocked("GOVERNANCE_FAILURE")
+    return head
 
 def _trusted(url: str) -> str:
     p = urlparse(url)
@@ -150,7 +178,7 @@ def _prepare_for_test(*, state_root: str | os.PathLike[str], raw_authorization: 
     if evidence_path is not None: _atomic_once(Path(evidence_path), canonical_bytes(result), "EVIDENCE_ALREADY_EXISTS")
     return result
 
-def prepare(*, raw_authorization: str, support_sha: str, fetcher: Callable[[str], tuple[bytes,str]], parser: Callable[[bytes], Any], v4_manifest_path: str | os.PathLike[str], v4_universe_path: str | os.PathLike[str], implementation_commit: str, now: Callable[[], datetime], sleep: Callable[[int],None]=lambda _n: None, evidence_path: str | os.PathLike[str] | None=None) -> dict[str, Any]:
+def prepare(*, raw_authorization: str, fetcher: Callable[[str], tuple[bytes,str]], parser: Callable[[bytes], Any], v4_manifest_path: str | os.PathLike[str], v4_universe_path: str | os.PathLike[str], implementation_commit: str, now: Callable[[], datetime], sleep: Callable[[int],None]=lambda _n: None, evidence_path: str | os.PathLike[str] | None=None) -> dict[str, Any]:
     """Production-facing API: fixed canonical machine-local state only."""
     try:
         root = CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT
@@ -158,4 +186,5 @@ def prepare(*, raw_authorization: str, support_sha: str, fetcher: Callable[[str]
             raise OSError("nonabsolute")
     except Exception as exc:
         raise V8KPublicSourceBlocked("GOVERNANCE_FAILURE") from exc
-    return _prepare_for_test(state_root=root, raw_authorization=raw_authorization, support_sha=support_sha, fetcher=fetcher, parser=parser, v4_manifest_path=v4_manifest_path, v4_universe_path=v4_universe_path, implementation_commit=implementation_commit, now=now, sleep=sleep, evidence_path=evidence_path)
+    head = production_provenance()
+    return _prepare_for_test(state_root=root, raw_authorization=raw_authorization, support_sha=head, fetcher=fetcher, parser=parser, v4_manifest_path=v4_manifest_path, v4_universe_path=v4_universe_path, implementation_commit=implementation_commit, now=now, sleep=sleep, evidence_path=evidence_path)

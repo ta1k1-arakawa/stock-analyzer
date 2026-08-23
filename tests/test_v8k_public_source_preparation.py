@@ -40,6 +40,7 @@ def test_receipt_key_fixed_and_no_partition_api():
  assert m.receipt_key()==m.receipt_key()
  assert "allocate_fresh_blocks" not in open(m.__file__,encoding="utf8").read()
  assert "state_root" not in inspect.signature(m.prepare).parameters
+ assert "support_sha" not in inspect.signature(m.prepare).parameters
  assert m.CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT == m.CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8k-public-source-preparation"
 
 def test_prepare_locks_before_parse_reuses_bytes_and_safe_evidence(state_root,monkeypatch):
@@ -59,10 +60,19 @@ def test_prepare_locks_before_parse_reuses_bytes_and_safe_evidence(state_root,mo
 
 def test_production_api_uses_canonical_lock_without_fetch(state_root,monkeypatch):
  monkeypatch.setattr(m,"CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT",state_root)
+ monkeypatch.setattr(m,"production_provenance",lambda:"a"*40)
  m._lock(state_root,b"raw",hashlib.sha256(auth().encode()).hexdigest(),lambda:datetime(2026,1,1,tzinfo=timezone.utc))
  monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **kw:({"source_raw_sha256":m.sha256(kw["raw_source_bytes"]),"eligible_ticker_count":900,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"},[],[],{}))
- out=m.prepare(raw_authorization=auth(),support_sha="a"*40,fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("fetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ out=m.prepare(raw_authorization=auth(),fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("fetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
  assert out["network_request_count"]==0
+
+def test_provenance_failures_block_without_fetch():
+ base={"config --get remote.origin.url":"https://github.com/ta1k1-arakawa/stock-analyzer.git","branch --show-current":m.AUTHORITATIVE_BRANCH,"status --porcelain":"","rev-parse HEAD":"a"*40,"rev-parse refs/remotes/origin/"+m.AUTHORITATIVE_BRANCH:"a"*40,"rev-parse HEAD:"+m.DESIGN_PATH:m.FROZEN_DESIGN_BLOB,"merge-base --is-ancestor "+m.FROZEN_DESIGN_COMMIT+" "+"a"*40:""}
+ def good(args): return base[" ".join(args)]
+ assert m.production_provenance(good)=="a"*40
+ for key in ("config --get remote.origin.url","branch --show-current","status --porcelain","rev-parse HEAD","rev-parse refs/remotes/origin/"+m.AUTHORITATIVE_BRANCH,"rev-parse HEAD:"+m.DESIGN_PATH,"merge-base --is-ancestor "+m.FROZEN_DESIGN_COMMIT+" "+"a"*40):
+  changed=dict(base); changed[key]="bad" if key!="status --porcelain" else " M x"
+  with pytest.raises(m.V8KPublicSourceBlocked): m.production_provenance(lambda args,c=changed:c[" ".join(args)])
 
 def test_parser_failure_after_lock_never_refetch(state_root,monkeypatch):
  monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **_:(_ for _ in ()).throw(ValueError()))
