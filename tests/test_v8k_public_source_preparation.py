@@ -151,13 +151,45 @@ def test_prepare_locks_before_parse_reuses_bytes_and_safe_evidence(state_root,mo
  out2=m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("refetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=now)
  assert out2["network_request_count"]==0
 
-def test_production_api_uses_canonical_lock_without_fetch(state_root,monkeypatch):
+def test_production_prepare_exposes_only_raw_authorization():
+ assert tuple(inspect.signature(m.prepare).parameters)==("raw_authorization",)
+ for keyword in ("fetcher","parser","v4_manifest_path","v4_universe_path","state_root","repo_root","support_sha","implementation_commit","now","clock","sleep","evidence_path"):
+  with pytest.raises(TypeError): m.prepare(raw_authorization=auth(),**{keyword:None})
+ _,_,manifest_path,universe_path=m._production_dependencies()
+ assert manifest_path==m.CANONICAL_REPOSITORY_ROOT/"V4_UNIVERSE_MANIFEST.json"
+ assert universe_path==m.CANONICAL_REPOSITORY_ROOT/"V4_UNIVERSE.csv"
+
+def test_production_prepare_uses_canonical_dependencies_and_verified_head(monkeypatch):
+ seen={}; dependencies=(lambda _u:(b"",m.JPX_PAGE),lambda raw:raw,m.CANONICAL_REPOSITORY_ROOT/"V4_UNIVERSE_MANIFEST.json",m.CANONICAL_REPOSITORY_ROOT/"V4_UNIVERSE.csv")
+ monkeypatch.setattr(m,"production_provenance",lambda:"a"*40)
+ monkeypatch.setattr(m,"_production_dependencies",lambda:dependencies)
+ monkeypatch.setattr(m,"_prepare_for_test",lambda **kw:seen.update(kw) or {"status":"synthetic"})
+ assert m.prepare(raw_authorization=auth())=={"status":"synthetic"}
+ assert seen["state_root"]==m.CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT
+ assert seen["fetcher"] is dependencies[0] and seen["parser"] is dependencies[1]
+ assert seen["v4_manifest_path"]==m.CANONICAL_REPOSITORY_ROOT/"V4_UNIVERSE_MANIFEST.json"
+ assert seen["v4_universe_path"]==m.CANONICAL_REPOSITORY_ROOT/"V4_UNIVERSE.csv"
+ assert seen["support_sha"]==seen["implementation_commit"]=="a"*40
+
+@pytest.mark.parametrize("failures,expected_sleeps",[(1,[5]),(2,[5,30])])
+def test_production_prepare_enforces_real_frozen_backoff(state_root,monkeypatch,failures,expected_sleeps):
+ calls=[]; sleeps=[]
  monkeypatch.setattr(m,"CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT",state_root)
  monkeypatch.setattr(m,"production_provenance",lambda:"a"*40)
- m._lock(state_root,b"raw",hashlib.sha256(auth().encode()).hexdigest(),lambda:datetime(2026,1,1,tzinfo=timezone.utc))
+ monkeypatch.setattr(m.time,"sleep",sleeps.append)
+ def fetch(url):
+  calls.append(url)
+  if len(calls)<=failures: raise TimeoutError("synthetic timeout")
+  return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
+ monkeypatch.setattr(m,"_production_dependencies",lambda:(fetch,lambda raw:raw,"manifest","universe"))
  monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **kw:({"source_raw_sha256":m.sha256(kw["raw_source_bytes"]),"eligible_ticker_count":900,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"},[],[],{}))
- out=m.prepare(raw_authorization=auth(),fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("fetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",now=lambda:datetime.now(timezone.utc))
- assert out["network_request_count"]==0
+ assert m.prepare(raw_authorization=auth())["network_request_count"]==failures+2
+ assert sleeps==expected_sleeps
+
+def test_private_prepare_seam_retains_fake_dependencies(state_root,monkeypatch):
+ monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **kw:({"source_raw_sha256":m.sha256(kw["raw_source_bytes"]),"eligible_ticker_count":900,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"},[],[],{}))
+ out=m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=lambda url:(b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url),parser=lambda raw:raw,v4_manifest_path="manifest",v4_universe_path="universe",implementation_commit="d"*40,now=lambda:datetime(2026,1,1,tzinfo=timezone.utc),sleep=lambda _n:None)
+ assert out["network_request_count"]==2
 
 def test_provenance_failures_block_without_fetch():
  base={"config --get remote.origin.url":"https://github.com/ta1k1-arakawa/stock-analyzer.git","branch --show-current":m.AUTHORITATIVE_BRANCH,"status --porcelain":"","rev-parse HEAD":"a"*40,"rev-parse refs/remotes/origin/"+m.AUTHORITATIVE_BRANCH:"a"*40,"rev-parse HEAD:"+m.DESIGN_PATH:m.FROZEN_DESIGN_BLOB,"merge-base --is-ancestor "+m.FROZEN_DESIGN_COMMIT+" "+"a"*40:""}
@@ -181,8 +213,9 @@ def test_repository_identity_failure_blocks_before_injected_fetcher(state_root,m
  provenance=m.production_provenance
  monkeypatch.setattr(m,"production_provenance",lambda:provenance(lambda args:base[" ".join(args)]))
  calls=[]
+ monkeypatch.setattr(m,"_production_dependencies",lambda:(lambda url:calls.append(url),lambda raw:raw,"x","x"))
  with pytest.raises(m.V8KPublicSourceBlocked,match="GOVERNANCE_FAILURE"):
-  m.prepare(raw_authorization=auth(),fetcher=lambda url:calls.append(url),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",now=lambda:datetime.now(timezone.utc))
+  m.prepare(raw_authorization=auth())
  assert calls==[]
 
 def test_parser_failure_after_lock_never_refetch(state_root,monkeypatch):

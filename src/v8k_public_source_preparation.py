@@ -1,6 +1,6 @@
 """V8K Stage-1 public-source preparation support; no network is wired by default."""
 from __future__ import annotations
-import hashlib, json, os, re, subprocess
+import hashlib, json, os, re, subprocess, time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -221,7 +221,7 @@ def _production_dependencies() -> tuple[Callable[[str], tuple[bytes, str]], Call
         return _read_response(response), url
     return fetcher, default_parse_source_table, CANONICAL_REPOSITORY_ROOT / "V4_UNIVERSE_MANIFEST.json", CANONICAL_REPOSITORY_ROOT / "V4_UNIVERSE.csv"
 
-def prepare(*, raw_authorization: str, fetcher: Callable[[str], tuple[bytes,str]] | None = None, parser: Callable[[bytes], Any] | None = None, v4_manifest_path: str | os.PathLike[str] | None = None, v4_universe_path: str | os.PathLike[str] | None = None, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc), sleep: Callable[[int],None]=lambda _n: None, evidence_path: str | os.PathLike[str] | None=None) -> dict[str, Any]:
+def prepare(*, raw_authorization: str) -> dict[str, Any]:
     """Production-facing API: fixed canonical machine-local state only."""
     try:
         root = CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT
@@ -230,6 +230,5 @@ def prepare(*, raw_authorization: str, fetcher: Callable[[str], tuple[bytes,str]
     except Exception as exc:
         raise V8KPublicSourceBlocked("GOVERNANCE_FAILURE") from exc
     head = production_provenance()
-    if fetcher is None or parser is None or v4_manifest_path is None or v4_universe_path is None:
-        fetcher, parser, v4_manifest_path, v4_universe_path = _production_dependencies()
-    return _prepare_for_test(state_root=root, raw_authorization=raw_authorization, support_sha=head, fetcher=fetcher, parser=parser, v4_manifest_path=v4_manifest_path, v4_universe_path=v4_universe_path, implementation_commit=head, now=now, sleep=sleep, evidence_path=evidence_path)
+    fetcher, parser, v4_manifest_path, v4_universe_path = _production_dependencies()
+    return _prepare_for_test(state_root=root, raw_authorization=raw_authorization, support_sha=head, fetcher=fetcher, parser=parser, v4_manifest_path=v4_manifest_path, v4_universe_path=v4_universe_path, implementation_commit=head, now=lambda: datetime.now(timezone.utc), sleep=time.sleep)
