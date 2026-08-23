@@ -94,7 +94,139 @@ If quantity <1, skip and consider the next candidate. Actual D1 execution cost
 uses actual D1 close; cash may never be negative. The 10% buffer absorbs price
 movement/reservation mismatch. Never exceed cash silently to force ten names.
 
-## 5. Target and corporate actions
+## 5. Portfolio selection, cash, backfill, and carry semantics
+
+### Global cycle calendar
+
+Use frozen JPX calendar. `D0_0` is the first JPX trading day >=2018-01-01. For
+cycle n, `D0_n` is calendar index of `D0_0 + 3*n`; `D1_n`, `D2_n`, and `D3_n`
+are respectively first, second, and third next JPX trading days after D0.
+Thus `D0_(n+1)=D3_n`. Create cycles while `D0_n <= 2025-12-31`; D1/D2/D3 and
+HIGH-2 exit tail may extend later. Global dates never delay/redraw for full
+portfolio, failed order, or delayed exit, and are shared by strategy, 300k,
+stress, and every Random-K scenario.
+
+### D0 close processing order
+
+When D0 is an existing-position exit-attempt day, process at D0 close:
+
+1. Apply effective HIGH-2 corporate actions.
+2. Evaluate/execute required existing-position exits.
+3. Update cash, pending proceeds, and open-position state.
+4. Compute authoritative end-of-D0 MTM equity.
+5. Only then construct D0 features/scores and next-D1 entry submissions.
+
+Using D0 exit outcome to size D1 orders is causal. No D0-close buy exists;
+successfully executed D0-exit proceeds may be D1 buying power under frozen cash
+ledger.
+
+### Strategy ordering and score ties
+
+For each D0 use frozen daily scoreable universe. Each score must be finite. A
+nonfinite score for otherwise valid finite model input fails closed:
+
+```text
+failure_class=IMPLEMENTATION_FAILURE
+reason=NONFINITE_MODEL_SCORE
+```
+
+Traversal order is model score descending then canonical code ascending; equal
+scores therefore use canonical-code ascending. Duplicate canonical-code rows
+on D0 fail closed as `DATA_QUALITY_FAILURE: DUPLICATE_D0_CANONICAL_CODE`; do
+not remove arbitrarily. Random-K retains frozen SHA-256 order without scores.
+
+### Open-position slots and sectors
+
+After D0 close, `carry_count` is still-open positions. If `carry_count >10`,
+fail closed as `IMPLEMENTATION_FAILURE: MAX_POSITION_INVARIANT_BROKEN`.
+Otherwise `entry_order_slot_budget=10-carry_count`. A position scheduled/retrying
+exit at D1 counts as open: D1 same-close exit never provides D1 entry slot. If
+budget is zero, submit no entries but do not skip/shift cycle.
+
+Each filled position stores `entry_sector33` from entry-signal D0 and retains
+it until exit. Start D0 sector counts from carry positions. Immediately reserve
+one sector slot per submitted D1 order, even if it later fails/no-fills; D1
+outcomes cannot trigger same-cycle sector backfill. Missing/invalid candidate
+sector is `PORTFOLIO_SKIP_SECTOR33_UNAVAILABLE`; continue traversal. The cap
+remains two positions/submitted entries per stored sector33.
+
+### Duplicate/open code and D0 cash budget
+
+If candidate code is open after D0 close, record
+`PORTFOLIO_SKIP_DUPLICATE_OPEN_CODE` and continue. A code submitted in the D0
+pass cannot be submitted again; no same-close exit/re-entry assumption.
+
+After exits compute once per scenario:
+
+```text
+current_equity_D0=authoritative_HIGH_3_end_of_D0_MTM_equity
+target_notional=0.90*current_equity_D0/10
+cash_floor_D0=0.10*current_equity_D0
+known_D1_buying_power=cash_mechanically_known_available_after_D0
+submission_cash_budget=max(0,known_D1_buying_power-cash_floor_D0)
+```
+
+Do not include proceeds of a position still open after D0. This D0 cash floor
+is submission budgeting only; actual post-D1 cash may be below it. For candidate
+c: `qty_c=floor(target_notional/D0_raw_close_c)`. If less than one, record
+`PORTFOLIO_SKIP_QUANTITY_ZERO` and continue. Estimate
+`estimated_submission_cost_c=qty_c*D0_raw_close_c`, using raw D0 close only—no
+future D1 price/no-fill/stress/outcome. If it exceeds remaining budget, record
+`PORTFOLIO_SKIP_D0_ESTIMATED_CASH` and continue; otherwise reserve it. Budget
+never becomes negative.
+
+### Exact D0 traversal/backfill
+
+Traverse strategy score order or frozen Random-K order sequentially. Continue
+lower only when current candidate fails a D0-known constraint: duplicate/open
+code, sector unavailable/cap, quantity zero, or D0 estimated cash. This is
+causal pre-submission traversal, not outcome backfill. A candidate passing all
+D0 constraints is submitted; reserve estimated cash and sector; increment
+submitted count. Stop at `submitted_entry_order_count==entry_order_slot_budget`
+or exhausted eligible order. At most ten are submitted. After D0 selection, set
+is immutable: no D1-or-later event adds another candidate.
+
+### D1 entry execution and same-close exits
+
+Process submitted orders in exact D0 submission sequence. D1 entries never use
+proceeds from a D1 closing-auction exit. For each submitted order:
+
+1. Require finite positive official D1 raw close; otherwise `ENTRY_MARKET_NO_CLOSE`.
+2. Apply HIGH-1 deterministic ENTRY no-fill where applicable; if no-fill, `ENTRY_NO_FILL`.
+3. Use frozen execution price: base raw close, stress only its frozen adverse rule.
+4. Calculate actual cost from that price and frozen qty.
+5. If cost exceeds actual D1 entry cash, `ENTRY_INSUFFICIENT_CASH_AT_CLOSE`.
+6. Otherwise fill and deduct cost.
+
+Every non-fill is no replacement. Actual D1 execution may consume the D0 10%
+buffer and reduce cash below `cash_floor_D0`, but never below zero. There is no
+D1 quantity resize, partial synthetic quantity, or substitution. A D1 carry
+exit provides no slot, sector capacity, or buying power for pre-close D1
+entries; successful D1 exits update future-cycle state only.
+
+### Carry positions and scenario state separation
+
+An unexited position remains carry under HIGH-1/HIGH-2. At each later D0 it
+consumes a max-position slot and stored sector slot, remains in MTM equity,
+keeps capital tied, and naturally reduces known buying power. No forced
+liquidation, replacement, or cycle delay; fewer free slots means fewer orders.
+Random-K has identical mechanics in its own scenario state.
+
+Base 400k, 300k, Stress A+B, Stress C, strategy, and each Random-K simulation
+have separate causal cash/open-position state. They share global cycle calendar,
+applicable score or Random-K ordering, and deterministic shocks, but never
+mutable state or another scenario's future state. Differences caused by capital,
+fills, stress, or carries are allowed.
+
+### No post-result discretionary fill-up
+
+There is no rule to keep trying lower-ranked names until ten actually fill.
+Fill up to D0 submission slots using only D0-known constraints, then accept D1
+outcomes. Filled count may be below ten. Underinvestment from no-fill, D1 cash
+movement, missing D1 close, or carries is a frozen architecture result, never
+repaired afterward.
+
+## 6. Target and corporate actions
 
 ### Corporate-action ratio semantic
 
@@ -212,7 +344,7 @@ rows. The required acquisition horizon includes enough JPX trading days for the
 20-day exit-resolution tail, derived mechanically from the frozen JPX calendar
 rather than a favorable endpoint selected after outcomes.
 
-## 6. Fixed feature set
+## 7. Fixed feature set
 
 Exactly ten causal raw factors, then same-date cross-sectional percentile rank
 within the applicable study block:
@@ -227,7 +359,7 @@ features. Industry is permitted only for the sector-cap rule. `volume_dryup`
 is a preregistered prior from earlier exploratory work, receives no special
 weight, and is not compared with/without inside V9.
 
-## 7. Models
+## 8. Models
 
 Exactly two development models:
 
@@ -241,7 +373,7 @@ CANDIDATE=LightGBMRegressor(
 hyperparameter_search=false
 ```
 
-## 8. Training and model choice
+## 9. Training and model choice
 
 T0 only; expanding training; retrain once per calendar month. A month's
 predictions use only rows whose realized target exit date is strictly before
@@ -255,7 +387,7 @@ positive yearly IC in >=5 of 8 years. Otherwise `V9_REJECT_PRE_T1` and T1 is
 never opened. Freeze the selected model before T1; T1 rows never fit or choose
 a model.
 
-## 9. Benchmarks
+## 10. Benchmarks
 
 Mandatory: TOPIX price index, eligible-universe equal-weight price return, and
 executable random-K. The following is the complete Random-K protocol.
@@ -293,7 +425,7 @@ exhausted. A later D1 non-fill, invalid execution, or insufficient-cash failure
 does not substitute another same-day candidate. Random-K selection therefore
 cannot use D1-or-later information.
 
-## 10. Historical transaction/fill model
+## 11. Historical transaction/fill model
 
 ```text
 base_commission=0
@@ -344,7 +476,7 @@ Stress C remains report-only.
 Carry-position/capacity semantics after an exit no-fill are not resolved here;
 they remain HIGH-4.
 
-## 11. Verdict metric and IC aggregation semantics
+## 12. Verdict metric and IC aggregation semantics
 
 ### Daily cross-sectional IC
 
@@ -503,7 +635,7 @@ An attempt invalidated by `DATA_QUALITY_FAILURE`, `GOVERNANCE_FAILURE`,
 `V9_T1_REJECT` applies only to valid completed T1 evaluation failing one or
 more frozen confirmation criteria.
 
-## 12. T1 promotion criteria
+## 13. T1 promotion criteria
 
 One-shot T1 PASS requires all:
 
@@ -518,14 +650,14 @@ TOPIX/equal-weight comparisons are mandatory reporting, not independent PASS
 gates. Any valid criterion failure is `V9_T1_REJECT`. Do not change thresholds,
 features, model, holding period, K, or rerun within V9 after T1.
 
-## 13. Failure taxonomy
+## 14. Failure taxonomy
 
 Separate `DATA_QUALITY_FAILURE`, `GOVERNANCE_FAILURE`,
 `IMPLEMENTATION_FAILURE`, `OPERATIONAL_EXECUTION_FAILURE`, and
 `STRATEGY_CONFIRMATION_FAILURE`. Transport/data/implementation failures are
 not strategy failures.
 
-## 14. Forward progression
+## 15. Forward progression
 
 Only after T1 PASS: PAPER is later of three calendar months or 20 completed
 portfolio cycles; no tuning. It measures real S-share fills/prices/operations.
@@ -540,7 +672,7 @@ capital-risk stop, not proof of strategy invalidity. Full 300,000–400,000 JPY
 use requires another fresh human authorization and independent forward-evidence
 review.
 
-## 15. Paid-data boundary
+## 16. Paid-data boundary
 
 ```text
 HUMAN_V9_JQUANTS_STANDARD_PURCHASE_GATE_REQUIRED=true
