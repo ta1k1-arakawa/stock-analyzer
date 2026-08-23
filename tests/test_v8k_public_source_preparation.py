@@ -288,7 +288,117 @@ def test_repository_identity_failure_blocks_before_injected_fetcher(state_root,m
 def test_parser_failure_after_lock_never_refetch(state_root,monkeypatch):
  monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **_:(_ for _ in ()).throw(ValueError()))
  def fetch(url): return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
- with pytest.raises(m.V8KPublicSourceBlocked,match="DATA_QUALITY_FAILURE"):
+ with pytest.raises(m.V8KPublicSourceBlocked,match="DATA_QUALITY_FAILURE") as first:
   m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=fetch,parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
- with pytest.raises(m.V8KPublicSourceBlocked,match="DATA_QUALITY_FAILURE"):
+ assert first.value.failure_class=="DATA_QUALITY_FAILURE" and first.value.network_request_count==2 and first.value.first_complete_payload_locked is True
+ with pytest.raises(m.V8KPublicSourceBlocked,match="DATA_QUALITY_FAILURE") as second:
   m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("refetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ assert second.value.failure_class=="DATA_QUALITY_FAILURE" and second.value.network_request_count==0 and second.value.first_complete_payload_locked is True
+
+# --- HIGH-5: runner must no longer collapse every failure class to GOVERNANCE_FAILURE ---
+
+def test_failure_class_mapping_covers_every_frozen_public_class():
+ assert m.public_failure_class("PLUMBING_FAILURE_RETRIABLE")=="PLUMBING_FAILURE_RETRIABLE"
+ for reason in ("DATA_QUALITY_FAILURE","JPX_URL_INVALID","JPX_PAGE_INVALID","JPX_DATA_LINK_NOT_FOUND","EMPTY_COMPLETE_PAYLOAD"):
+  assert m.public_failure_class(reason)=="DATA_QUALITY_FAILURE"
+ for reason in ("AUTHORIZATION_GRAMMAR_INVALID","FROZEN_DESIGN_COMMIT_MISMATCH","GOVERNANCE_FAILURE"):
+  assert m.public_failure_class(reason)=="GOVERNANCE_FAILURE"
+ for reason in ("LOCKED_STATE_INCOMPLETE","LOCKED_STATE_INVALID","LOCKED_STATE_INTEGRITY_FAILURE","LOCKED_RAW_ALREADY_EXISTS","LOCKED_METADATA_ALREADY_EXISTS","DURABLE_PUBLICATION_FAILED","EVIDENCE_ALREADY_EXISTS"):
+  assert m.public_failure_class(reason)=="IMPLEMENTATION_FAILURE"
+
+def test_unknown_internal_reason_is_implementation_failure_fail_closed():
+ assert m.public_failure_class("SOME_NEW_UNSPECIFIED_REASON")=="IMPLEMENTATION_FAILURE"
+ exc=m.V8KPublicSourceBlocked("SOME_NEW_UNSPECIFIED_REASON")
+ assert exc.failure_class=="IMPLEMENTATION_FAILURE" and exc.network_request_count==0 and exc.first_complete_payload_locked is False
+
+def test_exhausted_retryable_transport_reports_plumbing_failure_retriable_with_actual_count():
+ calls=[]; waits=[]
+ def timeout(_):
+  calls.append(1); raise TimeoutError("timeout")
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m.fetch_first_complete(timeout,waits.append)
+ assert excinfo.value.failure_class=="PLUMBING_FAILURE_RETRIABLE"
+ assert excinfo.value.network_request_count==len(calls)==3
+ assert excinfo.value.first_complete_payload_locked is False
+
+def test_governance_or_auth_failure_maps_to_governance_failure(monkeypatch):
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m._prepare_for_test(state_root="unused",raw_authorization="wrong",support_sha="a"*40,fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("FETCH_MUST_NOT_RUN")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ assert excinfo.value.failure_class=="GOVERNANCE_FAILURE"
+ assert excinfo.value.network_request_count==0 and excinfo.value.first_complete_payload_locked is False
+
+def test_durable_lock_invariant_violation_is_implementation_failure(state_root):
+ m._lock(state_root,b"raw","b"*64,lambda:datetime(2026,1,1,tzinfo=timezone.utc))
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m._lock(state_root,b"second","b"*64,lambda:datetime.now(timezone.utc))
+ assert excinfo.value.failure_class=="IMPLEMENTATION_FAILURE"
+
+def test_pre_network_failure_reports_zero_requests():
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m.validate_authorization("bogus",design_commit=m.FROZEN_DESIGN_COMMIT,support_sha="a"*40)
+ assert excinfo.value.network_request_count==0 and excinfo.value.first_complete_payload_locked is False
+
+def test_page_semantic_failure_reports_one_request():
+ waits=[]
+ def offhost(url):
+  return b'<a href="https://evil/data_j.xls">',"https://www.jpx.co.jp/x"
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m.fetch_first_complete(offhost,waits.append)
+ assert excinfo.value.network_request_count==1 and excinfo.value.failure_class=="DATA_QUALITY_FAILURE"
+
+def test_post_lock_semantic_failure_reports_actual_acquisition_count(state_root,monkeypatch):
+ monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **_:(_ for _ in ()).throw(ValueError()))
+ def fetch(url): return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=fetch,parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ assert excinfo.value.failure_class=="DATA_QUALITY_FAILURE"
+ assert excinfo.value.network_request_count==2 and excinfo.value.first_complete_payload_locked is True
+
+def test_locked_byte_reprocessing_semantic_failure_reports_zero_requests(state_root,monkeypatch):
+ monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **_:(_ for _ in ()).throw(ValueError()))
+ def fetch(url): return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
+ with pytest.raises(m.V8KPublicSourceBlocked):
+  m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=fetch,parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("refetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ assert excinfo.value.network_request_count==0 and excinfo.value.first_complete_payload_locked is True
+
+def test_runner_emits_safe_failure_json_without_raw_internal_reason(monkeypatch,capsys):
+ raw=auth()
+ monkeypatch.setenv(runner.AUTH_ENV,raw)
+ def blocked_prepare(**_kw):
+  raise runner.V8KPublicSourceBlocked("LOCKED_STATE_INTEGRITY_FAILURE",network_request_count=2,first_complete_payload_locked=True)
+ monkeypatch.setattr(runner,"prepare",blocked_prepare)
+ with pytest.raises(SystemExit,match="IMPLEMENTATION_FAILURE"):
+  runner.main()
+ output=capsys.readouterr().out
+ assert "LOCKED_STATE_INTEGRITY_FAILURE" not in output
+ report=json.loads(output)
+ assert report=={"schema_version":"V8K_PUBLIC_SOURCE_PREPARATION_FAILURE_V1","study":m.STUDY,"stage":"PUBLIC_SOURCE_PREPARATION","execution_result":"BLOCKED","failure_class":"IMPLEMENTATION_FAILURE","network_request_count":2,"jpx_request_count":2,"first_complete_payload_locked":True}
+ assert raw not in output
+
+def test_runner_never_collapses_distinct_failure_classes_to_governance(monkeypatch,capsys):
+ raw=auth()
+ monkeypatch.setenv(runner.AUTH_ENV,raw)
+ for reason,expected_class in (("PLUMBING_FAILURE_RETRIABLE","PLUMBING_FAILURE_RETRIABLE"),("JPX_DATA_LINK_NOT_FOUND","DATA_QUALITY_FAILURE"),("LOCKED_STATE_INVALID","IMPLEMENTATION_FAILURE")):
+  monkeypatch.setattr(runner,"prepare",lambda reason=reason,**_kw:(_ for _ in ()).throw(runner.V8KPublicSourceBlocked(reason)))
+  with pytest.raises(SystemExit,match=expected_class):
+   runner.main()
+  output=capsys.readouterr().out
+  assert json.loads(output)["failure_class"]==expected_class
+
+def test_runner_does_not_leak_raw_authorization_on_failure(monkeypatch,capsys):
+ raw="wrong-authorization"
+ monkeypatch.setenv(runner.AUTH_ENV,raw)
+ monkeypatch.setattr(runner,"prepare",lambda **_kw:(_ for _ in ()).throw(runner.V8KPublicSourceBlocked("AUTHORIZATION_GRAMMAR_INVALID")))
+ with pytest.raises(SystemExit,match="GOVERNANCE_FAILURE"):
+  runner.main()
+ assert raw not in capsys.readouterr().out
+
+def test_runner_success_output_contract_unchanged(monkeypatch,capsys):
+ raw=auth()
+ expected={"schema_version":"V8K_PUBLIC_SOURCE_PREPARATION_EVIDENCE_V1","eligible_ticker_count":900,"source_raw_sha256":"c"*64,"network_request_count":0,"result_classification":"COMPLETE"}
+ monkeypatch.setenv(runner.AUTH_ENV,raw)
+ monkeypatch.setattr(runner,"prepare",lambda **_kw:expected)
+ assert runner.main()==0
+ assert json.loads(capsys.readouterr().out)==expected
