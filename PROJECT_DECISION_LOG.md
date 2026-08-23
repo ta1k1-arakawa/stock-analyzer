@@ -36,3 +36,7 @@ transitions. This public log must not contain protected material.
 - HIGH-2 is RESOLVED. V9_002 remains BLOCK with HIGH-3/HIGH-4.
 - HIGH-3 remediation defines exact IC, return, yearly excess, random-K percentile, DD percentile, 300k robustness, and Stress A+B arithmetic.
 - No purchase, data, T1, or design-freeze authority is created.
+- GPT exact-SHA review of `53d2c09b391cb405186db1ed27c9145f351fcf16`: `CRITICAL=0`, `HIGH=1`, `MEDIUM=0`, `RESULT=BLOCK`.
+- HIGH-4 core portfolio mechanics were substantially implemented; the remaining issue is the stale unresolved-carry contradiction plus the exact buying-power transition.
+- A successful D0 exit may fund D1, but no same-closing-auction exit proceeds may fund entries from that same close.
+- No purchase, data, T1, or design-freeze authority is created.

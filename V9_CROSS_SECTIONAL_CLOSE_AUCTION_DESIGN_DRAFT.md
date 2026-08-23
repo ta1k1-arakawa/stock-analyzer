@@ -204,6 +204,63 @@ D1 quantity resize, partial synthetic quantity, or substitution. A D1 carry
 exit provides no slot, sector capacity, or buying power for pre-close D1
 entries; successful D1 exits update future-cycle state only.
 
+### Buying-power and closing-auction cash ledger
+
+For V9, distinguish `available_buying_power`, open-position market value, and
+executed-but-not-yet-usable-same-auction proceeds. V9 does not model statutory
+settlement timing as a restriction on SBI buying power on a later trading day.
+
+1. Before a closing auction begins, an exit order's not-yet-executed proceeds
+   are not available to any entry order submitted for that same closing auction.
+2. When an exit successfully executes at trading-day T close,
+   `exit_proceeds = economic_quantity * frozen exit execution price - frozen
+   commission/cost applicable to that scenario`.
+3. Those proceeds become `available_buying_power` immediately after processing
+   the T closing auction.
+4. They cannot fund a T same-close entry, but can fund orders submitted for any
+   later JPX trading day, including T+1.
+5. A successful D0-close exit is included in post-D0 `available_buying_power`,
+   is included in `known_D1_buying_power`, and may fund D1 closing-auction
+   entry orders.
+6. A successful D1-close exit cannot fund D1 closing-auction entries; it
+   becomes available only after D1 close and may fund later-trading-day entries.
+7. A failed, no-fill, or market-no-close exit creates zero proceeds and changes
+   no `available_buying_power`.
+8. No proceeds are recognized before actual successful exit execution.
+9. No borrowing, margin, synthetic settlement credit, or negative buying power
+   is permitted.
+10. There is no extra arbitrary one-day pending-cash delay after successful
+    close execution for later-trading-day order budgeting.
+
+For historical accounting, after a successful exit at T close,
+`available_buying_power_after_T_close += exit_proceeds`, and the exited
+position is removed from open positions. For D0 order construction,
+`known_D1_buying_power = available_buying_power` immediately after all
+D0-close exit processing.
+
+For D1 execution, snapshot before the D1 closing-auction execution pass:
+`D1_entry_cash_available = available_buying_power` immediately before D1
+close. Process submitted D1 entry orders against only that snapshot and its
+current residual entry cash. Credit D1 exit proceeds only after all D1 entry
+feasibility has been determined; they cannot rescue a D1 entry that otherwise
+has insufficient cash.
+
+Within a close where entry and exit events exist, authoritative economic order
+is: (A) corporate-action processing; (B) determine pre-close available buying
+power and slot state; (C) execute already-submitted entries using only pre-close
+buying power; (D) execute/reconcile exits, which cannot fund those same-close
+entries; (E) credit successful exit proceeds for future trading days; and (F)
+record post-close open positions, cash, and equity. At D0 there are no D0 entry
+orders, so D0 exits execute and credit proceeds before post-close D0 state is
+used to construct D1 orders.
+
+This ordering remains consistent with `same-close exit cash reuse=false`,
+`same-close exit slot reuse=false`, and `D0 exit -> next-day D1 funding=true`.
+`frozen_pending_cash` in HIGH-3 equity terminology means only proceeds that
+have economically executed but are temporarily represented separately during
+the same close-processing transition. After that transition, they are part of
+`available_buying_power`; V9 has no multi-day pending-cash bucket.
+
 ### Carry positions and scenario state separation
 
 An unexited position remains carry under HIGH-1/HIGH-2. At each later D0 it
@@ -473,8 +530,9 @@ adverse 2.5 bp each side and exactly scenario-B events above—no separate rando
 stream. The same protocol applies to strategy and every Random-K simulation.
 Stress C remains report-only.
 
-Carry-position/capacity semantics after an exit no-fill are not resolved here;
-they remain HIGH-4.
+Carry-position/capacity behavior after exit non-fill is governed exactly by
+the frozen Portfolio selection, cash, backfill, and carry semantics section.
+No additional carry-capacity discretion exists.
 
 ## 12. Verdict metric and IC aggregation semantics
 
