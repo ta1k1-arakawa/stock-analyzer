@@ -2,7 +2,7 @@
 
 ```text
 document_type=V8K_LAYER_B_T1_CANDIDATE_PREREGISTRATION
-status=PROPOSED_NOT_FROZEN
+status=APPROVED_FROZEN
 evidence_capacity=ZERO
 future_profitability_established=false
 deployment_allowed=false
@@ -11,10 +11,30 @@ T1_consumed=false
 LAYER_A_SIMPLE_RANKING_EXPLORATION=CLOSED
 NO_MORE_LAYER_A_SIMPLE_RANKING_SEARCH=true
 NO_POST_SELECTION_TUNING=true
+NO_POST_T1_TUNING=true
+freeze_authorized_design_commit=1a06938b89a5c6c3169f88b33831c7c2810f2a48
+reviewed_candidate_preregistration_blob=6575070833c502c5b2a71f1669cc9d9f567e2518
+reviewed_t1_confirmation_design_blob=23fdff29ef4ddb96fc6f35cb5697251e14f61900
+independent_freeze_input_review_result=PASS
+independent_freeze_input_review_critical=0
+independent_freeze_input_review_high=0
+independent_freeze_input_review_medium=0
+human_freeze_gate=HUMAN_V8K_LAYER_B_T1_DESIGN_FREEZE
+human_freeze_complete=true
+human_freeze_authorization_sha256=4d0c5d8193dd32f6a7170e40a25b76e2c2c5434370a2b6cce65725780f33c3d5
+raw_human_authorization_persisted=false
+methodology_changed_during_freeze=false
+candidate_frozen=true
+t1_confirmation_design_frozen=true
+T1_ACCESS_AUTHORIZED=false
+T1_CONSUMED=false
+T2_AUTHORIZED=false
 ```
 
-This records the completed Layer A search and proposes an exact candidate for
-a later human-reviewed freeze. It authorizes no T1 access. Selection across
+This records the completed Layer A search and the human-approved, frozen exact
+candidate/T1 design. This freeze authorizes no partition generation, membership
+disclosure, T1 price/outcome access, private/sealed reads, T2/T3, deployment,
+or production. Selection across
 five exposed Layer-A families creates search/selection overfitting risk.
 Layer-A results have ZERO confirmatory evidence.
 
@@ -117,3 +137,7 @@ T1_HUMAN_AUTHORIZATION=REQUIRED_FRESH_AT_POINT_OF_USE
 This draft does not invent T1 pass thresholds, T1 partition/allocation, T1
 gate grammar, T1 retry rules, or promotion rules. A separate ChatGPT
 methodology decision is required before T1.
+
+```text
+NEXT_ACTION=CHATGPT_DECISION_REQUIRED_FOR_V8K_T1_PARTITION_AND_POINT_OF_USE_AUTHORITY
+```
