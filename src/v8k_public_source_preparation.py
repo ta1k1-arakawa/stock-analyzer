@@ -47,6 +47,7 @@ _INTERNAL_REASON_TO_PUBLIC_FAILURE_CLASS: dict[str, str] = {
     "AUTHORIZATION_GRAMMAR_INVALID": GOVERNANCE_FAILURE,
     "FROZEN_DESIGN_COMMIT_MISMATCH": GOVERNANCE_FAILURE,
     "GOVERNANCE_FAILURE": GOVERNANCE_FAILURE,
+    "IMPLEMENTATION_FAILURE": IMPLEMENTATION_FAILURE,
     "LOCKED_STATE_INCOMPLETE": IMPLEMENTATION_FAILURE,
     "LOCKED_STATE_INVALID": IMPLEMENTATION_FAILURE,
     "LOCKED_STATE_INTEGRITY_FAILURE": IMPLEMENTATION_FAILURE,
@@ -229,7 +230,7 @@ def fetch_first_complete(fetcher: Callable[[str], tuple[bytes, str]], sleep: Cal
         except Exception as exc:
             _classification, retryable = classify_transport_exception(exc)
             if not retryable:
-                raise
+                raise V8KPublicSourceBlocked(IMPLEMENTATION_FAILURE, network_request_count=requests, first_complete_payload_locked=False) from exc
             last = exc
             if attempt < MAX_RETRIES: sleep(BACKOFF_SECONDS[attempt])
     raise V8KPublicSourceBlocked("PLUMBING_FAILURE_RETRIABLE", network_request_count=requests) from last
@@ -279,6 +280,14 @@ def prepare(*, raw_authorization: str) -> dict[str, Any]:
             raise OSError("nonabsolute")
     except Exception as exc:
         raise V8KPublicSourceBlocked("GOVERNANCE_FAILURE") from exc
-    head = production_provenance()
-    fetcher, parser, v4_manifest_path, v4_universe_path = _production_dependencies()
-    return _prepare_for_test(state_root=root, raw_authorization=raw_authorization, support_sha=head, fetcher=fetcher, parser=parser, v4_manifest_path=v4_manifest_path, v4_universe_path=v4_universe_path, implementation_commit=head, now=lambda: datetime.now(timezone.utc), sleep=time.sleep)
+    try:
+        head = production_provenance()
+        fetcher, parser, v4_manifest_path, v4_universe_path = _production_dependencies()
+        return _prepare_for_test(state_root=root, raw_authorization=raw_authorization, support_sha=head, fetcher=fetcher, parser=parser, v4_manifest_path=v4_manifest_path, v4_universe_path=v4_universe_path, implementation_commit=head, now=lambda: datetime.now(timezone.utc), sleep=time.sleep)
+    except V8KPublicSourceBlocked:
+        raise
+    except Exception as exc:
+        # Total fail-closed boundary: any unexpected implementation/runtime
+        # exception not already classified above must still resolve to a
+        # safe public failure class rather than escape prepare() raw.
+        raise V8KPublicSourceBlocked(IMPLEMENTATION_FAILURE, network_request_count=0, first_complete_payload_locked=False) from exc

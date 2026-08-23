@@ -170,9 +170,13 @@ def test_nonretryable_and_jpx_security_failures_do_not_retry():
  waits=[]; calls=[]
  def programming(_):
   calls.append(1); raise ValueError("programming")
- with pytest.raises(ValueError,match="programming"):
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
   m.fetch_first_complete(programming,waits.append)
  assert calls==[1] and waits==[]
+ assert excinfo.value.failure_class=="IMPLEMENTATION_FAILURE"
+ assert excinfo.value.network_request_count==1
+ assert excinfo.value.first_complete_payload_locked is False
+ assert "programming" not in str(excinfo.value)
  calls=[]
  def offhost(url):
   calls.append(url); return b'<a href="https://evil/data_j.xls">',"https://www.jpx.co.jp/x"
@@ -402,3 +406,73 @@ def test_runner_success_output_contract_unchanged(monkeypatch,capsys):
  monkeypatch.setattr(runner,"prepare",lambda **_kw:expected)
  assert runner.main()==0
  assert json.loads(capsys.readouterr().out)==expected
+
+# --- HIGH-5A: total fail-closed failure boundary; no raw exception may escape ---
+
+def test_nonretryable_exception_on_xls_fetch_is_implementation_failure_with_no_sleep():
+ waits=[]; calls=[]
+ def fetcher(url):
+  calls.append(url)
+  if url==m.JPX_PAGE:
+   return b'<a href="/data_j.xls">',url
+  raise ValueError("synthetic xls programming bug")
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m.fetch_first_complete(fetcher,waits.append)
+ assert len(calls)==2 and waits==[]
+ assert excinfo.value.failure_class=="IMPLEMENTATION_FAILURE"
+ assert excinfo.value.network_request_count==2
+ assert excinfo.value.first_complete_payload_locked is False
+ assert "synthetic xls programming bug" not in str(excinfo.value)
+
+def test_prepare_wraps_unexpected_dependency_failure_as_implementation_failure(monkeypatch):
+ monkeypatch.setattr(m,"production_provenance",lambda:"a"*40)
+ def broken_dependencies():
+  raise ImportError("synthetic missing dependency")
+ monkeypatch.setattr(m,"_production_dependencies",broken_dependencies)
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m.prepare(raw_authorization=auth())
+ assert excinfo.value.failure_class=="IMPLEMENTATION_FAILURE"
+ assert excinfo.value.network_request_count==0 and excinfo.value.first_complete_payload_locked is False
+ assert "synthetic missing dependency" not in str(excinfo.value)
+
+def test_prepare_preserves_existing_failure_classes_through_outer_wrapper(monkeypatch):
+ monkeypatch.setattr(m,"production_provenance",lambda:"a"*40)
+ monkeypatch.setattr(m,"_production_dependencies",lambda:(lambda _u:(b"",m.JPX_PAGE),lambda raw:raw,"x","x"))
+ monkeypatch.setattr(m,"_prepare_for_test",lambda **_kw:(_ for _ in ()).throw(m.V8KPublicSourceBlocked("DATA_QUALITY_FAILURE",network_request_count=2,first_complete_payload_locked=True)))
+ with pytest.raises(m.V8KPublicSourceBlocked) as excinfo:
+  m.prepare(raw_authorization=auth())
+ assert excinfo.value.failure_class=="DATA_QUALITY_FAILURE"
+ assert excinfo.value.network_request_count==2 and excinfo.value.first_complete_payload_locked is True
+
+def test_runner_unexpected_ordinary_exception_fails_closed_without_traceback(monkeypatch,capsys):
+ raw=auth()
+ monkeypatch.setenv(runner.AUTH_ENV,raw)
+ def broken(**_kw):
+  raise KeyError("some/private/leaked/path")
+ monkeypatch.setattr(runner,"prepare",broken)
+ with pytest.raises(SystemExit,match="IMPLEMENTATION_FAILURE"):
+  runner.main()
+ output=capsys.readouterr().out
+ assert "some/private/leaked/path" not in output
+ assert "Traceback" not in output and "File \"" not in output and "KeyError" not in output
+ assert raw not in output
+ report=json.loads(output)
+ assert report=={"schema_version":"V8K_PUBLIC_SOURCE_PREPARATION_FAILURE_V1","study":m.STUDY,"stage":"PUBLIC_SOURCE_PREPARATION","execution_result":"BLOCKED","failure_class":"IMPLEMENTATION_FAILURE","network_request_count":0,"jpx_request_count":0,"first_complete_payload_locked":False}
+
+def test_runner_missing_auth_env_emits_safe_governance_json(monkeypatch,capsys):
+ monkeypatch.delenv(runner.AUTH_ENV,raising=False)
+ monkeypatch.setattr(runner,"prepare",lambda **_kw:(_ for _ in ()).throw(AssertionError("PREPARE_MUST_NOT_RUN")))
+ with pytest.raises(SystemExit,match="GOVERNANCE_FAILURE"):
+  runner.main()
+ report=json.loads(capsys.readouterr().out)
+ assert report=={"schema_version":"V8K_PUBLIC_SOURCE_PREPARATION_FAILURE_V1","study":m.STUDY,"stage":"PUBLIC_SOURCE_PREPARATION","execution_result":"BLOCKED","failure_class":"GOVERNANCE_FAILURE","network_request_count":0,"jpx_request_count":0,"first_complete_payload_locked":False}
+
+def test_runner_never_raises_keyboard_interrupt_or_system_exit_as_implementation_failure(monkeypatch):
+ raw=auth()
+ monkeypatch.setenv(runner.AUTH_ENV,raw)
+ monkeypatch.setattr(runner,"prepare",lambda **_kw:(_ for _ in ()).throw(KeyboardInterrupt()))
+ with pytest.raises(KeyboardInterrupt):
+  runner.main()
+ monkeypatch.setattr(runner,"prepare",lambda **_kw:(_ for _ in ()).throw(SystemExit("unrelated")))
+ with pytest.raises(SystemExit,match="unrelated"):
+  runner.main()
