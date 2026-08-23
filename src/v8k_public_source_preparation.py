@@ -8,6 +8,7 @@ from urllib.parse import urljoin, urlparse
 
 from src.v8_partition import verify_partition_source_preflight
 from src.v8c_human_gate_consumption import CANONICAL_CONSUMPTION_STATE_ROOT
+from src.v8c_transport import classify_transport_exception
 
 STUDY = "V8K_HISTORICAL_RESEARCH"
 GATE = "HUMAN_V8K_PUBLIC_SOURCE_PREPARATION_GATE"
@@ -177,16 +178,20 @@ def _lock(root: Path, raw: bytes, auth_hash: str, now: Callable[[], datetime]) -
 
 def fetch_first_complete(fetcher: Callable[[str], tuple[bytes, str]], sleep: Callable[[int], None]) -> tuple[bytes, str, int]:
     last: Exception | None = None
+    requests = 0
     for attempt in range(MAX_ATTEMPTS):
         try:
-            page, final_page = fetcher(JPX_PAGE); _trusted(final_page)
+            requests += 1; page, final_page = fetcher(JPX_PAGE); _trusted(final_page)
             xls = extract_xls_url(page)
-            raw, final_xls = fetcher(xls); _trusted(final_xls)
+            requests += 1; raw, final_xls = fetcher(xls); _trusted(final_xls)
             if not raw: raise V8KPublicSourceBlocked("EMPTY_COMPLETE_PAYLOAD")
-            return raw, xls, (attempt + 1) * 2
+            return raw, xls, requests
         except V8KPublicSourceBlocked:
             raise
         except Exception as exc:
+            _classification, retryable = classify_transport_exception(exc)
+            if not retryable:
+                raise
             last = exc
             if attempt < MAX_RETRIES: sleep(BACKOFF_SECONDS[attempt])
     raise V8KPublicSourceBlocked("PLUMBING_FAILURE_RETRIABLE") from last

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
-import hashlib, inspect, json, os, subprocess, sys, tempfile, pytest
+import errno, hashlib, inspect, json, os, socket, subprocess, sys, tempfile, urllib.error, pytest
 from src import v8k_public_source_preparation as m
 from scripts import run_v8k_public_source_preparation as runner
 
@@ -67,15 +67,59 @@ def test_jpx_url_and_link():
  for u in ("http://www.jpx.co.jp/x","https://evil/x","https://u@www.jpx.co.jp/x","https://www.jpx.co.jp:444/x"):
   with pytest.raises(m.V8KPublicSourceBlocked): m._trusted(u)
 
-def test_retry_policy_and_offhost():
+def test_retry_policy_page_failure_then_success_counts_actual_requests():
  calls=[]; waits=[]
  def f(url):
   calls.append(url)
-  if len(calls)==1: raise OSError("transient")
+  if len(calls)==1: raise TimeoutError("synthetic timeout")
   return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"x",url)
- assert m.fetch_first_complete(f,waits.append)[0]==b"x"; assert waits==[5]
+ assert m.fetch_first_complete(f,waits.append)==(b"x","https://www.jpx.co.jp/data_j.xls",3); assert waits==[5]
  assert (m.MAX_ATTEMPTS,m.MAX_RETRIES,m.BACKOFF_SECONDS,m.JITTER)==(3,2,(5,30),False)
- with pytest.raises(m.V8KPublicSourceBlocked): m.fetch_first_complete(lambda u:(b'<a href="https://evil/data_j.xls">',"https://www.jpx.co.jp/x"),lambda _:None)
+
+def test_retry_policy_xls_failure_then_success_counts_actual_requests():
+ calls=[]; waits=[]
+ def f(url):
+  calls.append(url)
+  if len(calls)==2: raise TimeoutError("synthetic timeout")
+  return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"x",url)
+ assert m.fetch_first_complete(f,waits.append)[2]==4
+ assert waits==[5] and len(calls)==4
+
+@pytest.mark.parametrize("failure",[
+ TimeoutError("timeout"),ConnectionResetError("reset"),OSError(errno.ECONNRESET,"reset"),socket.gaierror(socket.EAI_AGAIN,"temporary dns"),
+ urllib.error.URLError(TimeoutError("timeout")),urllib.error.URLError(ConnectionResetError("reset")),urllib.error.URLError(socket.gaierror(socket.EAI_AGAIN,"temporary dns")),
+ *[urllib.error.HTTPError("https://www.jpx.co.jp/x",code,"synthetic",{},None) for code in (408,425,429,500,502,503,504)],
+])
+def test_each_inherited_retryable_failure_retries_before_payload(failure):
+ calls=[]; waits=[]
+ def f(url):
+  calls.append(url)
+  if len(calls)==1: raise failure
+  return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"x",url)
+ assert m.fetch_first_complete(f,waits.append)[2]==3
+ assert waits==[5]
+
+def test_nonretryable_and_jpx_security_failures_do_not_retry():
+ waits=[]; calls=[]
+ def programming(_):
+  calls.append(1); raise ValueError("programming")
+ with pytest.raises(ValueError,match="programming"):
+  m.fetch_first_complete(programming,waits.append)
+ assert calls==[1] and waits==[]
+ calls=[]
+ def offhost(url):
+  calls.append(url); return b'<a href="https://evil/data_j.xls">',"https://www.jpx.co.jp/x"
+ with pytest.raises(m.V8KPublicSourceBlocked):
+  m.fetch_first_complete(offhost,waits.append)
+ assert len(calls)==1 and waits==[]
+
+def test_exhausted_retryable_failure_has_no_fourth_attempt():
+ calls=[]; waits=[]
+ def timeout(_):
+  calls.append(1); raise TimeoutError("timeout")
+ with pytest.raises(m.V8KPublicSourceBlocked,match="PLUMBING_FAILURE_RETRIABLE"):
+  m.fetch_first_complete(timeout,waits.append)
+ assert calls==[1,1,1] and waits==[5,30]
 
 def test_lock_and_corruption(state_root):
  raw=b"payload"; meta=m._lock(state_root,raw,"b"*64,lambda:datetime(2026,1,1,tzinfo=timezone.utc))
