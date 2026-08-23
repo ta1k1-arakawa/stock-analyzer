@@ -33,6 +33,7 @@ The inventory must include these source families:
 4. Ex-New / Ex-Rights / stock-split-ratio archive.
 5. Monthly aggregate listed-issue counts, where available.
 6. TOPIX Historical Index Value.
+7. JPX Calendar monthly market-business-day / market-holiday material.
 
 ### Deterministic source inventory
 
@@ -59,6 +60,32 @@ required for exact reverse replay. Every Stage-A record must lock requested
 URL, final resolved URL, HTTP status, byte length, SHA256 raw bytes, retrieval
 timestamp, source category, and applicable month/year. No security
 price/return field may be printed.
+
+The calendar source family exists solely to define Stage-B expected market
+dates. Stage-A execution must acquire and lock enough official JPX calendar
+material to cover 2016-09-01 through the final possible HIGH-2/V9 exit-tail
+date. Do not hard-code that endpoint. Derive it mechanically:
+
+```text
+FINAL_SIGNAL_D0=last_frozen_V9_signal_grid_D0_lte_2025-12-31
+FINAL_PLANNED_D3=third_JPX_business_day_after(FINAL_SIGNAL_D0)
+FINAL_POSSIBLE_EXIT_DAY=20th_JPX_business_day_exit_attempt_date(
+  counting_FINAL_PLANNED_D3_as_attempt_day_1)
+STAGE_B_GLOBAL_END_EXCLUSIVE=calendar_date_immediately_after(
+  FINAL_POSSIBLE_EXIT_DAY)
+```
+
+The locked calendar material must derive this endpoint unambiguously. Any
+unresolved required historical calendar-archive gap fails Stage A. No national
+holiday library, pandas holiday calendar, exchange calendar, Yahoo timestamp,
+or inferred weekday-only calendar may replace locked official JPX calendar
+evidence.
+
+For calendar date `d`, `JPX_BUSINESS_DAY(d)=true` iff the locked official JPX
+calendar contract classifies TSE cash-equity auction trading as open on `d`.
+Saturday and Sunday are false. If official material cannot classify a required
+date unambiguously, Stage A fails. The deterministic inventory and provenance
+rules apply to the calendar source family.
 
 ### Required Stage-A evidence
 
@@ -111,6 +138,7 @@ FREE_JPX_METADATA_PROBE_PASS=(
   AND security_type_pass == true
   AND canonical_identity_pass == true
   AND effective_date_pass == true
+  AND trading_calendar_pass == true
   AND deterministic_reconstruction_pass == true
   AND comparable_month_end_mismatch_count == 0
   AND raw_provenance_pass == true)
@@ -161,10 +189,29 @@ replacement after Yahoo results. Public output stores only final sample-manifest
 hash, count, and categories; ordinary report text must not print sample
 identities where repository governance prefers safe aggregate provenance.
 
-For each preregistered identity, request the fixed interval mechanically
-required by its public listing interval intersected with 2016-09-01 through the
-mechanically required V9 end/tail horizon. Determine that exact interval before
-its Yahoo request.
+### Frozen request interval
+
+For each preregistered canonical security identity `i`, Stage-A PIT
+reconstruction must provide `listed_state(i,d)` for every required calendar
+date. Define `REQUIRED_MARKET_DATES_i` as the ordered dates `d` satisfying all:
+
+- `d >= 2016-09-01`;
+- `d < STAGE_B_GLOBAL_END_EXCLUSIVE`;
+- `listed_state(i,d) == true`; and
+- `JPX_BUSINESS_DAY(d) == true`.
+
+If `REQUIRED_MARKET_DATES_i` is empty, set
+`STAGE_B_SAMPLE_CONSTRUCTION_FAIL` and stop before any Yahoo request. Define:
+
+```text
+REQUEST_START_i=first_date(REQUIRED_MARKET_DATES_i)
+REQUEST_END_EXCLUSIVE_i=calendar_date_immediately_after(
+  last_date(REQUIRED_MARKET_DATES_i))
+```
+
+Freeze these values in the Stage-B sample/request manifest before the first
+Yahoo request. One identity receives exactly one request. No request-window
+change after Yahoo results, retry, alternate suffix, or replacement is allowed.
 
 Permitted observations/reporting are only: HTTP status; schema-valid boolean;
 response-host-valid boolean; requested start/end; earliest and latest returned
@@ -173,23 +220,122 @@ count/presence; raw payload byte count; raw payload SHA256; canonical row hash;
 and canonical split-event hash. Do not print Open, High, Low, Close, AdjClose,
 Volume, returns, gains/losses, model features, signals, or profits.
 
-No retry, replacement, alternate ticker suffix after failure, or manual
-successful-source substitution is allowed.
+### Exact Yahoo returned-date coverage
 
-### Stage-B PASS rule
+For each response, define:
 
-Stage B passes only if every preregistered sample identity has HTTP 200,
-correct Yahoo response host, expected valid schema, no duplicate trading dates,
-nonempty valid rows, returned date span covering the mechanically required
-listed/request interval subject only to documented exchange non-trading days,
-structurally present raw/adjusted fields, and all required hashes. For every
-D_CORPORATE_ACTION identity whose Stage-A official JPX metadata places a split
-or consolidation in the request interval, Yahoo split-event metadata must
-permit mechanical comparison with that official event. Any mismatch or missing
-event is `STAGE_B_FAIL`.
+```text
+RETURNED_DATE_SET_i=set(trading_date from
+  valid_price_rows UNION invalid_price_rows)
+MISSING_EXPECTED_DATES_i=REQUIRED_MARKET_DATES_i - RETURNED_DATE_SET_i
+UNEXPECTED_RETURNED_DATES_i=RETURNED_DATE_SET_i - REQUIRED_MARKET_DATES_i
+```
 
-There is no majority threshold, 95-percent threshold, or replacement of failed
-identities.
+An invalid returned price row proves only that Yahoo returned a timestamp; it
+does not become a valid market observation. Duplicate dates are an immediate
+FAIL. Date-coverage PASS for identity `i` requires exactly:
+
+```text
+missing_expected_date_count_i == 0
+AND unexpected_returned_date_count_i == 0
+```
+
+Do not infer coverage from earliest/latest dates, interpolate missing dates,
+ignore an internal gap, or treat an absent expected JPX-business-day timestamp
+as an exchange holiday unless the locked official JPX calendar says so. This
+failure is `SOURCE_OR_DATA_FEASIBILITY_FAILURE`, not strategy failure. Ordinary
+public output must not print identity-specific missing-date lists; aggregate
+counts/hashes are permitted.
+
+### Structural Yahoo schema PASS
+
+For every preregistered identity:
+
+```text
+HTTP_PASS=(HTTP_status == 200)
+HOST_PASS=(final_response_host == frozen_trusted_Yahoo_host)
+SCHEMA_PASS=(
+  exactly_one_chart_result
+  AND expected_ticker_symbol_contract_pass
+  AND timestamps_array_exists_and_is_nonempty
+  AND raw_open_high_low_close_volume_arrays_structurally_exist
+  AND adjusted_close_array_structurally_exists
+  AND every_required_array_length_equals_timestamp_array_length
+  AND duplicate_trading_dates == false)
+HASH_PASS=all_required_raw_and_canonical_SHA256_values_produced
+VALID_ROW_PASS=(valid_price_row_count >= 1)
+```
+
+Do not add an invalid-row percentage threshold here. Invalid-row treatment
+remains governed by later frozen V9 data-quality rules; this probe tests source
+transport/coverage feasibility.
+
+### Exact corporate-action comparison
+
+For D_CORPORATE_ACTION, Stage-A official JPX metadata is authoritative. Define
+the pure split/consolidation ratio `R_e = post_action_shares / pre_action_shares`.
+For each D_CORPORATE_ACTION identity, `JPX_CA_SET_i` contains all official
+events with `REQUEST_START_i <= effective_date < REQUEST_END_EXCLUSIVE_i`. Each
+event is the canonical tuple:
+
+```text
+(effective_date_iso,
+ reduced_positive_ratio_numerator,
+ reduced_positive_ratio_denominator)
+```
+
+The ratio is exactly post-action shares over pre-action shares. Normalize it as
+an exact rational in lowest terms; decimal lexical values must be converted to
+an exact rational. Binary-float tolerance is not authoritative. Normalize Yahoo
+events to that same orientation. If Yahoo provides both numerator/denominator
+and `splitRatio`, they must mechanically agree before canonicalization or Stage
+B fails. `YAHOO_CA_SET_i` is the canonical multiset of Yahoo pure
+split/consolidation events in the same request interval.
+
+Corporate-action PASS for identity `i` requires:
+
+```text
+YAHOO_CA_SET_i == JPX_CA_SET_i
+```
+
+JPX missing-in-Yahoo events, Yahoo extras, date or ratio mismatch, orientation
+ambiguity, unparseable ratio, conflicting Yahoo fields, and duplicate-event
+ambiguity all fail. There is no plus/minus-one-day or ratio tolerance, manual
+reconciliation, or event replacement. Dividends are outside this comparison.
+
+### Exact Stage-B identity and overall verdicts
+
+For each unique preregistered identity `i`:
+
+```text
+IDENTITY_PASS_i=(
+  HTTP_PASS_i
+  AND HOST_PASS_i
+  AND SCHEMA_PASS_i
+  AND HASH_PASS_i
+  AND VALID_ROW_PASS_i
+  AND missing_expected_date_count_i == 0
+  AND unexpected_returned_date_count_i == 0
+  AND (no_D_CORPORATE_ACTION_membership_i
+       OR corporate_action_exact_match_i == true))
+```
+
+Preserve all original stratum memberships after cross-stratum deduplication. An
+identity in multiple strata makes one request but retains every applicable
+validation obligation. Let `N` be the number of unique preregistered identities
+after deterministic selection/deduplication. Stage B PASS iff:
+
+```text
+sample_construction_pass == true
+AND N > 0
+AND passed_identity_count == N
+AND failed_identity_count == 0
+```
+
+Otherwise `STAGE_B_FAIL`. There is no majority threshold, 95-percent threshold,
+reroll, replacement, retry, suffix substitution, manual override, or favorable
+source substitution. A Stage-B failure is source/data feasibility failure, not
+profitability failure.
 
 ## Result boundaries and human gates
 

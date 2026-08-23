@@ -67,3 +67,7 @@ transitions. This public log must not contain protected material.
 - GPT exact-SHA review of `abdbeed21dc6d291cd51afeee5bdf0fa4d06e23f`: `CRITICAL=0`, `HIGH=2`, `MEDIUM=0`, `RESULT=BLOCK`.
 - HIGH-1 Stage-A mechanical-verdict remediation is authorized; HIGH-2 remains OPEN.
 - No network, data, T1, or design-freeze authority is created.
+- GPT exact-SHA review of `0c0b2224d059ca75a173a4c27b1b68f209125686`: `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, `RESULT=PASS` for V9_005 HIGH-1.
+- V9_005 HIGH-1 is RESOLVED; HIGH-2 remains the only V9_005 design blocker.
+- HIGH-2 remediation binds official JPX calendar evidence, exact Yahoo expected/returned-date equality, and exact JPX-versus-Yahoo split/consolidation multiset comparison.
+- No network, data, T1, design-freeze, or purchase authority is created.
