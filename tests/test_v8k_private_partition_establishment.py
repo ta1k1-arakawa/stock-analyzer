@@ -602,3 +602,13 @@ def test_failure_class_mapping_fail_closed_for_unknown_reason():
     assert m.public_failure_class("SOME_NEW_UNSPECIFIED_REASON") == "IMPLEMENTATION_FAILURE"
     exc = m.V8KPrivatePartitionBlocked("SOME_NEW_UNSPECIFIED_REASON")
     assert exc.failure_class == "IMPLEMENTATION_FAILURE"
+
+
+def test_stage1_complete_lock_pair_is_required_before_stage2(monkeypatch):
+    monkeypatch.setattr(m, "_read_stage1_lock", lambda _root: (b"raw", {}))
+    assert m._read_locked_stage1_raw_bytes() == b"raw"
+    for failure in ("LOCKED_STATE_INCOMPLETE", "LOCKED_STATE_INVALID", "LOCKED_STATE_INTEGRITY_FAILURE"):
+        monkeypatch.setattr(m, "_read_stage1_lock", lambda _root, r=failure: (_ for _ in ()).throw(m.V8KPublicSourceBlocked(r)))
+        with pytest.raises(m.V8KPrivatePartitionBlocked) as blocked:
+            m._read_locked_stage1_raw_bytes()
+        assert blocked.value.failure_class == "IMPLEMENTATION_FAILURE"

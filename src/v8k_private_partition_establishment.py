@@ -63,6 +63,8 @@ from src.v8k_public_source_preparation import (
     FROZEN_DESIGN_BLOB,
     FROZEN_DESIGN_COMMIT,
     STUDY,
+    V8KPublicSourceBlocked,
+    _read_locked as _read_stage1_lock,
     production_provenance,
     receipt_key as _stage1_receipt_key,
 )
@@ -796,11 +798,13 @@ def _read_locked_stage1_raw_bytes() -> bytes:
     """Read Stage-1's real machine-local locked raw bytes. Never invoked by
     any test in this file -- there is no real Stage-1 lock in this
     environment, so a real call here fails closed on a missing file."""
-    path = CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT / (_stage1_receipt_key() + ".raw")
     try:
-        return path.read_bytes()
-    except OSError as error:
-        raise V8KPrivatePartitionBlocked("STAGE1_LOCKED_RAW_MISSING") from error
+        locked = _read_stage1_lock(CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT)
+    except V8KPublicSourceBlocked as error:
+        raise V8KPrivatePartitionBlocked("IMPLEMENTATION_FAILURE") from error
+    if locked is None:
+        raise V8KPrivatePartitionBlocked("IMPLEMENTATION_FAILURE")
+    return locked[0]
 
 
 def establish_private_partition(*, raw_authorization: str) -> dict[str, Any]:
@@ -811,8 +815,8 @@ def establish_private_partition(*, raw_authorization: str) -> dict[str, Any]:
     wired internally to the canonical/reviewed value."""
     try:
         support_sha = production_provenance()
-        parser, v4_manifest_path, v4_universe_csv_path = _production_dependencies()
         raw_source_bytes = _read_locked_stage1_raw_bytes()
+        parser, v4_manifest_path, v4_universe_csv_path = _production_dependencies()
         return _establish_for_test(
             raw_authorization=raw_authorization,
             support_sha=support_sha,
