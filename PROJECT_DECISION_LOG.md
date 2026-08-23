@@ -20,3 +20,7 @@ transitions. This public log must not contain protected material.
 - Same-close sale-proceeds reuse is rejected as an operational assumption.
 - Primary V9 portfolio decision: 10 positions, two close-to-close intervals, and next-entry D4 cash-gap architecture.
 - V9 remains prefreeze and profitability is unestablished.
+- GPT exact-SHA review of `dd9e49004e681909436126671936b06c42fbc84a`: `CRITICAL=0`, `HIGH=4`, `MEDIUM=0`, `RESULT=BLOCK`.
+- Findings: HIGH-1 random-K/no-fill protocol underspecified; HIGH-2 corporate-action/permanent-exit semantics underspecified; HIGH-3 verdict metric/IC aggregation underspecified; HIGH-4 portfolio selection/tie/cash/backfill semantics underspecified.
+- Only HIGH-1 remediation is authorized: random-K and no-fill now use SHA-256 domain-separated deterministic protocols.
+- No T1, data, paid purchase/access, or design-freeze authority is created; HIGH-2/HIGH-3/HIGH-4 remain open.

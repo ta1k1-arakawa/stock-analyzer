@@ -155,10 +155,40 @@ a model.
 ## 9. Benchmarks
 
 Mandatory: TOPIX price index, eligible-universe equal-weight price return, and
-executable random-K. Random-K uses 1,000 simulations; K=10; the same cycle
-dates, capital, 10% buffer, 1-share quantity rules, sector cap, missing-bar
-behavior, and execution assumptions as strategy; and a deterministic seed
-derived from `UTF8("V9_RANDOM_K_V1")`. No reseeding after results.
+executable random-K. The following is the complete Random-K protocol.
+
+### Random-K universe
+
+For each D0, draw only from the exact same daily scoreable/eligible universe
+available to the strategy before model-score ordering and portfolio selection.
+Eligibility includes frozen point-in-time membership, 252-history, OHLCV
+validity, liquidity, and feature-computability rules. Random-K uses neither
+model scores nor realized outcomes.
+
+### Random-K simulations and ordering
+
+Simulation identifiers are the integers `0..999`. For each `simulation_id`,
+D0, and `canonical_code`:
+
+```text
+random_key=SHA256(UTF8(
+  "V9_RANDOM_K_V1\0"
+  + format(simulation_id,"04d")
+  + "\0" + D0_ISO_DATE
+  + "\0" + canonical_code))
+sort=(random_key_hex,canonical_code)_ascending
+random_k_prng_library_used=false
+random_k_numpy_random_sklearn_rng_used=false
+reseed=false
+redraw=false
+```
+
+For each D0, traverse this deterministic order and apply the same
+portfolio-eligibility and order-submission constraints as strategy. Stop after
+at most K=10 entry orders have been submitted or the eligible pool is
+exhausted. A later D1 non-fill, invalid execution, or insufficient-cash failure
+does not substitute another same-day candidate. Random-K selection therefore
+cannot use D1-or-later information.
 
 ## 10. Historical transaction/fill model
 
@@ -170,11 +200,46 @@ historical_fill_rate_100_percent_established=false
 tax_in_promotion_metric=false
 ```
 
-This is an execution assumption, not proof of 100% fills. Mandatory stress A:
-2.5 bp adverse price each side. B: 2% deterministic outcome-independent
-no-fill via `hash(order_id,fixed_seed)`, with no same-day substitution. C: 5%
-deterministic no-fill, report-only severe sensitivity. Tax may be reported
-separately.
+This is an execution assumption, not proof of 100% fills. Mandatory stress A
+is 2.5 bp adverse price each side. Stress B has p=0.02; Stress C has p=0.05
+and is report-only. Tax may be reported separately.
+
+### Deterministic no-fill protocol
+
+For every ENTRY or EXIT execution attempt, use SHA-256—not a language/library
+`hash()`—to generate a domain-separated deterministic event:
+
+```text
+digest=SHA256(UTF8(
+  "V9_NOFILL_V1\0"
+  + SCENARIO
+  + "\0" + SIDE
+  + "\0" + ORIGINAL_D0_ISO_DATE
+  + "\0" + ATTEMPT_DATE_ISO
+  + "\0" + canonical_code))
+
+SCENARIO=B_or_C
+SIDE=ENTRY_or_EXIT
+u64=unsigned_big_endian_integer(digest_bytes[0:8])
+threshold=floor(p * 2^64)
+NO_FILL=(u64 < threshold)
+```
+
+The digest excludes model identity, strategy/random-K arm, random-K simulation
+identifier, price, predicted score, and realized outcome. Thus the same
+security/date/side attempt receives the same operational shock across strategy
+and benchmark portfolios.
+
+An ENTRY no-fill cancels the submitted entry, with no same-day replacement and
+no delayed entry. On EXIT no-fill, the position remains open and retries at the
+next JPX trading day's closing auction; that new attempt date creates a new
+deterministic event and no exit price is fabricated. Stress A + B uses A's
+adverse 2.5 bp each side and exactly scenario-B events above—no separate random
+stream. The same protocol applies to strategy and every Random-K simulation.
+Stress C remains report-only.
+
+Carry-position/capacity semantics after an exit no-fill are not resolved here;
+they remain HIGH-4.
 
 ## 11. T1 promotion criteria
 
