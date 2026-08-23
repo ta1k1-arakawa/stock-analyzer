@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
-import hashlib, tempfile, pytest
+import hashlib, inspect, tempfile, pytest
 from src import v8k_public_source_preparation as m
 
 def auth(s="a"*40): return m.authorization_identity(m.FROZEN_DESIGN_COMMIT,s)
@@ -39,6 +39,8 @@ def test_lock_and_corruption(state_root):
 def test_receipt_key_fixed_and_no_partition_api():
  assert m.receipt_key()==m.receipt_key()
  assert "allocate_fresh_blocks" not in open(m.__file__,encoding="utf8").read()
+ assert "state_root" not in inspect.signature(m.prepare).parameters
+ assert m.CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT == m.CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8k-public-source-preparation"
 
 def test_prepare_locks_before_parse_reuses_bytes_and_safe_evidence(state_root,monkeypatch):
  calls=[]; seen=[]
@@ -49,16 +51,23 @@ def test_prepare_locks_before_parse_reuses_bytes_and_safe_evidence(state_root,mo
  def fetch(url):
   calls.append(url); return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
  now=lambda:datetime(2026,1,1,tzinfo=timezone.utc)
- out=m.prepare(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=fetch,parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=now,evidence_path=state_root/"evidence.json")
+ out=m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=fetch,parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=now,evidence_path=state_root/"evidence.json")
  assert len(calls)==2 and seen==[b"raw"] and out["network_request_count"]==2
  assert '"raw"' not in (state_root/"evidence.json").read_text() and out["eligible_ticker_count"]==900
- out2=m.prepare(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("refetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=now)
+ out2=m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("refetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=now)
  assert out2["network_request_count"]==0
+
+def test_production_api_uses_canonical_lock_without_fetch(state_root,monkeypatch):
+ monkeypatch.setattr(m,"CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT",state_root)
+ m._lock(state_root,b"raw",hashlib.sha256(auth().encode()).hexdigest(),lambda:datetime(2026,1,1,tzinfo=timezone.utc))
+ monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **kw:({"source_raw_sha256":m.sha256(kw["raw_source_bytes"]),"eligible_ticker_count":900,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"},[],[],{}))
+ out=m.prepare(raw_authorization=auth(),support_sha="a"*40,fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("fetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+ assert out["network_request_count"]==0
 
 def test_parser_failure_after_lock_never_refetch(state_root,monkeypatch):
  monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **_:(_ for _ in ()).throw(ValueError()))
  def fetch(url): return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
  with pytest.raises(m.V8KPublicSourceBlocked,match="DATA_QUALITY_FAILURE"):
-  m.prepare(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=fetch,parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+  m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=fetch,parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
  with pytest.raises(m.V8KPublicSourceBlocked,match="DATA_QUALITY_FAILURE"):
-  m.prepare(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("refetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))
+  m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=lambda _u:(_ for _ in ()).throw(AssertionError("refetch")),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",implementation_commit="d"*40,now=lambda:datetime.now(timezone.utc))

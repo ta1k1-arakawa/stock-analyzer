@@ -7,6 +7,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urljoin, urlparse
 
 from src.v8_partition import verify_partition_source_preflight
+from src.v8c_human_gate_consumption import CANONICAL_CONSUMPTION_STATE_ROOT
 
 STUDY = "V8K_HISTORICAL_RESEARCH"
 GATE = "HUMAN_V8K_PUBLIC_SOURCE_PREPARATION_GATE"
@@ -21,6 +22,7 @@ KEY_MATERIAL = ("V8K_PUBLIC_SOURCE_PREPARATION_GATE_RECEIPT_KEY_V1\0"
                 "ta1k1-arakawa/stock-analyzer\0" + STUDY + "\0" + GATE).encode()
 DATA_LINK = re.compile(r"href=[\"']([^\"']*data_j\.xls)[\"']", re.I)
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT = CANONICAL_CONSUMPTION_STATE_ROOT.parent / "v8k-public-source-preparation"
 
 class V8KPublicSourceBlocked(RuntimeError):
     pass
@@ -85,8 +87,7 @@ def _atomic_once(path: Path, payload: bytes, reason: str) -> None:
             stage.unlink(missing_ok=True)
 
 def _state(root: Path) -> tuple[Path, Path]:
-    base = root / "v8k-public-source-preparation"
-    return base / (receipt_key() + ".raw"), base / (receipt_key() + ".json")
+    return root / (receipt_key() + ".raw"), root / (receipt_key() + ".json")
 
 def _read_locked(root: Path) -> tuple[bytes, dict[str, Any]] | None:
     raw_path, meta_path = _state(root)
@@ -132,8 +133,8 @@ def fetch_first_complete(fetcher: Callable[[str], tuple[bytes, str]], sleep: Cal
             if attempt < MAX_RETRIES: sleep(BACKOFF_SECONDS[attempt])
     raise V8KPublicSourceBlocked("PLUMBING_FAILURE_RETRIABLE") from last
 
-def prepare(*, state_root: str | os.PathLike[str], raw_authorization: str, support_sha: str, fetcher: Callable[[str], tuple[bytes,str]], parser: Callable[[bytes], Any], v4_manifest_path: str | os.PathLike[str], v4_universe_path: str | os.PathLike[str], implementation_commit: str, now: Callable[[], datetime], sleep: Callable[[int],None]=lambda _n: None, evidence_path: str | os.PathLike[str] | None=None) -> dict[str, Any]:
-    """Prepare locked source bytes. The injected fetcher is the sole network seam."""
+def _prepare_for_test(*, state_root: str | os.PathLike[str], raw_authorization: str, support_sha: str, fetcher: Callable[[str], tuple[bytes,str]], parser: Callable[[bytes], Any], v4_manifest_path: str | os.PathLike[str], v4_universe_path: str | os.PathLike[str], implementation_commit: str, now: Callable[[], datetime], sleep: Callable[[int],None]=lambda _n: None, evidence_path: str | os.PathLike[str] | None=None) -> dict[str, Any]:
+    """Private test seam. Production callers must use prepare(), never a root."""
     auth_hash = validate_authorization(raw_authorization, design_commit=FROZEN_DESIGN_COMMIT, support_sha=support_sha)
     root = Path(state_root); locked = _read_locked(root); requests = 0
     if locked is None:
@@ -148,3 +149,13 @@ def prepare(*, state_root: str | os.PathLike[str], raw_authorization: str, suppo
     result = {"schema_version":"V8K_PUBLIC_SOURCE_PREPARATION_EVIDENCE_V1","artifact_role":"PUBLIC_SOURCE_PREPARATION_EVIDENCE","study":STUDY,"stage":"PUBLIC_SOURCE_PREPARATION","gate":GATE,"frozen_design_commit":FROZEN_DESIGN_COMMIT,"frozen_design_blob":FROZEN_DESIGN_BLOB,"reviewed_support_implementation_sha":support_sha,"authorization_identity_sha256":auth_hash,"receipt_key_sha256":receipt_key(),"source_raw_sha256":source["source_raw_sha256"],"source_acquisition_utc":lock["source_acquisition_utc"],"eligible_ticker_count":source["eligible_ticker_count"],"eligible_ticker_list_sha256":source["eligible_ticker_list_sha256"],"t0_reproduction_status":source["t0_reproduction_status"],"first_complete_payload_locked":True,"network_request_count":requests,"result_classification":"COMPLETE"}
     if evidence_path is not None: _atomic_once(Path(evidence_path), canonical_bytes(result), "EVIDENCE_ALREADY_EXISTS")
     return result
+
+def prepare(*, raw_authorization: str, support_sha: str, fetcher: Callable[[str], tuple[bytes,str]], parser: Callable[[bytes], Any], v4_manifest_path: str | os.PathLike[str], v4_universe_path: str | os.PathLike[str], implementation_commit: str, now: Callable[[], datetime], sleep: Callable[[int],None]=lambda _n: None, evidence_path: str | os.PathLike[str] | None=None) -> dict[str, Any]:
+    """Production-facing API: fixed canonical machine-local state only."""
+    try:
+        root = CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT
+        if not root.is_absolute():
+            raise OSError("nonabsolute")
+    except Exception as exc:
+        raise V8KPublicSourceBlocked("GOVERNANCE_FAILURE") from exc
+    return _prepare_for_test(state_root=root, raw_authorization=raw_authorization, support_sha=support_sha, fetcher=fetcher, parser=parser, v4_manifest_path=v4_manifest_path, v4_universe_path=v4_universe_path, implementation_commit=implementation_commit, now=now, sleep=sleep, evidence_path=evidence_path)
