@@ -459,10 +459,83 @@ hyperparameter_search=false
 
 ## 9. Training and model choice
 
-T0 only; expanding training; retrain once per calendar month. A month's
-predictions use only rows whose realized target exit date is strictly before
-that month's first JPX trading day. Future labels are prohibited. Development
-evaluation years are 2018..2025.
+### Time roles
+
+```text
+SOURCE_FEATURE_HISTORY_START=2016-09-01
+PRE_EVALUATION_TRAINING_SIGNAL_WINDOW=2017-01-01_through_2017-12-31
+FORMAL_DEVELOPMENT_EVALUATION_SIGNAL_WINDOW=2018-01-01_through_2025-12-31
+2016-09-01_through_2016-12-31=FEATURE_HISTORY_ONLY
+```
+
+No model target/training row may have D0 before 2017-01-01. The year 2017 is
+`TRAINING_ONLY`: it may create T0 model-training features and labels, but does
+not contribute to formal IC metrics, model-selection comparison metrics,
+portfolio evaluation, or T1 promotion criteria; its `evidential_weight=NONE`.
+The years 2018..2025 remain the formal T0 development/model-selection
+evaluation as already specified.
+
+### Training signal-date cadence
+
+Training rows use the same three-JPX-trading-day signal cadence as deployment.
+Let the authoritative JPX trading calendar be sorted ascending and let `j0` be
+the calendar index of the first JPX trading day >=2018-01-01. A date at calendar
+index `j` is a V9 signal-grid D0 iff `(j-j0) mod 3 == 0`. This rule applies
+backward into 2017 and forward through 2025; training does not use every daily
+overlapping D0 merely to increase sample count. Only signal-grid dates meeting
+all frozen row-level eligibility and feature rules may produce training rows.
+
+### 2017 pre-evaluation training rows
+
+For a T0 security and 2017 signal-grid D0, a training row exists only if the
+security is point-in-time valid for the applicable T0 data treatment; all
+frozen feature inputs are causally available; >=252 required prior valid
+observations exist; frozen D1-to-D3 target can be mechanically realized; the
+target exit date is available; and all existing data-quality requirements pass.
+Because source feature history starts 2016-09-01, early 2017 rows mechanically
+remain unavailable where the 252-history requirement is not satisfied. Do not
+relax 252 history, backfill before 2016-09-01, or impute missing history.
+
+### Monthly training cutoff
+
+For prediction month M, `MONTH_START(M)` is the first JPX trading day in
+calendar month M. A T0 training row may be included only if:
+
+```text
+row.D0 >= 2017-01-01
+row.target_exit_date < MONTH_START(M)
+row belongs to the frozen V9 signal-grid
+```
+
+Thus the January 2018 model may train on eligible 2017 training-only rows whose
+D1-to-D3 target exit is strictly before the first JPX trading day of January
+2018. Every later month in 2018..2025 uses expanding T0 training consisting of
+eligible 2017 pre-evaluation rows plus eligible prior 2018..2025 T0 rows whose
+target exit is strictly before that month's `MONTH_START`. No current-month or
+future target may enter training; there is no rolling-window deletion or reset
+at calendar-year boundaries.
+
+### T0-only and initial-training fail-closed rules
+
+All model fitting and model selection remain T0 only. T1 never contributes a
+training row, model selection, scaler parameter, hyperparameter, or feature
+definition. The selected model family is determined only from T0 2018..2025
+formal development metrics under the already-frozen rules. Its monthly fit for
+later T1 inference uses only the corresponding causally available T0 rows.
+
+For any prediction month, if either fixed Ridge or fixed LightGBM cannot be fit
+under its already-frozen parameters using the causally available training set,
+fail closed:
+
+```text
+failure_class=DATA_QUALITY_FAILURE
+reason=INSUFFICIENT_CAUSAL_TRAINING_DATA
+```
+
+Do not move the evaluation start date, alter model parameters, relax 252
+history, add T1 rows, add off-grid daily rows, or use future labels. No
+model-selection or strategy-confirmation verdict is produced from such an
+invalid attempt; this is data feasibility failure, not strategy failure.
 
 LightGBM wins only if it has all: higher mean daily cross-sectional Spearman
 IC, higher median yearly IC, and no fewer positive-IC years. Otherwise Ridge

@@ -46,3 +46,7 @@ transitions. This public log must not contain protected material.
 - HIGH_FULL_1 remediation removes future listing-duration conditioning from the fresh T1 pool.
 - T1 remains size 600; a fresh pool below 600 fails `DATA_QUALITY_FAILURE` rather than redraw.
 - No purchase, data, T1, or design-freeze authority is created.
+- GPT exact-SHA review of `50004f2ac9778db7bb95431a8abd27c29ab9f691`: `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, `RESULT=PASS` for HIGH_FULL_1.
+- HIGH_FULL_1 is RESOLVED; MEDIUM_FULL_2 is RESOLVED by the pool-size fail-closed rule. V9 full design remains BLOCK.
+- HIGH_FULL_2 remediation defines 2017 training-only, 2016-09 feature-history-only, the same three-JPX-day signal grid, and strict monthly target-exit cutoff.
+- No purchase, data, T1, or design-freeze authority is created.
