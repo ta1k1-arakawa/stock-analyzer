@@ -123,6 +123,24 @@ def test_provenance_failures_block_without_fetch():
   changed=dict(base); changed[key]="bad" if key!="status --porcelain" else " M x"
   with pytest.raises(m.V8KPublicSourceBlocked): m.production_provenance(lambda args,c=changed:c[" ".join(args)])
 
+def test_exact_github_repository_origin_transport_forms():
+ for origin in ("https://github.com/ta1k1-arakawa/stock-analyzer","https://github.com/ta1k1-arakawa/stock-analyzer.git","git@github.com:ta1k1-arakawa/stock-analyzer.git","ssh://git@github.com/ta1k1-arakawa/stock-analyzer.git"):
+  assert m._is_exact_github_repository_origin(origin)
+
+def test_exact_github_repository_origin_rejects_misleading_forms():
+ for origin in ("https://evil.example/ta1k1-arakawa/stock-analyzer.git","https://github.com/evil/ta1k1-arakawa/stock-analyzer.git","https://github.com/ta1k1-arakawa/stock-analyzer-evil.git","https://github.com/ta1k1-arakawa/stock-analyzer/extra","https://github.com/ta1k1-arakawa/stock-analyzer.git?x=1","https://github.com/ta1k1-arakawa/stock-analyzer.git?","https://github.com/ta1k1-arakawa/stock-analyzer.git#fragment","https://github.com/ta1k1-arakawa/stock-analyzer.git#","https://example.com/x/ta1k1-arakawa/stock-analyzer.git/y"):
+  assert not m._is_exact_github_repository_origin(origin)
+
+def test_repository_identity_failure_blocks_before_injected_fetcher(state_root,monkeypatch):
+ base={"config --get remote.origin.url":"https://github.com/evil/ta1k1-arakawa/stock-analyzer.git","branch --show-current":m.AUTHORITATIVE_BRANCH,"status --porcelain":"","rev-parse HEAD":"a"*40,"rev-parse refs/remotes/origin/"+m.AUTHORITATIVE_BRANCH:"a"*40,"rev-parse HEAD:"+m.DESIGN_PATH:m.FROZEN_DESIGN_BLOB,"merge-base --is-ancestor "+m.FROZEN_DESIGN_COMMIT+" "+"a"*40:""}
+ monkeypatch.setattr(m,"CANONICAL_V8K_PUBLIC_SOURCE_STATE_ROOT",state_root)
+ provenance=m.production_provenance
+ monkeypatch.setattr(m,"production_provenance",lambda:provenance(lambda args:base[" ".join(args)]))
+ calls=[]
+ with pytest.raises(m.V8KPublicSourceBlocked,match="GOVERNANCE_FAILURE"):
+  m.prepare(raw_authorization=auth(),fetcher=lambda url:calls.append(url),parser=lambda x:x,v4_manifest_path="x",v4_universe_path="x",now=lambda:datetime.now(timezone.utc))
+ assert calls==[]
+
 def test_parser_failure_after_lock_never_refetch(state_root,monkeypatch):
  monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **_:(_ for _ in ()).throw(ValueError()))
  def fetch(url): return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)

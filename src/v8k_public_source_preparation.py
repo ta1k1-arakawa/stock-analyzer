@@ -53,6 +53,36 @@ def validate_authorization(raw: str, *, design_commit: str, support_sha: str) ->
         raise V8KPublicSourceBlocked("AUTHORIZATION_GRAMMAR_INVALID")
     return sha256(raw)
 
+def _is_exact_github_repository_origin(origin: object) -> bool:
+    """Accept only canonical GitHub transport spellings for this repository."""
+    if not isinstance(origin, str):
+        return False
+    if re.fullmatch(r"git@github\.com:ta1k1-arakawa/stock-analyzer(?:\.git)?", origin):
+        return True
+    try:
+        parsed = urlparse(origin)
+        port = parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme == "https":
+        allowed_user, allowed_ports = None, (None, 443)
+    elif parsed.scheme == "ssh":
+        allowed_user, allowed_ports = "git", (None, 22)
+    else:
+        return False
+    return (
+        parsed.hostname == "github.com"
+        and parsed.username == allowed_user
+        and parsed.password is None
+        and port in allowed_ports
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+        and "?" not in origin
+        and "#" not in origin
+        and parsed.path in ("/ta1k1-arakawa/stock-analyzer", "/ta1k1-arakawa/stock-analyzer.git")
+    )
+
 def production_provenance(git: Callable[[list[str]], str] | None = None) -> str:
     """Return verified HEAD or fail closed before the network seam."""
     if git is None:
@@ -73,7 +103,7 @@ def production_provenance(git: Callable[[list[str]], str] | None = None) -> str:
         raise
     except Exception as exc:
         raise V8KPublicSourceBlocked("GOVERNANCE_FAILURE") from exc
-    if REPOSITORY_IDENTITY not in origin or branch != AUTHORITATIVE_BRANCH or clean or not HEX40.fullmatch(head) or remote != head or blob != FROZEN_DESIGN_BLOB or ancestor not in ("","0","true"):
+    if not _is_exact_github_repository_origin(origin) or branch != AUTHORITATIVE_BRANCH or clean or not HEX40.fullmatch(head) or remote != head or blob != FROZEN_DESIGN_BLOB or ancestor not in ("","0","true"):
         raise V8KPublicSourceBlocked("GOVERNANCE_FAILURE")
     return head
 
