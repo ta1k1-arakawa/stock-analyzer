@@ -206,7 +206,7 @@ def _prepare_for_test(*, state_root: str | os.PathLike[str], raw_authorization: 
     else:
         raw, lock = locked; source_url = JPX_PAGE
     try:
-        source, _codes, _t0, _prov = verify_partition_source_preflight(raw_source_bytes=raw, parse_source_table=parser, v4_manifest_path=v4_manifest_path, v4_universe_csv_path=v4_universe_path, source_url=source_url, source_acquisition_utc=now(), partition_implementation_git_commit=implementation_commit)
+        source = verify_partition_source_preflight(raw_source_bytes=raw, parse_source_table=parser, v4_manifest_path=v4_manifest_path, v4_universe_csv_path=v4_universe_path, source_url=source_url, source_acquisition_utc=now(), partition_implementation_git_commit=implementation_commit)
     except Exception as exc:
         raise V8KPublicSourceBlocked("DATA_QUALITY_FAILURE") from exc
     result = {"schema_version":"V8K_PUBLIC_SOURCE_PREPARATION_EVIDENCE_V1","artifact_role":"PUBLIC_SOURCE_PREPARATION_EVIDENCE","study":STUDY,"stage":"PUBLIC_SOURCE_PREPARATION","gate":GATE,"frozen_design_commit":FROZEN_DESIGN_COMMIT,"frozen_design_blob":FROZEN_DESIGN_BLOB,"reviewed_support_implementation_sha":support_sha,"authorization_identity_sha256":auth_hash,"receipt_key_sha256":receipt_key(),"source_raw_sha256":source["source_raw_sha256"],"source_acquisition_utc":lock["source_acquisition_utc"],"eligible_ticker_count":source["eligible_ticker_count"],"eligible_ticker_list_sha256":source["eligible_ticker_list_sha256"],"t0_reproduction_status":source["t0_reproduction_status"],"first_complete_payload_locked":True,"network_request_count":requests,"result_classification":"COMPLETE"}

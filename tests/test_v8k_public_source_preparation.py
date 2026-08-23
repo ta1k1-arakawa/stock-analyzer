@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import errno, hashlib, inspect, json, os, socket, subprocess, sys, tempfile, urllib.error, pytest
 from src import v8k_public_source_preparation as m
+from src import v8_partition as partition
+from scripts import build_v8_partition_manifest as partition_runner
 from scripts import run_v8k_public_source_preparation as runner
 
 def auth(s="a"*40): return m.authorization_identity(m.FROZEN_DESIGN_COMMIT,s)
@@ -66,6 +68,40 @@ def test_jpx_url_and_link():
  assert m.extract_xls_url(b'<a href="/x/data_j.xls">x</a>')=="https://www.jpx.co.jp/x/data_j.xls"
  for u in ("http://www.jpx.co.jp/x","https://evil/x","https://u@www.jpx.co.jp/x","https://www.jpx.co.jp:444/x"):
   with pytest.raises(m.V8KPublicSourceBlocked): m._trusted(u)
+
+def test_plain_public_preflight_dict_is_propagated_without_tuple_unpack(state_root,monkeypatch):
+ source={"source_raw_sha256":"b"*64,"eligible_ticker_count":300,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"}
+ monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **_kwargs:source)
+ out=m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=lambda url:(b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url),parser=lambda raw:raw,v4_manifest_path="manifest",v4_universe_path="universe",implementation_commit="d"*40,now=lambda:datetime(2026,1,1,tzinfo=timezone.utc))
+ assert {key:out[key] for key in source}==source
+
+def test_real_public_source_preflight_integration_is_safe_and_nonallocating(state_root,monkeypatch):
+ import pandas as pd
+ codes=partition_runner._ordered_synthetic_codes(300)
+ rows=[{"code":code,"market":"プライム（内国株式）","industry":"SYN"} for code in codes]
+ csv_bytes=partition.build_universe_csv_bytes(rows); manifest_path=state_root/"manifest.json"; universe_path=state_root/"universe.csv"
+ manifest={"source_host":"www.jpx.co.jp","source_page":m.JPX_PAGE,"raw_file_sha256":hashlib.sha256(b"different-v4-raw").hexdigest(),"universe_csv_sha256":hashlib.sha256(csv_bytes).hexdigest(),"ticker_list_sha256":partition.ticker_list_sha256(codes),"selection_rule":"synthetic","selected_count":300,"eligible_current_only":300}
+ manifest_path.write_text(json.dumps(manifest),encoding="utf-8"); universe_path.write_bytes(csv_bytes)
+ frame=pd.DataFrame([{"コード":row["code"],"銘柄名":"SYN","市場・区分":row["market"],"33業種区分":row["industry"]} for row in rows])
+ monkeypatch.setattr(partition,"allocate_fresh_blocks",lambda *_args,**_kwargs:(_ for _ in ()).throw(AssertionError("PARTITION_ALLOCATION_FORBIDDEN")))
+ raw=b"current-synthetic-jpx-raw"
+ out=m._prepare_for_test(state_root=state_root/"state",raw_authorization=auth(),support_sha="a"*40,fetcher=lambda url:(b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (raw,url),parser=lambda _raw:frame,v4_manifest_path=manifest_path,v4_universe_path=universe_path,implementation_commit="d"*40,now=lambda:datetime(2026,1,1,tzinfo=timezone.utc))
+ expected={"schema_version","artifact_role","study","stage","gate","frozen_design_commit","frozen_design_blob","reviewed_support_implementation_sha","authorization_identity_sha256","receipt_key_sha256","source_raw_sha256","source_acquisition_utc","eligible_ticker_count","eligible_ticker_list_sha256","t0_reproduction_status","first_complete_payload_locked","network_request_count","result_classification"}
+ serialized=m.canonical_bytes(out).decode("utf-8")
+ assert set(out)==expected and out["t0_reproduction_status"]=="PASS" and out["network_request_count"]==2
+ assert hashlib.sha256(raw).hexdigest()!=manifest["raw_file_sha256"]
+ assert auth() not in serialized and raw.decode() not in serialized and str(state_root) not in serialized
+ assert all(key not in out for key in ("ticker","tickers","raw_payload","seed","partition","t1","t2","t3"))
+
+def test_real_t0_mismatch_remains_data_quality_failure(state_root):
+ import pandas as pd
+ codes=partition_runner._ordered_synthetic_codes(300)
+ rows=[{"code":code,"market":"プライム（内国株式）","industry":"SYN"} for code in codes]
+ csv_bytes=partition.build_universe_csv_bytes(rows); manifest_path=state_root/"manifest.json"; universe_path=state_root/"universe.csv"
+ manifest_path.write_text(json.dumps({"source_host":"www.jpx.co.jp","source_page":m.JPX_PAGE,"raw_file_sha256":"a"*64,"universe_csv_sha256":hashlib.sha256(csv_bytes).hexdigest(),"ticker_list_sha256":partition.ticker_list_sha256(codes),"selection_rule":"synthetic","selected_count":300,"eligible_current_only":300}),encoding="utf-8"); universe_path.write_bytes(csv_bytes)
+ frame=pd.DataFrame([{"コード":row["code"],"銘柄名":"SYN","市場・区分":"対象外" if index==0 else row["market"],"33業種区分":row["industry"]} for index,row in enumerate(rows)])
+ with pytest.raises(m.V8KPublicSourceBlocked,match="DATA_QUALITY_FAILURE"):
+  m._prepare_for_test(state_root=state_root/"state",raw_authorization=auth(),support_sha="a"*40,fetcher=lambda url:(b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url),parser=lambda _raw:frame,v4_manifest_path=manifest_path,v4_universe_path=universe_path,implementation_commit="d"*40,now=lambda:datetime(2026,1,1,tzinfo=timezone.utc))
 
 def test_retry_policy_page_failure_then_success_counts_actual_requests():
  calls=[]; waits=[]
@@ -140,7 +176,7 @@ def test_prepare_locks_before_parse_reuses_bytes_and_safe_evidence(state_root,mo
  calls=[]; seen=[]
  def preflight(**kw):
   seen.append(kw["raw_source_bytes"]); assert m._state(state_root)[0].exists()
-  return ({"source_raw_sha256":m.sha256(kw["raw_source_bytes"]),"eligible_ticker_count":900,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"},[],[],{})
+  return {"source_raw_sha256":m.sha256(kw["raw_source_bytes"]),"eligible_ticker_count":900,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"}
  monkeypatch.setattr(m,"verify_partition_source_preflight",preflight)
  def fetch(url):
   calls.append(url); return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
@@ -182,12 +218,12 @@ def test_production_prepare_enforces_real_frozen_backoff(state_root,monkeypatch,
   if len(calls)<=failures: raise TimeoutError("synthetic timeout")
   return (b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url)
  monkeypatch.setattr(m,"_production_dependencies",lambda:(fetch,lambda raw:raw,"manifest","universe"))
- monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **kw:({"source_raw_sha256":m.sha256(kw["raw_source_bytes"]),"eligible_ticker_count":900,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"},[],[],{}))
+ monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **kw:{"source_raw_sha256":m.sha256(kw["raw_source_bytes"]),"eligible_ticker_count":900,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"})
  assert m.prepare(raw_authorization=auth())["network_request_count"]==failures+2
  assert sleeps==expected_sleeps
 
 def test_private_prepare_seam_retains_fake_dependencies(state_root,monkeypatch):
- monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **kw:({"source_raw_sha256":m.sha256(kw["raw_source_bytes"]),"eligible_ticker_count":900,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"},[],[],{}))
+ monkeypatch.setattr(m,"verify_partition_source_preflight",lambda **kw:{"source_raw_sha256":m.sha256(kw["raw_source_bytes"]),"eligible_ticker_count":900,"eligible_ticker_list_sha256":"c"*64,"t0_reproduction_status":"PASS"})
  out=m._prepare_for_test(state_root=state_root,raw_authorization=auth(),support_sha="a"*40,fetcher=lambda url:(b'<a href="/data_j.xls">',url) if url==m.JPX_PAGE else (b"raw",url),parser=lambda raw:raw,v4_manifest_path="manifest",v4_universe_path="universe",implementation_commit="d"*40,now=lambda:datetime(2026,1,1,tzinfo=timezone.utc),sleep=lambda _n:None)
  assert out["network_request_count"]==2
 
