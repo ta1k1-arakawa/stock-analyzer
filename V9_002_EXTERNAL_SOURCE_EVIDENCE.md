@@ -44,3 +44,15 @@ evidence of profitability.
 
 This evidence does not authorize a J-Quants purchase, API access, raw-data
 acquisition, broker activity, historical evaluation, or T1 access.
+
+## Corporate-action source evidence
+
+```text
+source_class=GPT_WEB_VERIFIED_OFFICIAL_JQUANTS
+verification_date=2026-08-23
+JQUANTS_stock_prices_documentation=RAW_AND_ADJUSTED_PRICES_AND_ADJUSTMENT_FACTORS_PROVIDED
+JQUANTS_corporate_action_adjusted_prices=RETROACTIVELY_ADJUSTED
+JQUANTS_RETRO_ADJUSTED_PRICES_AS_DIRECT_CAUSAL_FEATURE_INPUT=false
+```
+
+This is source evidence, not profitability evidence.

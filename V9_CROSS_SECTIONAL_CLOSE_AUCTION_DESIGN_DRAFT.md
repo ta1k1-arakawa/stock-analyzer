@@ -96,18 +96,121 @@ movement/reservation mismatch. Never exceed cash silently to force ten names.
 
 ## 5. Target and corporate actions
 
-For D0, the target is split-adjusted PRICE return from D1 close to D3 close,
-converted to same-signal-date cross-sectional percentile rank [0,1]. Cash
-dividends are excluded unless a later frozen source contract explicitly
-supplies them.
+### Corporate-action ratio semantic
+
+For a pure stock split or consolidation, define
+`R_e = post_action_shares / pre_action_shares`. `R_e` must be a finite positive
+exact ratio derived from the future frozen J-Quants source contract. The
+source-contract implementation must mechanically verify the J-Quants adjustment
+field's orientation against this semantic; it must not silently assume it.
+
+### Causal price normalization
+
+Fully retroactively adjusted J-Quants OHLC must not directly feed D0 feature
+history. For observation date A and historical trading date `t <= A`:
 
 ```text
+F(t,A)=product(R_e for corporate actions where t < effective_date_e <= A)
+causal_normalized_price(t,A)=raw_price(t) / F(t,A)
+causal_normalized_volume(t,A)=raw_volume(t) * F(t,A)
+empty_product=1
+```
+
+For D0 features, `A=D0`; only corporate actions effective by D0 may alter D0
+feature history. Use causal-normalized O/H/L/C for every price-derived V9
+feature. For `volume_dryup`, use causal-normalized volume:
+
+```text
+volume_dryup=1 - mean(causal_normalized_volume,5) / mean(causal_normalized_volume,20)
+```
+
+This is corporate-action normalization clarification, not a new feature.
+
+### Target
+
+The D1-to-D3 target is split-neutral economic PRICE return. Let
+`R_hold=product(R_e where D1 < effective_date_e <= D3)`:
+
+```text
+target_raw_return=(raw_close_D3 * R_hold / raw_close_D1) - 1
+target=already_frozen_same_D0_cross_sectional_percentile_rank(target_raw_return)
 historical_return_type=PRICE_RETURN_EX_DIVIDENDS
 ```
 
-Disclose this limitation; do not infer total-return alpha. Corporate-action
-adjustment must be causal/mechanical. Do not skip observations because a future
-split/delisting is known ex post.
+Cash dividends remain excluded. No future corporate action may affect D0
+features or candidate eligibility; do not infer total-return alpha.
+
+### Historical position accounting for pure split/consolidation
+
+Execution prices remain official RAW closing prices. On each effective pure
+corporate-action date, before that day's close valuation/execution, an open
+position applies `economic_quantity := economic_quantity * R_e`; total
+historical entry cost remains unchanged.
+
+If economic quantity is an integer, quantity becomes that exact integer, no
+synthetic cash is created, per-share economic cost basis adjusts inversely, and
+MTM uses adjusted quantity times that day's raw close. If it is not an integer,
+fail closed:
+
+```text
+failure_class=OPERATIONAL_EXECUTION_FAILURE
+reason=NONINTEGER_CORPORATE_ACTION_ENTITLEMENT_UNMODELED
+```
+
+Do not round quantity, assume fractional-share sale or cash-in-lieu price, or
+substitute another security. This is not a strategy failure and yields no
+strategy-confirmation verdict for the affected formal evaluation attempt.
+
+### Other corporate actions and delisting
+
+If an open position is affected before successful exit by an event not purely
+representable by that exact same-code `R_e` share-ratio transformation—including
+unresolved merger, share exchange/transfer, code replacement, cash-out,
+delisting, or other security conversion—fail closed:
+
+```text
+failure_class=DATA_QUALITY_FAILURE
+reason=UNMODELED_CORPORATE_ACTION
+```
+
+Do not fabricate a last/zero price, favorably replace, or substitute a ticker;
+this is not strategy rejection.
+
+### Missing close, suspension, and exit retry
+
+The first planned exit attempt is D3. For an unresolved open position, retry at
+every subsequent JPX trading-day closing auction. On each exit-attempt date:
+
+1. Apply effective pure split/consolidation first.
+2. Verify the security remains valid under the point-in-time master.
+3. Check for a finite positive official raw close.
+4. If no official close exists while listed, set `status=MARKET_NO_CLOSE` and keep it open.
+5. If valid raw close exists, apply the frozen scenario no-fill rule where applicable.
+6. If not no-fill, execute at official raw close with applicable frozen stress.
+
+No price is fabricated.
+
+### Bounded unresolved exit and evaluation tail
+
+The maximum exit-attempt window is 20 consecutive JPX trading days, with D3 as
+attempt-day 1. A `MARKET_NO_CLOSE` day counts. If still open after attempt-day
+20, fail closed:
+
+```text
+failure_class=OPERATIONAL_EXECUTION_FAILURE
+reason=EXIT_NOT_RESOLVED_WITHIN_20_JPX_TRADING_DAYS
+```
+
+There is no strategy-confirmation verdict and no forced mark-to-zero or
+last-close liquidation; this is a risk/operational—not profitability—failure.
+
+Signal generation/model evaluation ends at the frozen signal-window end. After
+the final allowed D0, extra source dates are permitted only for planned/retry
+exits, MTM of already-open positions, and already-effective corporate-action
+processing. They permit no new signals, features, model targets, or training
+rows. The required acquisition horizon includes enough JPX trading days for the
+20-day exit-resolution tail, derived mechanically from the frozen JPX calendar
+rather than a favorable endpoint selected after outcomes.
 
 ## 6. Fixed feature set
 

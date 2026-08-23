@@ -24,3 +24,7 @@ transitions. This public log must not contain protected material.
 - Findings: HIGH-1 random-K/no-fill protocol underspecified; HIGH-2 corporate-action/permanent-exit semantics underspecified; HIGH-3 verdict metric/IC aggregation underspecified; HIGH-4 portfolio selection/tie/cash/backfill semantics underspecified.
 - Only HIGH-1 remediation is authorized: random-K and no-fill now use SHA-256 domain-separated deterministic protocols.
 - No T1, data, paid purchase/access, or design-freeze authority is created; HIGH-2/HIGH-3/HIGH-4 remain open.
+- GPT exact-SHA review of `ae4a1b76862482429c2dac946b011da499daebe7`: `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, `RESULT=PASS` for HIGH-1.
+- HIGH-1 is RESOLVED. V9_002 remains BLOCK with HIGH-2/HIGH-3/HIGH-4.
+- HIGH-2 remediation defined: causal split normalization, raw execution, fail-closed noninteger entitlements/unmodeled actions, and bounded 20-JPX-day exit resolution.
+- No purchase, data, T1, or design-freeze authority is created.
