@@ -64,3 +64,6 @@ transitions. This public log must not contain protected material.
 - Free-first remains preferred for feasibility work; J-Quants Standard remains fallback-only and unauthorized.
 - V9_005 preregisters separate JPX-metadata and Yahoo-coverage public probes; each real network stage requires separate fresh authorization.
 - No price outcome, model, backtest, T1, or design-freeze authority is created.
+- GPT exact-SHA review of `abdbeed21dc6d291cd51afeee5bdf0fa4d06e23f`: `CRITICAL=0`, `HIGH=2`, `MEDIUM=0`, `RESULT=BLOCK`.
+- HIGH-1 Stage-A mechanical-verdict remediation is authorized; HIGH-2 remains OPEN.
+- No network, data, T1, or design-freeze authority is created.

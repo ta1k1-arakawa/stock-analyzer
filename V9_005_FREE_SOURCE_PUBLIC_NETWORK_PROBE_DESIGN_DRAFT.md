@@ -34,6 +34,25 @@ The inventory must include these source families:
 5. Monthly aggregate listed-issue counts, where available.
 6. TOPIX Historical Index Value.
 
+### Deterministic source inventory
+
+Before any feasibility verdict, Stage A must create a deterministic
+`SOURCE_INVENTORY`. For every calendar month from 2017-01 through 2025-12,
+there must be one inventory record for every source family required by the
+reconstruction contract. Each record is exactly one of:
+
+```text
+AVAILABLE
+NOT_APPLICABLE_BY_SOURCE_CONTRACT
+MISSING
+```
+
+`NOT_APPLICABLE_BY_SOURCE_CONTRACT` is permitted only when the official JPX
+source family has a mechanically documented cadence/range proving that no file
+is expected for that month. Unknown or ambiguous is `MISSING`. Any required
+`MISSING` record is Stage-A FAIL; no alternate non-preregistered source may be
+substituted after a missing result.
+
 Target chronology is metadata sufficient to reconstruct V9 roles from
 2017-01-01 through 2025-12-31, plus terminal/current metadata only where
 required for exact reverse replay. Every Stage-A record must lock requested
@@ -41,23 +60,67 @@ URL, final resolved URL, HTTP status, byte length, SHA256 raw bytes, retrieval
 timestamp, source category, and applicable month/year. No security
 price/return field may be printed.
 
-Stage A must answer whether a deterministic terminal snapshot exists; every
-relevant listing addition and delisting can be represented; segment/market
-transitions can be represented; domestic ordinary common-stock status can be
-determined; code reuse can be disambiguated into canonical security identities;
-effective dates are mechanically available; revisions can be detected and
-locked; no months/files are missing; and reconstructed comparable month-end
-counts can be cross-checked against official aggregate counts. Archive gaps
-must not be silently filled.
+### Required Stage-A evidence
+
+Stage A passes only if all of the following are satisfied:
+
+1. `TERMINAL_SNAPSHOT`: a terminal/month-end security snapshot sufficient to
+   seed deterministic backward/forward reconstruction exists and its raw bytes
+   are locked.
+2. `LISTING_TRANSITIONS`: every inventory month has a locked official record
+   sufficient to identify all new listings and exact effective dates, or is
+   mechanically valid `NOT_APPLICABLE_BY_SOURCE_CONTRACT`.
+3. `DELISTING_TRANSITIONS`: the same rule holds for all delistings and exact
+   effective dates.
+4. `MARKET_TRANSITIONS`: all required market/segment transitions are
+   representable with exact effective dates; any encountered transition class
+   that is not representable fails Stage A.
+5. `SECURITY_TYPE`: domestic ordinary-common-stock eligibility is determinable
+   for every reconstructed identity/date needed by V9 without future security
+   state; `UNKNOWN` fails Stage A.
+6. `CANONICAL_IDENTITY`: define a canonical identity tuple from official
+   metadata fields. Its exact serialization must be frozen in the Stage-A
+   execution artifact before Stage B use. Any code-reuse case that cannot be
+   disambiguated without future/outcome data fails Stage A.
+7. `EFFECTIVE_DATE`: every state transition has one mechanically defined
+   effective JPX date; an ambiguous date fails Stage A.
+8. `RECONSTRUCTION`: beginning with the locked terminal snapshot and applying
+   only locked official transition records deterministically produces the same
+   security state on repeated runs.
+9. `MONTH_END_CROSSCHECK`: for every month with a comparable official JPX
+   aggregate listed-issue count, reconstructed count equals the official count
+   after the exact same documented scope definition. A mismatch fails Stage A;
+   do not manually reconcile. If unavailable, record
+   `CROSSCHECK_NOT_AVAILABLE`; that alone neither passes nor fails, but the
+   transition inventory must remain complete.
+10. `RAW_PROVENANCE`: every consumed source object records requested URL,
+    resolved URL, HTTP status, retrieval timestamp, byte count, SHA256 raw
+    bytes, source family, and applicable period. Duplicate/conflicting objects
+    for the same authoritative slot fail unless an official revision relation
+    is mechanically established.
+
+Stage A PASS iff:
 
 ```text
-FREE_JPX_METADATA_PROBE_PASS=all_required_deterministic_source_contract_elements_demonstrated
+FREE_JPX_METADATA_PROBE_PASS=(
+  required_inventory_missing_count == 0
+  AND terminal_snapshot_pass == true
+  AND listing_transition_pass == true
+  AND delisting_transition_pass == true
+  AND market_transition_pass == true
+  AND security_type_pass == true
+  AND canonical_identity_pass == true
+  AND effective_date_pass == true
+  AND deterministic_reconstruction_pass == true
+  AND comparable_month_end_mismatch_count == 0
+  AND raw_provenance_pass == true)
 FREE_JPX_METADATA_PROBE_FAIL=otherwise
 failure_class=SOURCE_OR_DATA_FEASIBILITY_FAILURE
 ```
 
-Failure is not strategy failure. No favorable substitution or manual gap
-filling is allowed after results.
+There is no weighted score, majority vote, manual override, favorable
+substitution, or source-family redraw. Failure is not strategy failure, and a
+Stage-A pass does not authorize Stage B.
 
 ## Stage B — Yahoo coverage probe
 
