@@ -60,3 +60,7 @@ transitions. This public log must not contain protected material.
 - Official-free JPX metadata/split/TOPIX sources appear available, while complete long-history individual-stock OHLCV remains unproven.
 - J-Quants remains fallback-only and unauthorized.
 - No purchase, data, T1, or design-freeze authority is created.
+- GPT exact-SHA review of `f85493c144e953bf8f4ae1bb2ffa30482d8fde64`: `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, `RESULT=PASS` for V9_004.
+- Free-first remains preferred for feasibility work; J-Quants Standard remains fallback-only and unauthorized.
+- V9_005 preregisters separate JPX-metadata and Yahoo-coverage public probes; each real network stage requires separate fresh authorization.
+- No price outcome, model, backtest, T1, or design-freeze authority is created.
