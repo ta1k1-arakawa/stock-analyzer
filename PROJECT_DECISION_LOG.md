@@ -50,3 +50,7 @@ transitions. This public log must not contain protected material.
 - HIGH_FULL_1 is RESOLVED; MEDIUM_FULL_2 is RESOLVED by the pool-size fail-closed rule. V9 full design remains BLOCK.
 - HIGH_FULL_2 remediation defines 2017 training-only, 2016-09 feature-history-only, the same three-JPX-day signal grid, and strict monthly target-exit cutoff.
 - No purchase, data, T1, or design-freeze authority is created.
+- GPT exact-SHA review of `da7b65e205dfc21e3ce131981383c1d118611762`: `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, `RESULT=BLOCK`.
+- HIGH_FULL_2 core training methodology is correct; the remaining issue is stale Section-1 source-window wording.
+- Remediation aligns source roles: 2016-09 through 2016-12 feature-only, 2017 training-only, and 2018 through 2025 formal evaluation.
+- No purchase, data, T1, or design-freeze authority is created.

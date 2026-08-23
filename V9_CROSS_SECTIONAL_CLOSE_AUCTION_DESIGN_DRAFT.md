@@ -20,9 +20,26 @@ Maximize prospective real-world net expected value and robustness under
 ## 1. Historical source and universe
 
 Preferred source: J-Quants individual Standard, subject to a future explicit
-human paid-data gate. Historical research window: 2018-01-01 through
-2025-12-31. Warm-up may use data from 2016-09-01 onward solely as required for
-causal 252-trading-day history.
+human paid-data gate. Historical source span begins at 2016-09-01.
+
+Source-date roles are:
+
+- 2016-09-01 through 2016-12-31:
+  `FEATURE_HISTORY_ONLY`
+
+- 2017-01-01 through 2017-12-31:
+  `PRE_EVALUATION_TRAINING_ONLY`
+  Eligible T0 signal-grid rows may create causal features and D1-to-D3 training
+  targets exactly as specified in Section 9. This period has
+  `evidential_weight=NONE` and contributes no formal IC, portfolio,
+  model-selection-comparison, or T1 promotion evidence.
+
+- 2018-01-01 through 2025-12-31:
+  `FORMAL_DEVELOPMENT_EVALUATION_SIGNAL_WINDOW`
+
+Additional dates after the final evaluation signal may be acquired only as
+already permitted for target realization, open-position MTM, corporate-action
+processing, and the frozen exit-resolution tail.
 
 The daily universe is point-in-time TSE-listed domestic ordinary common stocks
 only. Exclude ETFs/ETPs, REITs, foreign issues, preferred/special securities,
