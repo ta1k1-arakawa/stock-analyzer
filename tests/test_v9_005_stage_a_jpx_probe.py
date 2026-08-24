@@ -587,6 +587,162 @@ def test_monthly_statistics_traversal_does_not_hardcode_archive_numbering() -> N
     assert re.search(r"archive-?\\d+", source, re.IGNORECASE) is None
 
 
+def _monthly_statistics_acquisition_year_html(year: int) -> bytes:
+    return (
+        f"<table><tr><th>Report</th><th>{year}-03</th><th>{year}-04</th></tr>"
+        f"<tr><th>{m.F2_SEMANTIC_ROW_LABEL}</th><td><a href=\"f2-{year}-03.xlsx\">F2</a></td>"
+        f"<td><a href=\"f2-{year}-04.xlsx\">F2</a></td></tr>"
+        f"<tr><th>{m.F4_SEMANTIC_ROW_LABEL}</th><td><a href=\"f4-{year}-03.xlsx\">F4</a></td>"
+        f"<td><a href=\"f4-{year}-04.xlsx\">F4</a></td></tr></table>"
+    ).encode()
+
+
+def _monthly_statistics_acquisition_responses() -> dict[str, m.FetchResult]:
+    root = m.MONTHLY_STATISTICS_ROOT_URL
+    year_urls = {year: f"https://www.jpx.co.jp/english/markets/statistics-equities/monthly/{year}.html" for year in (2020, 2021)}
+    responses: dict[str, m.FetchResult] = {
+        root: m.FetchResult(b'<a href="2020.html">2020</a><a href="2021.html">2021</a>', root, 200),
+    }
+    for year, year_url in year_urls.items():
+        responses[year_url] = m.FetchResult(_monthly_statistics_acquisition_year_html(year), year_url, 200)
+        for family in ("f2", "f4"):
+            for month in ("03", "04"):
+                child_url = f"https://www.jpx.co.jp/english/markets/statistics-equities/monthly/{family}-{year}-{month}.xlsx"
+                responses[child_url] = m.FetchResult(f"{family}-{year}-{month}".encode(), child_url, 206)
+    return responses
+
+
+def test_f2_f4_single_slot_acquisition_reuses_shared_support_and_returns_child_ids(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    responses = _monthly_statistics_acquisition_responses()
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return responses[url]
+
+    f2_slot, first_attempts = m.acquire_f2_f4_monthly_evidence(
+        root, source_family=m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, requested_month="2020-03",
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert first_attempts == 3
+    root_lock = m.read_locked_payload(
+        root, m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+        m.MONTHLY_STATISTICS_DISCOVERY_ROOT, m.MONTHLY_STATISTICS_ROOT_URL,
+    )
+    year_url = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/2020.html"
+    year_lock = m.read_locked_payload(
+        root, m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+        m.monthly_statistics_discovery_year_period(2020), year_url,
+    )
+    assert root_lock is not None and year_lock is not None
+    assert root_lock["source_family"] == m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT
+    assert root_lock["applicable_period"] == m.MONTHLY_STATISTICS_DISCOVERY_ROOT
+    assert year_lock["applicable_period"] == "MONTHLY_STATISTICS_DISCOVERY_YEAR_2020"
+    assert f2_slot == m.source_object_slot_id(
+        m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "2020-03",
+        "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/f2-2020-03.xlsx",
+    )
+    f2_lock = m.read_locked_payload(
+        root, m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "2020-03",
+        "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/f2-2020-03.xlsx",
+    )
+    assert f2_lock is not None
+    assert f2_lock["source_family"] == m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT
+    assert f2_lock["applicable_period"] == "2020-03"
+    assert f2_lock["requested_url"] == "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/f2-2020-03.xlsx"
+    assert f2_lock["resolved_url"] == "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/f2-2020-03.xlsx"
+    f4_slot, f4_attempts = m.acquire_f2_f4_monthly_evidence(
+        root, source_family=m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE, requested_month="2020-03",
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert f4_attempts == 1
+    assert calls.count(m.MONTHLY_STATISTICS_ROOT_URL) == 1
+    assert calls.count(year_url) == 1
+    assert f4_slot == m.source_object_slot_id(
+        m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE, "2020-03",
+        "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/f4-2020-03.xlsx",
+    )
+    f4_lock = m.read_locked_payload(
+        root, m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE, "2020-03",
+        "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/f4-2020-03.xlsx",
+    )
+    assert f4_lock is not None
+    assert f4_lock["source_family"] == m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE
+    assert f4_lock["applicable_period"] == "2020-03"
+    support_ids = {
+        m.source_object_slot_id(m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, m.MONTHLY_STATISTICS_DISCOVERY_ROOT, m.MONTHLY_STATISTICS_ROOT_URL),
+        m.source_object_slot_id(m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "MONTHLY_STATISTICS_DISCOVERY_YEAR_2020", year_url),
+    }
+    assert f2_slot not in support_ids and f4_slot not in support_ids
+    f2_inventory = m.build_source_inventory(
+        coverage_references={(m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "2020-03"): [f2_slot]}, output_root=root,
+    )
+    f4_inventory = m.build_source_inventory(
+        coverage_references={(m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE, "2020-03"): [f4_slot]}, output_root=root,
+    )
+    assert next(r for r in f2_inventory if r["source_family"] == m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT and r["month"] == "2020-03")["status"] == m.INVENTORY_AVAILABLE
+    assert next(r for r in f4_inventory if r["source_family"] == m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE and r["month"] == "2020-03")["status"] == m.INVENTORY_AVAILABLE
+    _same_slot, same_attempts = m.acquire_f2_f4_monthly_evidence(
+        root, source_family=m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, requested_month="2020-03",
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert same_attempts == 0
+    _other_month, other_month_attempts = m.acquire_f2_f4_monthly_evidence(
+        root, source_family=m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, requested_month="2020-04",
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert other_month_attempts == 1
+    _other_year, other_year_attempts = m.acquire_f2_f4_monthly_evidence(
+        root, source_family=m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, requested_month="2021-03",
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert other_year_attempts == 2
+
+
+def test_f2_f4_single_slot_acquisition_fails_closed_before_or_after_support_lock(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        raise AssertionError("invalid input must not fetch")
+
+    for family, month in (("UNSUPPORTED", "2020-03"), (m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "bad")):
+        with pytest.raises(m.V9005StageABlocked):
+            m.acquire_f2_f4_monthly_evidence(root, source_family=family, requested_month=month, fetcher=fetcher, sleep=_no_sleep, clock=_clock)
+    assert calls == []
+    root_key = m.source_object_slot_id(
+        m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, m.MONTHLY_STATISTICS_DISCOVERY_ROOT, m.MONTHLY_STATISTICS_ROOT_URL,
+    )
+    (root / "raw" / f"{root_key}.bin").write_bytes(b"orphan")
+    with pytest.raises(m.V9005StageABlocked):
+        m.acquire_f2_f4_monthly_evidence(root, source_family=m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, requested_month="2020-03", fetcher=fetcher, sleep=_no_sleep, clock=_clock)
+    assert calls == []
+
+
+def test_f2_f4_single_slot_traversal_failure_never_fetches_a_child(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    m.lock_first_complete_payload(
+        root, source_family=m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+        applicable_period=m.MONTHLY_STATISTICS_DISCOVERY_ROOT, requested_url=m.MONTHLY_STATISTICS_ROOT_URL,
+        fetch_result=m.FetchResult(b'<a href="2020.html">2020</a>', m.MONTHLY_STATISTICS_ROOT_URL, 200),
+        retrieval_timestamp_utc="2026-08-24T00:00:00Z",
+    )
+    year_url = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/2020.html"
+    m.lock_first_complete_payload(
+        root, source_family=m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+        applicable_period=m.monthly_statistics_discovery_year_period(2020), requested_url=year_url,
+        fetch_result=m.FetchResult(b"<table><tr><th>Report</th><th>2020-03</th></tr></table>", year_url, 200),
+        retrieval_timestamp_utc="2026-08-24T00:00:00Z",
+    )
+    with pytest.raises(m.V9005StageABlocked):
+        m.acquire_f2_f4_monthly_evidence(
+            root, source_family=m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, requested_month="2020-03",
+            fetcher=lambda _url: (_ for _ in ()).throw(AssertionError("must not fetch guessed child")), sleep=_no_sleep, clock=_clock,
+        )
+
+
 # --- Reviewed deterministic locator strategy contract (F1-F7) ---------------
 
 def test_no_monthly_auxiliary_slot_kind_exists() -> None:

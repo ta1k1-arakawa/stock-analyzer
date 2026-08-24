@@ -160,6 +160,7 @@ CALENDAR_PAGE_COVERAGE_END = "2027-12-31"
 MONTHLY_STATISTICS_ROOT_URL = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/index.html"
 F2_SEMANTIC_ROW_LABEL = "Changes in Listed Companies and Issues, Etc."
 F4_SEMANTIC_ROW_LABEL = "Ex-New, Ex-Rights, Etc."
+MONTHLY_STATISTICS_DISCOVERY_ROOT = "MONTHLY_STATISTICS_DISCOVERY_ROOT"
 
 # F3: delisted-company archive (YEAR objects).
 DELISTED_COMPANY_ROOT_URL = "https://www.jpx.co.jp/english/listing/stocks/delisted/index.html"
@@ -1033,6 +1034,63 @@ def _parse_year_month(value: str) -> tuple[int, int]:
     return year, month
 
 
+def monthly_statistics_discovery_year_period(year: int) -> str:
+    if isinstance(year, bool) or not isinstance(year, int) or not 1000 <= year <= 9999:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    return f"MONTHLY_STATISTICS_DISCOVERY_YEAR_{year:04d}"
+
+
+def acquire_f2_f4_monthly_evidence(
+    output_root: str | os.PathLike[str],
+    *,
+    source_family: str,
+    requested_month: str,
+    fetcher: Callable[[str], FetchResult],
+    sleep: Callable[[int], None],
+    clock: Callable[[], datetime],
+) -> tuple[str, int]:
+    """Lock one F2/F4 child using the shared F2-owned support objects only."""
+    if source_family not in {
+        SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+        SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE,
+    }:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    year, _month = _parse_year_month(requested_month)
+    support_owner = SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT
+    root, root_attempts = ensure_locked_payload(
+        output_root,
+        source_family=support_owner,
+        applicable_period=MONTHLY_STATISTICS_DISCOVERY_ROOT,
+        requested_url=MONTHLY_STATISTICS_ROOT_URL,
+        fetcher=fetcher,
+        sleep=sleep,
+        clock=clock,
+    )
+    year_page_url = resolve_monthly_statistics_year_page_url(root["raw"], MONTHLY_STATISTICS_ROOT_URL, year)
+    year_page, year_attempts = ensure_locked_payload(
+        output_root,
+        source_family=support_owner,
+        applicable_period=monthly_statistics_discovery_year_period(year),
+        requested_url=year_page_url,
+        fetcher=fetcher,
+        sleep=sleep,
+        clock=clock,
+    )
+    child_url = resolve_monthly_statistics_evidence_url(
+        year_page["raw"], year_page_url, source_family, requested_month, selected_year=year,
+    )
+    _child, child_attempts = ensure_locked_payload(
+        output_root,
+        source_family=source_family,
+        applicable_period=requested_month,
+        requested_url=child_url,
+        fetcher=fetcher,
+        sleep=sleep,
+        clock=clock,
+    )
+    return source_object_slot_id(source_family, requested_month, child_url), root_attempts + year_attempts + child_attempts
+
+
 def f2_bridge_months(terminal_month: str) -> tuple[str, ...]:
     """F2's mandatory post-2025 bridge slots, mechanically derived from the
     terminal snapshot month T: every month from 2026-01 through T
@@ -1541,7 +1599,8 @@ __all__ = [
     "DELISTED_COMPANY_ROOT_URL", "F2_SEMANTIC_ROW_LABEL", "F4_SEMANTIC_ROW_LABEL", "F6_SEMANTIC_SECTION_LABEL",
     "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
     "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
-    "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_ROOT_URL", "PLUMBING_FAILURE_RETRIABLE",
+    "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
+    "MONTHLY_STATISTICS_ROOT_URL", "PLUMBING_FAILURE_RETRIABLE",
     "PROBE_SIGNAL_GRID_CONTRACT_MISMATCH", "SLOT_KIND_GLOBAL", "SLOT_KIND_MONTHLY", "SLOT_KIND_TERMINAL",
     "SLOT_KIND_YEAR", "SOURCE_FAMILIES", "SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE",
     "SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE", "SOURCE_FAMILY_JPX_CALENDAR",
@@ -1550,12 +1609,12 @@ __all__ = [
     "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE",
     "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE", "STAGE", "STUDY",
     "TOPIX_ROOT_URL", "VALID_SLOT_KINDS",
-    "V9005StageABlocked", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
+    "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
     "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
     "compute_month_end_mismatch_count", "compute_stage_a_evidence",
     "derive_final_signal_d0", "derive_stage_b_global_end_exclusive", "ensure_locked_payload",
     "extract_data_j_xls_url", "f2_bridge_months", "fetch_once_with_retry",
-    "initialize_output_root", "inventory_months", "lock_first_complete_payload", "nth_trading_day_after",
+    "initialize_output_root", "inventory_months", "lock_first_complete_payload", "monthly_statistics_discovery_year_period", "nth_trading_day_after",
     "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
     "resolve_f7_calendar_url", "resolve_month_locator", "resolve_monthly_statistics_evidence_url",
     "resolve_monthly_statistics_year_page_url", "run_stage_a",
