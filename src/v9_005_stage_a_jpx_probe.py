@@ -1066,7 +1066,9 @@ def acquire_f2_f4_monthly_evidence(
         sleep=sleep,
         clock=clock,
     )
-    year_page_url = resolve_monthly_statistics_year_page_url(root["raw"], MONTHLY_STATISTICS_ROOT_URL, year)
+    year_page_url = resolve_monthly_statistics_year_page_url(
+        root["raw"], root["resolved_url"], year,
+    )
     year_page, year_attempts = ensure_locked_payload(
         output_root,
         source_family=support_owner,
@@ -1077,7 +1079,7 @@ def acquire_f2_f4_monthly_evidence(
         clock=clock,
     )
     child_url = resolve_monthly_statistics_evidence_url(
-        year_page["raw"], year_page_url, source_family, requested_month, selected_year=year,
+        year_page["raw"], year_page["resolved_url"], source_family, requested_month, selected_year=year,
     )
     _child, child_attempts = ensure_locked_payload(
         output_root,

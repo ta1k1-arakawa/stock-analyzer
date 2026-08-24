@@ -700,6 +700,76 @@ def test_f2_f4_single_slot_acquisition_reuses_shared_support_and_returns_child_i
     assert other_year_attempts == 2
 
 
+def test_f2_f4_single_slot_acquisition_uses_locked_resolved_urls_as_link_bases(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    root_final_url = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/redirected/index.html"
+    year_requested_url = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/redirected/2020.html"
+    year_final_url = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/redirected/2020/index.html"
+    f2_requested_url = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/redirected/2020/f2.xlsx"
+    f2_final_url = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/redirected/2020/f2-final.xlsx"
+    f4_requested_url = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/redirected/2020/f4.xlsx"
+    responses = {
+        m.MONTHLY_STATISTICS_ROOT_URL: m.FetchResult(b'<a href="2020.html">2020</a>', root_final_url, 200),
+        year_requested_url: m.FetchResult(
+            b"<table><tr><th>Report</th><th>2020-03</th></tr>"
+            + f'<tr><th>{m.F2_SEMANTIC_ROW_LABEL}</th><td><a href="f2.xlsx">F2</a></td></tr>'.encode()
+            + f'<tr><th>{m.F4_SEMANTIC_ROW_LABEL}</th><td><a href="f4.xlsx">F4</a></td></tr></table>'.encode(),
+            year_final_url,
+            200,
+        ),
+        f2_requested_url: m.FetchResult(b"f2", f2_final_url, 206),
+        f4_requested_url: m.FetchResult(b"f4", f4_requested_url, 200),
+    }
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return responses[url]
+
+    f2_slot, first_attempts = m.acquire_f2_f4_monthly_evidence(
+        root, source_family=m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, requested_month="2020-03",
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert first_attempts == 3
+    assert year_requested_url in calls
+    assert "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/2020.html" not in calls
+    assert f2_requested_url in calls
+    assert "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/redirected/f2.xlsx" not in calls
+    root_lock = m.read_locked_payload(
+        root, m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+        m.MONTHLY_STATISTICS_DISCOVERY_ROOT, m.MONTHLY_STATISTICS_ROOT_URL,
+    )
+    year_lock = m.read_locked_payload(
+        root, m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+        m.monthly_statistics_discovery_year_period(2020), year_requested_url,
+    )
+    assert root_lock is not None and year_lock is not None
+    assert root_lock["requested_url"] == m.MONTHLY_STATISTICS_ROOT_URL
+    assert root_lock["resolved_url"] == root_final_url
+    assert year_lock["requested_url"] == year_requested_url
+    assert year_lock["resolved_url"] == year_final_url
+    assert f2_slot == m.source_object_slot_id(
+        m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "2020-03", f2_requested_url,
+    )
+    assert f2_slot != m.source_object_slot_id(
+        m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "2020-03", f2_final_url,
+    )
+    f4_slot, f4_attempts = m.acquire_f2_f4_monthly_evidence(
+        root, source_family=m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE, requested_month="2020-03",
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert f4_attempts == 1
+    assert f4_slot == m.source_object_slot_id(m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE, "2020-03", f4_requested_url)
+    _same_slot, same_attempts = m.acquire_f2_f4_monthly_evidence(
+        root, source_family=m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, requested_month="2020-03",
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert same_attempts == 0
+    assert calls.count(m.MONTHLY_STATISTICS_ROOT_URL) == 1
+    assert calls.count(year_requested_url) == 1
+    assert calls.count(f2_requested_url) == 1
+
+
 def test_f2_f4_single_slot_acquisition_fails_closed_before_or_after_support_lock(tmp_path: Path) -> None:
     root = m.initialize_output_root(tmp_path / "out")
     calls: list[str] = []

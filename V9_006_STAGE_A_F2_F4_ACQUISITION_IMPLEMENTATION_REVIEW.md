@@ -19,6 +19,24 @@ No base-month enumeration, bridge enumeration, content parsing, matrix
 mutation, production `run_stage_a` integration, or real network execution is
 implemented.
 
+The traversal base for each locked support object is that object's recorded
+`resolved_url`: root HTML resolves its selected year link against the locked
+root final URL, and year-page HTML resolves its child link against the locked
+year-page final URL. Raw-lock identities remain keyed by requested URLs, and
+the returned child slot ID remains keyed by the mechanically resolved child
+requested URL.
+
+```text
+REVIEWED_SHA=770321aadfc696de515a7576534da4fdc0086a4f
+PARENT_SHA=4b9c082bde0f7ace7bd4867b621f2e505b8d18de
+CRITICAL=0
+HIGH=0
+MEDIUM=1
+LOW=1
+RESULT=BLOCK
+FINDING=V9_006_F2_F4_ACQ_MEDIUM_1_RELATIVE_LINK_BASE_IGNORES_RESOLVED_URL
+```
+
 ```text
 REVIEWED_SHA=4b9c082bde0f7ace7bd4867b621f2e505b8d18de
 PARENT_SHA=04455334511f49ec8f8029d2a07022d78d8b758f
