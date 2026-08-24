@@ -208,3 +208,28 @@ separate two-run-determinism finding are unchanged.
 
 `V9_006_HIGH_2_SEM_IMPL_HIGH_2=REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW`.
 `V9_006_HIGH_2_SEM_IMPL_MEDIUM_1=OPEN`.
+
+## HIGH_2 GPT review and MEDIUM_1 two-run pass-gate remediation
+
+```text
+REVIEWED_SHA=2584bcf925e710f98c52e08c9de23e8886d2f189
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+RESULT=PASS
+V9_006_HIGH_2_SEM_IMPL_HIGH_1=RESOLVED
+V9_006_HIGH_2_SEM_IMPL_HIGH_2=RESOLVED
+V9_006_HIGH_2_SEM_IMPL_MEDIUM_1=OPEN
+```
+
+This task remediates exactly `V9_006_HIGH_2_SEM_IMPL_MEDIUM_1_TWO_RUN_
+DETERMINISM_NOT_IN_PASS_GATE`. `compute_stage_a_evidence` now receives the
+actual structured `terminal_identities` and `events`, calls
+`reconstruction_is_deterministic` internally, and sets
+`deterministic_reconstruction_pass` only when both the semantic
+reverse/forward check and the actual byte-identical two-run result pass.
+No caller-supplied two-run boolean exists. Production supplies its current
+empty structured inputs and remains fail-closed because semantic validation
+is false on empty evidence.
+
+`V9_006_HIGH_2_SEM_IMPL_MEDIUM_1=REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW`.

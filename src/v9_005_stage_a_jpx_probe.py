@@ -940,9 +940,9 @@ def reconstruction_is_deterministic(
 ) -> bool:
     """Evidence item 7's first requirement: two independent deterministic
     reconstructions from identical input must produce byte-identical
-    canonical state output. (The separate reverse/forward consistency
-    check is `semantic_result["deterministic_reconstruction_pass"]`, fed
-    directly into `compute_stage_a_evidence`.)"""
+    canonical state output. The Stage-A evidence gate combines this result
+    with the separate reverse/forward consistency check in
+    `semantic_result["deterministic_reconstruction_pass"]`."""
     first = canonical_bytes(reconstruct_security_state(terminal_identities=terminal_identities, events=events))
     second = canonical_bytes(reconstruct_security_state(terminal_identities=terminal_identities, events=events))
     return first == second
@@ -969,17 +969,21 @@ def compute_stage_a_evidence(
     terminal_snapshot_locked: bool,
     trading_calendar_derived: bool,
     semantic_result: Mapping[str, Any],
+    terminal_identities: Mapping[str, TerminalIdentityState],
+    events: Sequence[SemanticEvent],
     comparable_month_end_mismatch_count: int,
     raw_provenance_pass: bool,
 ) -> dict[str, Any]:
     """V9_006_HIGH_2_SEMANTIC_VALIDATION_IMPLEMENTATION: `listing_transition_
     pass`, `delisting_transition_pass`, `market_transition_pass`,
     `security_type_pass`, `canonical_identity_pass`, `effective_date_pass`,
-    and `deterministic_reconstruction_pass` are fed directly from
+    are fed directly from
     `semantic_result` (produced by
     `src.v9_005_stage_a_semantics.compute_semantic_validation_result`),
     never derived from monthly `SOURCE_INVENTORY` family coverage and never
-    a caller-supplied arbitrary boolean. `terminal_snapshot_pass` remains
+    a caller-supplied arbitrary boolean. Deterministic reconstruction is
+    the conjunction of semantic_result's reverse/forward check and a fresh
+    actual two-run reconstruction over these structured inputs. `terminal_snapshot_pass` remains
     an independent gate based solely on terminal-snapshot locking, and
     `trading_calendar_pass` remains based on F7 calendar-family coverage
     plus successful trading-calendar derivation -- neither of those two is
@@ -987,6 +991,9 @@ def compute_stage_a_evidence(
     required_inventory_missing_count = sum(1 for record in inventory if record["status"] == INVENTORY_MISSING)
     calendar_family_covered = _family_fully_covered(inventory, SOURCE_FAMILY_JPX_CALENDAR)
     trading_calendar_pass = bool(calendar_family_covered and trading_calendar_derived)
+    two_run_determinism_pass = reconstruction_is_deterministic(
+        terminal_identities=terminal_identities, events=events,
+    )
 
     evidence: dict[str, Any] = {
         "required_inventory_missing_count": required_inventory_missing_count,
@@ -998,7 +1005,9 @@ def compute_stage_a_evidence(
         "canonical_identity_pass": bool(semantic_result["canonical_identity_pass"]),
         "effective_date_pass": bool(semantic_result["effective_date_pass"]),
         "trading_calendar_pass": trading_calendar_pass,
-        "deterministic_reconstruction_pass": bool(semantic_result["deterministic_reconstruction_pass"]),
+        "deterministic_reconstruction_pass": bool(
+            semantic_result["deterministic_reconstruction_pass"] and two_run_determinism_pass
+        ),
         "comparable_month_end_mismatch_count": int(comparable_month_end_mismatch_count),
         "raw_provenance_pass": bool(raw_provenance_pass),
     }
@@ -1150,8 +1159,10 @@ def run_stage_a(
     # events explicitly so `compute_semantic_validation_result`'s own
     # fail-closed empty-input default governs -- this must never be
     # replaced by a caller-supplied arbitrary PASS boolean.
-    semantic_result = compute_semantic_validation_result(terminal_identities={}, events=())
-    reconstruction = reconstruct_security_state(terminal_identities={}, events=())
+    terminal_identities: Mapping[str, TerminalIdentityState] = {}
+    events: Sequence[SemanticEvent] = ()
+    semantic_result = compute_semantic_validation_result(terminal_identities=terminal_identities, events=events)
+    reconstruction = reconstruct_security_state(terminal_identities=terminal_identities, events=events)
     raw_provenance_pass = verify_raw_provenance(root)
 
     evidence = compute_stage_a_evidence(
@@ -1159,6 +1170,8 @@ def run_stage_a(
         terminal_snapshot_locked=True,
         trading_calendar_derived=trading_calendar_derived,
         semantic_result=semantic_result,
+        terminal_identities=terminal_identities,
+        events=events,
         comparable_month_end_mismatch_count=0,
         raw_provenance_pass=raw_provenance_pass,
     )

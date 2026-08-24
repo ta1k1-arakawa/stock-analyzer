@@ -336,6 +336,8 @@ def test_required_inventory_missing_causes_fail() -> None:
         # test -- not a claim that production semantic validation exists
         # (see test_production_semantic_evidence_computed_from_empty_input).
         semantic_result=_synthetic_semantic_result(),
+        terminal_identities={},
+        events=(),
         comparable_month_end_mismatch_count=0,
         raw_provenance_pass=True,
     )
@@ -385,6 +387,8 @@ def test_month_end_mismatch_fails_overall_pass_even_if_everything_else_passes() 
         terminal_snapshot_locked=True,
         trading_calendar_derived=True,
         semantic_result=_synthetic_semantic_result(),
+        terminal_identities={},
+        events=(),
         comparable_month_end_mismatch_count=1,
         raw_provenance_pass=True,
     )
@@ -462,6 +466,12 @@ def _full_evidence(**overrides: object) -> dict[str, object]:
         terminal_snapshot_locked=True,
         trading_calendar_derived=True,
         semantic_result=_synthetic_semantic_result(**semantic_overrides),
+        terminal_identities={
+            "1301": sem.TerminalIdentityState(
+                listed_state=True, market_state="PRIME", security_type_state=sem.SECURITY_TYPE_ELIGIBLE,
+            ),
+        },
+        events=(sem.SemanticEvent("1301", "2017-01-10", sem.DIMENSION_LISTED_STATE, False, True, "F2"),),
         comparable_month_end_mismatch_count=0,
         raw_provenance_pass=True,
     )
@@ -510,6 +520,11 @@ def test_compute_stage_a_evidence_no_longer_accepts_coverage_proxy_kwargs() -> N
     assert "reconstruction_deterministic" not in params
     assert "security_type_validation_pass" not in params
     assert "semantic_result" in params
+    assert "two_run_determinism_pass" not in params
+    assert "terminal_identities" in params
+    assert "events" in params
+    with pytest.raises(TypeError):
+        _full_evidence(two_run_determinism_pass=True)
 
 
 def test_full_inventory_coverage_alone_cannot_make_semantic_gates_pass() -> None:
@@ -561,6 +576,23 @@ def test_effective_date_pass_is_not_a_coverage_conjunction() -> None:
     assert evidence["effective_date_pass"] is False
 
 
+def test_deterministic_reconstruction_gate_requires_reverse_forward_and_two_run() -> None:
+    evidence = _full_evidence()
+    assert evidence["deterministic_reconstruction_pass"] is True
+
+    reverse_forward_failed = _full_evidence(deterministic_reconstruction_pass=False)
+    assert reverse_forward_failed["deterministic_reconstruction_pass"] is False
+
+
+def test_two_run_mismatch_fails_deterministic_and_free_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deterministic injection proves the actual two-run check is part
+    of the Stage-A pass conjunction, without introducing randomness."""
+    monkeypatch.setattr(m, "reconstruction_is_deterministic", lambda **_kwargs: False)
+    evidence = _full_evidence()
+    assert evidence["deterministic_reconstruction_pass"] is False
+    assert evidence["FREE_JPX_METADATA_PROBE_PASS"] is False
+
+
 def test_production_semantic_evidence_computed_from_empty_input() -> None:
     """Static-source proof that run_stage_a() -- the real-execution
     orchestration entrypoint -- computes its semantic_result via the real
@@ -572,7 +604,10 @@ def test_production_semantic_evidence_computed_from_empty_input() -> None:
     test_no_terminal_identities_fails_closed_not_vacuous_pass), this
     guarantees production never fakes a semantic PASS."""
     source = inspect.getsource(m.run_stage_a)
-    assert "compute_semantic_validation_result(terminal_identities={}, events=())" in source
+    assert "terminal_identities: Mapping[str, TerminalIdentityState] = {}" in source
+    assert "events: Sequence[SemanticEvent] = ()" in source
+    assert "terminal_identities=terminal_identities," in source
+    assert "events=events," in source
     # Confirm the real (unmocked) engine actually fails closed on that
     # exact call, so this static check is backed by real behavior.
     result = m.compute_semantic_validation_result(terminal_identities={}, events=())
