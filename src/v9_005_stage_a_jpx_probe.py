@@ -643,6 +643,15 @@ class F3RequiredSlotAcquisition:
     base_coverage_references: Mapping[tuple[str, str], tuple[str, ...]]
     network_attempt_count: int
 
+
+@dataclass(frozen=True)
+class F7RequiredSlotAcquisition:
+    """F7 base and envelope-extra calendar coverage references."""
+
+    base_coverage_references: Mapping[tuple[str, str], tuple[str, ...]]
+    envelope_extra_references: Mapping[str, tuple[str, ...]]
+    network_attempt_count: int
+
 def fetch_once_with_retry(
     url: str,
     fetcher: Callable[[str], FetchResult],
@@ -1294,6 +1303,76 @@ def acquire_f3_required_slots(
     return F3RequiredSlotAcquisition(base_references, attempts)
 
 
+def _validate_f7_required_slot_references(
+    output_root: str | os.PathLike[str],
+    base_references: Mapping[tuple[str, str], tuple[str, ...]],
+    extra_references: Mapping[str, tuple[str, ...]],
+) -> None:
+    family = SOURCE_FAMILY_JPX_CALENDAR
+    base_months = inventory_months()
+    extras = calendar_envelope_extra_months()
+    if set(base_references) != {(family, month) for month in base_months}:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    if set(extra_references) != set(extras):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    verified_locks = _verified_raw_lock_index(output_root)
+
+    def validate_one(slot_ids: tuple[str, ...], month: str) -> None:
+        if not isinstance(slot_ids, tuple) or len(slot_ids) != 1:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        slot_id = slot_ids[0]
+        if not isinstance(slot_id, str) or re.fullmatch(r"[0-9a-f]{64}", slot_id) is None:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        metadata = verified_locks.get(slot_id)
+        if (
+            metadata is None
+            or metadata.get("source_family") != family
+            or metadata.get("applicable_period") != month
+            or source_object_slot_id(family, month, metadata.get("requested_url")) != slot_id
+        ):
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+
+    for (_family, month), slot_ids in base_references.items():
+        validate_one(slot_ids, month)
+    for month, slot_ids in extra_references.items():
+        validate_one(slot_ids, month)
+
+
+def acquire_f7_required_slots(
+    output_root: str | os.PathLike[str],
+    *,
+    fetcher: Callable[[str], FetchResult],
+    sleep: Callable[[int], None],
+    clock: Callable[[], datetime],
+) -> F7RequiredSlotAcquisition:
+    """Acquire every exact-template F7 envelope object in ascending order."""
+    family = SOURCE_FAMILY_JPX_CALENDAR
+    base_months = frozenset(inventory_months())
+    base_references: dict[tuple[str, str], tuple[str, ...]] = {}
+    extra_references: dict[str, tuple[str, ...]] = {}
+    attempts = 0
+    for month in calendar_envelope_months():
+        year, month_number = _parse_year_month(month)
+        requested_url = resolve_f7_calendar_url(year, month_number)
+        _locked, slot_attempts = ensure_locked_payload(
+            output_root,
+            source_family=family,
+            applicable_period=month,
+            requested_url=requested_url,
+            fetcher=fetcher,
+            sleep=sleep,
+            clock=clock,
+        )
+        attempts += slot_attempts
+        slot_ids = (source_object_slot_id(family, month, requested_url),)
+        if month in base_months:
+            base_references[(family, month)] = slot_ids
+        else:
+            extra_references[month] = slot_ids
+    _validate_f7_required_slot_references(output_root, base_references, extra_references)
+    return F7RequiredSlotAcquisition(base_references, extra_references, attempts)
+
+
 def calendar_envelope_months() -> tuple[str, ...]:
     """All required F7 calendar months: 2016-09 through 2026-03 inclusive."""
     return _year_month_range(CALENDAR_ENVELOPE_FIRST_YEAR_MONTH, CALENDAR_ENVELOPE_LAST_YEAR_MONTH)
@@ -1789,7 +1868,7 @@ __all__ = [
     "DELISTED_COMPANY_DISCOVERY_ROOT", "DELISTED_COMPANY_ROOT_URL", "F2_SEMANTIC_ROW_LABEL", "F4_SEMANTIC_ROW_LABEL", "F6_SEMANTIC_SECTION_LABEL",
     "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
     "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
-    "F2F4RequiredSlotAcquisition", "F3RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
+    "F2F4RequiredSlotAcquisition", "F3RequiredSlotAcquisition", "F7RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
     "MONTHLY_STATISTICS_ROOT_URL", "PLUMBING_FAILURE_RETRIABLE",
     "PROBE_SIGNAL_GRID_CONTRACT_MISMATCH", "SLOT_KIND_GLOBAL", "SLOT_KIND_MONTHLY", "SLOT_KIND_TERMINAL",
     "SLOT_KIND_YEAR", "SOURCE_FAMILIES", "SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE",
@@ -1799,7 +1878,7 @@ __all__ = [
     "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE",
     "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE", "STAGE", "STUDY",
     "TOPIX_ROOT_URL", "VALID_SLOT_KINDS",
-    "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "acquire_f2_f4_required_slots", "acquire_f3_required_slots", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
+    "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "acquire_f2_f4_required_slots", "acquire_f3_required_slots", "acquire_f7_required_slots", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
     "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
     "compute_month_end_mismatch_count", "compute_stage_a_evidence",
     "derive_final_signal_d0", "derive_stage_b_global_end_exclusive", "ensure_locked_payload",

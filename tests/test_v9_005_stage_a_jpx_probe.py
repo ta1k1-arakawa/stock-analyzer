@@ -646,6 +646,89 @@ def _f3_year_responses(root_final_url: str) -> dict[str, m.FetchResult]:
     return responses
 
 
+def _f7_calendar_responses() -> dict[str, m.FetchResult]:
+    responses: dict[str, m.FetchResult] = {}
+    for month in m.calendar_envelope_months():
+        year, month_number = map(int, month.split("-"))
+        requested_url = m.resolve_f7_calendar_url(year, month_number)
+        resolved_url = requested_url
+        if month == "2017-01":
+            resolved_url = "https://www.jpx.co.jp/calendar/final-201701.html"
+        responses[requested_url] = m.FetchResult(month.encode(), resolved_url, 200)
+    return responses
+
+
+def test_f7_calendar_acquisition_uses_only_template_urls_and_separates_extras(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    responses = _f7_calendar_responses()
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return responses[url]
+
+    result = m.acquire_f7_required_slots(root, fetcher=fetcher, sleep=_no_sleep, clock=_clock)
+    assert len(m.calendar_envelope_months()) == 115
+    assert len(result.base_coverage_references) == 108
+    assert tuple(result.envelope_extra_references) == (
+        "2016-09", "2016-10", "2016-11", "2016-12", "2026-01", "2026-02", "2026-03",
+    )
+    for month in ("2016-09", "2017-01", "2025-12", "2026-03"):
+        year, month_number = map(int, month.split("-"))
+        assert m.resolve_f7_calendar_url(year, month_number) in calls
+    assert all(url.startswith("https://www.jpx.co.jp/calendar/") for url in calls)
+    verified = m._verified_raw_lock_index(root)
+    for month in m.calendar_envelope_months():
+        slot_ids = result.base_coverage_references.get((m.SOURCE_FAMILY_JPX_CALENDAR, month), result.envelope_extra_references.get(month))
+        assert slot_ids is not None and len(slot_ids) == 1
+        slot_id = slot_ids[0]
+        assert verified[slot_id]["source_family"] == m.SOURCE_FAMILY_JPX_CALENDAR
+        assert verified[slot_id]["applicable_period"] == month
+    requested_2017 = m.resolve_f7_calendar_url(2017, 1)
+    redirected_slot = result.base_coverage_references[(m.SOURCE_FAMILY_JPX_CALENDAR, "2017-01")][0]
+    assert redirected_slot == m.source_object_slot_id(m.SOURCE_FAMILY_JPX_CALENDAR, "2017-01", requested_2017)
+    assert redirected_slot != m.source_object_slot_id(m.SOURCE_FAMILY_JPX_CALENDAR, "2017-01", responses[requested_2017].resolved_url)
+    inventory = m.build_source_inventory(result.base_coverage_references, output_root=root)
+    assert len(inventory) == 648
+    assert sum(record["status"] == m.INVENTORY_AVAILABLE and record["source_family"] == m.SOURCE_FAMILY_JPX_CALENDAR for record in inventory) == 108
+    assert all(record["status"] == m.INVENTORY_MISSING for record in inventory if record["source_family"] != m.SOURCE_FAMILY_JPX_CALENDAR)
+    mismatched = dict(result.base_coverage_references)
+    mismatched[(m.SOURCE_FAMILY_JPX_CALENDAR, "2017-01")] = result.base_coverage_references[(m.SOURCE_FAMILY_JPX_CALENDAR, "2017-02")]
+    with pytest.raises(m.V9005StageABlocked):
+        m._validate_f7_required_slot_references(root, mismatched, result.envelope_extra_references)
+    repeated = m.acquire_f7_required_slots(root, fetcher=fetcher, sleep=_no_sleep, clock=_clock)
+    assert repeated.network_attempt_count == 0
+
+
+def test_f7_calendar_acquisition_fails_closed_without_refetch_or_partial_result(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    first_url = m.resolve_f7_calendar_url(2016, 9)
+    first_slot = m.source_object_slot_id(m.SOURCE_FAMILY_JPX_CALENDAR, "2016-09", first_url)
+    (root / "raw" / f"{first_slot}.bin").write_bytes(b"orphan")
+    calls: list[str] = []
+
+    def no_refetch(url: str) -> m.FetchResult:
+        calls.append(url)
+        raise AssertionError("orphan F7 lock must not be refetched")
+
+    with pytest.raises(m.V9005StageABlocked):
+        m.acquire_f7_required_slots(root, fetcher=no_refetch, sleep=_no_sleep, clock=_clock)
+    assert calls == []
+
+    healthy_root = m.initialize_output_root(tmp_path / "healthy")
+    responses = _f7_calendar_responses()
+
+    def failing_fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        if url == m.resolve_f7_calendar_url(2020, 6):
+            raise m.V9005StageABlocked(m.IMPLEMENTATION_FAILURE)
+        return responses[url]
+
+    with pytest.raises(m.V9005StageABlocked):
+        m.acquire_f7_required_slots(healthy_root, fetcher=failing_fetcher, sleep=_no_sleep, clock=_clock)
+    assert m.resolve_f7_calendar_url(2020, 7) not in calls
+
+
 def test_delisted_company_year_traversal_is_unique_safe_and_total() -> None:
     root_url = "https://www.jpx.co.jp/english/listing/stocks/delisted/archive/index.html"
     assert m.resolve_delisted_company_year_url(b'<a href="2017.html"> 2017 </a>', root_url, 2017) == (
