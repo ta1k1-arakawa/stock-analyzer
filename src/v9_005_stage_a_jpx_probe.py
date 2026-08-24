@@ -968,8 +968,29 @@ def _normalized_coverage_references(
     return normalized
 
 
+def _verified_raw_lock_index(output_root: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
+    """Index only complete raw-lock pairs that pass the existing validator."""
+    raw_dir = Path(output_root) / "raw"
+    if not raw_dir.is_dir():
+        return {}
+    raw_paths = {path.with_suffix(""): path for path in raw_dir.glob("*.bin")}
+    meta_paths = {path.with_suffix(""): path for path in raw_dir.glob("*.json")}
+    verified: dict[str, dict[str, Any]] = {}
+    for stem in sorted(set(raw_paths) & set(meta_paths)):
+        try:
+            raw = raw_paths[stem].read_bytes()
+            meta = json.loads(meta_paths[stem].read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if _lock_meta_matches_raw(meta, raw, expected_key=stem.name):
+            verified[stem.name] = meta
+    return verified
+
+
 def build_source_inventory(
     coverage_references: Mapping[tuple[str, str], Sequence[str]] | None = None,
+    *,
+    output_root: str | os.PathLike[str] | None = None,
 ) -> list[dict[str, Any]]:
     """The base MONTHLY_COVERAGE_MATRIX: exactly `MONTHLY_COVERAGE_
     FAMILIES` (F2-F7) x `inventory_months()` (108 months) = 648 records.
@@ -977,6 +998,17 @@ def build_source_inventory(
     BY_SOURCE_CONTRACT, not MISSING -- per V9_006_F1_TERMINAL_SEED_
     PREFREEZE_AMENDMENT."""
     normalized_references = _normalized_coverage_references(coverage_references)
+    referenced_slot_ids = {
+        slot_id for slot_ids in normalized_references.values() for slot_id in slot_ids
+    }
+    if referenced_slot_ids and output_root is None:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    verified_locks = _verified_raw_lock_index(output_root) if referenced_slot_ids else {}
+    for (source_family, _month), slot_ids in normalized_references.items():
+        for slot_id in slot_ids:
+            metadata = verified_locks.get(slot_id)
+            if metadata is None or metadata["source_family"] != source_family:
+                raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
     records: list[dict[str, Any]] = []
     for month in inventory_months():
         for family in MONTHLY_COVERAGE_FAMILIES:

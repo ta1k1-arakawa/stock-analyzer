@@ -33,12 +33,30 @@ def _slot_id(source_family: str, month: str, suffix: str = "one") -> str:
     return m.source_object_slot_id(source_family, month, f"https://www.jpx.co.jp/{suffix}")
 
 
-def _full_coverage_references() -> dict[tuple[str, str], list[str]]:
-    return {
-        (family, month): [_slot_id(family, month)]
+def _full_available_inventory() -> list[dict[str, object]]:
+    return [
+        {
+            "source_family": family,
+            "month": month,
+            "status": m.INVENTORY_AVAILABLE,
+            "source_object_slot_ids": ["a" * 64],
+        }
         for family in m.MONTHLY_COVERAGE_FAMILIES
         for month in m.inventory_months()
-    }
+    ]
+
+
+def _lock_coverage_object(root: Path, source_family: str, month: str, suffix: str = "one") -> str:
+    requested_url = f"https://www.jpx.co.jp/coverage/{suffix}"
+    m.lock_first_complete_payload(
+        root,
+        source_family=source_family,
+        applicable_period=month,
+        requested_url=requested_url,
+        fetch_result=m.FetchResult(b"coverage-bytes", requested_url, 200),
+        retrieval_timestamp_utc="2026-08-24T00:00:00Z",
+    )
+    return m.source_object_slot_id(source_family, month, requested_url)
 
 
 def _production_script_module() -> object:
@@ -310,11 +328,30 @@ def test_source_object_slot_id_reuses_the_existing_raw_lock_key() -> None:
     assert re.fullmatch(r"[0-9a-f]{64}", slot_id)
 
 
-def test_inventory_available_only_with_valid_slot_id_references() -> None:
+def test_inventory_rejects_nonempty_slot_ids_without_an_output_root() -> None:
     month = m.inventory_months()[0]
     family = m.SOURCE_FAMILY_JPX_CALENDAR
-    slot_id = _slot_id(family, month)
-    inventory = m.build_source_inventory(coverage_references={(family, month): [slot_id]})
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.build_source_inventory(coverage_references={(family, month): ["a" * 64]})
+    assert excinfo.value.reason == m.IMPLEMENTATION_FAILURE
+
+
+def test_inventory_rejects_nonexistent_or_arbitrary_url_slot_id(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    month = m.inventory_months()[0]
+    family = m.SOURCE_FAMILY_JPX_CALENDAR
+    for slot_id in ("a" * 64, _slot_id(family, month)):
+        with pytest.raises(m.V9005StageABlocked) as excinfo:
+            m.build_source_inventory(coverage_references={(family, month): [slot_id]}, output_root=root)
+        assert excinfo.value.reason == m.IMPLEMENTATION_FAILURE
+
+
+def test_inventory_available_only_with_a_genuine_matching_raw_lock(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    month = m.inventory_months()[0]
+    family = m.SOURCE_FAMILY_JPX_CALENDAR
+    slot_id = _lock_coverage_object(root, family, month)
+    inventory = m.build_source_inventory(coverage_references={(family, month): [slot_id]}, output_root=root)
     record = next(r for r in inventory if r["source_family"] == family and r["month"] == month)
     assert record["status"] == m.INVENTORY_AVAILABLE
     assert record["source_object_slot_ids"] == [slot_id]
@@ -322,16 +359,57 @@ def test_inventory_available_only_with_valid_slot_id_references() -> None:
     assert other["status"] == m.INVENTORY_MISSING
 
 
-def test_inventory_slot_id_references_are_sorted_deduplicated_and_empty_is_missing() -> None:
+def test_inventory_slot_id_references_are_sorted_deduplicated_and_empty_is_missing(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
     month = m.inventory_months()[0]
     family = m.SOURCE_FAMILY_JPX_CALENDAR
-    first, second = _slot_id(family, month, "a"), _slot_id(family, month, "b")
-    inventory = m.build_source_inventory(coverage_references={(family, month): [second, first, second]})
+    first = _lock_coverage_object(root, family, month, "a")
+    second = _lock_coverage_object(root, family, month, "b")
+    inventory = m.build_source_inventory(
+        coverage_references={(family, month): [second, first, second]}, output_root=root,
+    )
     record = next(r for r in inventory if r["source_family"] == family and r["month"] == month)
     assert record["status"] == m.INVENTORY_AVAILABLE
     assert record["source_object_slot_ids"] == sorted({first, second})
     missing = m.build_source_inventory(coverage_references={(family, month): []})
     assert next(r for r in missing if r["source_family"] == family and r["month"] == month)["status"] == m.INVENTORY_MISSING
+
+
+def test_inventory_rejects_verified_lock_from_the_wrong_family(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    month = m.inventory_months()[0]
+    slot_id = _lock_coverage_object(root, m.SOURCE_FAMILY_JPX_CALENDAR, month)
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.build_source_inventory(
+            coverage_references={(m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, month): [slot_id]},
+            output_root=root,
+        )
+    assert excinfo.value.reason == m.IMPLEMENTATION_FAILURE
+
+
+@pytest.mark.parametrize("corruption", ["sha256", "byte_length", "retrieval_timestamp_utc"])
+def test_inventory_rejects_corrupt_referenced_raw_lock(tmp_path: Path, corruption: str) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    family, month = m.SOURCE_FAMILY_JPX_CALENDAR, m.inventory_months()[0]
+    slot_id = _lock_coverage_object(root, family, month)
+    _raw_path, meta_path = m._raw_paths(root, slot_id)
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata[corruption] = {"sha256": "0" * 64, "byte_length": 999, "retrieval_timestamp_utc": "garbage"}[corruption]
+    meta_path.write_bytes(m.canonical_bytes(metadata))
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.build_source_inventory(coverage_references={(family, month): [slot_id]}, output_root=root)
+    assert excinfo.value.reason == m.IMPLEMENTATION_FAILURE
+
+
+@pytest.mark.parametrize("suffix", [".bin", ".json"])
+def test_inventory_rejects_orphan_referenced_lock(tmp_path: Path, suffix: str) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    family, month = m.SOURCE_FAMILY_JPX_CALENDAR, m.inventory_months()[0]
+    slot_id = "a" * 64
+    (root / "raw" / f"{slot_id}{suffix}").write_bytes(b"orphan")
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.build_source_inventory(coverage_references={(family, month): [slot_id]}, output_root=root)
+    assert excinfo.value.reason == m.IMPLEMENTATION_FAILURE
 
 
 @pytest.mark.parametrize("slot_ids", [object(), [object()], ["A" * 64], ["a" * 63], ["g" * 64]])
@@ -523,9 +601,7 @@ def test_month_end_mismatch_detected() -> None:
 
 
 def test_month_end_mismatch_fails_overall_pass_even_if_everything_else_passes() -> None:
-    full_inventory = m.build_source_inventory(
-        coverage_references=_full_coverage_references()
-    )
+    full_inventory = _full_available_inventory()
     evidence = m.compute_stage_a_evidence(
         inventory=full_inventory,
         terminal_snapshot_locked=True,
@@ -599,9 +675,7 @@ def _synthetic_semantic_result(**overrides: object) -> dict[str, object]:
 
 
 def _full_evidence(**overrides: object) -> dict[str, object]:
-    full_inventory = m.build_source_inventory(
-        coverage_references=_full_coverage_references()
-    )
+    full_inventory = _full_available_inventory()
     semantic_overrides = {key: overrides.pop(key) for key in list(overrides) if key in _SEMANTIC_RESULT_KEYS}
     kwargs = dict(
         inventory=full_inventory,
