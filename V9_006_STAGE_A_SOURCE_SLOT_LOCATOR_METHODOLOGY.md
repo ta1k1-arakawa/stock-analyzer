@@ -122,7 +122,7 @@ hardcode archive-N numbering.
 resolved and locked, referencing that object's `SOURCE_OBJECT_INVENTORY`
 slot ID; otherwise `MISSING`. The post-2025 months required to reverse from
 terminal month `T` back through 2025-12 are additional mandatory
-`SOURCE_OBJECT_INVENTORY` slots outside the 756-record base matrix, not
+`SOURCE_OBJECT_INVENTORY` slots outside the 648-record base matrix, not
 extra base-matrix cells. Any missing required bridge month sets
 `listing_transition_pass=false`.
 
@@ -246,7 +246,7 @@ weekday-only substitute may replace the locked official material.
 `AVAILABLE` if and only if the exact `YYYYMM` page is locked, referencing
 that object's `SOURCE_OBJECT_INVENTORY` slot ID; otherwise `MISSING`.
 2016-09 through 2016-12 and 2026-01 through 2026-03 are additional
-mandatory calendar object slots outside the 756-record base matrix. Any
+mandatory calendar object slots outside the 648-record base matrix. Any
 missing or ambiguous required envelope month sets
 `trading_calendar_pass=false`. The existing signal-grid endpoint
 derivation is unchanged.
