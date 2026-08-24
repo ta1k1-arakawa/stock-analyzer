@@ -37,8 +37,20 @@ in chat, and it makes zero real network requests itself.
   binding, output-root collision check, and an interactively typed Stage-A
   confirmation token) before any network request; no chat-supplied
   authorization is baked into the file.
-- `tests/test_v9_005_stage_a_jpx_probe.py` -- 71 tests, entirely offline
-  (synthetic fixtures and injected fake fetchers/git callables only).
+- `tests/test_v9_005_stage_a_jpx_probe.py` -- 88 tests (grown across this
+  session), entirely offline (synthetic fixtures and injected fake
+  fetchers/git callables only).
+- `src/v9_005_stage_a_semantics.py` -- the V9_006_HIGH_2 semantic
+  validation engine: canonical-code grammar/normalization, structured
+  `SemanticEvent`/`TerminalIdentityState` types, conflict/corroboration
+  dedup, the reverse/forward deterministic-reconstruction check, the
+  UNKNOWN-security-type-while-listed check, and
+  `compute_semantic_validation_result`. Zero network access; imports
+  nothing from `v9_005_stage_a_jpx_probe.py` (the dependency runs the
+  other way).
+- `tests/test_v9_005_stage_a_semantics.py` -- 45 tests, entirely offline,
+  covering every methodology rule bound in
+  `V9_006_STAGE_A_SEMANTIC_VALIDATION_METHODOLOGY.md`.
 
 ## Source-locator discipline (contract item 4)
 
@@ -319,6 +331,94 @@ strategies, retry policy, `ACQUISITION_IMPLEMENTATION_COMPLETE`, original
 HIGH_3 (raw provenance), and original HIGH_4 (redirect handling) are all
 unchanged.
 
+## Semantic validation implementation (V9_006_HIGH_2_SEMANTIC_VALIDATION_IMPLEMENTATION)
+
+GPT's exact-SHA review of the docs-only semantic-methodology binding
+(`RESULT=PASS`, reviewed SHA `64610dbf050ff24e3aca6b60ea6ba7dc2c76369c`)
+resolved `V9_006_HIGH_2_SEMANTIC_VALIDATION_METHODOLOGY=PASS`. This task
+implements exactly that reviewed methodology in code, targeting original
+V9_006 HIGH_2: "semantic validation/reconstruction absent; semantic PASS
+booleans were coverage proxies and `reconstruct_security_state` was a
+placeholder."
+
+A new module, `src/v9_005_stage_a_semantics.py`, implements the engine:
+`validate_canonical_code`/`normalize_canonical_code` (exact 4-character
+grammar -- position 1/3 digit, position 2/4 digit or one of
+`ACDFGHJKLMNPRSTUWXY`, unambiguous spreadsheet-artifact stripping only);
+`SemanticEvent` (canonical_code, ISO effective_date, dimension in
+`LISTED_STATE`/`MARKET_STATE`/`SECURITY_TYPE_STATE`, before/after state,
+source_family) and `TerminalIdentityState`; conflict/corroboration
+deduplication (identical F2/F3 events collapse, differing ones fail
+`CONFLICTING_TRANSITION_EVIDENCE`); the reverse/forward
+`deterministic_reconstruction_pass` check (replay backward from the
+terminal value through descending-date events, then forward through the
+same events ascending, comparing the recovered value byte-for-byte against
+the declared terminal value); reused-code/disjoint-episode detection
+(`AMBIGUOUS_REUSED_SECURITY_CODE`); and the UNKNOWN-security-type-while-
+listed check. `compute_semantic_validation_result` produces one result
+containing `listing_transition_pass`, `delisting_transition_pass`,
+`market_transition_pass`, `security_type_pass`, `canonical_identity_pass`,
+`effective_date_pass`, `deterministic_reconstruction_pass`,
+`reconstructed_identity_count`, and `canonical_state` -- all derived only
+from the given structured events/identities. With zero terminal identities
+(no semantic evidence acquired) it fails closed -- every boolean `False`,
+never a vacuous pass -- mirroring this repository's existing
+`_family_fully_covered` convention for absent evidence.
+
+`src/v9_005_stage_a_jpx_probe.py` is rewired to consume this engine:
+`reconstruct_security_state`/`reconstruction_is_deterministic` now take
+`terminal_identities`/`events` and delegate to
+`compute_semantic_validation_result`, replacing the old placeholder that
+always reported `reconstructed_identity_count=0` regardless of input.
+`compute_stage_a_evidence` now takes a `semantic_result` mapping and feeds
+its `listing_transition_pass`/`delisting_transition_pass`/
+`market_transition_pass`/`security_type_pass`/`canonical_identity_pass`/
+`effective_date_pass`/`deterministic_reconstruction_pass` directly into
+the `FREE_JPX_METADATA_PROBE_PASS` conjunction -- the old
+`_family_fully_covered`-based proxies (`listing_transition_pass ==
+F2 coverage`, `delisting_transition_pass == F3 coverage`,
+`market_transition_pass == listing_transition_pass`,
+`canonical_identity_pass == terminal_snapshot_locked AND
+security_type_pass`, `effective_date_pass` as a coverage conjunction) are
+all removed; `terminal_snapshot_pass` and `trading_calendar_pass` remain
+unchanged (neither is a semantic-evidence item). `run_stage_a()` calls
+`compute_semantic_validation_result(terminal_identities={}, events=())`
+explicitly -- production has no acquired F2-F7 semantic evidence, and this
+call site is unreachable today regardless (blocked by
+`verify_acquisition_implementation_ready()` first) -- so the engine's own
+fail-closed empty-input default governs; this is never replaced by a
+hardcoded or caller-supplied arbitrary PASS boolean.
+
+This task implements no F2-F7 network traversal/parser/fetch integration
+(that remains separate, future, authorized work), does not touch
+`ACQUISITION_IMPLEMENTATION_COMPLETE` (`False`) or
+`verify_acquisition_implementation_ready()`, and does not change the
+648-record matrix, F1 `TERMINAL_SEED` role, F2 bridge derivation, F3
+`YEAR` strategy, F4 ratio orientation, F5/F6/F7 strategies, retry policy,
+original HIGH_3 (raw provenance), or original HIGH_4 (redirect handling).
+
+Tests: `tests/test_v9_005_stage_a_semantics.py` (45 tests) proves every
+methodology rule directly against the engine -- numeric/alphanumeric
+canonical codes, illegal letter/position/5-character rejection, reused-
+code disjoint episodes, simple listing/delisting chronology, market-
+transition independence from listing_transition_pass, UNKNOWN-while-listed
+failure, F2/F3 identical corroboration vs. conflict, same-date different-
+dimension determinism, ambiguous/impossible effective dates, reverse/
+forward terminal byte equality (pass and tampered/inconsistent fail),
+repeated-reconstruction byte-identity, and the empty-input fail-closed
+default. `tests/test_v9_005_stage_a_jpx_probe.py` (88 tests) proves the
+wiring: `compute_stage_a_evidence`'s signature no longer accepts the old
+proxy kwargs; full 648-record inventory coverage alone cannot make any
+semantic gate PASS; `market_transition_pass`/`canonical_identity_pass`/
+`effective_date_pass` are independently settable from
+`listing_transition_pass` (never a proxy or fixed conjunction); and a
+static-source check confirms `run_stage_a()` calls the real engine with
+empty input, backed by that exact call genuinely failing closed. The
+pre-existing `test_run_stage_a_valid_confirmation_still_stops_before_any_
+network_or_git` (unchanged) continues to prove zero fetcher calls, zero
+git calls, and no output-root creation under a valid confirmation, since
+`ACQUISITION_IMPLEMENTATION_COMPLETE` remains `False`.
+
 ## Signal-grid binding (contract item 5)
 
 `verify_signal_grid_binding` is called immediately after output-root
@@ -395,31 +495,25 @@ or embedded in this file.
 
 ## Next action
 
-`GPT_EXACT_SHA_V9_006_HIGH_2_SEMANTIC_METHODOLOGY_REVIEW`: obtain GPT's
-independent exact-SHA review of this docs-only semantic-validation
-methodology binding
-(`V9_006_STAGE_A_SEMANTIC_VALIDATION_METHODOLOGY.md`) before any
-implementation task codes it. `V9_006_LOCATOR_IMPL_HIGH_1`,
+`GPT_EXACT_SHA_V9_006_HIGH_2_SEMANTIC_IMPLEMENTATION_REVIEW`: obtain GPT's
+independent exact-SHA review of this semantic-validation implementation
+(`src/v9_005_stage_a_semantics.py` plus the `v9_005_stage_a_jpx_probe.py`
+wiring) before any real Stage-A execution. `V9_006_LOCATOR_IMPL_HIGH_1`,
 `V9_006_LOCATOR_IMPL_HIGH_2`, and `V9_006_LOCATOR_IMPL_HIGH_3` are already
-`RESOLVED` (GPT exact-SHA `PASS`, reviewed SHAs
-`afc59fb285e09aa8c7225ce6f855d16801c67584`,
-`ed70bc8f42beabef5aac76242a7aaba9c9ab1b6a`, and
-`b2d91bd226aadfe3366d7272f868762925909b13` respectively), closing the
-locator/inventory-contract implementation review chain
-(`V9_006_STAGE_A_LOCATOR_IMPLEMENTATION=PASS`,
-`V9_006_SOURCE_SLOT_LOCATOR_METHODOLOGY=PASS`). Real execution
-additionally requires: this semantic-methodology review's PASS; a future,
-separately reviewed implementation task that codes this exact methodology
-into `src/v9_005_stage_a_jpx_probe.py` (resolving original V9_006 HIGH_2
-and replacing production `run_stage_a()`'s hardcoded
-`security_type_validation_pass=False`), itself subject to its own GPT
-exact-SHA review PASS; PASS of the original HIGH_3 finding (raw
-provenance/content-lock boundary) and the original HIGH_4 finding
-(redirect-before-body-consumption), neither remediated by this task; a
-future, separately reviewed task that actually implements the complete
-F2-F7 acquisition pipeline and flips `ACQUISITION_IMPLEMENTATION_COMPLETE`
-to `True` (not built by this task); the environment readiness ordering in
-`AI_REAL_EXECUTION_RUNBOOK.md` SS16-19; and a fresh, separate, explicit
-point-of-use human network authorization obtained after all of the above
-(not the authorization already given in chat, which this task did not
-consume).
+`RESOLVED`, closing the locator/inventory-contract implementation review
+chain (`V9_006_STAGE_A_LOCATOR_IMPLEMENTATION=PASS`,
+`V9_006_SOURCE_SLOT_LOCATOR_METHODOLOGY=PASS`); the semantic-validation
+*methodology* binding is already `PASS` (reviewed SHA
+`64610dbf050ff24e3aca6b60ea6ba7dc2c76369c`). Real execution additionally
+requires: this semantic-*implementation* review's PASS; PASS of the
+original HIGH_3 finding (raw provenance/content-lock boundary) and the
+original HIGH_4 finding (redirect-before-body-consumption), neither
+remediated by this task; a future, separately reviewed task that actually
+implements the complete F2-F7 acquisition/parser-integration pipeline
+(turning locked raw JPX bytes into the `SemanticEvent`/
+`TerminalIdentityState` input this engine consumes) and flips
+`ACQUISITION_IMPLEMENTATION_COMPLETE` to `True` (not built by this task);
+the environment readiness ordering in `AI_REAL_EXECUTION_RUNBOOK.md`
+SS16-19; and a fresh, separate, explicit point-of-use human network
+authorization obtained after all of the above (not the authorization
+already given in chat, which this task did not consume).

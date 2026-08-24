@@ -77,10 +77,16 @@ import urllib.parse
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
 from src.v7_jpx_calendar import V7JpxCalendarBlocked, parse_jpx_holiday_html
 from src.v8c_transport import classify_transport_exception
+from src.v9_005_stage_a_semantics import (
+    SemanticEvent,
+    TerminalIdentityState,
+    compute_semantic_validation_result,
+)
 
 STUDY = "V9_CROSS_SECTIONAL_CLOSE_AUCTION"
 STAGE = "V9_005_STAGE_A_JPX_METADATA_PROBE"
@@ -903,26 +909,42 @@ def _family_fully_covered(inventory: Sequence[Mapping[str, Any]], family: str) -
     return covered
 
 
-# --- Reconstruction determinism (evidence item 8) ---------------------------
+# --- Semantic reconstruction (evidence items 2-8; V9_006_HIGH_2_SEMANTIC_
+# VALIDATION_IMPLEMENTATION) ---------------------------------------------
 
-def reconstruct_security_state(locked_evidence: Mapping[str, Any]) -> dict[str, Any]:
-    """Deterministically fold whatever locked terminal-snapshot bytes exist
-    into a canonical reconstructed-state summary. With no locked evidence
-    this deterministically returns an empty reconstruction; the property
-    verified by `reconstruction_is_deterministic` is that identical input
-    always yields byte-identical output, independent of evidence volume."""
-    terminal = locked_evidence.get("terminal_snapshot")
-    terminal_sha256 = terminal["sha256"] if isinstance(terminal, Mapping) else None
+def reconstruct_security_state(
+    *,
+    terminal_identities: Mapping[str, TerminalIdentityState] = MappingProxyType({}),
+    events: Sequence[SemanticEvent] = (),
+) -> dict[str, Any]:
+    """Deterministic semantic reconstruction, delegating to
+    `src.v9_005_stage_a_semantics.compute_semantic_validation_result` --
+    replacing the prior placeholder that always reported
+    `reconstructed_identity_count=0` regardless of input. With no acquired
+    terminal identities (the current production state, since F2-F7
+    acquisition/parser integration is separate, future, authorized work)
+    this fails closed via the semantics engine's own empty-input default;
+    it never fabricates a nonzero reconstruction."""
+    result = compute_semantic_validation_result(terminal_identities=terminal_identities, events=events)
     return {
-        "schema_version": "V9_005_STAGE_A_RECONSTRUCTION_V1",
-        "terminal_snapshot_sha256": terminal_sha256,
-        "reconstructed_identity_count": 0,
+        "schema_version": "V9_005_STAGE_A_RECONSTRUCTION_V2",
+        "reconstructed_identity_count": result["reconstructed_identity_count"],
+        "canonical_state": result["canonical_state"],
     }
 
 
-def reconstruction_is_deterministic(locked_evidence: Mapping[str, Any]) -> bool:
-    first = canonical_bytes(reconstruct_security_state(locked_evidence))
-    second = canonical_bytes(reconstruct_security_state(locked_evidence))
+def reconstruction_is_deterministic(
+    *,
+    terminal_identities: Mapping[str, TerminalIdentityState] = MappingProxyType({}),
+    events: Sequence[SemanticEvent] = (),
+) -> bool:
+    """Evidence item 7's first requirement: two independent deterministic
+    reconstructions from identical input must produce byte-identical
+    canonical state output. (The separate reverse/forward consistency
+    check is `semantic_result["deterministic_reconstruction_pass"]`, fed
+    directly into `compute_stage_a_evidence`.)"""
+    first = canonical_bytes(reconstruct_security_state(terminal_identities=terminal_identities, events=events))
+    second = canonical_bytes(reconstruct_security_state(terminal_identities=terminal_identities, events=events))
     return first == second
 
 
@@ -946,42 +968,37 @@ def compute_stage_a_evidence(
     inventory: Sequence[Mapping[str, Any]],
     terminal_snapshot_locked: bool,
     trading_calendar_derived: bool,
-    reconstruction_deterministic: bool,
+    semantic_result: Mapping[str, Any],
     comparable_month_end_mismatch_count: int,
     raw_provenance_pass: bool,
-    security_type_validation_pass: bool,
 ) -> dict[str, Any]:
+    """V9_006_HIGH_2_SEMANTIC_VALIDATION_IMPLEMENTATION: `listing_transition_
+    pass`, `delisting_transition_pass`, `market_transition_pass`,
+    `security_type_pass`, `canonical_identity_pass`, `effective_date_pass`,
+    and `deterministic_reconstruction_pass` are fed directly from
+    `semantic_result` (produced by
+    `src.v9_005_stage_a_semantics.compute_semantic_validation_result`),
+    never derived from monthly `SOURCE_INVENTORY` family coverage and never
+    a caller-supplied arbitrary boolean. `terminal_snapshot_pass` remains
+    an independent gate based solely on terminal-snapshot locking, and
+    `trading_calendar_pass` remains based on F7 calendar-family coverage
+    plus successful trading-calendar derivation -- neither of those two is
+    a semantic-evidence item and neither is changed by this task."""
     required_inventory_missing_count = sum(1 for record in inventory if record["status"] == INVENTORY_MISSING)
-    listing_transition_pass = _family_fully_covered(inventory, SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT)
-    delisting_transition_pass = _family_fully_covered(inventory, SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE)
-    market_transition_pass = listing_transition_pass
-    # V9_006_LOCATOR_IMPL_HIGH_3: "a TERMINAL object exists" is NOT evidence
-    # that V9_005's SECURITY_TYPE requirement is satisfied -- domestic
-    # ordinary-common-stock eligibility must be determinable for every
-    # reconstructed identity/date needed by V9 without future security
-    # state, with UNKNOWN failing. security_type_pass is therefore driven
-    # only by the explicit security_type_validation_pass input, never
-    # inferred from terminal_snapshot_locked, family coverage, row count,
-    # or any other proxy. terminal_snapshot_pass (below) remains an
-    # independent gate based solely on terminal-snapshot locking; the two
-    # must never be conflated.
-    security_type_pass = bool(security_type_validation_pass)
-    effective_date_pass = listing_transition_pass and delisting_transition_pass and market_transition_pass
-    canonical_identity_pass = bool(terminal_snapshot_locked) and security_type_pass
     calendar_family_covered = _family_fully_covered(inventory, SOURCE_FAMILY_JPX_CALENDAR)
     trading_calendar_pass = bool(calendar_family_covered and trading_calendar_derived)
 
     evidence: dict[str, Any] = {
         "required_inventory_missing_count": required_inventory_missing_count,
         "terminal_snapshot_pass": bool(terminal_snapshot_locked),
-        "listing_transition_pass": listing_transition_pass,
-        "delisting_transition_pass": delisting_transition_pass,
-        "market_transition_pass": market_transition_pass,
-        "security_type_pass": security_type_pass,
-        "canonical_identity_pass": canonical_identity_pass,
-        "effective_date_pass": effective_date_pass,
+        "listing_transition_pass": bool(semantic_result["listing_transition_pass"]),
+        "delisting_transition_pass": bool(semantic_result["delisting_transition_pass"]),
+        "market_transition_pass": bool(semantic_result["market_transition_pass"]),
+        "security_type_pass": bool(semantic_result["security_type_pass"]),
+        "canonical_identity_pass": bool(semantic_result["canonical_identity_pass"]),
+        "effective_date_pass": bool(semantic_result["effective_date_pass"]),
         "trading_calendar_pass": trading_calendar_pass,
-        "deterministic_reconstruction_pass": bool(reconstruction_deterministic),
+        "deterministic_reconstruction_pass": bool(semantic_result["deterministic_reconstruction_pass"]),
         "comparable_month_end_mismatch_count": int(comparable_month_end_mismatch_count),
         "raw_provenance_pass": bool(raw_provenance_pass),
     }
@@ -1122,27 +1139,28 @@ def run_stage_a(
         endpoint_failure_reason = getattr(exc, "reason", str(exc))
 
     inventory = build_source_inventory(locked_index={})
-    locked_evidence = {"terminal_snapshot": locked_terminal}
-    reconstruction = reconstruct_security_state(locked_evidence)
-    reconstruction_deterministic = reconstruction_is_deterministic(locked_evidence)
+
+    # V9_006_HIGH_2_SEMANTIC_VALIDATION_IMPLEMENTATION: production has no
+    # acquired F2-F7 structured semantic evidence yet -- the F2-F7
+    # acquisition/parser-integration task that turns locked raw JPX bytes
+    # into SemanticEvent/TerminalIdentityState input is separate, future,
+    # authorized work (and this code path is unreachable in production
+    # today, since `verify_acquisition_implementation_ready()` above
+    # already stops every real run first). Pass empty terminal_identities/
+    # events explicitly so `compute_semantic_validation_result`'s own
+    # fail-closed empty-input default governs -- this must never be
+    # replaced by a caller-supplied arbitrary PASS boolean.
+    semantic_result = compute_semantic_validation_result(terminal_identities={}, events=())
+    reconstruction = reconstruct_security_state(terminal_identities={}, events=())
     raw_provenance_pass = verify_raw_provenance(root)
 
     evidence = compute_stage_a_evidence(
         inventory=inventory,
         terminal_snapshot_locked=True,
         trading_calendar_derived=trading_calendar_derived,
-        reconstruction_deterministic=reconstruction_deterministic,
+        semantic_result=semantic_result,
         comparable_month_end_mismatch_count=0,
         raw_provenance_pass=raw_provenance_pass,
-        # V9_006_LOCATOR_IMPL_HIGH_3: intentionally fail-closed. The actual
-        # semantic security-type validator (domestic ordinary-common-stock
-        # eligibility, determinable for every reconstructed identity/date
-        # without future security state, UNKNOWN failing) has not yet been
-        # implemented or independently reviewed. This False will only ever
-        # be replaced by the real result of that future, separately
-        # reviewed validator -- never by a proxy such as terminal-snapshot
-        # locking, family coverage, or row count.
-        security_type_validation_pass=False,
     )
     summary = build_safe_summary(
         evidence,
@@ -1155,7 +1173,7 @@ def run_stage_a(
     _atomic_create(root / "inventory.json", canonical_bytes(inventory))
     _atomic_create(root / "reconstruction.json", canonical_bytes({
         "reconstruction": reconstruction,
-        "deterministic_reconstruction_pass": reconstruction_deterministic,
+        "deterministic_reconstruction_pass": semantic_result["deterministic_reconstruction_pass"],
         "endpoint": endpoint,
         "endpoint_derivation_failure_reason": endpoint_failure_reason,
     }))

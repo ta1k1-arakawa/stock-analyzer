@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import src.v9_005_stage_a_jpx_probe as m
+import src.v9_005_stage_a_semantics as sem
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 8, 24, 3, 0, tzinfo=timezone.utc)
@@ -330,14 +331,13 @@ def test_required_inventory_missing_causes_fail() -> None:
         inventory=inventory,
         terminal_snapshot_locked=True,
         trading_calendar_derived=True,
-        reconstruction_deterministic=True,
+        # Synthetic full-pass semantic result: isolates
+        # required_inventory_missing_count as the only cause of FAIL under
+        # test -- not a claim that production semantic validation exists
+        # (see test_production_semantic_evidence_computed_from_empty_input).
+        semantic_result=_synthetic_semantic_result(),
         comparable_month_end_mismatch_count=0,
         raw_provenance_pass=True,
-        # Synthetic True: isolates required_inventory_missing_count as the
-        # only cause of FAIL under test, per V9_006_LOCATOR_IMPL_HIGH_3 --
-        # not a claim that production semantic security-type validation
-        # exists.
-        security_type_validation_pass=True,
     )
     assert evidence["required_inventory_missing_count"] > 0
     assert evidence["FREE_JPX_METADATA_PROBE_PASS"] is False
@@ -347,15 +347,21 @@ def test_required_inventory_missing_causes_fail() -> None:
 # --- 9. Deterministic repeated reconstruction --------------------------------
 
 def test_reconstruction_is_deterministic() -> None:
-    evidence_input = {"terminal_snapshot": {"sha256": "a" * 64}}
-    assert m.reconstruction_is_deterministic(evidence_input) is True
-    first = m.reconstruct_security_state(evidence_input)
-    second = m.reconstruct_security_state(evidence_input)
+    identities = {"1301": sem.TerminalIdentityState(
+        listed_state=True, market_state="PRIME", security_type_state=sem.SECURITY_TYPE_ELIGIBLE,
+    )}
+    events = (sem.SemanticEvent("1301", "2017-01-10", sem.DIMENSION_LISTED_STATE, False, True, "F2"),)
+    assert m.reconstruction_is_deterministic(terminal_identities=identities, events=events) is True
+    first = m.reconstruct_security_state(terminal_identities=identities, events=events)
+    second = m.reconstruct_security_state(terminal_identities=identities, events=events)
     assert first == second
+    assert first["reconstructed_identity_count"] == 1
 
 
 def test_reconstruction_empty_input_is_still_deterministic() -> None:
-    assert m.reconstruction_is_deterministic({}) is True
+    assert m.reconstruction_is_deterministic(terminal_identities={}, events=()) is True
+    reconstruction = m.reconstruct_security_state(terminal_identities={}, events=())
+    assert reconstruction["reconstructed_identity_count"] == 0
 
 
 # --- 10. Comparable month-end count mismatch => FAIL ------------------------
@@ -378,13 +384,9 @@ def test_month_end_mismatch_fails_overall_pass_even_if_everything_else_passes() 
         inventory=full_inventory,
         terminal_snapshot_locked=True,
         trading_calendar_derived=True,
-        reconstruction_deterministic=True,
+        semantic_result=_synthetic_semantic_result(),
         comparable_month_end_mismatch_count=1,
         raw_provenance_pass=True,
-        # Synthetic True: isolates the month-end mismatch as the only cause
-        # of FAIL under test ("even if everything else passes") -- not a
-        # claim that production semantic security-type validation exists.
-        security_type_validation_pass=True,
     )
     assert evidence["FREE_JPX_METADATA_PROBE_PASS"] is False
 
@@ -429,25 +431,39 @@ def test_signal_grid_binding_verified_against_real_repository_head() -> None:
 
 # --- 12. Exact Stage-A PASS conjunction --------------------------------------
 
+_SEMANTIC_RESULT_KEYS = frozenset({
+    "listing_transition_pass", "delisting_transition_pass", "market_transition_pass",
+    "security_type_pass", "canonical_identity_pass", "effective_date_pass",
+    "deterministic_reconstruction_pass",
+})
+
+
+def _synthetic_semantic_result(**overrides: object) -> dict[str, object]:
+    """A fully-passing synthetic semantic-validation result, for exercising
+    compute_stage_a_evidence()'s aggregation/conjunction mechanics only --
+    never a claim that production semantic validation exists. Production
+    always computes this for real via
+    src.v9_005_stage_a_semantics.compute_semantic_validation_result (see
+    test_production_semantic_evidence_computed_from_empty_input)."""
+    result: dict[str, object] = {key: True for key in _SEMANTIC_RESULT_KEYS}
+    result.update(overrides)
+    return result
+
+
 def _full_evidence(**overrides: object) -> dict[str, object]:
     full_inventory = m.build_source_inventory(
         locked_index={
             (family, month): object() for family in m.MONTHLY_COVERAGE_FAMILIES for month in m.inventory_months()
         }
     )
+    semantic_overrides = {key: overrides.pop(key) for key in list(overrides) if key in _SEMANTIC_RESULT_KEYS}
     kwargs = dict(
         inventory=full_inventory,
         terminal_snapshot_locked=True,
         trading_calendar_derived=True,
-        reconstruction_deterministic=True,
+        semantic_result=_synthetic_semantic_result(**semantic_overrides),
         comparable_month_end_mismatch_count=0,
         raw_provenance_pass=True,
-        # Synthetic True default: exercises the evidence-conjunction
-        # mechanics only. Per V9_006_LOCATOR_IMPL_HIGH_3, this is never
-        # evidence that production semantic security-type validation
-        # exists -- production run_stage_a() always passes False (see
-        # test_production_security_type_validation_pass_is_hardcoded_false).
-        security_type_validation_pass=True,
     )
     kwargs.update(overrides)
     return m.compute_stage_a_evidence(**kwargs)
@@ -464,10 +480,15 @@ def test_exact_pass_conjunction_true_when_everything_passes() -> None:
     [
         {"terminal_snapshot_locked": False},
         {"trading_calendar_derived": False},
-        {"reconstruction_deterministic": False},
         {"raw_provenance_pass": False},
         {"comparable_month_end_mismatch_count": 1},
-        {"security_type_validation_pass": False},
+        {"listing_transition_pass": False},
+        {"delisting_transition_pass": False},
+        {"market_transition_pass": False},
+        {"security_type_pass": False},
+        {"canonical_identity_pass": False},
+        {"effective_date_pass": False},
+        {"deterministic_reconstruction_pass": False},
     ],
 )
 def test_exact_pass_conjunction_false_if_any_single_condition_fails(overrides: dict[str, object]) -> None:
@@ -476,58 +497,87 @@ def test_exact_pass_conjunction_false_if_any_single_condition_fails(overrides: d
     assert evidence["failure_class"] == m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
 
 
-# --- V9_006_LOCATOR_IMPL_HIGH_3: security_type_pass must be driven only by
-# the explicit security_type_validation_pass input, never inferred from
-# terminal_snapshot_locked (or any other proxy) as a false substitute for
-# the not-yet-implemented semantic security-type validator.
+# --- V9_006_HIGH_2_SEMANTIC_VALIDATION_IMPLEMENTATION: the five semantic
+# evidence booleans must come only from the real semantic-validation
+# result, never from monthly SOURCE_INVENTORY family coverage, and never
+# from an arbitrary caller-supplied boolean disguised as coverage.
 
-def test_terminal_snapshot_locked_true_with_security_type_validation_false_fails_security_type() -> None:
-    evidence = _full_evidence(terminal_snapshot_locked=True, security_type_validation_pass=False)
-    assert evidence["terminal_snapshot_pass"] is True
-    assert evidence["security_type_pass"] is False
+def test_compute_stage_a_evidence_no_longer_accepts_coverage_proxy_kwargs() -> None:
+    """The old proxy-based kwargs (reconstruction_deterministic,
+    security_type_validation_pass) are gone; compute_stage_a_evidence only
+    accepts the real semantic_result mapping."""
+    params = set(inspect.signature(m.compute_stage_a_evidence).parameters)
+    assert "reconstruction_deterministic" not in params
+    assert "security_type_validation_pass" not in params
+    assert "semantic_result" in params
+
+
+def test_full_inventory_coverage_alone_cannot_make_semantic_gates_pass() -> None:
+    """Dummy/coverage-only evidence can no longer make the semantic gates
+    PASS: full 648-record inventory coverage plus a semantic_result that
+    reports every semantic gate False must still fail every one of them,
+    proving listing/delisting/market/canonical_identity/effective_date/
+    deterministic_reconstruction are driven by semantic_result alone."""
+    failing_semantic_result = {key: False for key in _SEMANTIC_RESULT_KEYS}
+    evidence = _full_evidence(**failing_semantic_result)
+    for key in _SEMANTIC_RESULT_KEYS:
+        assert evidence[key] is False, key
     assert evidence["FREE_JPX_METADATA_PROBE_PASS"] is False
-    assert evidence["failure_class"] == m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
 
 
-def test_terminal_snapshot_locked_alone_can_never_make_security_type_pass() -> None:
-    """A locked terminal object is not, by itself, evidence that domestic
-    ordinary-common-stock eligibility is determinable -- security_type_pass
-    must stay False regardless of terminal_snapshot_locked's value unless
-    security_type_validation_pass is explicitly True."""
-    for terminal_locked in (True, False):
-        evidence = _full_evidence(
-            terminal_snapshot_locked=terminal_locked, security_type_validation_pass=False,
-        )
-        assert evidence["security_type_pass"] is False
+def test_market_transition_pass_is_independent_of_listing_transition_pass_in_evidence() -> None:
+    """market_transition_pass must not equal listing_transition_pass
+    merely as a proxy at the compute_stage_a_evidence layer either --
+    they can differ."""
+    evidence = _full_evidence(listing_transition_pass=True, market_transition_pass=False)
+    assert evidence["listing_transition_pass"] is True
+    assert evidence["market_transition_pass"] is False
 
 
-def test_synthetic_security_type_validation_true_feeds_conjunction_independent_of_terminal_lock() -> None:
-    """An explicit synthetic security_type_validation_pass=True can drive
-    security_type_pass=True even when terminal_snapshot_locked is False --
-    proving the two gates are independent, never conflated, and that a
-    True security_type_pass is never *derived* from terminal-snapshot
-    locking. This synthetic input tests aggregation/conjunction mechanics
-    only; it is not evidence that production semantic validation exists."""
-    evidence = _full_evidence(terminal_snapshot_locked=False, security_type_validation_pass=True)
+def test_canonical_identity_pass_is_not_terminal_snapshot_locked_and_security_type_pass() -> None:
+    """canonical_identity_pass must not be recomputed in
+    compute_stage_a_evidence as terminal_snapshot_locked AND
+    security_type_pass -- it is fed straight from semantic_result and can
+    be True even while terminal_snapshot_locked is False, or False while
+    both terminal_snapshot_locked and security_type_pass are True."""
+    evidence = _full_evidence(terminal_snapshot_locked=False, canonical_identity_pass=True)
     assert evidence["terminal_snapshot_pass"] is False
-    assert evidence["security_type_pass"] is True
-    # Overall PASS still fails, because terminal_snapshot_pass is an
-    # independent required conjunct.
-    assert evidence["FREE_JPX_METADATA_PROBE_PASS"] is False
+    assert evidence["canonical_identity_pass"] is True
+
+    evidence2 = _full_evidence(terminal_snapshot_locked=True, security_type_pass=True, canonical_identity_pass=False)
+    assert evidence2["terminal_snapshot_pass"] is True
+    assert evidence2["security_type_pass"] is True
+    assert evidence2["canonical_identity_pass"] is False
 
 
-def test_production_security_type_validation_pass_is_hardcoded_false() -> None:
+def test_effective_date_pass_is_not_a_coverage_conjunction() -> None:
+    """effective_date_pass must not be recomputed as
+    listing_transition_pass AND delisting_transition_pass AND
+    market_transition_pass -- it is fed straight from semantic_result."""
+    evidence = _full_evidence(
+        listing_transition_pass=True, delisting_transition_pass=True, market_transition_pass=True,
+        effective_date_pass=False,
+    )
+    assert evidence["effective_date_pass"] is False
+
+
+def test_production_semantic_evidence_computed_from_empty_input() -> None:
     """Static-source proof that run_stage_a() -- the real-execution
-    orchestration entrypoint -- always passes security_type_validation_pass
-    =False to compute_stage_a_evidence(), because the actual semantic
-    security-type validator has not yet been implemented or independently
-    reviewed. This is intentionally fail-closed and must only ever be
-    replaced by the real result of that future, separately reviewed
-    validator."""
+    orchestration entrypoint -- computes its semantic_result via the real
+    src.v9_005_stage_a_semantics.compute_semantic_validation_result with
+    empty terminal_identities/events (no F2-F7 acquisition exists yet),
+    never via a hardcoded or caller-supplied arbitrary PASS boolean. Since
+    the semantics engine itself fails closed on empty input (see
+    tests/test_v9_005_stage_a_semantics.py::
+    test_no_terminal_identities_fails_closed_not_vacuous_pass), this
+    guarantees production never fakes a semantic PASS."""
     source = inspect.getsource(m.run_stage_a)
-    call_start = source.index("compute_stage_a_evidence(")
-    call_text = source[call_start:call_start + source[call_start:].index(")\n") + 2]
-    assert "security_type_validation_pass=False" in call_text
+    assert "compute_semantic_validation_result(terminal_identities={}, events=())" in source
+    # Confirm the real (unmocked) engine actually fails closed on that
+    # exact call, so this static check is backed by real behavior.
+    result = m.compute_semantic_validation_result(terminal_identities={}, events=())
+    for key in _SEMANTIC_RESULT_KEYS:
+        assert result[key] is False, key
 
 
 # --- Endpoint derivation ------------------------------------------------------

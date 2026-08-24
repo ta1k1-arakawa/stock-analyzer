@@ -190,19 +190,32 @@ does not flip that flag; it remains `False` until the future
 implementation task both codes this methodology and receives its own
 independent GPT exact-SHA review PASS.
 
+## Implementation status (added by a later, separate task)
+
+This methodology binding was independently GPT exact-SHA reviewed `PASS`
+(reviewed SHA `64610dbf050ff24e3aca6b60ea6ba7dc2c76369c`,
+`V9_006_HIGH_2_SEMANTIC_VALIDATION_METHODOLOGY=PASS`). A separate,
+subsequent task (`V9_006_HIGH_2_SEMANTIC_VALIDATION_IMPLEMENTATION`) then
+coded exactly this binding into `src/v9_005_stage_a_semantics.py` (a new
+module) and rewired `src/v9_005_stage_a_jpx_probe.py`'s
+`reconstruct_security_state`/`reconstruction_is_deterministic`/
+`compute_stage_a_evidence` to consume it -- see
+`V9_006_STAGE_A_IMPLEMENTATION.md`'s "Semantic validation implementation"
+section and `V9_006_STAGE_A_LOCATOR_IMPLEMENTATION_REVIEW.md` for the
+finding/remediation record. That implementation task did not implement any
+F2-F7 network traversal/parser integration and did not flip
+`ACQUISITION_IMPLEMENTATION_COMPLETE`; this document's rules above remain
+the authoritative methodology binding for that (still separate, future)
+acquisition/parser-integration task to satisfy.
+
 ## Next action
 
-`GPT_EXACT_SHA_V9_006_HIGH_2_SEMANTIC_METHODOLOGY_REVIEW`: obtain GPT's
-independent exact-SHA review of this semantic-validation methodology
-binding. A future, separately authorized implementation task would then
-code this exact binding (canonical-code grammar/serialization, reused-code
-detection, point-in-time state reconstruction, the three-state
-`security_type_state` classifier, transition-evidence parsing,
-`canonical_identity_pass`, the reverse/forward
-`deterministic_reconstruction_pass` consistency check, and
-`effective_date_pass`) into `src/v9_005_stage_a_jpx_probe.py`, itself
-subject to a separate GPT exact-SHA review PASS -- still without executing
-any real network request until a fresh, separate, explicit Stage-A human
-network authorization is obtained after that implementation's review PASS,
-in addition to the still-open original HIGH_3/HIGH_4 findings and the
-separate F2-F7 acquisition-implementation task.
+`GPT_EXACT_SHA_V9_006_HIGH_2_SEMANTIC_IMPLEMENTATION_REVIEW`: obtain GPT's
+independent exact-SHA review of the semantic-validation implementation
+described above, before any real Stage-A execution -- still without
+executing any real network request until a fresh, separate, explicit
+Stage-A human network authorization is obtained after that review PASS, in
+addition to the still-open original HIGH_3/HIGH_4 findings and the
+separate F2-F7 acquisition/parser-integration implementation task that
+must still supply this engine's real `SemanticEvent`/
+`TerminalIdentityState` input.
