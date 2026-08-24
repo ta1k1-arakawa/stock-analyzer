@@ -37,3 +37,31 @@ MEDIUM=0
 LOW=1
 RESULT=PASS
 ```
+
+## HIGH_3 residual MEDIUM review and remediation
+
+```text
+REVIEWED_SHA=c77eff15ecd5b6a250ebcb960214cc99dd8950a2
+PARENT_SHA=c603d1b0e86b85d98ae79d5969f83c9bf99113c4
+CRITICAL=0
+HIGH=0
+MEDIUM=1
+LOW=1
+RESULT=BLOCK
+FINDING=V9_006_HIGH_3_MEDIUM_1_RAW_PROVENANCE_VALIDATION_NOT_TOTAL
+```
+
+This revision remediates exactly that MEDIUM. `lock_first_complete_payload`
+now accepts the immutable `FetchResult` as its only payload/resolved-URL/
+HTTP-status source; metadata derives those fields directly from that one
+object. No separate production-capable lock API accepts arbitrary status or
+payload provenance.
+
+Retrieval timestamps must now be exact canonical UTC text:
+`YYYY-MM-DDTHH:MM:SSZ`. The same strict parse-and-round-trip validation is
+applied before writing, while reading, and when verifying stored provenance.
+Malformed persisted timestamps fail closed. F1 discovery/XLS locking,
+orphan/hash/length/duplicate/reuse checks, HIGH_4 ordering, the deferred LOW,
+and `ACQUISITION_IMPLEMENTATION_COMPLETE=false` are unchanged.
+
+`V9_006_HIGH_3=REMEDIATION_REVISED_AWAITING_GPT_REVIEW`.

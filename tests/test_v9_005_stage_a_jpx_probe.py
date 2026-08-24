@@ -102,14 +102,13 @@ def test_first_complete_payload_lock(tmp_path: Path) -> None:
         source_family=m.SOURCE_FAMILY_JPX_CALENDAR,
         applicable_period="CURRENT",
         requested_url=m.CALENDAR_PAGE_URL,
-        resolved_url=m.CALENDAR_PAGE_URL,
-        http_status=200,
-        payload=b"raw-bytes",
+        fetch_result=m.FetchResult(b"raw-bytes", m.CALENDAR_PAGE_URL, 206),
         retrieval_timestamp_utc="2026-08-24T00:00:00Z",
     )
     assert locked["raw"] == b"raw-bytes"
     assert locked["sha256"] == m.sha256_bytes(b"raw-bytes")
     assert locked["byte_length"] == len(b"raw-bytes")
+    assert locked["http_status"] == 206
     assert set(locked) - {"raw"} == m._REQUIRED_LOCK_META_FIELDS
     reread = m.read_locked_payload(root, m.SOURCE_FAMILY_JPX_CALENDAR, "CURRENT", m.CALENDAR_PAGE_URL)
     assert reread is not None
@@ -122,13 +121,14 @@ def test_no_overwrite_on_second_lock(tmp_path: Path) -> None:
         source_family=m.SOURCE_FAMILY_JPX_CALENDAR,
         applicable_period="CURRENT",
         requested_url=m.CALENDAR_PAGE_URL,
-        resolved_url=m.CALENDAR_PAGE_URL,
-        http_status=200,
+        fetch_result=m.FetchResult(b"first", m.CALENDAR_PAGE_URL, 200),
         retrieval_timestamp_utc="2026-08-24T00:00:00Z",
     )
-    m.lock_first_complete_payload(root, payload=b"first", **kwargs)
+    m.lock_first_complete_payload(root, **kwargs)
     with pytest.raises(m.V9005StageABlocked) as excinfo:
-        m.lock_first_complete_payload(root, payload=b"second-attempt", **kwargs)
+        m.lock_first_complete_payload(
+            root, **{**kwargs, "fetch_result": m.FetchResult(b"second-attempt", m.CALENDAR_PAGE_URL, 200)},
+        )
     assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
     # never silently overwritten
     reread = m.read_locked_payload(root, m.SOURCE_FAMILY_JPX_CALENDAR, "CURRENT", m.CALENDAR_PAGE_URL)
@@ -187,9 +187,7 @@ def test_raw_provenance_rejects_mismatched_hash_and_length(tmp_path: Path) -> No
         source_family=m.SOURCE_FAMILY_JPX_CALENDAR,
         applicable_period="CURRENT",
         requested_url=m.CALENDAR_PAGE_URL,
-        resolved_url=m.CALENDAR_PAGE_URL,
-        http_status=200,
-        payload=b"raw-bytes",
+        fetch_result=m.FetchResult(b"raw-bytes", m.CALENDAR_PAGE_URL, 200),
         retrieval_timestamp_utc="2026-08-24T00:00:00Z",
     )
     key = m._record_key(locked["source_family"], locked["applicable_period"], locked["requested_url"])
@@ -198,6 +196,59 @@ def test_raw_provenance_rejects_mismatched_hash_and_length(tmp_path: Path) -> No
     metadata["byte_length"] += 1
     meta_path.write_bytes(m.canonical_bytes(metadata))
     assert m.verify_raw_provenance(root) is False
+
+
+def test_raw_lock_api_requires_coupled_fetch_result() -> None:
+    parameters = inspect.signature(m.lock_first_complete_payload).parameters
+    assert "fetch_result" in parameters
+    assert parameters["fetch_result"].default is inspect.Parameter.empty
+    assert "payload" not in parameters
+    assert "resolved_url" not in parameters
+    assert "http_status" not in parameters
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "",
+        "garbage",
+        "2026-08-24 03:00:00Z",
+        "2026-08-24T03:00:00+00:00",
+        "2026-08-24T03:00:00.123Z",
+        "2026-02-30T03:00:00Z",
+    ],
+)
+def test_raw_lock_rejects_malformed_timestamp_at_write(tmp_path: Path, timestamp: str) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    with pytest.raises(m.V9005StageABlocked):
+        m.lock_first_complete_payload(
+            root,
+            source_family=m.SOURCE_FAMILY_JPX_CALENDAR,
+            applicable_period="CURRENT",
+            requested_url=m.CALENDAR_PAGE_URL,
+            fetch_result=m.FetchResult(b"raw-bytes", m.CALENDAR_PAGE_URL, 200),
+            retrieval_timestamp_utc=timestamp,
+        )
+
+
+def test_raw_provenance_and_read_reject_malformed_persisted_timestamp(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    locked = m.lock_first_complete_payload(
+        root,
+        source_family=m.SOURCE_FAMILY_JPX_CALENDAR,
+        applicable_period="CURRENT",
+        requested_url=m.CALENDAR_PAGE_URL,
+        fetch_result=m.FetchResult(b"raw-bytes", m.CALENDAR_PAGE_URL, 200),
+        retrieval_timestamp_utc="2026-08-24T03:00:00Z",
+    )
+    key = m._record_key(locked["source_family"], locked["applicable_period"], locked["requested_url"])
+    _raw_path, meta_path = m._raw_paths(root, key)
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata["retrieval_timestamp_utc"] = "garbage"
+    meta_path.write_bytes(m.canonical_bytes(metadata))
+    assert m.verify_raw_provenance(root) is False
+    with pytest.raises(m.V9005StageABlocked):
+        m.read_locked_payload(root, m.SOURCE_FAMILY_JPX_CALENDAR, "CURRENT", m.CALENDAR_PAGE_URL)
 
 
 def test_output_root_collision_rejected(tmp_path: Path) -> None:

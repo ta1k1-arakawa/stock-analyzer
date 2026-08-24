@@ -489,6 +489,30 @@ _REQUIRED_LOCK_META_FIELDS = frozenset({
     "schema_version", "source_family", "applicable_period", "requested_url",
     "resolved_url", "http_status", "retrieval_timestamp_utc", "byte_length", "sha256",
 })
+_RAW_LOCK_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _is_canonical_raw_lock_timestamp(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.strptime(value, _RAW_LOCK_TIMESTAMP_FORMAT)
+    except ValueError:
+        return False
+    return parsed.strftime(_RAW_LOCK_TIMESTAMP_FORMAT) == value
+
+
+def _is_valid_fetch_result(value: object) -> bool:
+    return (
+        isinstance(value, FetchResult)
+        and isinstance(value.payload, bytes)
+        and bool(value.payload)
+        and isinstance(value.resolved_url, str)
+        and bool(value.resolved_url)
+        and not isinstance(value.http_status, bool)
+        and isinstance(value.http_status, int)
+        and 100 <= value.http_status <= 599
+    )
 
 
 def _lock_meta_matches_raw(meta: object, raw: bytes, *, expected_key: str) -> bool:
@@ -502,7 +526,7 @@ def _lock_meta_matches_raw(meta: object, raw: bytes, *, expected_key: str) -> bo
         or not isinstance(meta["resolved_url"], str) or not meta["resolved_url"]
         or isinstance(meta["http_status"], bool) or not isinstance(meta["http_status"], int)
         or not 100 <= meta["http_status"] <= 599
-        or not isinstance(meta["retrieval_timestamp_utc"], str) or not meta["retrieval_timestamp_utc"]
+        or not _is_canonical_raw_lock_timestamp(meta["retrieval_timestamp_utc"])
         or isinstance(meta["byte_length"], bool) or not isinstance(meta["byte_length"], int)
     ):
         return False
@@ -562,25 +586,20 @@ def lock_first_complete_payload(
     source_family: str,
     applicable_period: str,
     requested_url: str,
-    resolved_url: str,
-    http_status: int,
-    payload: bytes,
+    fetch_result: FetchResult,
     retrieval_timestamp_utc: str,
 ) -> dict[str, Any]:
     if source_family not in SOURCE_FAMILIES:
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
     if (
-        not isinstance(payload, bytes) or not payload
-        or not isinstance(requested_url, str) or not requested_url
-        or not isinstance(resolved_url, str) or not resolved_url
-        or isinstance(http_status, bool) or not isinstance(http_status, int)
-        or not 100 <= http_status <= 599
-        or not isinstance(retrieval_timestamp_utc, str) or not retrieval_timestamp_utc
+        not isinstance(requested_url, str) or not requested_url
+        or not _is_valid_fetch_result(fetch_result)
+        or not _is_canonical_raw_lock_timestamp(retrieval_timestamp_utc)
     ):
         raise V9005StageABlocked(SOURCE_OR_DATA_FEASIBILITY_FAILURE)
     try:
         validate_jpx_url(requested_url)
-        validate_jpx_url(resolved_url)
+        validate_jpx_url(fetch_result.resolved_url)
     except V9005StageABlocked as exc:
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
     key = _record_key(source_family, applicable_period, requested_url)
@@ -590,15 +609,15 @@ def lock_first_complete_payload(
         "source_family": source_family,
         "applicable_period": applicable_period,
         "requested_url": requested_url,
-        "resolved_url": resolved_url,
-        "http_status": int(http_status),
+        "resolved_url": fetch_result.resolved_url,
+        "http_status": fetch_result.http_status,
         "retrieval_timestamp_utc": retrieval_timestamp_utc,
-        "byte_length": len(payload),
-        "sha256": sha256_bytes(payload),
+        "byte_length": len(fetch_result.payload),
+        "sha256": sha256_bytes(fetch_result.payload),
     }
-    _atomic_create(raw_path, payload)
+    _atomic_create(raw_path, fetch_result.payload)
     _atomic_create(meta_path, canonical_bytes(meta))
-    return {"raw": payload, **meta}
+    return {"raw": fetch_result.payload, **meta}
 
 
 def ensure_locked_payload(
@@ -622,9 +641,7 @@ def ensure_locked_payload(
         source_family=source_family,
         applicable_period=applicable_period,
         requested_url=requested_url,
-        resolved_url=result.resolved_url,
-        http_status=result.http_status,
-        payload=result.payload,
+        fetch_result=result,
         retrieval_timestamp_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     return locked, requests_used
@@ -1166,9 +1183,7 @@ def run_stage_a(
             source_family=SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
             applicable_period=TERMINAL_DISCOVERY_ROOT,
             requested_url=LISTED_ISSUES_PAGE_URL,
-            resolved_url=discovery_result.resolved_url,
-            http_status=discovery_result.http_status,
-            payload=discovery_result.payload,
+            fetch_result=discovery_result,
             retrieval_timestamp_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
     derived_xls_url = extract_data_j_xls_url(locked_discovery["raw"])
@@ -1184,9 +1199,7 @@ def run_stage_a(
             source_family=SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
             applicable_period=TERMINAL_PERIOD,
             requested_url=derived_xls_url,
-            resolved_url=xls_result.resolved_url,
-            http_status=xls_result.http_status,
-            payload=xls_result.payload,
+            fetch_result=xls_result,
             retrieval_timestamp_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
