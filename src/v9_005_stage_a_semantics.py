@@ -48,6 +48,8 @@ AMBIGUOUS_REUSED_SECURITY_CODE = "AMBIGUOUS_REUSED_SECURITY_CODE"
 CONFLICTING_TRANSITION_EVIDENCE = "CONFLICTING_TRANSITION_EVIDENCE"
 AMBIGUOUS_EFFECTIVE_DATE = "AMBIGUOUS_EFFECTIVE_DATE"
 INVALID_SEMANTIC_EVENT = "INVALID_SEMANTIC_EVENT"
+INVALID_TERMINAL_IDENTITY_STATE = "INVALID_TERMINAL_IDENTITY_STATE"
+DUPLICATE_CANONICAL_IDENTITY = "DUPLICATE_CANONICAL_IDENTITY"
 
 
 class SemanticValidationError(ValueError):
@@ -176,6 +178,41 @@ def _validate_event(event: SemanticEvent) -> SemanticEvent:
     else:
         raise SemanticValidationError(INVALID_SEMANTIC_EVENT)
     return SemanticEvent(code, effective_date, event.dimension, event.before_state, event.after_state, event.source_family)
+
+
+@dataclass(frozen=True)
+class _TerminalStateValidity:
+    """Per-field validity of one `TerminalIdentityState` before semantic
+    use (V9_006_HIGH_2_SEM_IMPL_HIGH_1). Each field is checked
+    independently so that, e.g., a bad `security_type_state` fails only
+    the gates that field is responsible for, without discarding a
+    perfectly valid `listed_state`/`market_state` reconstruction."""
+
+    listed_state_valid: bool
+    market_state_valid: bool
+    security_type_state_valid: bool
+
+    @property
+    def all_valid(self) -> bool:
+        return self.listed_state_valid and self.market_state_valid and self.security_type_state_valid
+
+
+def _validate_terminal_identity_state(state: object) -> _TerminalStateValidity:
+    """Never raises -- returns per-field validity so the caller can fail
+    closed on exactly the affected evidence items. A value that is not
+    even a `TerminalIdentityState` instance fails all three fields (there
+    is nothing trustworthy to read). `listed_state` must be an actual
+    `bool` -- `isinstance(1, bool)` is `False` in Python, so an int like
+    `1` is correctly rejected even though `1 == True`. `market_state` must
+    be a non-empty `str` (no market enumeration is invented here).
+    `security_type_state` must be exactly one of
+    `VALID_SECURITY_TYPE_STATES`."""
+    if not isinstance(state, TerminalIdentityState):
+        return _TerminalStateValidity(False, False, False)
+    listed_state_valid = isinstance(state.listed_state, bool)
+    market_state_valid = isinstance(state.market_state, str) and state.market_state != ""
+    security_type_state_valid = state.security_type_state in VALID_SECURITY_TYPE_STATES
+    return _TerminalStateValidity(listed_state_valid, market_state_valid, security_type_state_valid)
 
 
 def _dedupe_and_detect_conflicts(
@@ -326,14 +363,43 @@ def compute_semantic_validation_result(
             elif dimension != DIMENSION_SECURITY_TYPE_STATE:
                 unattributed_invalid = True
 
-    identities: dict[str, TerminalIdentityState] = {}
+    # V9_006_HIGH_2_SEM_IMPL_HIGH_1: group by canonical code AFTER
+    # normalization so that two distinct raw terminal_identities keys
+    # normalizing to the same canonical_code (e.g. "1301" and " 1301 ", or
+    # "130a" and "130A") are detected as a collision -- never silently
+    # overwritten. Also validate each surviving state's fields
+    # independently before any semantic use.
+    normalized_groups: dict[str, list[str]] = {}
     any_invalid_identity = False
-    for raw_code, state in terminal_identities.items():
+    for raw_code in terminal_identities:
         try:
             code = validate_canonical_code(raw_code)
         except SemanticValidationError:
             any_invalid_identity = True
             reasons.add(INVALID_CANONICAL_CODE)
+            continue
+        normalized_groups.setdefault(code, []).append(raw_code)
+
+    identities: dict[str, TerminalIdentityState] = {}
+    any_invalid_listed_state = False
+    any_invalid_market_state = False
+    any_invalid_security_type_state = False
+    for code, raw_keys in normalized_groups.items():
+        if len(raw_keys) > 1:
+            any_invalid_identity = True
+            reasons.add(DUPLICATE_CANONICAL_IDENTITY)
+            continue
+        state = terminal_identities[raw_keys[0]]
+        validity = _validate_terminal_identity_state(state)
+        if not validity.all_valid:
+            any_invalid_identity = True
+            reasons.add(INVALID_TERMINAL_IDENTITY_STATE)
+            if not validity.listed_state_valid:
+                any_invalid_listed_state = True
+            if not validity.market_state_valid:
+                any_invalid_market_state = True
+            if not validity.security_type_state_valid:
+                any_invalid_security_type_state = True
             continue
         identities[code] = state
 
@@ -393,10 +459,21 @@ def compute_semantic_validation_result(
     if unattributed_invalid:
         reasons.add(INVALID_SEMANTIC_EVENT)
 
-    listing_ok = not any_invalid_listing and not listed_conflict and not unattributed_invalid
-    delisting_ok = not any_invalid_delisting and not listed_conflict and not unattributed_invalid
-    market_ok = not any_invalid_market and not market_conflict and not unattributed_invalid
+    # V9_006_HIGH_2_SEM_IMPL_HIGH_1: any invalid terminal-identity field
+    # (of any code) or any normalized-code collision is folded into
+    # any_invalid_identity below, which fails canonical_identity_pass and
+    # deterministic_reconstruction_pass outright -- semantic validation
+    # cannot PASS with an invalid or colliding terminal identity in the
+    # input, even if every other identity/event is perfectly clean. Each
+    # invalid field additionally fails its own more specific gate(s).
+    listing_ok = not any_invalid_listing and not listed_conflict and not unattributed_invalid and not any_invalid_listed_state
+    delisting_ok = (
+        not any_invalid_delisting and not listed_conflict and not unattributed_invalid and not any_invalid_listed_state
+    )
+    market_ok = not any_invalid_market and not market_conflict and not unattributed_invalid and not any_invalid_market_state
+    security_type_ok = security_type_ok and not any_invalid_security_type_state
     canonical_identity_ok = not any_invalid_identity and not reused_code_violation
+    deterministic_reconstruction_ok = reconstruction_consistent and not any_invalid_identity
     effective_date_ok = not any_ambiguous_date
 
     return {
@@ -406,7 +483,7 @@ def compute_semantic_validation_result(
         "security_type_pass": bool(security_type_ok),
         "canonical_identity_pass": bool(canonical_identity_ok),
         "effective_date_pass": bool(effective_date_ok),
-        "deterministic_reconstruction_pass": bool(reconstruction_consistent),
+        "deterministic_reconstruction_pass": bool(deterministic_reconstruction_ok),
         "reasons": tuple(sorted(reasons)),
         "reconstructed_identity_count": len(identities),
         "canonical_state": canonical_state,

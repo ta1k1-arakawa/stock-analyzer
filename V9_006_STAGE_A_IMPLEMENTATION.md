@@ -42,15 +42,17 @@ in chat, and it makes zero real network requests itself.
   fetchers/git callables only).
 - `src/v9_005_stage_a_semantics.py` -- the V9_006_HIGH_2 semantic
   validation engine: canonical-code grammar/normalization, structured
-  `SemanticEvent`/`TerminalIdentityState` types, conflict/corroboration
-  dedup, the reverse/forward deterministic-reconstruction check, the
-  UNKNOWN-security-type-while-listed check, and
+  `SemanticEvent`/`TerminalIdentityState` types, per-field terminal-
+  identity validation and normalized-code collision detection, conflict/
+  corroboration dedup, the reverse/forward deterministic-reconstruction
+  check, the UNKNOWN-security-type-while-listed check, and
   `compute_semantic_validation_result`. Zero network access; imports
   nothing from `v9_005_stage_a_jpx_probe.py` (the dependency runs the
   other way).
-- `tests/test_v9_005_stage_a_semantics.py` -- 45 tests, entirely offline,
+- `tests/test_v9_005_stage_a_semantics.py` -- 57 tests, entirely offline,
   covering every methodology rule bound in
-  `V9_006_STAGE_A_SEMANTIC_VALIDATION_METHODOLOGY.md`.
+  `V9_006_STAGE_A_SEMANTIC_VALIDATION_METHODOLOGY.md` plus terminal-
+  identity validation/collision-detection regression coverage.
 
 ## Source-locator discipline (contract item 4)
 
@@ -419,6 +421,56 @@ network_or_git` (unchanged) continues to prove zero fetcher calls, zero
 git calls, and no output-root creation under a valid confirmation, since
 `ACQUISITION_IMPLEMENTATION_COMPLETE` remains `False`.
 
+## Terminal identity validation and collision detection (V9_006_HIGH_2_SEM_IMPL_HIGH_1)
+
+GPT's exact-SHA review of the semantic-validation implementation
+(`RESULT=BLOCK`, reviewed SHA `85d22b3c409a467bcd8084ba4b3d3a4f4516ee64`)
+found three findings; this task remediates exactly the first:
+`V9_006_HIGH_2_SEM_IMPL_HIGH_1_TERMINAL_IDENTITY_VALIDATION_AND_COLLISION`.
+`V9_006_HIGH_2_SEM_IMPL_HIGH_2` (orphan event identity not rejected) and
+`V9_006_HIGH_2_SEM_IMPL_MEDIUM_1` (two-run determinism not folded into the
+PASS gate) remain `OPEN` and are explicitly out of scope here -- see
+`V9_006_STAGE_A_SEMANTIC_VALIDATION_IMPLEMENTATION_REVIEW.md`.
+
+The finding: `compute_semantic_validation_result` never validated a
+`terminal_identities` entry's shape or field types before using it, and
+normalized-code collisions (e.g. `"1301"` vs. `" 1301 "`, or `"130a"` vs.
+`"130A"`) were resolved by silent dict-assignment overwrite rather than
+being rejected.
+
+The fix, in `src/v9_005_stage_a_semantics.py` only: a new
+`_validate_terminal_identity_state` helper independently checks
+`listed_state` (must be an actual `bool` -- `isinstance(1, bool)` is
+`False`, so a truthy int like `1` is correctly rejected), `market_state`
+(must be a non-empty `str`; no market enumeration invented), and
+`security_type_state` (must be exactly one of `VALID_SECURITY_TYPE_
+STATES`); a non-`TerminalIdentityState` value fails all three. Each
+field's invalidity fails closed exactly the evidence items specified:
+invalid `listed_state` -> `listing_transition_pass`/`delisting_transition_
+pass`/`canonical_identity_pass`/`deterministic_reconstruction_pass`;
+invalid `market_state` -> `market_transition_pass`/`canonical_identity_
+pass`/`deterministic_reconstruction_pass`; invalid `security_type_state`
+-> `security_type_pass`/`canonical_identity_pass`/`deterministic_
+reconstruction_pass`. Canonical-code collision detection now groups raw
+`terminal_identities` keys by their normalized `canonical_code` first;
+any code with more than one distinct raw key is a `DUPLICATE_CANONICAL_
+IDENTITY` -- neither entry is used, and `canonical_identity_pass`/
+`deterministic_reconstruction_pass` both fail, even when the colliding
+states are byte-identical. The exact canonical-code grammar and all other
+previously reviewed methodology are unchanged; `src/v9_005_stage_a_jpx_
+probe.py` was not modified.
+
+Tests: `tests/test_v9_005_stage_a_semantics.py` grows from 45 to 57 tests,
+adding coverage for an out-of-enum `security_type_state`, an empty/non-
+string `market_state`, `listed_state` as int `1`/`0`, a non-
+`TerminalIdentityState` mapping value, whitespace- and case-normalized
+code collisions, proof that a collision is never silently overwritten
+(neither raw key's state survives into `canonical_state`/
+`reconstructed_identity_count`), proof that byte-identical colliding
+states still fail, and a regression check that a normal single-key valid
+terminal identity behaves unchanged. All 45 pre-existing semantics tests
+continue to pass.
+
 ## Signal-grid binding (contract item 5)
 
 `verify_signal_grid_binding` is called immediately after output-root
@@ -495,25 +547,28 @@ or embedded in this file.
 
 ## Next action
 
-`GPT_EXACT_SHA_V9_006_HIGH_2_SEMANTIC_IMPLEMENTATION_REVIEW`: obtain GPT's
-independent exact-SHA review of this semantic-validation implementation
-(`src/v9_005_stage_a_semantics.py` plus the `v9_005_stage_a_jpx_probe.py`
-wiring) before any real Stage-A execution. `V9_006_LOCATOR_IMPL_HIGH_1`,
+`GPT_EXACT_SHA_V9_006_HIGH_2_SEM_IMPL_HIGH_1_REVIEW`: obtain GPT's
+independent exact-SHA review of this terminal-identity-validation-and-
+collision-detection remediation (`V9_006_HIGH_2_SEM_IMPL_HIGH_1`) before
+any real Stage-A execution. `V9_006_LOCATOR_IMPL_HIGH_1`,
 `V9_006_LOCATOR_IMPL_HIGH_2`, and `V9_006_LOCATOR_IMPL_HIGH_3` are already
 `RESOLVED`, closing the locator/inventory-contract implementation review
 chain (`V9_006_STAGE_A_LOCATOR_IMPLEMENTATION=PASS`,
 `V9_006_SOURCE_SLOT_LOCATOR_METHODOLOGY=PASS`); the semantic-validation
 *methodology* binding is already `PASS` (reviewed SHA
 `64610dbf050ff24e3aca6b60ea6ba7dc2c76369c`). Real execution additionally
-requires: this semantic-*implementation* review's PASS; PASS of the
-original HIGH_3 finding (raw provenance/content-lock boundary) and the
-original HIGH_4 finding (redirect-before-body-consumption), neither
-remediated by this task; a future, separately reviewed task that actually
-implements the complete F2-F7 acquisition/parser-integration pipeline
-(turning locked raw JPX bytes into the `SemanticEvent`/
-`TerminalIdentityState` input this engine consumes) and flips
-`ACQUISITION_IMPLEMENTATION_COMPLETE` to `True` (not built by this task);
-the environment readiness ordering in `AI_REAL_EXECUTION_RUNBOOK.md`
+requires: this HIGH_1 remediation review's PASS; remediation and PASS of
+the still-`OPEN` findings `V9_006_HIGH_2_SEM_IMPL_HIGH_2` (orphan event
+identity not rejected) and `V9_006_HIGH_2_SEM_IMPL_MEDIUM_1` (two-run
+determinism not folded into the PASS gate), neither remediated by this
+task; PASS of the original HIGH_3 finding (raw provenance/content-lock
+boundary) and the original HIGH_4 finding (redirect-before-body-
+consumption); a future, separately reviewed task that actually implements
+the complete F2-F7 acquisition/parser-integration pipeline (turning locked
+raw JPX bytes into the `SemanticEvent`/`TerminalIdentityState` input this
+engine consumes) and flips `ACQUISITION_IMPLEMENTATION_COMPLETE` to `True`
+(not built by this task); the environment readiness ordering in
+`AI_REAL_EXECUTION_RUNBOOK.md`
 SS16-19; and a fresh, separate, explicit point-of-use human network
 authorization obtained after all of the above (not the authorization
 already given in chat, which this task did not consume).

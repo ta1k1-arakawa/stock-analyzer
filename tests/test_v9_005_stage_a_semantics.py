@@ -320,3 +320,131 @@ def test_malformed_listed_state_event_before_equals_after_is_invalid() -> None:
     result = sem.compute_semantic_validation_result(terminal_identities=identities, events=events)
     assert result["listing_transition_pass"] is False
     assert result["delisting_transition_pass"] is False
+
+
+# --- V9_006_HIGH_2_SEM_IMPL_HIGH_1: terminal identity state validation and
+# normalized-canonical-code collision detection -------------------------------
+
+def test_invalid_security_type_state_fails_relevant_gates() -> None:
+    identities = {"1301": TIS(listed_state=True, market_state="PRIME", security_type_state="BOGUS")}
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=())
+    assert result["security_type_pass"] is False
+    assert result["canonical_identity_pass"] is False
+    assert result["deterministic_reconstruction_pass"] is False
+    assert sem.INVALID_TERMINAL_IDENTITY_STATE in result["reasons"]
+
+
+def test_empty_market_state_fails_relevant_gates() -> None:
+    identities = {"1301": TIS(listed_state=True, market_state="", security_type_state=sem.SECURITY_TYPE_ELIGIBLE)}
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=())
+    assert result["market_transition_pass"] is False
+    assert result["canonical_identity_pass"] is False
+    assert result["deterministic_reconstruction_pass"] is False
+
+
+def test_non_string_market_state_fails_relevant_gates() -> None:
+    identities = {"1301": TIS(listed_state=True, market_state=123, security_type_state=sem.SECURITY_TYPE_ELIGIBLE)}
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=())
+    assert result["market_transition_pass"] is False
+    assert result["canonical_identity_pass"] is False
+
+
+def test_listed_state_as_int_one_is_rejected_despite_bool_int_relationship() -> None:
+    """`1 == True` in Python, but `listed_state` must be an actual `bool`,
+    not merely a truthy int."""
+    identities = {"1301": TIS(listed_state=1, market_state="PRIME", security_type_state=sem.SECURITY_TYPE_ELIGIBLE)}
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=())
+    assert result["listing_transition_pass"] is False
+    assert result["delisting_transition_pass"] is False
+    assert result["canonical_identity_pass"] is False
+    assert result["deterministic_reconstruction_pass"] is False
+
+
+def test_listed_state_as_int_zero_is_also_rejected() -> None:
+    identities = {"1301": TIS(listed_state=0, market_state="PRIME", security_type_state=sem.SECURITY_TYPE_ELIGIBLE)}
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=())
+    assert result["listing_transition_pass"] is False
+    assert result["delisting_transition_pass"] is False
+
+
+def test_non_terminal_identity_state_mapping_value_fails_closed() -> None:
+    """A plain dict (or any non-TerminalIdentityState value) must fail
+    closed rather than being read as if it were a real terminal state."""
+    identities = {"1301": {"listed_state": True, "market_state": "PRIME", "security_type_state": sem.SECURITY_TYPE_ELIGIBLE}}
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=())
+    assert result["canonical_identity_pass"] is False
+    assert result["deterministic_reconstruction_pass"] is False
+    assert result["listing_transition_pass"] is False
+    assert result["market_transition_pass"] is False
+    assert result["security_type_pass"] is False
+    assert sem.INVALID_TERMINAL_IDENTITY_STATE in result["reasons"]
+
+
+def test_whitespace_normalized_code_collision_fails_as_duplicate() -> None:
+    state = TIS(listed_state=True, market_state="PRIME", security_type_state=sem.SECURITY_TYPE_ELIGIBLE)
+    identities = {"1301": state, " 1301 ": state}
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=())
+    assert result["canonical_identity_pass"] is False
+    assert result["deterministic_reconstruction_pass"] is False
+    assert sem.DUPLICATE_CANONICAL_IDENTITY in result["reasons"]
+
+
+def test_case_normalized_code_collision_fails_as_duplicate() -> None:
+    state = TIS(listed_state=True, market_state="PRIME", security_type_state=sem.SECURITY_TYPE_ELIGIBLE)
+    identities = {"130a": state, "130A": state}
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=())
+    assert result["canonical_identity_pass"] is False
+    assert result["deterministic_reconstruction_pass"] is False
+    assert sem.DUPLICATE_CANONICAL_IDENTITY in result["reasons"]
+
+
+def test_duplicate_collision_is_not_silently_overwritten() -> None:
+    """Neither colliding raw key's state survives into the reconstructed
+    canonical_state or reconstructed_identity_count -- the collision is
+    never resolved by silently keeping the last-seen value."""
+    kept_state = TIS(listed_state=True, market_state="PRIME", security_type_state=sem.SECURITY_TYPE_ELIGIBLE)
+    dropped_state = TIS(listed_state=False, market_state="STANDARD", security_type_state=sem.SECURITY_TYPE_INELIGIBLE)
+    identities = {"1301": kept_state, " 1301 ": dropped_state}
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=())
+    assert "1301" not in result["canonical_state"]
+    assert result["reconstructed_identity_count"] == 0
+
+
+def test_byte_identical_duplicate_states_still_fail() -> None:
+    """Even when both colliding entries carry byte-identical state, the
+    duplicate canonical-code condition alone still fails -- there is no
+    'harmless duplicate' exception."""
+    state = TIS(listed_state=True, market_state="PRIME", security_type_state=sem.SECURITY_TYPE_ELIGIBLE)
+    identities = {"1301": state, "1301.0": state}
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=())
+    assert result["canonical_identity_pass"] is False
+    assert sem.DUPLICATE_CANONICAL_IDENTITY in result["reasons"]
+
+
+def test_valid_existing_terminal_states_behave_unchanged() -> None:
+    """A normal, single-key, fully valid terminal identity is unaffected
+    by the new per-field validation and collision detection."""
+    identities = {"1301": TIS(listed_state=True, market_state="PRIME", security_type_state=sem.SECURITY_TYPE_ELIGIBLE)}
+    events = [E("1301", "2017-01-10", sem.DIMENSION_LISTED_STATE, False, True, "F2")]
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=events)
+    assert result["listing_transition_pass"] is True
+    assert result["delisting_transition_pass"] is True
+    assert result["market_transition_pass"] is True
+    assert result["security_type_pass"] is True
+    assert result["canonical_identity_pass"] is True
+    assert result["effective_date_pass"] is True
+    assert result["deterministic_reconstruction_pass"] is True
+    assert result["reconstructed_identity_count"] == 1
+    assert result["reasons"] == ()
+
+
+# --- Zero network (structural) -------------------------------------------------
+
+def test_module_has_no_network_capable_imports() -> None:
+    """This module must never be able to reach the network: it performs
+    pure computation over already-structured input only."""
+    import inspect
+
+    source = inspect.getsource(sem)
+    for forbidden in ("socket", "urllib", "http.client", "requests"):
+        assert forbidden not in source
