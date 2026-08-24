@@ -177,6 +177,7 @@ CALENDAR_ENVELOPE_FIRST_YEAR_MONTH = (2016, 9)
 CALENDAR_ENVELOPE_LAST_YEAR_MONTH = (2026, 3)
 
 TERMINAL_PERIOD = "TERMINAL"
+TERMINAL_DISCOVERY_ROOT = "TERMINAL_DISCOVERY_ROOT"
 CALENDAR_PERIOD = "CURRENT"
 
 # --- Source-slot kinds (V9_006_SOURCE_SLOT_LOCATOR_HIGH_1) ------------------
@@ -414,11 +415,21 @@ LOCATOR_STRATEGIES: dict[str, LocatorStrategy] = {
 
 # --- Transport with retry (item 3: classify only per AI_REAL_EXECUTION_RUNBOOK.md) --
 
+@dataclass(frozen=True)
+class FetchResult:
+    """One actually observed transport response. Its status, final URL,
+    and payload stay coupled so raw-lock provenance cannot be fabricated
+    separately from the bytes that were consumed."""
+
+    payload: bytes
+    resolved_url: str
+    http_status: int
+
 def fetch_once_with_retry(
     url: str,
-    fetcher: Callable[[str], tuple[bytes, str]],
+    fetcher: Callable[[str], FetchResult],
     sleep: Callable[[int], None],
-) -> tuple[bytes, str, int]:
+) -> tuple[FetchResult, int]:
     """Fetch url, rejecting off-domain requests/redirects before content is
     consumed. Retries only classified retryable transport failures, up to
     the frozen attempt/backoff policy, per AI_REAL_EXECUTION_RUNBOOK.md."""
@@ -428,11 +439,19 @@ def fetch_once_with_retry(
     for attempt in range(MAX_ATTEMPTS):
         try:
             requests_used += 1
-            payload, final_url = fetcher(url)
-            validate_jpx_url(final_url, reason="OFF_DOMAIN_REDIRECT_REJECTED")
-            if not payload:
+            result = fetcher(url)
+            if (
+                not isinstance(result, FetchResult)
+                or not isinstance(result.payload, bytes)
+                or not isinstance(result.resolved_url, str)
+                or isinstance(result.http_status, bool)
+                or not isinstance(result.http_status, int)
+            ):
+                raise V9005StageABlocked(IMPLEMENTATION_FAILURE, network_request_count=requests_used)
+            validate_jpx_url(result.resolved_url, reason="OFF_DOMAIN_REDIRECT_REJECTED")
+            if not result.payload:
                 raise V9005StageABlocked(SOURCE_OR_DATA_FEASIBILITY_FAILURE, network_request_count=requests_used)
-            return payload, final_url, requests_used
+            return result, requests_used
         except V9005StageABlocked as exc:
             exc.network_request_count = requests_used
             raise
@@ -472,6 +491,33 @@ _REQUIRED_LOCK_META_FIELDS = frozenset({
 })
 
 
+def _lock_meta_matches_raw(meta: object, raw: bytes, *, expected_key: str) -> bool:
+    if not isinstance(meta, dict) or set(meta) != _REQUIRED_LOCK_META_FIELDS:
+        return False
+    if (
+        meta["schema_version"] != "V9_005_STAGE_A_RAW_LOCK_V1"
+        or meta["source_family"] not in SOURCE_FAMILIES
+        or not isinstance(meta["applicable_period"], str) or not meta["applicable_period"]
+        or not isinstance(meta["requested_url"], str) or not meta["requested_url"]
+        or not isinstance(meta["resolved_url"], str) or not meta["resolved_url"]
+        or isinstance(meta["http_status"], bool) or not isinstance(meta["http_status"], int)
+        or not 100 <= meta["http_status"] <= 599
+        or not isinstance(meta["retrieval_timestamp_utc"], str) or not meta["retrieval_timestamp_utc"]
+        or isinstance(meta["byte_length"], bool) or not isinstance(meta["byte_length"], int)
+    ):
+        return False
+    try:
+        validate_jpx_url(meta["requested_url"])
+        validate_jpx_url(meta["resolved_url"])
+    except V9005StageABlocked:
+        return False
+    return (
+        _record_key(meta["source_family"], meta["applicable_period"], meta["requested_url"]) == expected_key
+        and meta["sha256"] == sha256_bytes(raw)
+        and meta["byte_length"] == len(raw)
+    )
+
+
 def read_locked_payload(
     output_root: str | os.PathLike[str],
     source_family: str,
@@ -489,12 +535,7 @@ def read_locked_payload(
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
-    if (
-        not isinstance(meta, dict)
-        or set(meta) != _REQUIRED_LOCK_META_FIELDS
-        or meta["sha256"] != sha256_bytes(raw)
-        or meta["byte_length"] != len(raw)
-    ):
+    if not _lock_meta_matches_raw(meta, raw, expected_key=key):
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
     return {"raw": raw, **meta}
 
@@ -528,8 +569,20 @@ def lock_first_complete_payload(
 ) -> dict[str, Any]:
     if source_family not in SOURCE_FAMILIES:
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
-    if not payload:
+    if (
+        not isinstance(payload, bytes) or not payload
+        or not isinstance(requested_url, str) or not requested_url
+        or not isinstance(resolved_url, str) or not resolved_url
+        or isinstance(http_status, bool) or not isinstance(http_status, int)
+        or not 100 <= http_status <= 599
+        or not isinstance(retrieval_timestamp_utc, str) or not retrieval_timestamp_utc
+    ):
         raise V9005StageABlocked(SOURCE_OR_DATA_FEASIBILITY_FAILURE)
+    try:
+        validate_jpx_url(requested_url)
+        validate_jpx_url(resolved_url)
+    except V9005StageABlocked as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
     key = _record_key(source_family, applicable_period, requested_url)
     raw_path, meta_path = _raw_paths(Path(output_root), key)
     meta = {
@@ -554,7 +607,7 @@ def ensure_locked_payload(
     source_family: str,
     applicable_period: str,
     requested_url: str,
-    fetcher: Callable[[str], tuple[bytes, str]],
+    fetcher: Callable[[str], FetchResult],
     sleep: Callable[[int], None],
     clock: Callable[[], datetime],
 ) -> tuple[dict[str, Any], int]:
@@ -562,16 +615,16 @@ def ensure_locked_payload(
     existing = read_locked_payload(output_root, source_family, applicable_period, requested_url)
     if existing is not None:
         return existing, 0
-    payload, final_url, requests_used = fetch_once_with_retry(requested_url, fetcher, sleep)
+    result, requests_used = fetch_once_with_retry(requested_url, fetcher, sleep)
     now = clock()
     locked = lock_first_complete_payload(
         output_root,
         source_family=source_family,
         applicable_period=applicable_period,
         requested_url=requested_url,
-        resolved_url=final_url,
-        http_status=200,
-        payload=payload,
+        resolved_url=result.resolved_url,
+        http_status=result.http_status,
+        payload=result.payload,
         retrieval_timestamp_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     return locked, requests_used
@@ -583,21 +636,19 @@ def verify_raw_provenance(output_root: str | os.PathLike[str]) -> bool:
     raw_dir = Path(output_root) / "raw"
     if not raw_dir.exists():
         return True
-    for meta_path in sorted(raw_dir.glob("*.json")):
+    raw_paths = {path.with_suffix("") for path in raw_dir.glob("*.bin")}
+    meta_paths = {path.with_suffix("") for path in raw_dir.glob("*.json")}
+    if raw_paths != meta_paths:
+        return False
+    for stem in sorted(raw_paths):
+        meta_path = stem.with_suffix(".json")
         raw_path = meta_path.with_suffix(".bin")
-        if not raw_path.exists():
-            return False
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             raw = raw_path.read_bytes()
         except Exception:
             return False
-        if (
-            not isinstance(meta, dict)
-            or set(meta) != _REQUIRED_LOCK_META_FIELDS
-            or meta["sha256"] != sha256_bytes(raw)
-            or meta["byte_length"] != len(raw)
-        ):
+        if not _lock_meta_matches_raw(meta, raw, expected_key=stem.name):
             return False
     return True
 
@@ -1077,7 +1128,7 @@ def run_stage_a(
     output_root: str | os.PathLike[str],
     repo_root: str | os.PathLike[str],
     confirmation: str,
-    fetcher: Callable[[str], tuple[bytes, str]],
+    fetcher: Callable[[str], FetchResult],
     sleep: Callable[[int], None],
     clock: Callable[[], datetime],
     git: Callable[[list[str]], str] | None = None,
@@ -1103,21 +1154,39 @@ def run_stage_a(
     signal_grid_head = verify_signal_grid_binding(repo_root, git=git)
 
     requests_used = 0
+    locked_discovery = read_locked_payload(
+        root, SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, TERMINAL_DISCOVERY_ROOT, LISTED_ISSUES_PAGE_URL,
+    )
+    if locked_discovery is None:
+        discovery_result, used = fetch_once_with_retry(LISTED_ISSUES_PAGE_URL, fetcher, sleep)
+        requests_used += used
+        now = clock()
+        locked_discovery = lock_first_complete_payload(
+            root,
+            source_family=SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
+            applicable_period=TERMINAL_DISCOVERY_ROOT,
+            requested_url=LISTED_ISSUES_PAGE_URL,
+            resolved_url=discovery_result.resolved_url,
+            http_status=discovery_result.http_status,
+            payload=discovery_result.payload,
+            retrieval_timestamp_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+    derived_xls_url = extract_data_j_xls_url(locked_discovery["raw"])
     locked_terminal = read_locked_payload(
-        root, SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, TERMINAL_PERIOD, LISTED_ISSUES_PAGE_URL,
+        root, SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, TERMINAL_PERIOD, derived_xls_url,
     )
     if locked_terminal is None:
-        xls_bytes, xls_final_url, used = fetch_terminal_snapshot(fetcher, sleep)
+        xls_result, used = fetch_once_with_retry(derived_xls_url, fetcher, sleep)
         requests_used += used
         now = clock()
         locked_terminal = lock_first_complete_payload(
             root,
             source_family=SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
             applicable_period=TERMINAL_PERIOD,
-            requested_url=LISTED_ISSUES_PAGE_URL,
-            resolved_url=xls_final_url,
-            http_status=200,
-            payload=xls_bytes,
+            requested_url=derived_xls_url,
+            resolved_url=xls_result.resolved_url,
+            http_status=xls_result.http_status,
+            payload=xls_result.payload,
             retrieval_timestamp_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
 
@@ -1204,18 +1273,6 @@ def run_stage_a(
     return summary
 
 
-def fetch_terminal_snapshot(
-    fetcher: Callable[[str], tuple[bytes, str]],
-    sleep: Callable[[int], None],
-) -> tuple[bytes, str, int]:
-    """Two independently retried requests: the listing page, then its
-    extracted (and off-domain-validated) `data_j.xls` link."""
-    page_bytes, _page_final_url, used_page = fetch_once_with_retry(LISTED_ISSUES_PAGE_URL, fetcher, sleep)
-    xls_url = extract_data_j_xls_url(page_bytes)
-    xls_bytes, xls_final_url, used_xls = fetch_once_with_retry(xls_url, fetcher, sleep)
-    return xls_bytes, xls_final_url, used_page + used_xls
-
-
 __all__ = [
     "ACQUISITION_IMPLEMENTATION_COMPLETE",
     "ALLOWED_HOST_SUFFIX", "BOUND_SIGNAL_GRID_BLOB_SHA", "BOUND_SIGNAL_GRID_PATH",
@@ -1224,7 +1281,7 @@ __all__ = [
     "DELISTED_COMPANY_ROOT_URL", "F2_SEMANTIC_ROW_LABEL", "F4_SEMANTIC_ROW_LABEL", "F6_SEMANTIC_SECTION_LABEL",
     "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
     "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
-    "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_ROOT_URL", "PLUMBING_FAILURE_RETRIABLE",
+    "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_ROOT_URL", "PLUMBING_FAILURE_RETRIABLE",
     "PROBE_SIGNAL_GRID_CONTRACT_MISMATCH", "SLOT_KIND_GLOBAL", "SLOT_KIND_MONTHLY", "SLOT_KIND_TERMINAL",
     "SLOT_KIND_YEAR", "SOURCE_FAMILIES", "SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE",
     "SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE", "SOURCE_FAMILY_JPX_CALENDAR",
@@ -1237,7 +1294,7 @@ __all__ = [
     "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
     "compute_month_end_mismatch_count", "compute_stage_a_evidence",
     "derive_final_signal_d0", "derive_stage_b_global_end_exclusive", "ensure_locked_payload",
-    "extract_data_j_xls_url", "f2_bridge_months", "fetch_once_with_retry", "fetch_terminal_snapshot",
+    "extract_data_j_xls_url", "f2_bridge_months", "fetch_once_with_retry",
     "initialize_output_root", "inventory_months", "lock_first_complete_payload", "nth_trading_day_after",
     "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
     "resolve_f7_calendar_url", "resolve_month_locator", "run_stage_a",

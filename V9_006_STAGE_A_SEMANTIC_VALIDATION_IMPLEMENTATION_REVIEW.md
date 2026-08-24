@@ -233,3 +233,20 @@ empty structured inputs and remains fail-closed because semantic validation
 is false on empty evidence.
 
 `V9_006_HIGH_2_SEM_IMPL_MEDIUM_1=REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW`.
+
+## GPT review closing HIGH_2 semantic implementation findings
+
+```text
+REVIEWED_SHA=c603d1b0e86b85d98ae79d5969f83c9bf99113c4
+PARENT_SHA=2584bcf925e710f98c52e08c9de23e8886d2f189
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+LOW=1
+RESULT=PASS
+V9_006_HIGH_2_SEM_IMPL_MEDIUM_1=RESOLVED
+V9_006_HIGH_2=RESOLVED
+V9_006_HIGH_2_SEM_IMPL_LOW_1_RECONSTRUCTION_ARTIFACT_DETERMINISM_FIELD_NOT_COMBINED=OPEN_DEFERRED
+```
+
+The deferred LOW finding is intentionally not remediated here.

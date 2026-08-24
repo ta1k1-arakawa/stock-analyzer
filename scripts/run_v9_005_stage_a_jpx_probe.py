@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from src.v9_005_stage_a_jpx_probe import (  # noqa: E402
     CHATGPT_DECISION_REQUIRED,
+    FetchResult,
     STAGE,
     STUDY,
     V9005StageABlocked,
@@ -32,13 +33,19 @@ FAILURE_SCHEMA_VERSION = "V9_005_STAGE_A_FAILURE_V1"
 PRODUCTION_USER_AGENT = "V9-005-Stage-A-JPX-Probe/1.0"
 
 
-def _production_fetcher(url: str) -> tuple[bytes, str]:
+def _production_fetcher(url: str) -> FetchResult:
     request = urllib.request.Request(url, headers={"User-Agent": PRODUCTION_USER_AGENT})
     response = urllib.request.urlopen(request, timeout=30)
     try:
         payload = response.read()
         final_url = getattr(response, "url", url)
-        return payload, final_url
+        http_status = getattr(response, "status", None)
+        if http_status is None:
+            getcode = getattr(response, "getcode", None)
+            http_status = getcode() if callable(getcode) else None
+        if isinstance(http_status, bool) or not isinstance(http_status, int):
+            raise RuntimeError("missing observed HTTP status")
+        return FetchResult(payload=payload, resolved_url=final_url, http_status=http_status)
     finally:
         close = getattr(response, "close", None)
         if callable(close):

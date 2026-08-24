@@ -72,8 +72,8 @@ def test_allowed_jpx_url_accepted(url: str) -> None:
 
 
 def test_off_domain_redirect_rejected() -> None:
-    def fetcher(_url: str) -> tuple[bytes, str]:
-        return b"payload", "https://evil.example/redirected"
+    def fetcher(_url: str) -> m.FetchResult:
+        return m.FetchResult(b"payload", "https://evil.example/redirected", 200)
 
     with pytest.raises(m.V9005StageABlocked) as excinfo:
         m.fetch_once_with_retry("https://www.jpx.co.jp/x", fetcher, _no_sleep)
@@ -83,9 +83,9 @@ def test_off_domain_redirect_rejected() -> None:
 def test_off_domain_request_rejected_before_any_fetch_call() -> None:
     calls: list[str] = []
 
-    def fetcher(url: str) -> tuple[bytes, str]:
+    def fetcher(url: str) -> m.FetchResult:
         calls.append(url)
-        return b"payload", url
+        return m.FetchResult(b"payload", url, 200)
 
     with pytest.raises(m.V9005StageABlocked) as excinfo:
         m.fetch_once_with_retry("https://evil.example/x", fetcher, _no_sleep)
@@ -139,9 +139,9 @@ def test_same_locked_payload_reprocessed_not_refetched(tmp_path: Path) -> None:
     root = m.initialize_output_root(tmp_path / "out")
     calls: list[str] = []
 
-    def fetcher(url: str) -> tuple[bytes, str]:
+    def fetcher(url: str) -> m.FetchResult:
         calls.append(url)
-        return b"payload-one", url
+        return m.FetchResult(b"payload-one", url, 201)
 
     locked_first, requests_first = m.ensure_locked_payload(
         root,
@@ -167,6 +167,37 @@ def test_same_locked_payload_reprocessed_not_refetched(tmp_path: Path) -> None:
     assert requests_second == 0
     assert len(calls) == 1  # no second network call
     assert locked_second["raw"] == locked_first["raw"] == b"payload-one"
+    assert locked_first["http_status"] == 201
+
+
+def test_raw_provenance_rejects_orphan_bin_and_orphan_metadata(tmp_path: Path) -> None:
+    bin_root = m.initialize_output_root(tmp_path / "bin-out")
+    (bin_root / "raw" / "orphan.bin").write_bytes(b"orphan")
+    assert m.verify_raw_provenance(bin_root) is False
+
+    meta_root = m.initialize_output_root(tmp_path / "meta-out")
+    (meta_root / "raw" / "orphan.json").write_text("{}", encoding="utf-8")
+    assert m.verify_raw_provenance(meta_root) is False
+
+
+def test_raw_provenance_rejects_mismatched_hash_and_length(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    locked = m.lock_first_complete_payload(
+        root,
+        source_family=m.SOURCE_FAMILY_JPX_CALENDAR,
+        applicable_period="CURRENT",
+        requested_url=m.CALENDAR_PAGE_URL,
+        resolved_url=m.CALENDAR_PAGE_URL,
+        http_status=200,
+        payload=b"raw-bytes",
+        retrieval_timestamp_utc="2026-08-24T00:00:00Z",
+    )
+    key = m._record_key(locked["source_family"], locked["applicable_period"], locked["requested_url"])
+    _raw_path, meta_path = m._raw_paths(root, key)
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata["byte_length"] += 1
+    meta_path.write_bytes(m.canonical_bytes(metadata))
+    assert m.verify_raw_provenance(root) is False
 
 
 def test_output_root_collision_rejected(tmp_path: Path) -> None:
@@ -699,19 +730,19 @@ def test_extract_data_j_xls_url_relative_link_resolves_against_english_root() ->
 def test_transport_retryable_then_success() -> None:
     attempts: list[int] = []
 
-    def fetcher(url: str) -> tuple[bytes, str]:
+    def fetcher(url: str) -> m.FetchResult:
         attempts.append(1)
         if len(attempts) < 2:
             raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
-        return b"payload", url
+        return m.FetchResult(b"payload", url, 200)
 
-    payload, final_url, requests_used = m.fetch_once_with_retry("https://www.jpx.co.jp/x", fetcher, _no_sleep)
-    assert payload == b"payload"
+    result, requests_used = m.fetch_once_with_retry("https://www.jpx.co.jp/x", fetcher, _no_sleep)
+    assert result.payload == b"payload"
     assert requests_used == 2
 
 
 def test_transport_nonretryable_fails_immediately() -> None:
-    def fetcher(url: str) -> tuple[bytes, str]:
+    def fetcher(url: str) -> m.FetchResult:
         raise urllib.error.HTTPError(url, 404, "not found", {}, None)
 
     with pytest.raises(m.V9005StageABlocked) as excinfo:
@@ -720,12 +751,19 @@ def test_transport_nonretryable_fails_immediately() -> None:
 
 
 def test_transport_exhausted_retries_is_plumbing_failure_retriable() -> None:
-    def fetcher(url: str) -> tuple[bytes, str]:
+    def fetcher(url: str) -> m.FetchResult:
         raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
 
     with pytest.raises(m.V9005StageABlocked) as excinfo:
         m.fetch_once_with_retry("https://www.jpx.co.jp/x", fetcher, _no_sleep)
     assert excinfo.value.reason == m.PLUMBING_FAILURE_RETRIABLE
+
+
+def test_raw_provenance_status_capture_does_not_remediate_high4_redirect_ordering() -> None:
+    """HIGH_4 remains deliberately out of scope: production still reads
+    the response body before looking at the final resolved URL/status."""
+    source = (ROOT / "scripts" / "run_v9_005_stage_a_jpx_probe.py").read_text(encoding="utf-8")
+    assert source.index("payload = response.read()") < source.index("final_url = getattr(response, \"url\", url)")
 
 
 # --- End-to-end run_stage_a with fully synthetic, offline fixtures ---------
@@ -800,7 +838,7 @@ def test_run_stage_a_incomplete_locator_contract_stops_before_any_network(
     calls: list[str] = []
     git_calls: list[list[str]] = []
 
-    def fetcher(url: str) -> tuple[bytes, str]:
+    def fetcher(url: str) -> m.FetchResult:
         calls.append(url)
         raise AssertionError("must not fetch while the locator contract is incomplete")
 
@@ -833,7 +871,7 @@ def test_run_stage_a_incomplete_locator_contract_stops_before_any_network(
 def test_run_stage_a_wrong_confirmation_never_fetches(tmp_path: Path) -> None:
     calls: list[str] = []
 
-    def fetcher(url: str) -> tuple[bytes, str]:
+    def fetcher(url: str) -> m.FetchResult:
         calls.append(url)
         raise AssertionError("must not fetch on bad confirmation")
 
@@ -931,14 +969,28 @@ def test_run_stage_a_offline_reports_fail_with_safe_evidence(
     # this forcing, run_stage_a would now stop at the acquisition gate
     # before ever reaching this test's synthetic fetcher.
     monkeypatch.setattr(m, "ACQUISITION_IMPLEMENTATION_COMPLETE", True)
+    xls_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls"
+    discovery_html = _synthetic_listing_page()
     responses = {
-        m.LISTED_ISSUES_PAGE_URL: (_synthetic_listing_page(), m.LISTED_ISSUES_PAGE_URL),
-        "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls": (b"xls-bytes", "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls"),
-        m.CALENDAR_PAGE_URL: (_synthetic_calendar_html(), m.CALENDAR_PAGE_URL),
+        m.LISTED_ISSUES_PAGE_URL: m.FetchResult(discovery_html, "https://www.jpx.co.jp/english/markets/statistics-equities/misc/01-final.html", 200),
+        xls_url: m.FetchResult(b"xls-bytes", "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j-final.xls", 206),
+        m.CALENDAR_PAGE_URL: m.FetchResult(_synthetic_calendar_html(), m.CALENDAR_PAGE_URL, 200),
     }
 
-    def fetcher(url: str) -> tuple[bytes, str]:
+    def fetcher(url: str) -> m.FetchResult:
         return responses[url]
+
+    actual_extract = m.extract_data_j_xls_url
+
+    def extract_only_after_discovery_lock(raw: bytes) -> str:
+        locked = m.read_locked_payload(
+            tmp_path / "stage-a-out", m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
+            m.TERMINAL_DISCOVERY_ROOT, m.LISTED_ISSUES_PAGE_URL,
+        )
+        assert locked is not None and locked["raw"] == raw == discovery_html
+        return actual_extract(raw)
+
+    monkeypatch.setattr(m, "extract_data_j_xls_url", extract_only_after_discovery_lock)
 
     summary = m.run_stage_a(
         output_root=tmp_path / "stage-a-out",
@@ -970,6 +1022,24 @@ def test_run_stage_a_offline_reports_fail_with_safe_evidence(
     durable_root = tmp_path / "stage-a-out"
     for name in ("inventory.json", "reconstruction.json", "result.json", "receipt.json"):
         assert (durable_root / name).exists()
+    discovery = m.read_locked_payload(
+        durable_root, m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
+        m.TERMINAL_DISCOVERY_ROOT, m.LISTED_ISSUES_PAGE_URL,
+    )
+    terminal = m.read_locked_payload(
+        durable_root, m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, m.TERMINAL_PERIOD, xls_url,
+    )
+    assert discovery is not None and terminal is not None
+    assert discovery["requested_url"] == m.LISTED_ISSUES_PAGE_URL
+    assert discovery["resolved_url"] == responses[m.LISTED_ISSUES_PAGE_URL].resolved_url
+    assert terminal["requested_url"] == xls_url != m.LISTED_ISSUES_PAGE_URL
+    assert terminal["resolved_url"] == responses[xls_url].resolved_url
+    assert terminal["http_status"] == 206  # actual non-200 status is never rewritten
+    for locked, response in ((discovery, responses[m.LISTED_ISSUES_PAGE_URL]), (terminal, responses[xls_url])):
+        assert locked["raw"] == response.payload
+        assert locked["byte_length"] == len(response.payload)
+        assert locked["sha256"] == m.sha256_bytes(response.payload)
+    assert m.verify_raw_provenance(durable_root) is True
 
 
 def test_run_stage_a_wrong_signal_grid_blob_stops_before_any_fetch(
@@ -982,7 +1052,7 @@ def test_run_stage_a_wrong_signal_grid_blob_stops_before_any_fetch(
     monkeypatch.setattr(m, "ACQUISITION_IMPLEMENTATION_COMPLETE", True)
     calls: list[str] = []
 
-    def fetcher(url: str) -> tuple[bytes, str]:
+    def fetcher(url: str) -> m.FetchResult:
         calls.append(url)
         raise AssertionError("must not fetch on signal-grid contract mismatch")
 
