@@ -47,6 +47,23 @@ never `SOURCE_OR_DATA_FEASIBILITY_FAILURE` -- only if some required slot
 still has no reviewed strategy at all. `SOURCE_OR_DATA_FEASIBILITY_
 FAILURE` remains reserved for a genuine result produced only after real
 Stage-A execution actually attempts (and fails) the reviewed traversal.
+
+V9_006_LOCATOR_IMPL_HIGH_1: a complete locator-*strategy* registry is not
+the same thing as a complete acquisition *implementation*. No code in this
+module yet actually walks a locked official F2-F7 root response to find
+each required child object for every base/bridge/envelope slot -- that
+traversal-fetch pipeline is separate, future, authorized work. Running
+Stage A today would otherwise fetch only the two objects that do have an
+implemented fetch path (F1's terminal snapshot, the calendar page) and then
+report the remaining 648 slots `MISSING` -- a knowingly incomplete
+acquisition run, no better than the knowingly doomed run V9_006_HIGH_1
+already forbade. `run_stage_a` therefore also calls
+`verify_acquisition_implementation_ready()`, immediately after the locator-
+contract check and still before touching the filesystem, git, or the
+network, which raises `V9005StageABlocked(STAGE_A_ACQUISITION_
+IMPLEMENTATION_INCOMPLETE)` (`failure_class=CHATGPT_DECISION_REQUIRED`)
+unconditionally until `ACQUISITION_IMPLEMENTATION_COMPLETE` is flipped to
+`True` by that future task.
 """
 
 from __future__ import annotations
@@ -176,6 +193,22 @@ PROBE_SIGNAL_GRID_CONTRACT_MISMATCH = "PROBE_SIGNAL_GRID_CONTRACT_MISMATCH"
 CHATGPT_DECISION_REQUIRED = "CHATGPT_DECISION_REQUIRED"
 STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE = "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE"
 
+# --- V9_006_LOCATOR_IMPL_HIGH_1: pre-network acquisition-readiness stop ----
+# A distinct, separate gate from the locator-*methodology* completeness
+# check above. The reviewed LOCATOR_STRATEGIES registry can be fully
+# complete (every family has a reviewed root/traversal or template) while
+# the actual acquisition *implementation* -- the real code that walks a
+# locked official root response to find each required child object for
+# F2-F7, including every mandatory base/bridge/envelope/source-object slot
+# -- does not yet exist. A knowingly incomplete acquisition pipeline must
+# never be allowed to cross the network boundary and produce a guaranteed
+# "fetch a couple of objects, then report the rest MISSING" result; that is
+# not materially different from the doomed-run problem V9_006_HIGH_1
+# already forbade. This also must never be reported as SOURCE_OR_DATA_
+# FEASIBILITY_FAILURE, which remains reserved for a genuine result after a
+# complete acquisition pipeline actually ran.
+STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE = "STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE"
+
 PUBLIC_FAILURE_CLASSES = frozenset({
     PLUMBING_FAILURE_RETRIABLE,
     SOURCE_OR_DATA_FEASIBILITY_FAILURE,
@@ -194,7 +227,13 @@ _INTERNAL_REASON_TO_PUBLIC_FAILURE_CLASS: dict[str, str] = {
     "OFF_DOMAIN_REQUEST_REJECTED": SOURCE_OR_DATA_FEASIBILITY_FAILURE,
     "OFF_DOMAIN_REDIRECT_REJECTED": SOURCE_OR_DATA_FEASIBILITY_FAILURE,
     STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE: CHATGPT_DECISION_REQUIRED,
+    STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE: CHATGPT_DECISION_REQUIRED,
 }
+
+# Flips to True only when a future, separately reviewed task implements the
+# complete acquisition pipeline for every F1-F7 source-object slot
+# (base/bridge/envelope), not merely the locator-strategy registry.
+ACQUISITION_IMPLEMENTATION_COMPLETE = False
 
 MAX_ATTEMPTS = 3
 MAX_RETRIES = 2
@@ -800,6 +839,26 @@ def verify_locator_contract_complete() -> None:
     # completeness.
 
 
+def verify_acquisition_implementation_ready() -> None:
+    """V9_006_LOCATOR_IMPL_HIGH_1 pre-network acquisition-*implementation*-
+    readiness gate. Distinct from, and in addition to,
+    `verify_locator_contract_complete()`: the locator-strategy registry may
+    be fully reviewed and complete while the actual code that acquires
+    every required F1-F7 slot (base 648-record matrix, F1's mandatory
+    TERMINAL object, F2's post-2025 bridge slots, and F7's envelope slots)
+    does not yet exist. Real Stage-A execution must not cross the JPX
+    network boundary while that acquisition pipeline is incomplete, even
+    though the locator contract itself is fully bound -- a knowingly
+    incomplete acquisition run is not an acceptable substitute for
+    stopping, for exactly the same reason a knowingly incomplete locator
+    contract was not. This raises unconditionally until
+    `ACQUISITION_IMPLEMENTATION_COMPLETE` is flipped to `True` by a future,
+    separately reviewed task that actually implements the complete
+    acquisition pipeline for every source-object slot."""
+    if not ACQUISITION_IMPLEMENTATION_COMPLETE:
+        raise V9005StageABlocked(STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE)
+
+
 def build_source_inventory(
     locked_index: Mapping[tuple[str, str], Any] | None = None,
 ) -> list[dict[str, Any]]:
@@ -992,10 +1051,16 @@ def run_stage_a(
 
     Per V9_006_HIGH_1, this stops before touching the filesystem, git, or
     the network at all if the deterministic Stage-A locator contract is not
-    yet mechanically complete (see `verify_locator_contract_complete`)."""
+    yet mechanically complete (see `verify_locator_contract_complete`).
+    Per V9_006_LOCATOR_IMPL_HIGH_1, it then also stops -- still before any
+    filesystem, git, or network access -- if the actual acquisition
+    implementation for every required F1-F7 slot is not yet complete (see
+    `verify_acquisition_implementation_ready`), even once the locator
+    contract itself is fully bound."""
     if confirmation != CONFIRMATION:
         raise V9005StageABlocked(GOVERNANCE_FAILURE)
     verify_locator_contract_complete()
+    verify_acquisition_implementation_ready()
     root = initialize_output_root(output_root)
     signal_grid_head = verify_signal_grid_binding(repo_root, git=git)
 
@@ -1100,6 +1165,7 @@ def fetch_terminal_snapshot(
 
 
 __all__ = [
+    "ACQUISITION_IMPLEMENTATION_COMPLETE",
     "ALLOWED_HOST_SUFFIX", "BOUND_SIGNAL_GRID_BLOB_SHA", "BOUND_SIGNAL_GRID_PATH",
     "CALENDAR_ENVELOPE_FIRST_YEAR_MONTH", "CALENDAR_ENVELOPE_LAST_YEAR_MONTH",
     "CALENDAR_MONTHLY_LOCATOR_TEMPLATE", "CALENDAR_PAGE_URL", "CHATGPT_DECISION_REQUIRED", "CONFIRMATION",
@@ -1112,7 +1178,8 @@ __all__ = [
     "SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE", "SOURCE_FAMILY_JPX_CALENDAR",
     "SOURCE_FAMILY_LISTED_ISSUES_MONTH_END", "SOURCE_FAMILY_MONTHLY_AGGREGATE_LISTED_ISSUE_COUNTS",
     "SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT", "SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE",
-    "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE", "STAGE", "STUDY",
+    "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE",
+    "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE", "STAGE", "STUDY",
     "TOPIX_ROOT_URL", "VALID_SLOT_KINDS",
     "V9005StageABlocked", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
     "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
@@ -1122,6 +1189,7 @@ __all__ = [
     "initialize_output_root", "inventory_months", "lock_first_complete_payload", "nth_trading_day_after",
     "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
     "resolve_f7_calendar_url", "resolve_month_locator", "run_stage_a",
-    "sha256_bytes", "validate_jpx_url", "verify_locator_contract_complete", "verify_raw_provenance",
+    "sha256_bytes", "validate_jpx_url", "verify_acquisition_implementation_ready",
+    "verify_locator_contract_complete", "verify_raw_provenance",
     "verify_signal_grid_binding",
 ]

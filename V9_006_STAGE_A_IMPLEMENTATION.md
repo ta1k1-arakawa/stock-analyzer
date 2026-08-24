@@ -111,6 +111,62 @@ handles), which is insufficient to mechanically derive `FINAL_SIGNAL_D0`
 exclusive` fails closed with `SOURCE_OR_DATA_FEASIBILITY_FAILURE` in that
 case rather than compute a wrong index from a narrower window.
 
+## Acquisition-implementation readiness (V9_006_LOCATOR_IMPL_HIGH_1)
+
+GPT's exact-SHA review of the locator/inventory-contract implementation
+(reviewed SHA `7c5abbee11b02406b202d413c917f2ed523e5d13`) found `RESULT=BLOCK`
+with three HIGH findings; this task remediates exactly one:
+`V9_006_LOCATOR_IMPL_HIGH_1_KNOWN_INCOMPLETE_ACQUISITION_CROSSES_NETWORK`.
+The other two (`HIGH_2`: F1 exact-root contract mismatch; `HIGH_3`:
+`security_type_pass` semantic gate weakening) remain `OPEN` and are
+explicitly out of scope here -- see
+`V9_006_STAGE_A_LOCATOR_IMPLEMENTATION_REVIEW.md`.
+
+The finding: `verify_locator_contract_complete()` now genuinely passes
+(every one of the seven source families has a reviewed deterministic
+locator *strategy* bound), but that is a separate thing from the actual
+acquisition *implementation* -- no code in this module yet walks a locked
+official F2-F7 root response to find each required child object for every
+base/bridge/envelope slot. Left unguarded, a real `run_stage_a()` run today
+would cross the network boundary, fetch only the two objects that do have
+an implemented fetch path (F1's terminal snapshot, the calendar page), and
+then report the remaining 648 slots `MISSING` -- a knowingly incomplete
+acquisition run, not materially different from the knowingly-doomed-run
+problem `V9_006_HIGH_1` already forbade for the locator-methodology gate.
+
+The fix adds a second, independent, pre-network gate,
+`verify_acquisition_implementation_ready()`, called in `run_stage_a()`
+immediately after `verify_locator_contract_complete()` and before
+output-root creation, before any git call, and before any fetcher call. It
+raises `V9005StageABlocked(STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE)`
+(public `failure_class=CHATGPT_DECISION_REQUIRED`, never
+`SOURCE_OR_DATA_FEASIBILITY_FAILURE`) unconditionally while the module-level
+flag `ACQUISITION_IMPLEMENTATION_COMPLETE` is `False`, which it is
+hardcoded to be by this task. That flag flips to `True` only when a future,
+separately reviewed task actually implements the complete F1-F7 acquisition
+pipeline (base 648-record matrix, F1's mandatory `TERMINAL` object, F2's
+post-2025 bridge slots, F7's envelope slots). This task implements only the
+guard, not that pipeline: `verify_locator_contract_complete()` continues to
+pass unchanged, the 648-record matrix, F1 `TERMINAL_SEED` role, F2 bridge
+derivation, F3 `YEAR` strategy, F4/F5/F6/F7 strategies, and the retry policy
+are all unchanged, and `security_type_pass`/F1 root/HIGH_2/HIGH_3/HIGH_4 are
+untouched.
+
+Tests: `test_acquisition_implementation_is_not_yet_complete` proves the flag
+is `False` and the guard raises with the correct reason/failure class;
+`test_run_stage_a_valid_confirmation_still_stops_before_any_network_or_git`
+calls `run_stage_a` with a valid confirmation against the real, unmocked,
+complete `LOCATOR_STRATEGIES` registry and real (`False`)
+`ACQUISITION_IMPLEMENTATION_COMPLETE`, asserting zero fetcher calls, zero
+git calls, and no output-root directory created. The two existing offline
+regression tests that exercise the fetch/lock/evidence pipeline below both
+gates (`test_run_stage_a_offline_reports_fail_with_safe_evidence`,
+`test_run_stage_a_wrong_signal_grid_blob_stops_before_any_fetch`) now each
+force `ACQUISITION_IMPLEMENTATION_COMPLETE=True` via `monkeypatch`, clearly
+commented as forcing (not claiming) completeness, so that neither test
+normalizes a "fetch some objects then 648-MISSING FAIL" production run
+under the real, still-incomplete state.
+
 ## Signal-grid binding (contract item 5)
 
 `verify_signal_grid_binding` is called immediately after output-root
@@ -187,15 +243,19 @@ or embedded in this file.
 
 ## Next action
 
-`GPT_EXACT_SHA_V9_006_STAGE_A_LOCATOR_IMPLEMENTATION_REVIEW`: obtain GPT's
-independent exact-SHA review of this locator/inventory-contract
-implementation before any real Stage-A execution. Real execution
-additionally requires: this review's PASS (and PASS of any other
-still-open V9_006 findings, including HIGH_2 semantic reconstruction,
+`GPT_EXACT_SHA_V9_006_LOCATOR_IMPL_HIGH_1_REVIEW`: obtain GPT's independent
+exact-SHA review of this acquisition-implementation-readiness-guard
+remediation (`V9_006_LOCATOR_IMPL_HIGH_1`) before any real Stage-A
+execution. Real execution additionally requires: this review's PASS; PASS
+of the still-`OPEN` findings `V9_006_LOCATOR_IMPL_HIGH_2` (F1 exact-root
+contract mismatch) and `V9_006_LOCATOR_IMPL_HIGH_3` (`security_type_pass`
+semantic gate weakening), neither remediated by this task; PASS of any
+other still-open V9_006 findings (including HIGH_2 semantic reconstruction,
 HIGH_3 raw provenance/content-lock boundary, and HIGH_4 redirect-before-
-body-consumption, none of which this task remediated); an actual F2-F7
-traversal-fetch implementation (not built by this task); the environment
-readiness ordering in `AI_REAL_EXECUTION_RUNBOOK.md` SS16-19; and a fresh,
-separate, explicit point-of-use human network authorization obtained after
-that review PASS (not the authorization already given in chat, which this
-task did not consume).
+body-consumption); a future, separately reviewed task that actually
+implements the complete F2-F7 acquisition pipeline and flips
+`ACQUISITION_IMPLEMENTATION_COMPLETE` to `True` (not built by this task);
+the environment readiness ordering in `AI_REAL_EXECUTION_RUNBOOK.md`
+SS16-19; and a fresh, separate, explicit point-of-use human network
+authorization obtained after that review PASS (not the authorization
+already given in chat, which this task did not consume).

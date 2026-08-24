@@ -669,14 +669,85 @@ def test_run_stage_a_wrong_confirmation_never_fetches(tmp_path: Path) -> None:
     assert not (tmp_path / "out").exists()
 
 
+# --- V9_006_LOCATOR_IMPL_HIGH_1: acquisition-implementation readiness is a
+# distinct, separate, pre-network gate from locator-*methodology*
+# completeness above. The reviewed LOCATOR_STRATEGIES registry is complete,
+# but no F2-F7 traversal/fetch implementation exists yet, so real Stage-A
+# execution must still stop, unconditionally, before touching the
+# filesystem, git, or the network.
+
+def test_acquisition_implementation_is_not_yet_complete() -> None:
+    """Ground truth for this remediation: unlike the locator-strategy
+    registry, the actual F2-F7 acquisition pipeline is NOT yet implemented,
+    so this flag must remain False and the readiness check must raise."""
+    assert m.ACQUISITION_IMPLEMENTATION_COMPLETE is False
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.verify_acquisition_implementation_ready()
+    assert excinfo.value.reason == m.STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE
+    assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
+
+
+def test_run_stage_a_valid_confirmation_still_stops_before_any_network_or_git(
+    tmp_path: Path,
+) -> None:
+    """The real, currently-bound locator registry is complete (see
+    test_locator_contract_is_now_complete), so a valid confirmation now
+    clears the FIRST pre-network gate. It must still be stopped by the
+    SEPARATE acquisition-implementation-readiness gate, before output-root
+    creation, before any git call, and before any fetcher call -- a
+    knowingly incomplete acquisition pipeline must never be allowed to
+    reach the network boundary. This exercises the real, unmocked registry
+    and the real, unmocked (False) ACQUISITION_IMPLEMENTATION_COMPLETE
+    flag -- no monkeypatching of either."""
+    calls: list[str] = []
+    git_calls: list[list[str]] = []
+
+    def fetcher(url: str) -> tuple[bytes, str]:
+        calls.append(url)
+        raise AssertionError("must not fetch while acquisition implementation is incomplete")
+
+    def fake_git(args: list[str]) -> str:
+        git_calls.append(args)
+        raise AssertionError("must not call git while acquisition implementation is incomplete")
+
+    out = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_stage_a(
+            output_root=out,
+            repo_root=str(ROOT),
+            confirmation=m.CONFIRMATION,
+            fetcher=fetcher,
+            sleep=_no_sleep,
+            clock=_clock,
+            git=fake_git,
+        )
+    assert excinfo.value.reason == m.STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE
+    assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
+    # Never SOURCE_OR_DATA_FEASIBILITY_FAILURE: that class is reserved for a
+    # genuine result after the complete acquisition pipeline actually ran.
+    assert excinfo.value.failure_class != m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
+    assert calls == []
+    assert git_calls == []
+    assert not out.exists()  # no durable state created for a stop this early
+
+
 # --- Regression coverage: with the locator contract now genuinely
 # complete, the existing fetch/lock/evidence pipeline below the gate still
 # behaves correctly. All fetchers below are synthetic/offline fakes -- no
 # real network request is made.
 
 def test_run_stage_a_offline_reports_fail_with_safe_evidence(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # SAFETY/SCOPE: this test exercises the fetch/lock/evidence pipeline
+    # BELOW the V9_006_LOCATOR_IMPL_HIGH_1 acquisition-implementation gate.
+    # It forces ACQUISITION_IMPLEMENTATION_COMPLETE True for this test only
+    # -- it is not a claim that the real F2-F7 acquisition pipeline exists;
+    # the real, unmocked flag is proven False by
+    # test_acquisition_implementation_is_not_yet_complete above. Without
+    # this forcing, run_stage_a would now stop at the acquisition gate
+    # before ever reaching this test's synthetic fetcher.
+    monkeypatch.setattr(m, "ACQUISITION_IMPLEMENTATION_COMPLETE", True)
     responses = {
         m.LISTED_ISSUES_PAGE_URL: (_synthetic_listing_page(), m.LISTED_ISSUES_PAGE_URL),
         "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls": (b"xls-bytes", "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls"),
@@ -719,8 +790,13 @@ def test_run_stage_a_offline_reports_fail_with_safe_evidence(
 
 
 def test_run_stage_a_wrong_signal_grid_blob_stops_before_any_fetch(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # SAFETY/SCOPE: forces ACQUISITION_IMPLEMENTATION_COMPLETE True so this
+    # test can still reach and exercise the (later) signal-grid-binding
+    # check below the V9_006_LOCATOR_IMPL_HIGH_1 gate -- see the identical
+    # note on test_run_stage_a_offline_reports_fail_with_safe_evidence.
+    monkeypatch.setattr(m, "ACQUISITION_IMPLEMENTATION_COMPLETE", True)
     calls: list[str] = []
 
     def fetcher(url: str) -> tuple[bytes, str]:
