@@ -441,6 +441,116 @@ def test_unknown_family_or_month_is_ambiguous_fail_closed() -> None:
         m.resolve_month_locator(m.SOURCE_FAMILY_JPX_CALENDAR, "2099-01")
 
 
+def _year_selector_html(*links: tuple[str, str]) -> bytes:
+    return ("<html><body>" + "".join(f'<a href="{href}">{text}</a>' for href, text in links) + "</body></html>").encode()
+
+
+def _monthly_statistics_year_html(*, f2_href: str = "f2.xlsx", f4_href: str = "f4.xlsx") -> bytes:
+    return (
+        "<table><tr><th>Report</th><th>2020-03</th></tr>"
+        f"<tr><th>{m.F2_SEMANTIC_ROW_LABEL}</th><td><a href=\"{f2_href}\">F2</a></td></tr>"
+        f"<tr><th>{m.F4_SEMANTIC_ROW_LABEL}</th><td><a href=\"{f4_href}\">F4</a></td></tr>"
+        "</table>"
+    ).encode()
+
+
+def test_monthly_statistics_year_selector_resolves_one_exact_year() -> None:
+    resolved = m.resolve_monthly_statistics_year_page_url(
+        _year_selector_html(("archive/2020.html", "2020")), m.MONTHLY_STATISTICS_ROOT_URL, 2020,
+    )
+    assert resolved == "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/archive/2020.html"
+
+
+@pytest.mark.parametrize(
+    "links",
+    [
+        (("2020-a.html", "2020"), ("2020-b.html", "2020")),
+        (("2021.html", "2021"),),
+        (("https://evil.example/2020.html", "2020"),),
+    ],
+)
+def test_monthly_statistics_year_selector_fails_closed_on_ambiguous_missing_or_unsafe_links(
+    links: tuple[tuple[str, str], ...],
+) -> None:
+    with pytest.raises(m.V9005StageABlocked):
+        m.resolve_monthly_statistics_year_page_url(_year_selector_html(*links), m.MONTHLY_STATISTICS_ROOT_URL, 2020)
+
+
+def test_monthly_statistics_year_selector_rejects_malformed_html() -> None:
+    with pytest.raises(m.V9005StageABlocked):
+        m.resolve_monthly_statistics_year_page_url(b'<a href="2020.html">2020', m.MONTHLY_STATISTICS_ROOT_URL, 2020)
+
+
+def test_monthly_statistics_f2_and_f4_rows_resolve_only_their_exact_children() -> None:
+    page = _monthly_statistics_year_html()
+    page_url = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/archive/2020.html"
+    assert m.resolve_monthly_statistics_evidence_url(
+        page, page_url, m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "2020-03", selected_year=2020,
+    ) == "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/archive/f2.xlsx"
+    assert m.resolve_monthly_statistics_evidence_url(
+        page, page_url, m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE, "2020-03", selected_year=2020,
+    ) == "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/archive/f4.xlsx"
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        b"<table><tr><th>Report</th><th>2020-03</th></tr></table>",
+        (
+            f"<table><tr><th>Report</th><th>2020-03</th></tr>"
+            f"<tr><th>{m.F2_SEMANTIC_ROW_LABEL}</th><td><a href=\"a.xlsx\">a</a></td></tr>"
+            f"<tr><th>{m.F2_SEMANTIC_ROW_LABEL}</th><td><a href=\"b.xlsx\">b</a></td></tr></table>"
+        ).encode(),
+        (
+            f"<table><tr><th>Report</th><th>2020-04</th></tr>"
+            f"<tr><th>{m.F2_SEMANTIC_ROW_LABEL}</th><td><a href=\"a.xlsx\">a</a></td></tr></table>"
+        ).encode(),
+        (
+            f"<table><tr><th>Report</th><th>2020-03</th></tr>"
+            f"<tr><th>{m.F2_SEMANTIC_ROW_LABEL}</th><td><a href=\"a.xlsx\">a</a><a href=\"b.xlsx\">b</a></td></tr></table>"
+        ).encode(),
+    ],
+)
+def test_monthly_statistics_evidence_traversal_rejects_missing_or_ambiguous_structure(page: bytes) -> None:
+    with pytest.raises(m.V9005StageABlocked):
+        m.resolve_monthly_statistics_evidence_url(
+            page, "https://www.jpx.co.jp/monthly/2020.html", m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+            "2020-03", selected_year=2020,
+        )
+
+
+@pytest.mark.parametrize(
+    "family, month, selected_year",
+    [
+        ("UNSUPPORTED", "2020-03", 2020),
+        (m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "bad", 2020),
+        (m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "2020-03", 2021),
+    ],
+)
+def test_monthly_statistics_evidence_traversal_rejects_invalid_inputs(
+    family: str, month: str, selected_year: int,
+) -> None:
+    with pytest.raises(m.V9005StageABlocked):
+        m.resolve_monthly_statistics_evidence_url(
+            _monthly_statistics_year_html(), "https://www.jpx.co.jp/monthly/2020.html", family, month,
+            selected_year=selected_year,
+        )
+
+
+def test_monthly_statistics_evidence_traversal_rejects_unsafe_child_url() -> None:
+    with pytest.raises(m.V9005StageABlocked):
+        m.resolve_monthly_statistics_evidence_url(
+            _monthly_statistics_year_html(f2_href="https://evil.example/f2.xlsx"),
+            "https://www.jpx.co.jp/monthly/2020.html", m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+            "2020-03", selected_year=2020,
+        )
+
+
+def test_monthly_statistics_traversal_does_not_hardcode_archive_numbering() -> None:
+    source = (ROOT / "src" / "v9_005_stage_a_jpx_probe.py").read_text(encoding="utf-8")
+    assert re.search(r"archive-?\\d+", source, re.IGNORECASE) is None
+
+
 # --- Reviewed deterministic locator strategy contract (F1-F7) ---------------
 
 def test_no_monthly_auxiliary_slot_kind_exists() -> None:

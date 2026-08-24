@@ -76,6 +76,7 @@ import subprocess
 import urllib.parse
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
@@ -317,6 +318,154 @@ def extract_data_j_xls_url(page_bytes: bytes) -> str:
         raise V9005StageABlocked(SOURCE_OR_DATA_FEASIBILITY_FAILURE)
     resolved = urllib.parse.urljoin(LISTED_ISSUES_PAGE_URL, match.group(1))
     return validate_jpx_url(resolved, reason="OFF_DOMAIN_REDIRECT_REJECTED")
+
+
+@dataclass
+class _MonthlyStatisticsCell:
+    tag: str
+    text_parts: list[str]
+    hrefs: list[str]
+
+    @property
+    def text(self) -> str:
+        return " ".join("".join(self.text_parts).split())
+
+
+@dataclass
+class _MonthlyStatisticsTable:
+    rows: list[list[_MonthlyStatisticsCell]]
+
+
+class _MonthlyStatisticsHtmlParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.anchors: list[tuple[str, str]] = []
+        self.tables: list[_MonthlyStatisticsTable] = []
+        self._table_stack: list[_MonthlyStatisticsTable] = []
+        self._current_row: list[_MonthlyStatisticsCell] | None = None
+        self._current_cell: _MonthlyStatisticsCell | None = None
+        self._anchor_stack: list[list[str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "table":
+            table = _MonthlyStatisticsTable(rows=[])
+            self.tables.append(table)
+            self._table_stack.append(table)
+        elif tag == "tr" and self._table_stack:
+            self._current_row = []
+            self._table_stack[-1].rows.append(self._current_row)
+        elif tag in {"th", "td"} and self._current_row is not None:
+            self._current_cell = _MonthlyStatisticsCell(tag=tag, text_parts=[], hrefs=[])
+            self._current_row.append(self._current_cell)
+        elif tag == "a":
+            href = attributes.get("href")
+            self._anchor_stack.append([href or "", ""])
+            if self._current_cell is not None and href is not None:
+                self._current_cell.hrefs.append(href)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._anchor_stack:
+            href, text = self._anchor_stack.pop()
+            self.anchors.append((href, " ".join(text.split())))
+        elif tag in {"th", "td"}:
+            self._current_cell = None
+        elif tag == "tr":
+            self._current_row = None
+        elif tag == "table" and self._table_stack:
+            self._table_stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        if self._current_cell is not None:
+            self._current_cell.text_parts.append(data)
+        for anchor in self._anchor_stack:
+            anchor[1] += data
+
+
+def _parse_monthly_statistics_html(page_bytes: bytes) -> _MonthlyStatisticsHtmlParser:
+    if not isinstance(page_bytes, bytes):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    try:
+        parser = _MonthlyStatisticsHtmlParser()
+        parser.feed(page_bytes.decode("utf-8"))
+        parser.close()
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+    if parser._anchor_stack or parser._table_stack or parser._current_row is not None or parser._current_cell is not None:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    return parser
+
+
+def _resolve_locked_page_link(page_url: str, href: object) -> str:
+    try:
+        validate_jpx_url(page_url)
+    except V9005StageABlocked as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+    if not isinstance(href, str) or not href:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    try:
+        return validate_jpx_url(
+            urllib.parse.urljoin(page_url, href), reason="OFF_DOMAIN_REDIRECT_REJECTED",
+        )
+    except V9005StageABlocked as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+
+def resolve_monthly_statistics_year_page_url(root_bytes: bytes, root_url: str, requested_year: int) -> str:
+    """Resolve exactly one official archive-year page from locked root bytes."""
+    if isinstance(requested_year, bool) or not isinstance(requested_year, int) or not 1000 <= requested_year <= 9999:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    parser = _parse_monthly_statistics_html(root_bytes)
+    candidates = [
+        _resolve_locked_page_link(root_url, href)
+        for href, text in parser.anchors
+        if text == str(requested_year)
+    ]
+    if len(candidates) != 1:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    return candidates[0]
+
+
+def resolve_monthly_statistics_evidence_url(
+    year_page_bytes: bytes,
+    year_page_url: str,
+    source_family: str,
+    requested_month: str,
+    *,
+    selected_year: int,
+) -> str:
+    """Resolve one F2/F4 monthly object from a locked selected-year page."""
+    labels = {
+        SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT: F2_SEMANTIC_ROW_LABEL,
+        SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE: F4_SEMANTIC_ROW_LABEL,
+    }
+    label = labels.get(source_family)
+    if label is None:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    year, _month = _parse_year_month(requested_month)
+    if isinstance(selected_year, bool) or not isinstance(selected_year, int) or year != selected_year:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    parser = _parse_monthly_statistics_html(year_page_bytes)
+    matching_rows: list[tuple[_MonthlyStatisticsTable, list[_MonthlyStatisticsCell]]] = []
+    for table in parser.tables:
+        for row in table.rows:
+            if any(cell.text == label for cell in row):
+                matching_rows.append((table, row))
+    if len(matching_rows) != 1:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    table, semantic_row = matching_rows[0]
+    month_columns = [
+        index
+        for row in table.rows
+        for index, cell in enumerate(row)
+        if cell.tag == "th" and cell.text == requested_month
+    ]
+    if len(month_columns) != 1:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    column = month_columns[0]
+    if column >= len(semantic_row) or len(semantic_row[column].hrefs) != 1:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    return _resolve_locked_page_link(year_page_url, semantic_row[column].hrefs[0])
 
 
 def resolve_f7_calendar_url(year: int, month: int) -> str:
@@ -1373,7 +1522,8 @@ __all__ = [
     "extract_data_j_xls_url", "f2_bridge_months", "fetch_once_with_retry",
     "initialize_output_root", "inventory_months", "lock_first_complete_payload", "nth_trading_day_after",
     "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
-    "resolve_f7_calendar_url", "resolve_month_locator", "run_stage_a",
+    "resolve_f7_calendar_url", "resolve_month_locator", "resolve_monthly_statistics_evidence_url",
+    "resolve_monthly_statistics_year_page_url", "run_stage_a",
     "sha256_bytes", "source_object_slot_id", "validate_jpx_url", "verify_acquisition_implementation_ready",
     "verify_locator_contract_complete", "verify_raw_provenance",
     "verify_signal_grid_binding",
