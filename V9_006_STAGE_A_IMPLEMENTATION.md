@@ -167,6 +167,47 @@ commented as forcing (not claiming) completeness, so that neither test
 normalizes a "fetch some objects then 648-MISSING FAIL" production run
 under the real, still-incomplete state.
 
+## F1 exact-root binding (V9_006_LOCATOR_IMPL_HIGH_2)
+
+GPT's exact-SHA review of the HIGH_1 remediation (`RESULT=PASS`, reviewed
+SHA `afc59fb285e09aa8c7225ce6f855d16801c67584`) resolved
+`V9_006_LOCATOR_IMPL_HIGH_1`; this task remediates the second finding from
+the original locator-implementation review:
+`V9_006_LOCATOR_IMPL_HIGH_2_F1_EXACT_ROOT_CONTRACT_MISMATCH`. `HIGH_3`
+(`security_type_pass` semantic gate weakening) remains `OPEN` and is
+explicitly out of scope here -- see
+`V9_006_STAGE_A_LOCATOR_IMPLEMENTATION_REVIEW.md`.
+
+The finding: `LISTED_ISSUES_PAGE_URL` (F1's root) had drifted from the
+exact authoritative root bound in
+`V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md`
+(`root=https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html`),
+using the non-English page instead. The fix corrects
+`LISTED_ISSUES_PAGE_URL` to that exact reviewed URL; because
+`LOCATOR_STRATEGIES[F1].root_url` derives from this constant, it is
+corrected automatically. No alias, fallback root, redirect-based
+substitution, non-English alternative, or guessed historical root was
+introduced -- the reviewed traversal rule (a unique same-domain
+`data_j.xls` link from the official F1 page) and its relative-link
+resolution via `urllib.parse.urljoin` are otherwise unchanged; a relative
+link now correctly resolves under the `/english/` root when it is not an
+absolute-path link. `ACQUISITION_IMPLEMENTATION_COMPLETE` remains `False`
+and `verify_acquisition_implementation_ready()` is unchanged, so a valid
+real run still stops before any filesystem/git/network access -- the F1
+root fix does not, by itself, enable any Stage-A network call.
+`security_type_pass`, `reconstruct_security_state`, retry policy, and the
+F2-F7 locator strategies/bridge/envelope are all unchanged.
+
+Tests: `test_f1_root_is_exact_bound_english_root` and
+`test_f1_locator_strategy_root_matches_bound_constant` prove the exact
+binding; `test_extract_data_j_xls_url_relative_link_resolves_against_english_root`
+proves a genuinely relative `data_j.xls` href resolves under the new root
+and stays same-domain. The pre-existing
+`test_run_stage_a_valid_confirmation_still_stops_before_any_network_or_git`
+(unchanged, exercised against the real registry) continues to prove zero
+network calls, zero git calls, and no output-root creation under a valid
+confirmation.
+
 ## Signal-grid binding (contract item 5)
 
 `verify_signal_grid_binding` is called immediately after output-root
@@ -243,17 +284,18 @@ or embedded in this file.
 
 ## Next action
 
-`GPT_EXACT_SHA_V9_006_LOCATOR_IMPL_HIGH_1_REVIEW`: obtain GPT's independent
-exact-SHA review of this acquisition-implementation-readiness-guard
-remediation (`V9_006_LOCATOR_IMPL_HIGH_1`) before any real Stage-A
-execution. Real execution additionally requires: this review's PASS; PASS
-of the still-`OPEN` findings `V9_006_LOCATOR_IMPL_HIGH_2` (F1 exact-root
-contract mismatch) and `V9_006_LOCATOR_IMPL_HIGH_3` (`security_type_pass`
-semantic gate weakening), neither remediated by this task; PASS of any
-other still-open V9_006 findings (including HIGH_2 semantic reconstruction,
-HIGH_3 raw provenance/content-lock boundary, and HIGH_4 redirect-before-
-body-consumption); a future, separately reviewed task that actually
-implements the complete F2-F7 acquisition pipeline and flips
+`GPT_EXACT_SHA_V9_006_LOCATOR_IMPL_HIGH_2_REVIEW`: obtain GPT's independent
+exact-SHA review of this F1-exact-root-binding remediation
+(`V9_006_LOCATOR_IMPL_HIGH_2`) before any real Stage-A execution.
+`V9_006_LOCATOR_IMPL_HIGH_1` is already `RESOLVED` (GPT exact-SHA `PASS`,
+reviewed SHA `afc59fb285e09aa8c7225ce6f855d16801c67584`). Real execution
+additionally requires: this HIGH_2 review's PASS; PASS of the still-`OPEN`
+finding `V9_006_LOCATOR_IMPL_HIGH_3` (`security_type_pass` semantic gate
+weakening), not remediated by this task; PASS of any other still-open
+V9_006 findings (including HIGH_2 semantic reconstruction, HIGH_3 raw
+provenance/content-lock boundary, and HIGH_4 redirect-before-body-
+consumption); a future, separately reviewed task that actually implements
+the complete F2-F7 acquisition pipeline and flips
 `ACQUISITION_IMPLEMENTATION_COMPLETE` to `True` (not built by this task);
 the environment readiness ordering in `AI_REAL_EXECUTION_RUNBOOK.md`
 SS16-19; and a fresh, separate, explicit point-of-use human network

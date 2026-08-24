@@ -133,7 +133,12 @@ INVENTORY_MISSING = "MISSING"
 _VALID_INVENTORY_STATUSES = frozenset({INVENTORY_AVAILABLE, INVENTORY_NOT_APPLICABLE, INVENTORY_MISSING})
 
 # --- Known reviewed JPX endpoints (never guessed) ---------------------------
-LISTED_ISSUES_PAGE_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
+# V9_006_LOCATOR_IMPL_HIGH_2: F1's authoritative root is exactly the English
+# listed-issues page bound in V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md
+# (root=https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html).
+# No alias, fallback root, redirect-based substitution, non-English
+# alternative, or guessed historical root is permitted.
+LISTED_ISSUES_PAGE_URL = "https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html"
 LISTED_ISSUES_PAGE_HOST = "www.jpx.co.jp"
 _DATA_LINK_RE = re.compile(r"href=[\"']([^\"']*data_j\.xls)[\"']", re.I)
 

@@ -511,6 +511,33 @@ def test_extract_data_j_xls_url_missing_link_fails_closed() -> None:
     assert excinfo.value.failure_class == m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
 
 
+# --- V9_006_LOCATOR_IMPL_HIGH_2: F1's authoritative root is the exact
+# English listed-issues page bound in
+# V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md -- no alias, fallback,
+# redirect-based substitution, non-English alternative, or guessed
+# historical root.
+
+def test_f1_root_is_exact_bound_english_root() -> None:
+    assert m.LISTED_ISSUES_PAGE_URL == "https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html"
+
+
+def test_f1_locator_strategy_root_matches_bound_constant() -> None:
+    strategy = m.LOCATOR_STRATEGIES[m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END]
+    assert strategy.root_url == m.LISTED_ISSUES_PAGE_URL
+
+
+def test_extract_data_j_xls_url_relative_link_resolves_against_english_root() -> None:
+    """A genuinely relative (non-absolute-path) data_j.xls href must resolve
+    relative to the exact bound English root, not any other JPX page --
+    proving the traversal rule stays same-domain and does not freeze or
+    guess a concrete child URL beyond what the supplied page actually
+    contains."""
+    page = b'<html><a href="data_j.xls">Excel</a></html>'
+    resolved = m.extract_data_j_xls_url(page)
+    assert resolved == "https://www.jpx.co.jp/english/markets/statistics-equities/misc/data_j.xls"
+    assert resolved.startswith("https://" + m.LISTED_ISSUES_PAGE_HOST + "/")
+
+
 # --- Transport retry classification (per AI_REAL_EXECUTION_RUNBOOK.md) -----
 
 def test_transport_retryable_then_success() -> None:

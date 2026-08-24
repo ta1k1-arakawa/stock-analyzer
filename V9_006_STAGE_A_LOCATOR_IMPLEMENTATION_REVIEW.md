@@ -67,14 +67,55 @@ task, per this task's explicit prohibition. `V9_006_LOCATOR_IMPL_HIGH_2=OPEN`.
 remediated. `security_type_pass` and its semantics were not changed by this
 task, per this task's explicit prohibition. `V9_006_LOCATOR_IMPL_HIGH_3=OPEN`.
 
+## HIGH_1 exact-SHA remediation review
+
+```text
+REVIEWED_SHA=afc59fb285e09aa8c7225ce6f855d16801c67584
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+RESULT=PASS
+```
+
+GPT's independent exact-SHA review of the `V9_006_LOCATOR_IMPL_HIGH_1`
+remediation (reviewed commit `afc59fb285e09aa8c7225ce6f855d16801c67584`,
+parent `7c5abbee11b02406b202d413c917f2ed523e5d13`) is `PASS`.
+`V9_006_LOCATOR_IMPL_HIGH_1=RESOLVED`.
+
+## Finding 2 status update
+
+`V9_006_LOCATOR_IMPL_HIGH_2_F1_EXACT_ROOT_CONTRACT_MISMATCH`: remediated in
+task `V9_006_LOCATOR_IMPL_HIGH_2_F1_EXACT_ROOT`. `LISTED_ISSUES_PAGE_URL`
+(and, derived from it, `LOCATOR_STRATEGIES[F1].root_url`) is now bound to
+the exact authoritative English root
+`https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html`
+per `V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md` -- no alias,
+fallback root, redirect-based substitution, non-English alternative, or
+guessed historical root was introduced. The reviewed traversal rule (a
+unique same-domain `data_j.xls` link from the official F1 page) is
+unchanged; a relative link continues to resolve against this exact bound
+root via `urllib.parse.urljoin`, proven for a genuinely relative href by
+`test_extract_data_j_xls_url_relative_link_resolves_against_english_root`.
+`ACQUISITION_IMPLEMENTATION_COMPLETE` remains `False` and
+`verify_acquisition_implementation_ready()` is unchanged, so a valid real
+run still stops before any filesystem/git/network access.
+
+`V9_006_LOCATOR_IMPL_HIGH_2=REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW`
+
+## Finding 3 (still OPEN -- explicitly out of scope this task)
+
+`V9_006_LOCATOR_IMPL_HIGH_3_SECURITY_TYPE_GATE_OUT_OF_SCOPE_WEAKENING`
+remains `OPEN`; not remediated by this task, per this task's explicit
+prohibition. `security_type_pass` and its semantics were not touched.
+
 ## What this review closure does not do
 
-This is not a GPT review -- it records the BLOCK review this task responds
-to and this task's own remediation claim for finding 1 only. It creates no
-network, data, T1, or design-freeze authority, and does not by itself
-authorize any Stage-A execution, which remains `BLOCK`ed pending: GPT's
-independent exact-SHA review of this remediation
-(`GPT_EXACT_SHA_V9_006_LOCATOR_IMPL_HIGH_1_REVIEW`); remediation and PASS of
-findings 2 and 3; a future, separately reviewed F2-F7 acquisition-pipeline
+This is not a GPT review -- it records GPT's independent PASS of the
+HIGH_1 remediation, and this task's own remediation claim for finding 2
+only. It creates no network, data, T1, or design-freeze authority, and does
+not by itself authorize any Stage-A execution, which remains `BLOCK`ed
+pending: GPT's independent exact-SHA review of this HIGH_2 remediation
+(`GPT_EXACT_SHA_V9_006_LOCATOR_IMPL_HIGH_2_REVIEW`); remediation and PASS of
+finding 3; a future, separately reviewed F2-F7 acquisition-pipeline
 implementation task; and a fresh, separate, explicit point-of-use human
 network authorization obtained after all of the above.
