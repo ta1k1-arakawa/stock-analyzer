@@ -206,7 +206,7 @@ freeze; does not modify `V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_
 DRAFT.md`; and does not consume the human's existing chat-given Stage-A
 authorization.
 
-## Next action
+## Next action (superseded by the HIGH-1A PASS review below)
 
 `V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A` remains
 `REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW` -- not `PASS` or `RESOLVED`
@@ -219,3 +219,35 @@ requirement) before F1 can ever reach `AVAILABLE` for any base month. Real
 Stage-A execution stays `BLOCK`ed regardless, also pending the unresolved
 retry/backoff policy decision, implementation of F1-F7, and a fresh
 Stage-A human network authorization.
+
+## GPT exact-SHA independent review — PASS (HIGH-1A)
+
+```text
+REVIEWED_SHA=122380628655863148d92469a3a58e1427907fa3
+PARENT_SHA=4a04ce0c755a1733c2aa79675047fb541ed92aa6
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+RESULT=PASS
+```
+
+FINDING=V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A_F1_NOT_APPLICABLE_MISCLASSIFICATION
+
+FINDING_STATUS=RESOLVED
+
+`V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A` is `RESOLVED`, and with it
+`V9_006_SOURCE_SLOT_LOCATOR_HIGH_1` overall is `RESOLVED`. This PASS
+resolved the open question the HIGH-1A remediation had explicitly left
+unanswered ("every F1 base-month cell mechanically resolves to `MISSING`
+until a future, separately reviewed methodology decision either supplies a
+reviewed historical F1 locator, or decides whether F1's monthly
+requirement should be redefined"): that further decision has now been made
+via the `V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT` (see
+`V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT.md`), which amends
+`V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_DRAFT.md` itself to bind
+F1 as `TERMINAL_SEED` only -- removing F1 from the monthly reconstruction
+contract entirely, rather than leaving its base-month cells permanently
+`MISSING`. `V9_006_SOURCE_SLOT_LOCATOR_METHODOLOGY` remains `BLOCK` overall
+(other findings and the unresolved retry/backoff policy decision remain
+open), and this PASS creates no network, data, T1, or design-freeze
+authority.

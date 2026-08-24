@@ -35,12 +35,31 @@ The inventory must include these source families:
 6. TOPIX Historical Index Value.
 7. JPX Calendar monthly market-business-day / market-holiday material.
 
+**F1_TERMINAL_SEED_PREFREEZE_AMENDMENT.** Source family 1 (List of
+TSE-listed Issues / month-end listed-issue material) is `TERMINAL_SEED`
+only: it exclusively serves the `TERMINAL_SNAPSHOT` requirement below (a
+single locked, mandatory, unique current rolling object with mechanically
+parsed terminal snapshot month `T`), not the monthly `SOURCE_INVENTORY`
+grid. Historical family-1 monthly snapshots are not a required input to
+the reconstruction algorithm (locked `TERMINAL_SNAPSHOT` seed + locked
+official transition records), are not required, and must not be searched
+for, fetched, consumed, or used in Stage A -- including as post-hoc
+corroboration or crosscheck if later discovered. See
+`V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT.md` for the full rationale.
+A future study/amendment would be required to add them.
+
 ### Deterministic source inventory
 
 Before any feasibility verdict, Stage A must create a deterministic
 `SOURCE_INVENTORY`. For every calendar month from 2017-01 through 2025-12,
 there must be one inventory record for every source family required by the
-reconstruction contract. Each record is exactly one of:
+monthly reconstruction contract -- source families 2 through 7 only.
+Source family 1 has no base `SOURCE_INVENTORY` record of any kind for any
+month: it must not be represented as `AVAILABLE`,
+`NOT_APPLICABLE_BY_SOURCE_CONTRACT`, or `MISSING` in this monthly grid,
+because it is outside the required monthly reconstruction contract per the
+F1 terminal-seed amendment above. Each of the remaining families' monthly
+records is exactly one of:
 
 ```text
 AVAILABLE
@@ -139,7 +158,12 @@ Stage A passes only if all of the following are satisfied:
 
 1. `TERMINAL_SNAPSHOT`: a terminal/month-end security snapshot sufficient to
    seed deterministic backward/forward reconstruction exists and its raw bytes
-   are locked.
+   are locked. This is sourced exclusively from source family 1 (List of
+   TSE-listed Issues / month-end listed-issue material) per the
+   `F1_TERMINAL_SEED_PREFREEZE_AMENDMENT` above: a unique current rolling
+   object is mandatory, with terminal snapshot month `T` parsed
+   mechanically. Absent or ambiguous evidence sets `terminal_snapshot_pass
+   =false`, which fails Stage A per the PASS conjunction below.
 2. `LISTING_TRANSITIONS`: every inventory month has a locked official record
    sufficient to identify all new listings and exact effective dates, or is
    mechanically valid `NOT_APPLICABLE_BY_SOURCE_CONTRACT`.
@@ -172,7 +196,11 @@ Stage A passes only if all of the following are satisfied:
     for the same authoritative slot fail unless an official revision relation
     is mechanically established.
 
-Stage A PASS iff:
+Per the `F1_TERMINAL_SEED_PREFREEZE_AMENDMENT` above, `required_inventory_
+missing_count` refers to the monthly `SOURCE_INVENTORY` grid for source
+families 2 through 7 only (family 1 has no monthly grid records); the
+separate `terminal_snapshot_pass` gate independently covers family 1's
+mandatory `TERMINAL_SNAPSHOT` object. Stage A PASS iff:
 
 ```text
 FREE_JPX_METADATA_PROBE_PASS=(

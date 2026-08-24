@@ -42,9 +42,11 @@ same object's reference across months never means refetching it.
 
 ### 2. MONTHLY_COVERAGE_MATRIX
 
-This preserves the exact V9_005 requirement unchanged: 7 source families ×
-every month 2017-01 through 2025-12 = 756 records. Each record's status
-remains exactly one of:
+Per `V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT.md`, this now covers
+source families F2 through F7 only -- 6 source families × every month
+2017-01 through 2025-12 = 648 records. Source family F1 is `TERMINAL_SEED`
+only (see F1 below) and has no base record in this matrix for any month.
+Each record's status remains exactly one of:
 
 ```text
 AVAILABLE
@@ -71,46 +73,35 @@ monthly archive. Parse the terminal snapshot month `T` from official source
 semantics. No guessed historical URL. The `slot_kind=TERMINAL` rolling
 current object described here is unchanged.
 
-**Monthly coverage mapping (V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A).** Official
-JPX cadence states this List of TSE-listed Issues material is updated on
-the third business day of *each month*, and its Excel files are updated
-sequentially. That official cadence mechanically proves a monthly file is
-expected every month -- it does not prove the opposite. Historical
-unavailability or overwrite of a given month's file (because the object is
-rolling/sequentially replaced) is not the same thing as the official source
-contract proving no file was ever expected for that month.
-`NOT_APPLICABLE_BY_SOURCE_CONTRACT` is therefore **prohibited** for this
-family's base monthly cells. For each base `MONTHLY_COVERAGE_MATRIX` cell
-2017-01 through 2025-12:
+**Monthly coverage mapping (V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT,
+superseding the V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A remediation below).**
+`V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_DRAFT.md` now binds F1 as
+`TERMINAL_SEED` only: F1 has **no base `MONTHLY_COVERAGE_MATRIX` cell of
+any kind, for any month**. It is not represented as `AVAILABLE`,
+`NOT_APPLICABLE_BY_SOURCE_CONTRACT`, or `MISSING` -- it is simply outside
+the required monthly reconstruction contract, because the required
+reconstruction algorithm (locked `TERMINAL_SNAPSHOT` seed + locked official
+transition records from F2/F3) never needs a historical F1 monthly
+snapshot as an input. `required_inventory_missing_count` therefore ranges
+only over source families F2 through F7 (6 families × 108 months = 648
+records), never F1.
 
-- `AVAILABLE` if and only if an exact official historical F1 month-end
-  object for that month is uniquely resolved by the bound official
-  traversal and locked, referencing that object's `SOURCE_OBJECT_INVENTORY`
-  slot ID.
-- `MISSING` otherwise.
+The separate current/rolling `TERMINAL` object remains mandatory and
+independently gates `terminal_snapshot_pass`: a unique current rolling
+object is required, with terminal snapshot month `T` parsed mechanically;
+an absent or ambiguous terminal object sets `terminal_snapshot_pass=false`,
+which fails Stage A. See `V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT.md`
+for the full methodology rationale, including why this does not weaken any
+substantive point-in-time reconstruction gate.
 
-The separate current/rolling `TERMINAL` object remains mandatory outside
-this matrix. A valid `TERMINAL` object does **not** by itself make any
-historical F1 base-month cell `AVAILABLE` -- the terminal object identifies
-only the terminal snapshot month `T`, not a full historical monthly
-archive. An absent or ambiguous terminal object still sets
-`terminal_snapshot_pass=false`, independent of the base-month cells.
-Terminal month `T` must be parsed mechanically from the object itself.
-
-**Open locator gap.** Under the currently bound F1 root/traversal
-(`https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html`
-+ `data_j.xls` extraction), no historical-month locator is yet established
--- that root/traversal only resolves the current rolling object, not a
-per-month historical archive. This is recorded as a methodology/
-source-locator blocker, not resolved by inventing a historical URL and not
-resolved by declaring the base-month cells `NOT_APPLICABLE_BY_SOURCE_
-CONTRACT`. Under this binding, every F1 base-month cell mechanically
-resolves to `MISSING` until a future, separately reviewed methodology
-decision either (a) supplies a reviewed historical F1 locator/traversal, or
-(b) decides whether `V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_
-DRAFT.md` should later remove or redefine F1's monthly requirement. Neither
-of those decisions is made by this document; `V9_005_FREE_SOURCE_PUBLIC_
-NETWORK_PROBE_DESIGN_DRAFT.md` itself is unchanged.
+**Historical F1 monthly snapshots are not required and must not be used.**
+Do not search for, fetch, consume, or use historical F1 monthly
+snapshots in Stage A -- including as post-hoc corroboration or crosscheck
+if later discovered by any other means. A future study/amendment would be
+required to add them. (An earlier version of this document instead treated
+every F1 base-month cell as mechanically `MISSING` pending a historical
+locator; that intermediate position is now superseded -- F1 simply has no
+base-month cells at all.)
 
 ## F2 -- MONTHLY_STATISTICS_CHANGES_REPORT
 
@@ -284,22 +275,26 @@ stays `BLOCK`ed pending that separate decision. This task also does not
 implement any of F1-F7 in code, does not execute the probe, does not make
 any network request, and does not consume any human authorization,
 including the Stage-A authorization already given in chat.
-`V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A` additionally does not decide whether a
-historical F1 locator/traversal will later be supplied, or whether
-`V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_DRAFT.md` should later
-remove or redefine F1's monthly requirement; `V9_005_FREE_SOURCE_PUBLIC_
-NETWORK_PROBE_DESIGN_DRAFT.md` itself is not modified by this document.
+The `F1_TERMINAL_SEED_PREFREEZE_AMENDMENT` resolved the open question left
+by `V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A` (whether F1's monthly requirement
+should be removed or redefined) by removing F1 from the monthly
+reconstruction contract entirely; see
+`V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT.md`. This does not decide, and
+does not authorize, searching for, fetching, or using a historical F1
+locator: historical F1 monthly snapshots remain out of scope for Stage A
+unless a future, separate study/amendment adds them.
 
 ## Next action
 
-`GPT_EXACT_SHA_V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A_REVIEW`: obtain GPT's
-independent exact-SHA review of this HIGH-1A remediation (see
+`GPT_EXACT_SHA_V9_006_F1_TERMINAL_SEED_AMENDMENT_REVIEW`: obtain GPT's
+independent exact-SHA review of the `F1_TERMINAL_SEED_PREFREEZE_AMENDMENT`
+(see `V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT.md` and
 `V9_006_SOURCE_SLOT_LOCATOR_HIGH_1_REVIEW.md`). A future, separately
 authorized implementation task would then wire F1-F7 -- with the
-`SOURCE_OBJECT_INVENTORY` / `MONTHLY_COVERAGE_MATRIX` two-layer model --
-into `src/v9_005_stage_a_jpx_probe.py`'s `resolve_month_locator` seam
-under this exact binding -- still without executing any real network
-request until a fresh, separate, explicit Stage-A human network
-authorization is obtained after that implementation's own GPT exact-SHA
-review PASS. Before then, a separate GPT methodology decision must still
-resolve F1's open historical-locator gap.
+`SOURCE_OBJECT_INVENTORY` / `MONTHLY_COVERAGE_MATRIX` two-layer model, F1
+now `TERMINAL_SEED`-only -- into `src/v9_005_stage_a_jpx_probe.py`'s
+`resolve_month_locator` seam under this exact binding -- still without
+executing any real network request until a fresh, separate, explicit
+Stage-A human network authorization is obtained after that
+implementation's own GPT exact-SHA review PASS. The retry/backoff policy
+also remains a separate, still-undecided methodology question.
