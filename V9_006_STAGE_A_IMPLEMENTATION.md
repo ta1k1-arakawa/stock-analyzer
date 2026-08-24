@@ -268,6 +268,57 @@ conjunction tests continue to isolate their own conditions under test), and
 a new parametrized case (`security_type_validation_pass: False`) was added
 to `test_exact_pass_conjunction_false_if_any_single_condition_fails`.
 
+## Semantic validation methodology binding (V9_006_HIGH_2, docs-only)
+
+GPT's exact-SHA review of the HIGH_3 remediation (`RESULT=PASS`, reviewed
+SHA `b2d91bd226aadfe3366d7272f868762925909b13`) resolved
+`V9_006_LOCATOR_IMPL_HIGH_3`, closing the locator/inventory-contract
+implementation review chain (`V9_006_STAGE_A_LOCATOR_IMPLEMENTATION=PASS`,
+`V9_006_SOURCE_SLOT_LOCATOR_METHODOLOGY=PASS`). This task is a separate,
+docs-only GPT methodology binding for original V9_006 HIGH_2 (full semantic
+reconstruction/validation) -- it implements no parser or semantic
+validator and makes no code change.
+
+`V9_006_STAGE_A_SEMANTIC_VALIDATION_METHODOLOGY.md` records the exact GPT-
+bound methodology for the `SECURITY_TYPE`, `CANONICAL_IDENTITY`,
+`LISTING_TRANSITIONS`/`DELISTING_TRANSITIONS`/`MARKET_TRANSITIONS`,
+`EFFECTIVE_DATE`, and `RECONSTRUCTION` Stage-A evidence items: the exact
+4-character `canonical_code` serialization and grammar (including
+JPX's 2024+ alphanumeric codes and the 5th-character security-type
+exclusion); `AMBIGUOUS_REUSED_SECURITY_CODE` fail-closed handling for
+disjoint listing episodes sharing a code; point-in-time `listed_state`/
+market/`security_type_state` reconstruction with exact half-open effective-
+date semantics; the three-state `security_type_state` classifier
+(`ELIGIBLE_DOMESTIC_ORDINARY_COMMON` / `EXPLICITLY_INELIGIBLE` / `UNKNOWN`,
+with any needed `UNKNOWN` failing `security_type_pass`); the requirement
+that `listing_transition_pass`/`delisting_transition_pass`/
+`market_transition_pass` be computed from parsed official transition
+events (not the currently-implemented family-coverage-only proxies, and
+`market_transition_pass` must not equal `listing_transition_pass` merely
+as a proxy); `canonical_identity_pass`'s exact conjunction; and
+`deterministic_reconstruction_pass`'s reverse/forward consistency check
+(replay backward then forward from the same locked seed/transitions; the
+recovered terminal state must byte-match the canonical terminal state, no
+reconciliation on mismatch).
+
+This methodology binding does not implement any of the above in code:
+`src/v9_005_stage_a_jpx_probe.py`'s `reconstruct_security_state`,
+`reconstruction_is_deterministic`, and `compute_stage_a_evidence`'s
+`listing_transition_pass`/`delisting_transition_pass`/
+`market_transition_pass`/`canonical_identity_pass`/`effective_date_pass`
+computations are unchanged by this task. `security_type_pass`'s unsafe
+proxy was already removed in `V9_006_LOCATOR_IMPL_HIGH_3` (production
+`run_stage_a()` already hardcodes `security_type_validation_pass=False`
+pending exactly the validator this document's section 4 now
+methodologically binds); this task does not flip that flag. Original
+V9_006 HIGH_2 remains `OPEN` pending a separate, future implementation
+task that codes this exact binding, itself subject to its own GPT
+exact-SHA review. The 648-record matrix, F1 `TERMINAL_SEED` role, F2
+bridge derivation, F3 `YEAR` strategy, F4 ratio orientation, F5/F6/F7
+strategies, retry policy, `ACQUISITION_IMPLEMENTATION_COMPLETE`, original
+HIGH_3 (raw provenance), and original HIGH_4 (redirect handling) are all
+unchanged.
+
 ## Signal-grid binding (contract item 5)
 
 `verify_signal_grid_binding` is called immediately after output-root
@@ -344,23 +395,31 @@ or embedded in this file.
 
 ## Next action
 
-`GPT_EXACT_SHA_V9_006_LOCATOR_IMPL_HIGH_3_REVIEW`: obtain GPT's independent
-exact-SHA review of this security-type-evidence-fail-closed remediation
-(`V9_006_LOCATOR_IMPL_HIGH_3`) before any real Stage-A execution.
-`V9_006_LOCATOR_IMPL_HIGH_1` and `V9_006_LOCATOR_IMPL_HIGH_2` are already
+`GPT_EXACT_SHA_V9_006_HIGH_2_SEMANTIC_METHODOLOGY_REVIEW`: obtain GPT's
+independent exact-SHA review of this docs-only semantic-validation
+methodology binding
+(`V9_006_STAGE_A_SEMANTIC_VALIDATION_METHODOLOGY.md`) before any
+implementation task codes it. `V9_006_LOCATOR_IMPL_HIGH_1`,
+`V9_006_LOCATOR_IMPL_HIGH_2`, and `V9_006_LOCATOR_IMPL_HIGH_3` are already
 `RESOLVED` (GPT exact-SHA `PASS`, reviewed SHAs
-`afc59fb285e09aa8c7225ce6f855d16801c67584` and
-`ed70bc8f42beabef5aac76242a7aaba9c9ab1b6a` respectively). Real execution
-additionally requires: this HIGH_3 review's PASS; PASS of the original
-V9_006 HIGH_2 finding (full semantic reconstruction/validation, including
-the actual security-type parser/classifier that will someday replace this
-task's hardcoded `security_type_validation_pass=False`), the original
-HIGH_3 finding (raw provenance/content-lock boundary), and the original
-HIGH_4 finding (redirect-before-body-consumption), none of which this task
-remediated; a future, separately reviewed task that actually implements
-the complete F2-F7 acquisition pipeline and flips
-`ACQUISITION_IMPLEMENTATION_COMPLETE` to `True` (not built by this task);
-the environment readiness ordering in `AI_REAL_EXECUTION_RUNBOOK.md`
-SS16-19; and a fresh, separate, explicit point-of-use human network
-authorization obtained after that review PASS (not the authorization
-already given in chat, which this task did not consume).
+`afc59fb285e09aa8c7225ce6f855d16801c67584`,
+`ed70bc8f42beabef5aac76242a7aaba9c9ab1b6a`, and
+`b2d91bd226aadfe3366d7272f868762925909b13` respectively), closing the
+locator/inventory-contract implementation review chain
+(`V9_006_STAGE_A_LOCATOR_IMPLEMENTATION=PASS`,
+`V9_006_SOURCE_SLOT_LOCATOR_METHODOLOGY=PASS`). Real execution
+additionally requires: this semantic-methodology review's PASS; a future,
+separately reviewed implementation task that codes this exact methodology
+into `src/v9_005_stage_a_jpx_probe.py` (resolving original V9_006 HIGH_2
+and replacing production `run_stage_a()`'s hardcoded
+`security_type_validation_pass=False`), itself subject to its own GPT
+exact-SHA review PASS; PASS of the original HIGH_3 finding (raw
+provenance/content-lock boundary) and the original HIGH_4 finding
+(redirect-before-body-consumption), neither remediated by this task; a
+future, separately reviewed task that actually implements the complete
+F2-F7 acquisition pipeline and flips `ACQUISITION_IMPLEMENTATION_COMPLETE`
+to `True` (not built by this task); the environment readiness ordering in
+`AI_REAL_EXECUTION_RUNBOOK.md` SS16-19; and a fresh, separate, explicit
+point-of-use human network authorization obtained after all of the above
+(not the authorization already given in chat, which this task did not
+consume).
