@@ -1586,19 +1586,19 @@ def test_derive_endpoint_fails_closed_on_insufficient_forward_tail() -> None:
 
 def test_extract_data_j_xls_url_reused_pattern() -> None:
     page = b'<html><a href="/x/data_j.xls">Excel</a></html>'
-    assert m.extract_data_j_xls_url(page) == "https://www.jpx.co.jp/x/data_j.xls"
+    assert m.extract_data_j_xls_url(page, m.LISTED_ISSUES_PAGE_URL) == "https://www.jpx.co.jp/x/data_j.xls"
 
 
 def test_extract_data_j_xls_url_rejects_off_domain_link() -> None:
     page = b'<html><a href="https://evil.example/data_j.xls">Excel</a></html>'
     with pytest.raises(m.V9005StageABlocked) as excinfo:
-        m.extract_data_j_xls_url(page)
+        m.extract_data_j_xls_url(page, m.LISTED_ISSUES_PAGE_URL)
     assert excinfo.value.reason == "OFF_DOMAIN_REDIRECT_REJECTED"
 
 
 def test_extract_data_j_xls_url_missing_link_fails_closed() -> None:
     with pytest.raises(m.V9005StageABlocked) as excinfo:
-        m.extract_data_j_xls_url(b"<html>no link here</html>")
+        m.extract_data_j_xls_url(b"<html>no link here</html>", m.LISTED_ISSUES_PAGE_URL)
     assert excinfo.value.failure_class == m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
 
 
@@ -1624,9 +1624,21 @@ def test_extract_data_j_xls_url_relative_link_resolves_against_english_root() ->
     guess a concrete child URL beyond what the supplied page actually
     contains."""
     page = b'<html><a href="data_j.xls">Excel</a></html>'
-    resolved = m.extract_data_j_xls_url(page)
+    resolved = m.extract_data_j_xls_url(page, m.LISTED_ISSUES_PAGE_URL)
     assert resolved == "https://www.jpx.co.jp/english/markets/statistics-equities/misc/data_j.xls"
     assert resolved.startswith("https://" + m.LISTED_ISSUES_PAGE_HOST + "/")
+
+
+def test_extract_data_j_xls_url_uses_locked_discovery_final_url_as_relative_base() -> None:
+    final_url = "https://www.jpx.co.jp/english/markets/statistics-equities/misc/redirected/index.html"
+    derived = m.extract_data_j_xls_url(b'<a href="data_j.xls">Excel</a>', final_url)
+    assert derived == "https://www.jpx.co.jp/english/markets/statistics-equities/misc/redirected/data_j.xls"
+    assert derived != "https://www.jpx.co.jp/english/markets/statistics-equities/misc/data_j.xls"
+    assert m.source_object_slot_id(m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, m.TERMINAL_PERIOD, derived) != m.source_object_slot_id(
+        m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, m.TERMINAL_PERIOD, final_url,
+    )
+    with pytest.raises(m.V9005StageABlocked):
+        m.extract_data_j_xls_url(b'<a href="data_j.xls">Excel</a>', "https://evil.example/index.html")
 
 
 # --- Transport retry classification (per AI_REAL_EXECUTION_RUNBOOK.md) -----
@@ -1982,13 +1994,13 @@ def test_run_stage_a_offline_reports_fail_with_safe_evidence(
 
     actual_extract = m.extract_data_j_xls_url
 
-    def extract_only_after_discovery_lock(raw: bytes) -> str:
+    def extract_only_after_discovery_lock(raw: bytes, page_url: str) -> str:
         locked = m.read_locked_payload(
             tmp_path / "stage-a-out", m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
             m.TERMINAL_DISCOVERY_ROOT, m.LISTED_ISSUES_PAGE_URL,
         )
         assert locked is not None and locked["raw"] == raw == discovery_html
-        return actual_extract(raw)
+        return actual_extract(raw, page_url)
 
     monkeypatch.setattr(m, "extract_data_j_xls_url", extract_only_after_discovery_lock)
 

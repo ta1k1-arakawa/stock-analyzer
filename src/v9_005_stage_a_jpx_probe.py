@@ -310,7 +310,7 @@ def validate_jpx_url(url: object, *, reason: str = "OFF_DOMAIN_REQUEST_REJECTED"
 
 # --- Terminal-snapshot locator (reused verbatim from reviewed code) --------
 
-def extract_data_j_xls_url(page_bytes: bytes) -> str:
+def extract_data_j_xls_url(page_bytes: bytes, page_url: str) -> str:
     try:
         text = page_bytes.decode("utf-8", errors="replace")
     except Exception as exc:
@@ -318,7 +318,8 @@ def extract_data_j_xls_url(page_bytes: bytes) -> str:
     match = _DATA_LINK_RE.search(text)
     if not match:
         raise V9005StageABlocked(SOURCE_OR_DATA_FEASIBILITY_FAILURE)
-    resolved = urllib.parse.urljoin(LISTED_ISSUES_PAGE_URL, match.group(1))
+    validate_jpx_url(page_url, reason="OFF_DOMAIN_REDIRECT_REJECTED")
+    resolved = urllib.parse.urljoin(page_url, match.group(1))
     return validate_jpx_url(resolved, reason="OFF_DOMAIN_REDIRECT_REJECTED")
 
 
@@ -1760,7 +1761,7 @@ def run_stage_a(
             fetch_result=discovery_result,
             retrieval_timestamp_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
-    derived_xls_url = extract_data_j_xls_url(locked_discovery["raw"])
+    derived_xls_url = extract_data_j_xls_url(locked_discovery["raw"], locked_discovery["resolved_url"])
     locked_terminal = read_locked_payload(
         root, SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, TERMINAL_PERIOD, derived_xls_url,
     )
