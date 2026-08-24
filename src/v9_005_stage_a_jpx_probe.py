@@ -164,6 +164,7 @@ MONTHLY_STATISTICS_DISCOVERY_ROOT = "MONTHLY_STATISTICS_DISCOVERY_ROOT"
 
 # F3: delisted-company archive (YEAR objects).
 DELISTED_COMPANY_ROOT_URL = "https://www.jpx.co.jp/english/listing/stocks/delisted/index.html"
+DELISTED_COMPANY_DISCOVERY_ROOT = "DELISTED_COMPANY_DISCOVERY_ROOT"
 
 # F5: monthly aggregate listed-issue counts (auxiliary=true).
 LISTING_CO_ROOT_URL = "https://www.jpx.co.jp/english/listing/co/index.html"
@@ -462,6 +463,21 @@ def resolve_monthly_statistics_year_page_url(root_bytes: bytes, root_url: str, r
     return candidates[0]
 
 
+def resolve_delisted_company_year_url(root_bytes: bytes, root_page_url: str, requested_year: int) -> str:
+    """Resolve one F3 archive YEAR object from locked root HTML only."""
+    if isinstance(requested_year, bool) or not isinstance(requested_year, int) or not 1000 <= requested_year <= 9999:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    parser = _parse_monthly_statistics_html(root_bytes)
+    candidates = [
+        _resolve_locked_page_link(root_page_url, href)
+        for href, text in parser.anchors
+        if text == str(requested_year)
+    ]
+    if len(candidates) != 1:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    return candidates[0]
+
+
 def resolve_monthly_statistics_evidence_url(
     year_page_bytes: bytes,
     year_page_url: str,
@@ -617,6 +633,14 @@ class F2F4RequiredSlotAcquisition:
 
     base_coverage_references: Mapping[tuple[str, str], tuple[str, ...]]
     f2_bridge_references: Mapping[str, tuple[str, ...]]
+    network_attempt_count: int
+
+
+@dataclass(frozen=True)
+class F3RequiredSlotAcquisition:
+    """F3's complete-year fan-out references and aggregate attempts."""
+
+    base_coverage_references: Mapping[tuple[str, str], tuple[str, ...]]
     network_attempt_count: int
 
 def fetch_once_with_retry(
@@ -1199,6 +1223,77 @@ def acquire_f2_f4_required_slots(
     return F2F4RequiredSlotAcquisition(base_references, bridge_references, attempts)
 
 
+def _validate_f3_required_slot_references(
+    output_root: str | os.PathLike[str],
+    base_references: Mapping[tuple[str, str], tuple[str, ...]],
+) -> None:
+    family = SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE
+    expected_keys = {(family, month) for month in inventory_months()}
+    if set(base_references) != expected_keys:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    verified_locks = _verified_raw_lock_index(output_root)
+    year_slot_ids: set[str] = set()
+    for year in range(2017, 2026):
+        months = tuple(f"{year}-{month:02d}" for month in range(1, 13))
+        slot_ids = [base_references[(family, month)] for month in months]
+        if any(not isinstance(ids, tuple) or len(ids) != 1 for ids in slot_ids):
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        slot_id = slot_ids[0][0]
+        if any(ids[0] != slot_id for ids in slot_ids):
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        if not isinstance(slot_id, str) or re.fullmatch(r"[0-9a-f]{64}", slot_id) is None:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        metadata = verified_locks.get(slot_id)
+        if (
+            metadata is None
+            or metadata.get("source_family") != family
+            or metadata.get("applicable_period") != str(year)
+            or source_object_slot_id(family, str(year), metadata.get("requested_url")) != slot_id
+        ):
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        year_slot_ids.add(slot_id)
+    if len(year_slot_ids) != 9:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+
+
+def acquire_f3_required_slots(
+    output_root: str | os.PathLike[str],
+    *,
+    fetcher: Callable[[str], FetchResult],
+    sleep: Callable[[int], None],
+    clock: Callable[[], datetime],
+) -> F3RequiredSlotAcquisition:
+    """Acquire nine F3 YEAR objects and fan each to its twelve base months."""
+    family = SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE
+    root, attempts = ensure_locked_payload(
+        output_root,
+        source_family=family,
+        applicable_period=DELISTED_COMPANY_DISCOVERY_ROOT,
+        requested_url=DELISTED_COMPANY_ROOT_URL,
+        fetcher=fetcher,
+        sleep=sleep,
+        clock=clock,
+    )
+    base_references: dict[tuple[str, str], tuple[str, ...]] = {}
+    for year in range(2017, 2026):
+        year_url = resolve_delisted_company_year_url(root["raw"], root["resolved_url"], year)
+        _year_lock, year_attempts = ensure_locked_payload(
+            output_root,
+            source_family=family,
+            applicable_period=str(year),
+            requested_url=year_url,
+            fetcher=fetcher,
+            sleep=sleep,
+            clock=clock,
+        )
+        attempts += year_attempts
+        slot_id = source_object_slot_id(family, str(year), year_url)
+        for month in range(1, 13):
+            base_references[(family, f"{year}-{month:02d}")] = (slot_id,)
+    _validate_f3_required_slot_references(output_root, base_references)
+    return F3RequiredSlotAcquisition(base_references, attempts)
+
+
 def calendar_envelope_months() -> tuple[str, ...]:
     """All required F7 calendar months: 2016-09 through 2026-03 inclusive."""
     return _year_month_range(CALENDAR_ENVELOPE_FIRST_YEAR_MONTH, CALENDAR_ENVELOPE_LAST_YEAR_MONTH)
@@ -1691,10 +1786,10 @@ __all__ = [
     "ALLOWED_HOST_SUFFIX", "BOUND_SIGNAL_GRID_BLOB_SHA", "BOUND_SIGNAL_GRID_PATH",
     "CALENDAR_ENVELOPE_FIRST_YEAR_MONTH", "CALENDAR_ENVELOPE_LAST_YEAR_MONTH",
     "CALENDAR_MONTHLY_LOCATOR_TEMPLATE", "CALENDAR_PAGE_URL", "CHATGPT_DECISION_REQUIRED", "CONFIRMATION",
-    "DELISTED_COMPANY_ROOT_URL", "F2_SEMANTIC_ROW_LABEL", "F4_SEMANTIC_ROW_LABEL", "F6_SEMANTIC_SECTION_LABEL",
+    "DELISTED_COMPANY_DISCOVERY_ROOT", "DELISTED_COMPANY_ROOT_URL", "F2_SEMANTIC_ROW_LABEL", "F4_SEMANTIC_ROW_LABEL", "F6_SEMANTIC_SECTION_LABEL",
     "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
     "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
-    "F2F4RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
+    "F2F4RequiredSlotAcquisition", "F3RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
     "MONTHLY_STATISTICS_ROOT_URL", "PLUMBING_FAILURE_RETRIABLE",
     "PROBE_SIGNAL_GRID_CONTRACT_MISMATCH", "SLOT_KIND_GLOBAL", "SLOT_KIND_MONTHLY", "SLOT_KIND_TERMINAL",
     "SLOT_KIND_YEAR", "SOURCE_FAMILIES", "SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE",
@@ -1704,14 +1799,14 @@ __all__ = [
     "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE",
     "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE", "STAGE", "STUDY",
     "TOPIX_ROOT_URL", "VALID_SLOT_KINDS",
-    "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "acquire_f2_f4_required_slots", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
+    "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "acquire_f2_f4_required_slots", "acquire_f3_required_slots", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
     "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
     "compute_month_end_mismatch_count", "compute_stage_a_evidence",
     "derive_final_signal_d0", "derive_stage_b_global_end_exclusive", "ensure_locked_payload",
     "extract_data_j_xls_url", "f2_bridge_months", "fetch_once_with_retry",
     "initialize_output_root", "inventory_months", "lock_first_complete_payload", "monthly_statistics_discovery_year_period", "nth_trading_day_after",
     "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
-    "resolve_f7_calendar_url", "resolve_month_locator", "resolve_monthly_statistics_evidence_url",
+    "resolve_delisted_company_year_url", "resolve_f7_calendar_url", "resolve_month_locator", "resolve_monthly_statistics_evidence_url",
     "resolve_monthly_statistics_year_page_url", "run_stage_a",
     "sha256_bytes", "source_object_slot_id", "validate_jpx_url", "verify_acquisition_implementation_ready",
     "verify_locator_contract_complete", "verify_raw_provenance",

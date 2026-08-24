@@ -634,6 +634,138 @@ def _monthly_statistics_enumeration_responses(years: range) -> dict[str, m.Fetch
     return responses
 
 
+def _f3_year_responses(root_final_url: str) -> dict[str, m.FetchResult]:
+    root_html = "".join(f'<a href="{year}.html"> {year} </a>' for year in range(2017, 2026)).encode()
+    responses = {
+        m.DELISTED_COMPANY_ROOT_URL: m.FetchResult(root_html, root_final_url, 200),
+    }
+    base = root_final_url.rsplit("/", 1)[0]
+    for year in range(2017, 2026):
+        year_url = f"{base}/{year}.html"
+        responses[year_url] = m.FetchResult(f"year-{year}".encode(), year_url, 200)
+    return responses
+
+
+def test_delisted_company_year_traversal_is_unique_safe_and_total() -> None:
+    root_url = "https://www.jpx.co.jp/english/listing/stocks/delisted/archive/index.html"
+    assert m.resolve_delisted_company_year_url(b'<a href="2017.html"> 2017 </a>', root_url, 2017) == (
+        "https://www.jpx.co.jp/english/listing/stocks/delisted/archive/2017.html"
+    )
+    for raw in (
+        b'<a href="2017.html">2017</a><a href="duplicate.html">2017</a>',
+        b'<a href="2018.html">2018</a>',
+        b'<a href="https://evil.example/2017.html">2017</a>',
+        b'<a href="2017.html">2017',
+        b'</a>',
+        b'<a href="outer.html">2017<a href="inner.html">2017</a></a>',
+    ):
+        with pytest.raises(m.V9005StageABlocked) as excinfo:
+            m.resolve_delisted_company_year_url(raw, root_url, 2017)
+        assert excinfo.value.reason == m.IMPLEMENTATION_FAILURE
+
+
+def test_f3_year_acquisition_fans_out_verified_year_locks_and_reuses_them(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    root_final_url = "https://www.jpx.co.jp/english/listing/stocks/delisted/archive/redirected/index.html"
+    responses = _f3_year_responses(root_final_url)
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return responses[url]
+
+    result = m.acquire_f3_required_slots(root, fetcher=fetcher, sleep=_no_sleep, clock=_clock)
+    assert result.network_attempt_count == 10
+    assert len(result.base_coverage_references) == 108
+    root_lock = m.read_locked_payload(
+        root, m.SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE,
+        m.DELISTED_COMPANY_DISCOVERY_ROOT, m.DELISTED_COMPANY_ROOT_URL,
+    )
+    assert root_lock is not None
+    assert root_lock["source_family"] == m.SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE
+    assert root_lock["applicable_period"] == m.DELISTED_COMPANY_DISCOVERY_ROOT
+    assert root_lock["requested_url"] == m.DELISTED_COMPANY_ROOT_URL
+    redirected_2017 = "https://www.jpx.co.jp/english/listing/stocks/delisted/archive/redirected/2017.html"
+    assert redirected_2017 in calls
+    assert "https://www.jpx.co.jp/english/listing/stocks/delisted/2017.html" not in calls
+    root_slot = m.source_object_slot_id(
+        m.SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE, m.DELISTED_COMPANY_DISCOVERY_ROOT, m.DELISTED_COMPANY_ROOT_URL,
+    )
+    returned_ids = {slot_id for slot_ids in result.base_coverage_references.values() for slot_id in slot_ids}
+    assert root_slot not in returned_ids
+    assert len(returned_ids) == 9
+    verified = m._verified_raw_lock_index(root)
+    for year in range(2017, 2026):
+        month_ids = {
+            result.base_coverage_references[(m.SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE, f"{year}-{month:02d}")]
+            for month in range(1, 13)
+        }
+        assert len(month_ids) == 1
+        slot_id = next(iter(month_ids))[0]
+        assert verified[slot_id]["source_family"] == m.SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE
+        assert verified[slot_id]["applicable_period"] == str(year)
+    inventory = m.build_source_inventory(result.base_coverage_references, output_root=root)
+    assert len(inventory) == 648
+    assert sum(record["status"] == m.INVENTORY_AVAILABLE and record["source_family"] == m.SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE for record in inventory) == 108
+    assert all(record["status"] == m.INVENTORY_MISSING for record in inventory if record["source_family"] != m.SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE)
+    repeated = m.acquire_f3_required_slots(root, fetcher=fetcher, sleep=_no_sleep, clock=_clock)
+    assert repeated.network_attempt_count == 0
+
+
+def test_f3_year_acquisition_fails_closed_for_corrupt_locks_or_a_year_failure(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    calls: list[str] = []
+    root_slot = m.source_object_slot_id(
+        m.SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE, m.DELISTED_COMPANY_DISCOVERY_ROOT, m.DELISTED_COMPANY_ROOT_URL,
+    )
+    (root / "raw" / f"{root_slot}.bin").write_bytes(b"orphan")
+
+    def no_fetch(url: str) -> m.FetchResult:
+        calls.append(url)
+        raise AssertionError("corrupt root must not be refetched")
+
+    with pytest.raises(m.V9005StageABlocked):
+        m.acquire_f3_required_slots(root, fetcher=no_fetch, sleep=_no_sleep, clock=_clock)
+    assert calls == []
+
+    healthy_root = m.initialize_output_root(tmp_path / "healthy")
+    root_final_url = "https://www.jpx.co.jp/english/listing/stocks/delisted/archive/index.html"
+    responses = _f3_year_responses(root_final_url)
+
+    def failing_fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        if url.endswith("/2020.html"):
+            raise m.V9005StageABlocked(m.IMPLEMENTATION_FAILURE)
+        return responses[url]
+
+    with pytest.raises(m.V9005StageABlocked):
+        m.acquire_f3_required_slots(healthy_root, fetcher=failing_fetcher, sleep=_no_sleep, clock=_clock)
+    assert not any(url.endswith("/2021.html") for url in calls)
+
+
+def test_f3_year_acquisition_never_repairs_a_corrupt_year_lock(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    root_final_url = "https://www.jpx.co.jp/english/listing/stocks/delisted/archive/index.html"
+    responses = _f3_year_responses(root_final_url)
+
+    def fetcher(url: str) -> m.FetchResult:
+        return responses[url]
+
+    m.acquire_f3_required_slots(root, fetcher=fetcher, sleep=_no_sleep, clock=_clock)
+    year_url = "https://www.jpx.co.jp/english/listing/stocks/delisted/archive/2017.html"
+    year_slot = m.source_object_slot_id(m.SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE, "2017", year_url)
+    (root / "raw" / f"{year_slot}.json").write_text("{}", encoding="utf-8")
+    calls: list[str] = []
+
+    def no_refetch(url: str) -> m.FetchResult:
+        calls.append(url)
+        raise AssertionError("corrupt year lock must not be refetched")
+
+    with pytest.raises(m.V9005StageABlocked):
+        m.acquire_f3_required_slots(root, fetcher=no_refetch, sleep=_no_sleep, clock=_clock)
+    assert calls == []
+
+
 def test_f2_f4_required_slot_enumeration_is_exact_reusable_and_keeps_bridge_separate(tmp_path: Path) -> None:
     root = m.initialize_output_root(tmp_path / "out")
     responses = _monthly_statistics_enumeration_responses(range(2017, 2027))
