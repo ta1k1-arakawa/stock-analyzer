@@ -69,7 +69,6 @@ unconditionally until `ACQUISITION_IMPLEMENTATION_COMPLETE` is flipped to
 from __future__ import annotations
 
 import hashlib
-import html
 import json
 import os
 import re
@@ -1836,10 +1835,20 @@ class _F6RootStructureHtmlParser(HTMLParser):
 
 
 def _f6_normalize_text(value: str) -> str:
-    """HTML character references resolved, Unicode whitespace runs
-    collapsed to one ASCII space, leading/trailing whitespace stripped.
-    Comparison of the result stays case-sensitive (no casefold applied)."""
-    return " ".join(html.unescape(value).split())
+    """Unicode whitespace runs collapsed to one ASCII space,
+    leading/trailing whitespace stripped. Comparison of the result stays
+    case-sensitive (no casefold applied).
+
+    HTML character-reference resolution happens exactly once, upstream in
+    `_F6RootStructureHtmlParser` (`HTMLParser(convert_charrefs=True)`),
+    which already decodes references before this function ever sees the
+    text. This function must NOT call `html.unescape` again: value here
+    (DOM label text or anchor visible text) is already-parsed text, not
+    raw source bytes -- a second pass would recursively decode a literal
+    `&amp;nbsp;`/`&amp;#32;` in the original source into a real space,
+    silently matching text the source never actually rendered as the
+    target label (V9_006_F6_ROOT_OFFLINE_MEDIUM_1)."""
+    return " ".join(value.split())
 
 
 def _f6_element_siblings(parent: _F6DomElement) -> list[_F6DomElement]:

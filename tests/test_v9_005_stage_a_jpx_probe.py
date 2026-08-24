@@ -2282,8 +2282,21 @@ def test_f6_root_structure_multiple_occurrences_is_ambiguous(tmp_path: Path) -> 
     "payload, expected_status, expected_count",
     [
         (b"<h2>Historical   Index\n Value</h2>", m.STRUCTURE_CAPTURED, 1),
+        # A real &nbsp; entity is resolved exactly once by the parser
+        # (convert_charrefs=True) into an actual U+00A0, which is Unicode
+        # whitespace and so collapses to the target's plain space.
         ("<h2>Historical&nbsp;Index Value</h2>".encode(), m.STRUCTURE_CAPTURED, 1),
         (b"<h2>historical index value</h2>", m.STRUCTURE_AMBIGUOUS, 0),
+        # V9_006_F6_ROOT_OFFLINE_MEDIUM_1: only &amp; is a real entity here;
+        # decoding it once leaves the literal text "Historical&#32;Index
+        # Value" in the parsed DOM. A second (recursive) unescape pass
+        # would wrongly decode &#32; into a space and falsely match the
+        # target -- normalization must not do that second pass.
+        (b"<h2>Historical&amp;#32;Index Value</h2>", m.STRUCTURE_AMBIGUOUS, 0),
+        # Same double-decode trap with a named entity: only &amp; is real;
+        # decoding it once leaves the literal text "Historical&nbsp;Index
+        # Value" (no actual NBSP character) in the parsed DOM.
+        (b"<h2>Historical&amp;nbsp;Index Value</h2>", m.STRUCTURE_AMBIGUOUS, 0),
     ],
 )
 def test_f6_root_structure_whitespace_entity_normalization_is_exact_and_case_sensitive(
@@ -2294,6 +2307,24 @@ def test_f6_root_structure_whitespace_entity_normalization_is_exact_and_case_sen
     artifact = m.run_f6_root_structure_probe_offline(root)
     assert artifact["status"] == expected_status
     assert artifact["label_occurrence_count"] == expected_count
+
+
+def test_f6_root_structure_anchor_visible_text_is_decoded_exactly_once(tmp_path: Path) -> None:
+    """V9_006_F6_ROOT_OFFLINE_MEDIUM_1: anchor visible text must resolve
+    only the one real entity (&amp;) in the source, never recursively
+    decode the resulting literal "&nbsp;" text into an actual space. The
+    anchor is a sibling of the occurrence element (parent_children), not a
+    descendant, so its own visible text never pollutes the h2's matched
+    label text."""
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        b'<div><a href="x.html">A&amp;nbsp;B</a><h2>Historical Index Value</h2></div>',
+    )
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+    anchor_text = artifact["occurrences"][0]["anchors"]["parent_children"][0]["text"]
+    assert anchor_text == "A&nbsp;B"
 
 
 def test_f6_root_structure_sibling_index_ignores_text_nodes_and_classes_are_sorted_unique(

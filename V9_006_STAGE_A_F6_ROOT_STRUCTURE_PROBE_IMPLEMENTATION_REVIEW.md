@@ -116,3 +116,56 @@ not itself authorize any future real acquisition of the diagnostic raw
 payload -- that still requires its own fresh, explicit, one-shot human
 authorization at the point of use, exactly as fixed by
 `V9_006_STAGE_A_F6_PUBLIC_ROOT_STRUCTURE_PROBE_DESIGN.md`.
+
+## MEDIUM_1 review and remediation
+
+```text
+REVIEWED_SHA=e76ddcca1a153634676bb81ab143c054c09e1079
+CRITICAL=0
+HIGH=0
+MEDIUM=1
+RESULT=BLOCK
+FINDING=V9_006_F6_ROOT_OFFLINE_MEDIUM_1_DOUBLE_HTML_ENTITY_DECODE
+```
+
+`V9_006_F6_ROOT_OFFLINE_MEDIUM_1_DOUBLE_HTML_ENTITY_DECODE`:
+`_F6RootStructureHtmlParser` uses `HTMLParser(convert_charrefs=True)`, so
+`handle_data` text (and therefore every element's/anchor's raw descendant
+text) already has HTML character references resolved exactly once before
+`_f6_normalize_text` ever sees it. The reviewed `_f6_normalize_text` called
+`html.unescape()` again on that already-decoded text, a second, recursive
+decode pass. For source text such as `Historical&amp;#32;Index Value`, the
+parser's one real decode (`&amp;` -> `&`) correctly yields the literal
+`Historical&#32;Index Value`; the reviewed code's extra `html.unescape()`
+pass then wrongly decoded the remaining literal `&#32;` into an actual
+space, producing `Historical Index Value` and falsely matching text the
+source never actually rendered as the label. The same double-decode
+affected anchor visible text.
+
+**Remediation implemented this task:** `_f6_normalize_text` no longer calls
+`html.unescape`. It only collapses Unicode whitespace runs to one ASCII
+space and trims -- exactly the whitespace normalization the contract
+requires beyond the parser's own single upstream entity-resolution pass.
+Comparison remains case-sensitive; no other normalization, DOM-path, anchor
+category, raw-`href`, UTF-8, classification, or diagnostic-identity logic
+was touched. The now-unused `import html` was removed. See
+`_f6_normalize_text`'s updated docstring in
+`src/v9_005_stage_a_jpx_probe.py` for the exact rationale.
+
+New tests in `tests/test_v9_005_stage_a_jpx_probe.py` prove: a real
+`&nbsp;` entity still single-decodes to a matching space
+(`STRUCTURE_CAPTURED`, unchanged); `Historical&amp;#32;Index Value` and
+`Historical&amp;nbsp;Index Value` (only `&amp;` is a real entity; the
+remainder is literal text after one decode) both correctly produce
+`STRUCTURE_AMBIGUOUS` with `label_occurrence_count=0`
+(`test_f6_root_structure_whitespace_entity_normalization_is_exact_and_case_sensitive`);
+and anchor visible text `A&amp;nbsp;B` is recorded literally as `"A&nbsp;B"`,
+never `"A B"`
+(`test_f6_root_structure_anchor_visible_text_is_decoded_exactly_once`). The
+existing raw-`href` source-exactness test and the full existing F6 offline
+suite remain `PASS`: `pytest tests/test_v9_005_stage_a_jpx_probe.py -q` ->
+196 passed (193 existing + 3 new); `git diff --check` clean;
+`SOURCE_DATA_NETWORK_REQUESTS=0`.
+
+`V9_006_F6_ROOT_OFFLINE_MEDIUM_1_DOUBLE_HTML_ENTITY_DECODE=REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW`
+`V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_OFFLINE_IMPLEMENTATION=BLOCK`
