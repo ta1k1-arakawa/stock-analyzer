@@ -481,6 +481,20 @@ def test_monthly_statistics_year_selector_rejects_malformed_html() -> None:
         m.resolve_monthly_statistics_year_page_url(b'<a href="2020.html">2020', m.MONTHLY_STATISTICS_ROOT_URL, 2020)
 
 
+@pytest.mark.parametrize(
+    "page",
+    [
+        b"</a>",
+        b'<a href="2020.html">outer<a href="other.html">2020</a></a>',
+        b"<tr><a href=\"2020.html\">2020</a></tr>",
+    ],
+)
+def test_monthly_statistics_year_selector_rejects_invalid_relevant_tag_structure(page: bytes) -> None:
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.resolve_monthly_statistics_year_page_url(page, m.MONTHLY_STATISTICS_ROOT_URL, 2020)
+    assert excinfo.value.reason == m.IMPLEMENTATION_FAILURE
+
+
 def test_monthly_statistics_f2_and_f4_rows_resolve_only_their_exact_children() -> None:
     page = _monthly_statistics_year_html()
     page_url = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/archive/2020.html"
@@ -544,6 +558,28 @@ def test_monthly_statistics_evidence_traversal_rejects_unsafe_child_url() -> Non
             "https://www.jpx.co.jp/monthly/2020.html", m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
             "2020-03", selected_year=2020,
         )
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        b"<table><tr><th>x</td></tr></table>",
+        b"<table><tr><td>x</th></tr></table>",
+        b"</td>",
+        b"<td>outside</td>",
+        b"<tr><td>outside</td></tr>",
+        b"<table><tr><td>outer<td>nested</td></td></tr></table>",
+        b"<table><tr><th>Report</th><th>2020-03</th></tr></table></tr>",
+        b"<table><tr><td>premature</table></td></tr>",
+    ],
+)
+def test_monthly_statistics_evidence_traversal_rejects_malformed_relevant_table_structure(page: bytes) -> None:
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.resolve_monthly_statistics_evidence_url(
+            page, "https://www.jpx.co.jp/monthly/2020.html", m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+            "2020-03", selected_year=2020,
+        )
+    assert excinfo.value.reason == m.IMPLEMENTATION_FAILURE
 
 
 def test_monthly_statistics_traversal_does_not_hardcode_archive_numbering() -> None:

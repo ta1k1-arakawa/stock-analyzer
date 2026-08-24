@@ -345,27 +345,51 @@ class _MonthlyStatisticsHtmlParser(HTMLParser):
         self._current_row: list[_MonthlyStatisticsCell] | None = None
         self._current_cell: _MonthlyStatisticsCell | None = None
         self._anchor_stack: list[list[str]] = []
+        self._relevant_tag_stack: list[str] = []
+        self._invalid_structure = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
         if tag == "table":
+            if self._relevant_tag_stack:
+                self._invalid_structure = True
+                return
             table = _MonthlyStatisticsTable(rows=[])
             self.tables.append(table)
             self._table_stack.append(table)
-        elif tag == "tr" and self._table_stack:
+            self._relevant_tag_stack.append(tag)
+        elif tag == "tr":
+            if not self._relevant_tag_stack or self._relevant_tag_stack[-1] != "table":
+                self._invalid_structure = True
+                return
             self._current_row = []
             self._table_stack[-1].rows.append(self._current_row)
-        elif tag in {"th", "td"} and self._current_row is not None:
+            self._relevant_tag_stack.append(tag)
+        elif tag in {"th", "td"}:
+            if not self._relevant_tag_stack or self._relevant_tag_stack[-1] != "tr" or self._current_row is None:
+                self._invalid_structure = True
+                return
             self._current_cell = _MonthlyStatisticsCell(tag=tag, text_parts=[], hrefs=[])
             self._current_row.append(self._current_cell)
+            self._relevant_tag_stack.append(tag)
         elif tag == "a":
+            if "a" in self._relevant_tag_stack:
+                self._invalid_structure = True
+                return
             href = attributes.get("href")
             self._anchor_stack.append([href or "", ""])
+            self._relevant_tag_stack.append(tag)
             if self._current_cell is not None and href is not None:
                 self._current_cell.hrefs.append(href)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "a" and self._anchor_stack:
+        if tag not in {"table", "tr", "th", "td", "a"}:
+            return
+        if not self._relevant_tag_stack or self._relevant_tag_stack[-1] != tag:
+            self._invalid_structure = True
+            return
+        self._relevant_tag_stack.pop()
+        if tag == "a":
             href, text = self._anchor_stack.pop()
             self.anchors.append((href, " ".join(text.split())))
         elif tag in {"th", "td"}:
@@ -374,6 +398,10 @@ class _MonthlyStatisticsHtmlParser(HTMLParser):
             self._current_row = None
         elif tag == "table" and self._table_stack:
             self._table_stack.pop()
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"table", "tr", "th", "td", "a"}:
+            self._invalid_structure = True
 
     def handle_data(self, data: str) -> None:
         if self._current_cell is not None:
@@ -391,7 +419,14 @@ def _parse_monthly_statistics_html(page_bytes: bytes) -> _MonthlyStatisticsHtmlP
         parser.close()
     except Exception as exc:
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
-    if parser._anchor_stack or parser._table_stack or parser._current_row is not None or parser._current_cell is not None:
+    if (
+        parser._invalid_structure
+        or parser._relevant_tag_stack
+        or parser._anchor_stack
+        or parser._table_stack
+        or parser._current_row is not None
+        or parser._current_cell is not None
+    ):
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
     return parser
 
