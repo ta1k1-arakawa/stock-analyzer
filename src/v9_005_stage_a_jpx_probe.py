@@ -69,6 +69,7 @@ unconditionally until `ACQUISITION_IMPLEMENTATION_COMPLETE` is flipped to
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -172,6 +173,14 @@ LISTING_CO_ROOT_URL = "https://www.jpx.co.jp/english/listing/co/index.html"
 # F6: TOPIX Historical Index Value (one GLOBAL object).
 TOPIX_ROOT_URL = "https://www.jpx.co.jp/english/markets/indices/topix/"
 F6_SEMANTIC_SECTION_LABEL = "Historical Index Value"
+
+# F6 root-structure diagnostic (V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_
+# IMPLEMENTATION_CONTRACT): a dedicated raw-lock applicable_period, distinct
+# from TOPIX_DISCOVERY_ROOT/TOPIX_GLOBAL_2017_2025, so its raw lock and
+# derived artifact never alias or get mistaken for production F6
+# support/evidence identity. See the offline-only helpers near the bottom
+# of this module.
+F6_ROOT_STRUCTURE_DIAGNOSTIC = "F6_ROOT_STRUCTURE_DIAGNOSTIC"
 
 # F7: exact GPT-bound per-month calendar locator template and acquisition
 # envelope (V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md F7).
@@ -1713,6 +1722,397 @@ def build_safe_summary(
     }
 
 
+# --- F6 root-structure diagnostic (offline-only) ----------------------------
+# V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_OFFLINE_IMPLEMENTATION: this section
+# parses an ALREADY-LOCKED F6_ROOT_STRUCTURE_DIAGNOSTIC raw payload into the
+# deterministic `V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_RESULT.json` artifact
+# bound by `V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_IMPLEMENTATION_CONTRACT.md`.
+# It performs zero network I/O: every entry point here reads only an
+# already-durable raw lock via the existing `read_locked_payload`, never
+# accepts a fetcher/sleep/clock, and never calls `fetch_once_with_retry`,
+# `ensure_locked_payload`, or `lock_first_complete_payload`. Its structural
+# outcomes (`STRUCTURE_CAPTURED`/`STRUCTURE_AMBIGUOUS`/`STRUCTURE_EXTRACTION_
+# FAILED`) are diagnostic-only and are never mapped to, or usable as,
+# `INVENTORY_AVAILABLE`/`INVENTORY_MISSING` -- nothing here calls or feeds
+# `build_source_inventory`.
+
+STRUCTURE_CAPTURED = "STRUCTURE_CAPTURED"
+STRUCTURE_AMBIGUOUS = "STRUCTURE_AMBIGUOUS"
+STRUCTURE_EXTRACTION_FAILED = "STRUCTURE_EXTRACTION_FAILED"
+
+F6_ROOT_STRUCTURE_PROBE_RESULT_SCHEMA_VERSION = "V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_RESULT_V1"
+F6_ROOT_STRUCTURE_PROBE_DIAGNOSTIC_NAME = "V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE"
+F6_ROOT_STRUCTURE_PROBE_RESULT_FILENAME = "V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_RESULT.json"
+
+_F6_PAYLOAD_DECODE_FAILED = "PAYLOAD_DECODE_FAILED"
+_F6_MALFORMED_DOM_STRUCTURE = "MALFORMED_DOM_STRUCTURE"
+_F6_AMBIGUOUS_RAW_HREF_ATTRIBUTE = "AMBIGUOUS_RAW_HREF_ATTRIBUTE"
+
+_F6_VOID_ELEMENTS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+})
+
+
+class _F6RootStructureExtractionFailed(Exception):
+    """Internal, deterministic parse-failure signal carrying a stable,
+    non-secret reason token for the STRUCTURE_EXTRACTION_FAILED artifact."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class _F6DomElement:
+    __slots__ = ("tag", "attrs", "children", "parent", "raw_starttag_text")
+
+    def __init__(self, tag: str, attrs: dict[str, str | None], parent: "_F6DomElement | None") -> None:
+        self.tag = tag
+        self.attrs = attrs
+        self.children: list["_F6DomElement | str"] = []
+        self.parent = parent
+        self.raw_starttag_text: str | None = None
+
+
+class _F6RootStructureHtmlParser(HTMLParser):
+    """Builds a full generic DOM tree with strict stack-based start/end tag
+    validation (every tag, not only a fixed relevant subset), since the DOM
+    path and leaf-most label rule require deterministic structure for the
+    whole document, not just table markup."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.root = _F6DomElement(tag="#document", attrs={}, parent=None)
+        self._stack: list[_F6DomElement] = [self.root]
+        self.invalid_structure = False
+        self._open_anchor_count = 0
+
+    def _open(self, tag: str, attrs: list[tuple[str, str | None]]) -> _F6DomElement:
+        tag_lower = tag.lower()
+        # HTML forbids nested <a>; reject it deterministically rather than
+        # build an ambiguous anchor tree (mirrors the existing nested-anchor
+        # rejection already reviewed in _MonthlyStatisticsHtmlParser).
+        if tag_lower == "a" and self._open_anchor_count > 0:
+            self.invalid_structure = True
+        attributes: dict[str, str | None] = {}
+        for name, value in attrs:
+            key = name.lower()
+            if key not in attributes:
+                attributes[key] = value
+        parent = self._stack[-1]
+        element = _F6DomElement(tag_lower, attributes, parent)
+        parent.children.append(element)
+        element.raw_starttag_text = self.get_starttag_text()
+        self._stack.append(element)
+        if tag_lower == "a":
+            self._open_anchor_count += 1
+        return element
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        element = self._open(tag, attrs)
+        if element.tag in _F6_VOID_ELEMENTS:
+            self._stack.pop()
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        element = self._open(tag, attrs)
+        if element.tag == "a":
+            self._open_anchor_count -= 1
+        self._stack.pop()
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_lower = tag.lower()
+        if tag_lower in _F6_VOID_ELEMENTS:
+            return
+        if len(self._stack) <= 1 or self._stack[-1].tag != tag_lower:
+            self.invalid_structure = True
+            return
+        if tag_lower == "a":
+            self._open_anchor_count -= 1
+        self._stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        if data:
+            self._stack[-1].children.append(data)
+
+
+def _f6_normalize_text(value: str) -> str:
+    """HTML character references resolved, Unicode whitespace runs
+    collapsed to one ASCII space, leading/trailing whitespace stripped.
+    Comparison of the result stays case-sensitive (no casefold applied)."""
+    return " ".join(html.unescape(value).split())
+
+
+def _f6_element_siblings(parent: _F6DomElement) -> list[_F6DomElement]:
+    return [child for child in parent.children if isinstance(child, _F6DomElement)]
+
+
+def _f6_normalized_classes(value: str | None) -> list[str]:
+    if not value:
+        return []
+    tokens = [token for token in re.split(r"\s+", value.strip()) if token]
+    return sorted(set(tokens))
+
+
+def _f6_dom_path(element: _F6DomElement) -> list[dict[str, Any]]:
+    chain: list[dict[str, Any]] = []
+    node: _F6DomElement | None = element
+    while node is not None and node.parent is not None:
+        siblings = _f6_element_siblings(node.parent)
+        sibling_index = next(index for index, sibling in enumerate(siblings) if sibling is node)
+        chain.append({
+            "tag": node.tag,
+            "sibling_index": sibling_index,
+            "id": node.attrs.get("id"),
+            "classes": _f6_normalized_classes(node.attrs.get("class")),
+        })
+        node = node.parent
+    chain.reverse()
+    return chain
+
+
+_F6_TAG_NAME_RE = re.compile(r"^<[^\s/>]+")
+_F6_ATTR_TOKEN_RE = re.compile(r'([^\s"\'>/=]+)(?:\s*=\s*("([^"]*)"|\'([^\']*)\'|([^\s"\'=<>`]+)))?')
+
+
+def _f6_raw_attribute_value(starttag_text: str | None, attr_name: str) -> tuple[bool, str | None]:
+    """Return (unambiguous, raw_value_or_None) reading the exact raw
+    start-tag source text captured by the parser -- never HTML-entity
+    decoded -- so a recorded href keeps its exact source spelling
+    (including entity spelling) and is never resolved/reconstructed."""
+    if not isinstance(starttag_text, str):
+        return False, None
+    tag_match = _F6_TAG_NAME_RE.match(starttag_text)
+    if not tag_match:
+        return False, None
+    rest = starttag_text[tag_match.end():]
+    if rest.endswith("/>"):
+        rest = rest[:-2]
+    elif rest.endswith(">"):
+        rest = rest[:-1]
+    found: list[str | None] = []
+    pos = 0
+    length = len(rest)
+    while pos < length:
+        while pos < length and rest[pos].isspace():
+            pos += 1
+        if pos >= length:
+            break
+        match = _F6_ATTR_TOKEN_RE.match(rest, pos)
+        if not match or match.end() == pos:
+            return False, None
+        name = match.group(1)
+        if match.group(2) is not None:
+            value = match.group(3)
+            if value is None:
+                value = match.group(4)
+            if value is None:
+                value = match.group(5)
+        else:
+            value = None
+        if name.lower() == attr_name:
+            found.append(value)
+        pos = match.end()
+    if len(found) > 1:
+        return False, None
+    return True, (found[0] if found else None)
+
+
+def _f6_anchor_of(node: _F6DomElement, raw_text: dict[int, str]) -> dict[str, Any]:
+    unambiguous, raw_href = _f6_raw_attribute_value(node.raw_starttag_text, "href")
+    if not unambiguous:
+        raise _F6RootStructureExtractionFailed(_F6_AMBIGUOUS_RAW_HREF_ATTRIBUTE)
+    return {
+        "text": _f6_normalize_text(raw_text.get(id(node), "")),
+        "href": raw_href,
+        "dom_path": _f6_dom_path(node),
+    }
+
+
+def _f6_following_element_sibling(element: _F6DomElement) -> _F6DomElement | None:
+    if element.parent is None:
+        return None
+    siblings = _f6_element_siblings(element.parent)
+    index = next(i for i, sibling in enumerate(siblings) if sibling is element)
+    if index + 1 < len(siblings):
+        return siblings[index + 1]
+    return None
+
+
+def _f6_build_anchors(element: _F6DomElement, raw_text: dict[int, str]) -> dict[str, Any]:
+    self_anchor = _f6_anchor_of(element, raw_text) if element.tag == "a" else None
+    children = [_f6_anchor_of(c, raw_text) for c in _f6_element_siblings(element) if c.tag == "a"]
+    parent_children = (
+        [_f6_anchor_of(c, raw_text) for c in _f6_element_siblings(element.parent) if c.tag == "a"]
+        if element.parent is not None else []
+    )
+    following_sibling = _f6_following_element_sibling(element)
+    following_sibling_children = (
+        [_f6_anchor_of(c, raw_text) for c in _f6_element_siblings(following_sibling) if c.tag == "a"]
+        if following_sibling is not None else []
+    )
+    return {
+        "self": self_anchor,
+        "children": children,
+        "parent_children": parent_children,
+        "following_sibling_children": following_sibling_children,
+    }
+
+
+def _f6_analyze_dom(
+    root: _F6DomElement, target_normalized: str,
+) -> tuple[list[_F6DomElement], dict[int, str], set[int]]:
+    """Single traversal: document order, per-element raw descendant text,
+    and the leaf-most exact-normalized-label occurrence set (an element
+    matches only if none of its descendant elements also match)."""
+    doc_order: list[_F6DomElement] = []
+    raw_text: dict[int, str] = {}
+    matches: dict[int, bool] = {}
+    has_matching_descendant: dict[int, bool] = {}
+
+    def visit(node: _F6DomElement) -> None:
+        if node is not root:
+            doc_order.append(node)
+        text_parts: list[str] = []
+        child_has_match = False
+        for child in node.children:
+            if isinstance(child, str):
+                text_parts.append(child)
+            else:
+                visit(child)
+                text_parts.append(raw_text[id(child)])
+                if matches.get(id(child), False) or has_matching_descendant.get(id(child), False):
+                    child_has_match = True
+        text = "".join(text_parts)
+        raw_text[id(node)] = text
+        if node is not root:
+            matches[id(node)] = _f6_normalize_text(text) == target_normalized
+        has_matching_descendant[id(node)] = child_has_match
+
+    visit(root)
+    leaf_most_ids = {
+        id(node) for node in doc_order
+        if matches.get(id(node), False) and not has_matching_descendant.get(id(node), False)
+    }
+    return doc_order, raw_text, leaf_most_ids
+
+
+def _f6_extract_label_occurrences(text: str) -> list[dict[str, Any]]:
+    parser = _F6RootStructureHtmlParser()
+    try:
+        parser.feed(text)
+        parser.close()
+    except Exception as exc:
+        raise _F6RootStructureExtractionFailed(_F6_MALFORMED_DOM_STRUCTURE) from exc
+    if parser.invalid_structure or len(parser._stack) != 1:
+        raise _F6RootStructureExtractionFailed(_F6_MALFORMED_DOM_STRUCTURE)
+    target_normalized = _f6_normalize_text(F6_SEMANTIC_SECTION_LABEL)
+    doc_order, raw_text, leaf_most_ids = _f6_analyze_dom(parser.root, target_normalized)
+    occurrence_elements = [node for node in doc_order if id(node) in leaf_most_ids]
+    return [
+        {"dom_path": _f6_dom_path(node), "anchors": _f6_build_anchors(node, raw_text)}
+        for node in occurrence_elements
+    ]
+
+
+def _f6_decode_strict_utf8(raw: bytes) -> str:
+    payload = raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw
+    return payload.decode("utf-8")
+
+
+def _f6_root_structure_base_fields(locked: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": F6_ROOT_STRUCTURE_PROBE_RESULT_SCHEMA_VERSION,
+        "diagnostic": F6_ROOT_STRUCTURE_PROBE_DIAGNOSTIC_NAME,
+        "requested_url": locked["requested_url"],
+        "resolved_url": locked["resolved_url"],
+        "http_status": locked["http_status"],
+        "byte_length": locked["byte_length"],
+        "sha256": locked["sha256"],
+        "retrieval_timestamp_utc": locked["retrieval_timestamp_utc"],
+        "target_label": F6_SEMANTIC_SECTION_LABEL,
+    }
+
+
+def read_f6_root_structure_diagnostic_lock(output_root: str | os.PathLike[str]) -> dict[str, Any]:
+    """Read ONLY the already-existing F6_ROOT_STRUCTURE_DIAGNOSTIC raw lock
+    for the bound TOPIX_ROOT_URL. Fails closed (raises) if it is absent,
+    corrupt, or does not match the expected identity. Never fetches,
+    retries, sleeps, or accepts a clock -- this is a pure filesystem read."""
+    locked = read_locked_payload(
+        output_root,
+        SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
+        F6_ROOT_STRUCTURE_DIAGNOSTIC,
+        TOPIX_ROOT_URL,
+    )
+    if locked is None:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    return locked
+
+
+def parse_f6_root_structure_probe(locked: Mapping[str, Any]) -> dict[str, Any]:
+    """Pure and deterministic: turn an already-locked diagnostic raw
+    payload into the V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_RESULT_V1
+    artifact dict. Touches no filesystem, network, or clock."""
+    base = _f6_root_structure_base_fields(locked)
+    try:
+        text = _f6_decode_strict_utf8(locked["raw"])
+    except UnicodeDecodeError:
+        return {
+            **base, "status": STRUCTURE_EXTRACTION_FAILED,
+            "label_occurrence_count": None, "occurrences": [],
+            "failure_reason": _F6_PAYLOAD_DECODE_FAILED,
+        }
+    try:
+        occurrences = _f6_extract_label_occurrences(text)
+    except _F6RootStructureExtractionFailed as exc:
+        return {
+            **base, "status": STRUCTURE_EXTRACTION_FAILED,
+            "label_occurrence_count": None, "occurrences": [],
+            "failure_reason": exc.reason,
+        }
+    count = len(occurrences)
+    status = STRUCTURE_CAPTURED if count == 1 else STRUCTURE_AMBIGUOUS
+    return {
+        **base, "status": status,
+        "label_occurrence_count": count, "occurrences": occurrences,
+        "failure_reason": None,
+    }
+
+
+def write_f6_root_structure_probe_artifact(
+    output_root: str | os.PathLike[str], artifact: Mapping[str, Any],
+) -> Path:
+    """Write the diagnostic artifact under the same dedicated diagnostic
+    output_root (never production Stage-A output). First write is an
+    atomic create; if the artifact already exists, reuse it only when the
+    recomputed canonical bytes are byte-identical, otherwise fail closed.
+    Never overwrites."""
+    path = Path(output_root) / F6_ROOT_STRUCTURE_PROBE_RESULT_FILENAME
+    payload = canonical_bytes(artifact)
+    if path.exists():
+        try:
+            existing = path.read_bytes()
+        except Exception as exc:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+        if existing != payload:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        return path
+    _atomic_create(path, payload)
+    return path
+
+
+def run_f6_root_structure_probe_offline(output_root: str | os.PathLike[str]) -> dict[str, Any]:
+    """Fully offline seam: reads only the already-locked
+    F6_ROOT_STRUCTURE_DIAGNOSTIC raw payload, parses it deterministically,
+    and writes/reuses the result artifact. Never accepts a fetcher, sleep,
+    or clock, and never calls a network/fetch/retry/ensure_locked_payload
+    function -- SOURCE_DATA_NETWORK_REQUESTS is always 0 for this path."""
+    locked = read_f6_root_structure_diagnostic_lock(output_root)
+    artifact = parse_f6_root_structure_probe(locked)
+    write_f6_root_structure_probe_artifact(output_root, artifact)
+    return artifact
+
+
 # --- Orchestration -----------------------------------------------------------
 
 def run_stage_a(
@@ -1867,6 +2267,8 @@ __all__ = [
     "CALENDAR_ENVELOPE_FIRST_YEAR_MONTH", "CALENDAR_ENVELOPE_LAST_YEAR_MONTH",
     "CALENDAR_MONTHLY_LOCATOR_TEMPLATE", "CALENDAR_PAGE_URL", "CHATGPT_DECISION_REQUIRED", "CONFIRMATION",
     "DELISTED_COMPANY_DISCOVERY_ROOT", "DELISTED_COMPANY_ROOT_URL", "F2_SEMANTIC_ROW_LABEL", "F4_SEMANTIC_ROW_LABEL", "F6_SEMANTIC_SECTION_LABEL",
+    "F6_ROOT_STRUCTURE_DIAGNOSTIC", "F6_ROOT_STRUCTURE_PROBE_RESULT_FILENAME",
+    "F6_ROOT_STRUCTURE_PROBE_RESULT_SCHEMA_VERSION", "F6_ROOT_STRUCTURE_PROBE_DIAGNOSTIC_NAME",
     "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
     "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
     "F2F4RequiredSlotAcquisition", "F3RequiredSlotAcquisition", "F7RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
@@ -1878,6 +2280,7 @@ __all__ = [
     "SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT", "SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE",
     "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE",
     "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE", "STAGE", "STUDY",
+    "STRUCTURE_CAPTURED", "STRUCTURE_AMBIGUOUS", "STRUCTURE_EXTRACTION_FAILED",
     "TOPIX_ROOT_URL", "VALID_SLOT_KINDS",
     "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "acquire_f2_f4_required_slots", "acquire_f3_required_slots", "acquire_f7_required_slots", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
     "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
@@ -1885,10 +2288,11 @@ __all__ = [
     "derive_final_signal_d0", "derive_stage_b_global_end_exclusive", "ensure_locked_payload",
     "extract_data_j_xls_url", "f2_bridge_months", "fetch_once_with_retry",
     "initialize_output_root", "inventory_months", "lock_first_complete_payload", "monthly_statistics_discovery_year_period", "nth_trading_day_after",
+    "parse_f6_root_structure_probe", "read_f6_root_structure_diagnostic_lock",
     "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
     "resolve_delisted_company_year_url", "resolve_f7_calendar_url", "resolve_month_locator", "resolve_monthly_statistics_evidence_url",
-    "resolve_monthly_statistics_year_page_url", "run_stage_a",
+    "resolve_monthly_statistics_year_page_url", "run_f6_root_structure_probe_offline", "run_stage_a",
     "sha256_bytes", "source_object_slot_id", "validate_jpx_url", "verify_acquisition_implementation_ready",
     "verify_locator_contract_complete", "verify_raw_provenance",
-    "verify_signal_grid_binding",
+    "verify_signal_grid_binding", "write_f6_root_structure_probe_artifact",
 ]

@@ -2204,3 +2204,320 @@ def test_ps1_never_hardcodes_a_confirmation_from_chat() -> None:
     # matches src/v9_005_stage_a_jpx_probe.CONFIRMATION -- never a
     # session-specific or chat-supplied authorization string.
     assert m.CONFIRMATION in text
+
+
+# --- V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_OFFLINE_IMPLEMENTATION ----------
+# Fully offline: every fixture below is synthetic, already-locked bytes.
+# None of these tests perform, or are permitted to require, any network
+# call, per V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_IMPLEMENTATION_CONTRACT.md.
+
+def _lock_f6_diagnostic(
+    root: Path, payload: bytes, *, resolved_url: str | None = None, http_status: int = 200,
+) -> dict[str, object]:
+    return m.lock_first_complete_payload(
+        root,
+        source_family=m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
+        applicable_period=m.F6_ROOT_STRUCTURE_DIAGNOSTIC,
+        requested_url=m.TOPIX_ROOT_URL,
+        fetch_result=m.FetchResult(payload, resolved_url or m.TOPIX_ROOT_URL, http_status),
+        retrieval_timestamp_utc="2026-08-24T00:00:00Z",
+    )
+
+
+def test_f6_root_structure_single_occurrence_is_captured(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, b"<html><body><h2>Historical Index Value</h2></body></html>")
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+    assert artifact["label_occurrence_count"] == 1
+    assert artifact["failure_reason"] is None
+    assert len(artifact["occurrences"]) == 1
+    assert artifact["occurrences"][0]["dom_path"][-1]["tag"] == "h2"
+    assert artifact["target_label"] == m.F6_SEMANTIC_SECTION_LABEL
+    assert artifact["requested_url"] == m.TOPIX_ROOT_URL
+    assert artifact["schema_version"] == m.F6_ROOT_STRUCTURE_PROBE_RESULT_SCHEMA_VERSION
+    assert artifact["diagnostic"] == m.F6_ROOT_STRUCTURE_PROBE_DIAGNOSTIC_NAME
+
+
+def test_f6_root_structure_inline_markup_still_matches(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, b"<h2>Historical <em>Index</em> Value</h2>")
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+    assert artifact["label_occurrence_count"] == 1
+    assert artifact["occurrences"][0]["dom_path"][-1]["tag"] == "h2"
+
+
+def test_f6_root_structure_leaf_most_excludes_matching_ancestor(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, b"<div><span>Historical Index Value</span></div>")
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+    assert artifact["label_occurrence_count"] == 1
+    only = artifact["occurrences"][0]
+    assert only["dom_path"][-1]["tag"] == "span"
+    assert [c["tag"] for c in only["dom_path"]] == ["div", "span"]
+
+
+def test_f6_root_structure_zero_occurrences_is_ambiguous(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, b"<h2>Nothing Here</h2>")
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_AMBIGUOUS
+    assert artifact["label_occurrence_count"] == 0
+    assert artifact["occurrences"] == []
+    assert artifact["failure_reason"] is None
+
+
+def test_f6_root_structure_multiple_occurrences_is_ambiguous(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, b"<h2>Historical Index Value</h2><h3>Historical Index Value</h3>")
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_AMBIGUOUS
+    assert artifact["label_occurrence_count"] == 2
+    assert [o["dom_path"][-1]["tag"] for o in artifact["occurrences"]] == ["h2", "h3"]
+
+
+@pytest.mark.parametrize(
+    "payload, expected_status, expected_count",
+    [
+        (b"<h2>Historical   Index\n Value</h2>", m.STRUCTURE_CAPTURED, 1),
+        ("<h2>Historical&nbsp;Index Value</h2>".encode(), m.STRUCTURE_CAPTURED, 1),
+        (b"<h2>historical index value</h2>", m.STRUCTURE_AMBIGUOUS, 0),
+    ],
+)
+def test_f6_root_structure_whitespace_entity_normalization_is_exact_and_case_sensitive(
+    tmp_path: Path, payload: bytes, expected_status: str, expected_count: int,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, payload)
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == expected_status
+    assert artifact["label_occurrence_count"] == expected_count
+
+
+def test_f6_root_structure_sibling_index_ignores_text_nodes_and_classes_are_sorted_unique(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        b'<div>loose text<span>skip</span><span class="b a a">Historical Index Value</span></div>',
+    )
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+    last = artifact["occurrences"][0]["dom_path"][-1]
+    assert last == {"tag": "span", "sibling_index": 1, "id": None, "classes": ["a", "b"]}
+
+
+def test_f6_root_structure_all_four_anchor_relation_categories(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b"<section>"
+            b'<a href="parent1.html">P1</a>'
+            b'<h2>Historical Index Value<a href="child1.html"><img src="icon.png"></a></h2>'
+            b'<p><a href="follow1.html">F1</a><a href="follow2.html">F2</a></p>'
+            b'<a href="parent2.html">P2</a>'
+            b"</section>"
+        ),
+    )
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+    anchors = artifact["occurrences"][0]["anchors"]
+    assert anchors["self"] is None
+    assert [a["href"] for a in anchors["children"]] == ["child1.html"]
+    assert [a["href"] for a in anchors["parent_children"]] == ["parent1.html", "parent2.html"]
+    assert [a["href"] for a in anchors["following_sibling_children"]] == ["follow1.html", "follow2.html"]
+
+
+def test_f6_root_structure_self_anchor_when_occurrence_element_is_an_anchor(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, b'<div><a href="self.html">Historical Index Value</a></div>')
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+    anchors = artifact["occurrences"][0]["anchors"]
+    assert anchors["self"] == {
+        "text": "Historical Index Value", "href": "self.html",
+        "dom_path": artifact["occurrences"][0]["dom_path"],
+    }
+    assert anchors["children"] == []
+
+
+def test_f6_root_structure_raw_href_preserved_source_exact_never_resolved(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        b'<h2>Historical Index Value<a href="page.html?a=1&amp;b=2"><img src="i.png"></a></h2>',
+    )
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+    href = artifact["occurrences"][0]["anchors"]["children"][0]["href"]
+    assert href == "page.html?a=1&amp;b=2"  # entity spelling untouched, never decoded/resolved
+    assert m.TOPIX_ROOT_URL not in href
+
+
+def test_f6_root_structure_unrelated_numerical_page_text_absent_from_artifact(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b"<html><body>"
+            b"<table><tr><td>2024-01-04</td><td>1783.51</td></tr></table>"
+            b"<h2>Historical Index Value</h2>"
+            b"</body></html>"
+        ),
+    )
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    serialized = json.dumps(artifact)
+    assert "1783.51" not in serialized
+    assert "2024-01-04" not in serialized
+
+
+def test_f6_root_structure_same_locked_bytes_reprocessed_is_byte_identical_no_overwrite(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, b"<h2>Historical Index Value</h2>")
+    first = m.run_f6_root_structure_probe_offline(root)
+    second = m.run_f6_root_structure_probe_offline(root)
+    assert first == second
+    result_path = root / m.F6_ROOT_STRUCTURE_PROBE_RESULT_FILENAME
+    on_disk = result_path.read_bytes()
+    assert on_disk == m.canonical_bytes(first)
+
+    # A differing artifact for the same path must fail closed, never overwrite.
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.write_f6_root_structure_probe_artifact(root, {**first, "status": "TAMPERED"})
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert result_path.read_bytes() == on_disk
+
+
+def test_f6_root_structure_missing_diagnostic_lock_fails_closed(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    with pytest.raises(m.V9005StageABlocked):
+        m.read_f6_root_structure_diagnostic_lock(root)
+    with pytest.raises(m.V9005StageABlocked):
+        m.run_f6_root_structure_probe_offline(root)
+    assert not (root / m.F6_ROOT_STRUCTURE_PROBE_RESULT_FILENAME).exists()
+
+
+def test_f6_root_structure_corrupt_diagnostic_lock_fails_closed(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    locked = _lock_f6_diagnostic(root, b"<h2>Historical Index Value</h2>")
+    key = m.source_object_slot_id(
+        m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.F6_ROOT_STRUCTURE_DIAGNOSTIC, m.TOPIX_ROOT_URL,
+    )
+    (root / "raw" / f"{key}.bin").write_bytes(b"tampered-bytes")
+    with pytest.raises(m.V9005StageABlocked):
+        m.run_f6_root_structure_probe_offline(root)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"<h2>Historical Index Value</h3>",
+        b"</div><h2>Historical Index Value</h2>",
+        b"<div><h2>Historical Index Value</h2>",
+        b'<h2>Historical Index Value<a href="x.html">outer<a href="y.html">nested</a></a></h2>',
+    ],
+)
+def test_f6_root_structure_malformed_dom_fails_closed_deterministically(
+    tmp_path: Path, payload: bytes,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, payload)
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_EXTRACTION_FAILED
+    assert artifact["label_occurrence_count"] is None
+    assert artifact["occurrences"] == []
+    assert artifact["failure_reason"] == m._F6_MALFORMED_DOM_STRUCTURE
+    # Deterministic: reprocessing the same locked bytes reproduces the same artifact.
+    root2 = m.initialize_output_root(tmp_path / "out2")
+    _lock_f6_diagnostic(root2, payload)
+    assert m.run_f6_root_structure_probe_offline(root2) == artifact
+
+
+def test_f6_root_structure_invalid_utf8_fails_closed_with_no_fallback(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, b"<h2>Historical Index Value \xff\xfe</h2>")
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_EXTRACTION_FAILED
+    assert artifact["failure_reason"] == m._F6_PAYLOAD_DECODE_FAILED
+    assert artifact["label_occurrence_count"] is None
+    assert artifact["occurrences"] == []
+
+
+def test_f6_root_structure_utf8_bom_is_allowed_and_stripped(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, b"\xef\xbb\xbf<h2>Historical Index Value</h2>")
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+    assert artifact["label_occurrence_count"] == 1
+
+
+def test_f6_root_structure_ambiguous_raw_href_fails_extraction(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    # Two href attributes on one anchor: the raw href cannot be determined
+    # unambiguously, so extraction must fail closed rather than guess.
+    _lock_f6_diagnostic(
+        root,
+        b'<h2>Historical Index Value<a href="a.html" href="b.html"><img src="i.png"></a></h2>',
+    )
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_EXTRACTION_FAILED
+    assert artifact["failure_reason"] == m._F6_AMBIGUOUS_RAW_HREF_ATTRIBUTE
+
+
+def test_f6_root_structure_offline_seam_calls_no_network_fetch_retry_or_ensure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, b"<h2>Historical Index Value</h2>")
+
+    def _blocked(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("network/fetch/retry function invoked by offline seam")
+
+    monkeypatch.setattr(m, "fetch_once_with_retry", _blocked)
+    monkeypatch.setattr(m, "ensure_locked_payload", _blocked)
+    monkeypatch.setattr(m, "lock_first_complete_payload", _blocked)
+    artifact = m.run_f6_root_structure_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+
+    # None of the offline seam's entry points accept a fetcher/sleep/clock.
+    for func in (
+        m.read_f6_root_structure_diagnostic_lock,
+        m.parse_f6_root_structure_probe,
+        m.write_f6_root_structure_probe_artifact,
+        m.run_f6_root_structure_probe_offline,
+    ):
+        params = set(inspect.signature(func).parameters)
+        assert params.isdisjoint({"fetcher", "sleep", "clock"})
+
+
+def test_f6_root_structure_diagnostic_slot_cannot_populate_f6_inventory(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    locked = _lock_f6_diagnostic(root, b"<h2>Historical Index Value</h2>")
+    diagnostic_slot_id = m.source_object_slot_id(
+        m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.F6_ROOT_STRUCTURE_DIAGNOSTIC, m.TOPIX_ROOT_URL,
+    )
+    assert diagnostic_slot_id == m.source_object_slot_id(
+        locked["source_family"], locked["applicable_period"], locked["requested_url"],
+    )
+    # The diagnostic applicable_period is not a valid inventory month, so it
+    # can never be wired into build_source_inventory's coverage references.
+    with pytest.raises(m.V9005StageABlocked):
+        m.build_source_inventory({
+            (m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.F6_ROOT_STRUCTURE_DIAGNOSTIC): (diagnostic_slot_id,),
+        })
+    # With no coverage references at all, F6 remains MISSING for every month
+    # exactly as before this diagnostic seam existed.
+    inventory = m.build_source_inventory()
+    f6_records = [r for r in inventory if r["source_family"] == m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE]
+    assert len(f6_records) == len(m.inventory_months())
+    assert all(r["status"] == m.INVENTORY_MISSING for r in f6_records)
+
+
+def test_f6_root_structure_acquisition_implementation_complete_still_false() -> None:
+    assert m.ACQUISITION_IMPLEMENTATION_COMPLETE is False
