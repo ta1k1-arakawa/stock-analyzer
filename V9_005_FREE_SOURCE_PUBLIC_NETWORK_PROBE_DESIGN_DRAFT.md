@@ -152,6 +152,38 @@ Saturday and Sunday are false. If official material cannot classify a required
 date unambiguously, Stage A fails. The deterministic inventory and provenance
 rules apply to the calendar source family.
 
+### Retry policy binding (V9_006_STAGE_A_RETRY_POLICY)
+
+Stage-A transport retries follow the exact bound policy recorded in
+`V9_006_STAGE_A_RETRY_POLICY.md`:
+
+```text
+maximum_attempts_per_source_object=3
+maximum_retries_per_source_object=2
+backoff_seconds=[5,30]
+jitter=false
+```
+
+Retries are permitted only before the first complete payload for a given
+source object/request and only for that exact same source object/request,
+preserving source family, applicable period, requested URL, request
+parameters, and provider/domain exactly -- no alternate URL, provider,
+mirror, month, suffix, or parameter change. Retryable transport classes
+are exactly `NETWORK_TIMEOUT`, `CONNECTION_RESET`,
+`TEMPORARY_DNS_FAILURE`, `HTTP_408`, `HTTP_425`, `HTTP_429`, `HTTP_500`,
+`HTTP_502`, `HTTP_503`, and `HTTP_504`; no other condition is retryable,
+and a nonretryable condition (including an off-domain/untrusted redirect,
+a response-host mismatch, a parser/schema failure, a semantic/data-quality
+failure, missing/ambiguous evidence, or a governance/implementation
+failure) stops immediately with no remaining attempts consumed. Once a
+complete payload for a source object is locked it must never be fetched
+again; parser/semantic repair may only reprocess the exact same locked
+bytes. If all attempts fail with only retryable transport conditions,
+`failure_class=PLUMBING_FAILURE_RETRIABLE` and the Stage-A run STOPs; this
+is never converted into `SOURCE_OR_DATA_FEASIBILITY_FAILURE`, no new run
+starts automatically, and the same human authorization is never reused for
+another attempt.
+
 ### Required Stage-A evidence
 
 Stage A passes only if all of the following are satisfied:

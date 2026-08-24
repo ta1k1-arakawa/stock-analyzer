@@ -79,7 +79,7 @@ opening, model fitting, backtesting, profit calculation, or V9 design
 freeze, and does not consume the human's existing chat-given Stage-A
 authorization.
 
-## Next action
+## Next action (superseded by the PASS review below)
 
 `V9_006_F1_TERMINAL_SEED_MEDIUM_1` remains
 `REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW` -- not `PASS` or `RESOLVED`
@@ -89,3 +89,27 @@ SHA. `V9_005_F1_TERMINAL_SEED_AMENDMENT` and
 review. Real Stage-A execution stays `BLOCK`ed regardless, also pending
 the unresolved retry/backoff policy decision, implementation of F1-F7, and
 a fresh Stage-A human network authorization.
+
+## GPT exact-SHA independent review — PASS
+
+```text
+REVIEWED_SHA=c95b7a12370fa3c736d5bbc25f6fb6a4de675036
+PARENT_SHA=ea5e0aa7d6ca528312706aa70faf7788ed5ae90b
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+RESULT=PASS
+```
+
+FINDING=V9_006_F1_TERMINAL_SEED_MEDIUM_1_STALE_756_BASE_MATRIX_REFERENCES
+
+FINDING_STATUS=RESOLVED
+
+`V9_006_F1_TERMINAL_SEED_MEDIUM_1` is `RESOLVED`. The two stale
+"756-record base matrix" references in
+`V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md`'s F2 and F7 "Monthly
+coverage mapping" subsections are correctly stated as `648-record`, with
+no rule's meaning changed. `V9_005_F1_TERMINAL_SEED_AMENDMENT` is `PASS`.
+`V9_006_SOURCE_SLOT_LOCATOR_METHODOLOGY` remains `BLOCK` overall (the
+retry/backoff policy and implementation remain separately open), and this
+PASS creates no network, data, T1, or design-freeze authority.
