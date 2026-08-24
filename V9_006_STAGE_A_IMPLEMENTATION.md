@@ -37,65 +37,79 @@ in chat, and it makes zero real network requests itself.
   binding, output-root collision check, and an interactively typed Stage-A
   confirmation token) before any network request; no chat-supplied
   authorization is baked into the file.
-- `tests/test_v9_005_stage_a_jpx_probe.py` -- 58 tests, entirely offline
+- `tests/test_v9_005_stage_a_jpx_probe.py` -- 71 tests, entirely offline
   (synthetic fixtures and injected fake fetchers/git callables only).
 
 ## Source-locator discipline (contract item 4)
 
-No JPX endpoint URL in this implementation was guessed. Exactly two
-concrete endpoints are reused verbatim from already-reviewed repository
-evidence/code:
+No JPX endpoint URL in this implementation was guessed; every locator is
+reused verbatim from `V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md`
+and `V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT.md`'s exact GPT-reviewed
+bindings, represented in code as the `LOCATOR_STRATEGIES` registry
+(`src/v9_005_stage_a_jpx_probe.py`):
 
-- the listed-issues page (`https://www.jpx.co.jp/markets/statistics-equities/misc/01.html`)
-  and its `data_j.xls` link-extraction pattern, reused from
-  `src/v8k_public_source_preparation.py` / `scripts/build_v8_partition_manifest.py`;
-- the JPX Calendar page (`https://www.jpx.co.jp/english/corporate/about-jpx/calendar/index.html`),
-  reused from `src/v7_jpx_calendar.py`.
+- **F1** (`TERMINAL`): the listed-issues page + `data_j.xls`
+  link-extraction pattern, reused from
+  `src/v8k_public_source_preparation.py` / `scripts/build_v8_partition_manifest.py`.
+  F1 is `TERMINAL_SEED` only and has zero `MONTHLY_COVERAGE_MATRIX` cells.
+- **F2** (`MONTHLY`) / **F4** (`MONTHLY`): a shared Monthly Statistics root,
+  distinguished by semantic row label (`F2_SEMANTIC_ROW_LABEL` /
+  `F4_SEMANTIC_ROW_LABEL`).
+- **F3** (`YEAR`): the delisted-company archive root; one `YEAR` object's
+  strategy identically supports all 12 months of its year.
+- **F5** (`MONTHLY`, `auxiliary=true`): the listing/co root.
+- **F6** (`GLOBAL`): the TOPIX root, exactly one object under the
+  "Historical Index Value" section.
+- **F7** (`MONTHLY`): the exact GPT-bound per-month template
+  `https://www.jpx.co.jp/calendar/{YYYY}{MM:02d}.html`, envelope
+  2016-09 through 2026-03 inclusive.
 
-`V9_004_EXTERNAL_SOURCE_EVIDENCE.md` and
-`V9_005_HIGH_2_EXTERNAL_SOURCE_EVIDENCE.md` describe the *existence* of five
-other source families (Monthly Statistics Report, delisted-company archive,
-split/right-treatment archive, monthly aggregate counts, TOPIX historical
-index) in prose, but no reviewed repository evidence supplies their exact
-per-month archive URLs. Per the source-locator discipline, inventing a URL
-pattern for those families would itself be a new methodology decision, so
-this implementation does not attempt it. `resolve_month_locator` is the
-single documented seam a future, separately reviewed task would extend with
-additional reviewed per-month locators; it returns no locator for any
-family/month today.
+**V9_006_HIGH_1 / HIGH_1A / SOURCE_SLOT_LOCATOR / STAGE_A_LOCATOR_CONTRACT
+remediation chain.** The original implementation assumed all seven
+families occupied the monthly grid and had no reviewed locator strategy at
+all, so it either crossed the network boundary before a guaranteed FAIL
+(HIGH_1) or later stopped unconditionally with `CHATGPT_DECISION_REQUIRED`
+because no family had a *concrete resolved URL* per month (HIGH_1 fix).
+GPT's subsequent methodology work established: (a) F1 is `TERMINAL_SEED`
+only (`V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT.md`), shrinking the base
+matrix to 648 records (F2-F7 x 108 months); and (b) the pre-network
+completeness gate must verify only that a *reviewed deterministic locator
+strategy* (root + semantic traversal, or F7's exact template) is bound per
+family -- never that the concrete per-month/per-year child URL is already
+known, since discovering that child URL requires traversing a locked
+official root response, which is real Stage-A network work.
 
-**V9_006_HIGH_1 remediation.** The original implementation converted that
-universal "no locator" condition into a real fetch-and-FAIL run: it still
-crossed the JPX network boundary (fetching the two non-monthly artifacts
-that do have a locator) before computing a guaranteed `FREE_JPX_METADATA_
-PROBE_FAIL`. GPT's review correctly identified this as unacceptable: a
-knowingly doomed real-network run is not a substitute for stopping before
-the boundary, and `V9_004_FREE_DATA_SOURCE_FEASIBILITY_AUDIT.md`'s own
-`FREE_PIT_UNIVERSE_FEASIBILITY=PARTIAL_NOT_PROVEN` conclusion means the
-locator contract for the seven required source families/monthly slots was
-never actually complete in the first place. `run_stage_a` now calls
-`verify_locator_contract_complete()` as its very first step -- before
-touching the filesystem, git, or the network -- which raises
-`V9005StageABlocked(STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE)`
-(`failure_class=CHATGPT_DECISION_REQUIRED`, never `SOURCE_OR_DATA_
-FEASIBILITY_FAILURE`) whenever any required family/month cell lacks a
-mechanically resolvable locator. Under current reviewed evidence every cell
-lacks one, so real execution today stops immediately: zero fetch calls,
-zero git calls, and no output-root directory is even created. See
-`V9_006_HIGH_1_REVIEW.md` for the full finding and remediation record.
+This task implements that exact contract: `MONTHLY_COVERAGE_FAMILIES` (F2-
+F7) drives `build_source_inventory`'s 648-record matrix; `LOCATOR_
+STRATEGIES` binds a `LocatorStrategy` (`slot_kind` in `MONTHLY`/`YEAR`/
+`TERMINAL`/`GLOBAL` only -- no `MONTHLY_AUXILIARY`) for every one of the
+seven families; `resolve_month_locator` returns the bound strategy (not a
+concrete URL) for every required monthly-coverage cell; `f2_bridge_months`
+mechanically derives F2's post-2025 bridge slots from the terminal snapshot
+month `T`; `calendar_envelope_months`/`calendar_envelope_extra_months`
+mechanically derive F7's envelope slots outside 2017-2025.
+`verify_locator_contract_complete()` therefore now passes without raising
+under the currently bound registry -- `LOCATOR_CONTRACT_COMPLETE=true` --
+though a real Stage-A run today would still report `FREE_JPX_METADATA_
+PROBE_FAIL` (`required_inventory_missing_count=648`), because the actual
+F2-F7 root-traversal fetch implementation (parsing a locked official page
+to find its child object) is separate, future, authorized work: this task
+implements the locator/inventory *contract*, not the traversal *fetcher*.
+See `V9_006_HIGH_1_REVIEW.md`, `V9_006_SOURCE_SLOT_LOCATOR_HIGH_1_REVIEW.md`,
+and `V9_006_F1_TERMINAL_SEED_AMENDMENT_REVIEW.md` for the full finding and
+remediation chain.
 
 `SOURCE_OR_DATA_FEASIBILITY_FAILURE` remains reserved for a genuine result
-produced only after the locator contract is complete and the actual
-approved source probe has run -- it is exercised in tests only with the
-locator-contract gate forced complete via monkeypatch, simulating a future,
-separately reviewed extension (`test_run_stage_a_offline_reports_fail_with_
-safe_evidence_once_contract_forced_complete`). In that forced scenario, the
-single locked calendar page also only covers 2026-2027 (the same years
-`src/v7_jpx_calendar.py` already handles), which is insufficient to
-mechanically derive `FINAL_SIGNAL_D0` (requires coverage back to
-2018-01-01); `derive_stage_b_global_end_exclusive` fails closed with
-`SOURCE_OR_DATA_FEASIBILITY_FAILURE` in that case rather than compute a
-wrong index from a narrower window.
+produced after real Stage-A execution actually attempts (and fails) the
+reviewed traversal; it is exercised in tests via the existing F1 + calendar-
+page fetch path (`test_run_stage_a_offline_reports_fail_with_safe_
+evidence`), which still only fetches the two non-monthly artifacts that
+have always had a concrete root -- the single locked calendar page there
+covers only 2026-2027 (the same years `src/v7_jpx_calendar.py` already
+handles), which is insufficient to mechanically derive `FINAL_SIGNAL_D0`
+(requires coverage back to 2018-01-01); `derive_stage_b_global_end_
+exclusive` fails closed with `SOURCE_OR_DATA_FEASIBILITY_FAILURE` in that
+case rather than compute a wrong index from a narrower window.
 
 ## Signal-grid binding (contract item 5)
 
@@ -162,17 +176,26 @@ or embedded in this file.
   inspected.
 - No T1 partition was generated or opened; no model was fit; no backtest
   ran; no V9 design freeze occurred; no Stage B artifact was produced.
-- `V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_DRAFT.md` was not
-  modified; none of its thresholds, source families, retry rules, dates, or
-  corporate-action semantics changed.
+- This implementation task itself did not modify
+  `V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_DRAFT.md`, and did not
+  change retry classification/policy, F1/F2-F7 methodology, F4's ratio
+  orientation, or the F7 acquisition envelope -- it only wires the already
+  GPT-reviewed locator/inventory contract into code. (Earlier, separate
+  methodology tasks did amend that design draft -- the
+  `F1_TERMINAL_SEED_PREFREEZE_AMENDMENT` and the retry-policy binding; see
+  `PROJECT_DECISION_LOG.md` for that history.)
 
 ## Next action
 
-`GPT_EXACT_SHA_V9_006_HIGH_1_REVIEW`: obtain GPT's independent exact-SHA
-review of this HIGH-1 remediation commit before any real Stage-A execution.
-Real execution additionally requires: this review's PASS (and PASS of any
-other still-open V9_006 findings); the environment readiness ordering in
-`AI_REAL_EXECUTION_RUNBOOK.md` SS16-19; and a fresh, separate, explicit
-point-of-use human network authorization obtained after that review PASS
-(not the authorization already given in chat, which this task did not
-consume).
+`GPT_EXACT_SHA_V9_006_STAGE_A_LOCATOR_IMPLEMENTATION_REVIEW`: obtain GPT's
+independent exact-SHA review of this locator/inventory-contract
+implementation before any real Stage-A execution. Real execution
+additionally requires: this review's PASS (and PASS of any other
+still-open V9_006 findings, including HIGH_2 semantic reconstruction,
+HIGH_3 raw provenance/content-lock boundary, and HIGH_4 redirect-before-
+body-consumption, none of which this task remediated); an actual F2-F7
+traversal-fetch implementation (not built by this task); the environment
+readiness ordering in `AI_REAL_EXECUTION_RUNBOOK.md` SS16-19; and a fresh,
+separate, explicit point-of-use human network authorization obtained after
+that review PASS (not the authorization already given in chat, which this
+task did not consume).

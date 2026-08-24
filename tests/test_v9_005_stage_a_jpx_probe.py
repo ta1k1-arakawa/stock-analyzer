@@ -36,7 +36,7 @@ def test_no_real_network_socket_used(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(socket, "socket", _blocked)
     inventory = m.build_source_inventory()
-    assert len(inventory) == len(m.inventory_months()) * len(m.SOURCE_FAMILIES)
+    assert len(inventory) == len(m.inventory_months()) * len(m.MONTHLY_COVERAGE_FAMILIES)
 
 
 # --- 2/3. Off-domain request/redirect rejection -----------------------------
@@ -178,8 +178,24 @@ def test_output_root_collision_rejected(tmp_path: Path) -> None:
 
 def test_inventory_defaults_to_missing_for_every_cell() -> None:
     inventory = m.build_source_inventory()
-    assert len(inventory) == len(m.inventory_months()) * len(m.SOURCE_FAMILIES)
+    assert len(inventory) == 648
+    assert len(inventory) == len(m.inventory_months()) * len(m.MONTHLY_COVERAGE_FAMILIES)
     assert all(record["status"] == m.INVENTORY_MISSING for record in inventory)
+
+
+def test_monthly_coverage_matrix_is_exactly_f2_through_f7() -> None:
+    assert len(m.MONTHLY_COVERAGE_FAMILIES) == 6
+    assert m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END not in m.MONTHLY_COVERAGE_FAMILIES
+    assert set(m.MONTHLY_COVERAGE_FAMILIES) == set(m.SOURCE_FAMILIES) - {m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END}
+
+
+def test_f1_has_zero_monthly_cells_and_a_separate_terminal_slot() -> None:
+    inventory = m.build_source_inventory()
+    assert all(record["source_family"] != m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END for record in inventory)
+    f1_strategy = m.LOCATOR_STRATEGIES[m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END]
+    assert f1_strategy.slot_kind == m.SLOT_KIND_TERMINAL
+    with pytest.raises(m.V9005StageABlocked):
+        m.resolve_month_locator(m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, m.inventory_months()[0])
 
 
 def test_inventory_available_only_when_locked() -> None:
@@ -197,6 +213,114 @@ def test_unknown_family_or_month_is_ambiguous_fail_closed() -> None:
         m.resolve_month_locator("NOT_A_REAL_FAMILY", m.inventory_months()[0])
     with pytest.raises(m.V9005StageABlocked):
         m.resolve_month_locator(m.SOURCE_FAMILY_JPX_CALENDAR, "2099-01")
+
+
+# --- Reviewed deterministic locator strategy contract (F1-F7) ---------------
+
+def test_no_monthly_auxiliary_slot_kind_exists() -> None:
+    assert m.VALID_SLOT_KINDS == {m.SLOT_KIND_MONTHLY, m.SLOT_KIND_YEAR, m.SLOT_KIND_TERMINAL, m.SLOT_KIND_GLOBAL}
+    assert "MONTHLY_AUXILIARY" not in m.VALID_SLOT_KINDS
+    assert not hasattr(m, "SLOT_KIND_MONTHLY_AUXILIARY")
+
+
+def test_no_hardcoded_archive_n_locator_anywhere_in_strategies() -> None:
+    for strategy in m.LOCATOR_STRATEGIES.values():
+        for value in (strategy.root_url, strategy.locator_template):
+            if value is not None:
+                assert not re.search(r"archive-?\d+", value, re.IGNORECASE), value
+
+
+def test_f2_monthly_statistics_changes_report_strategy_is_deterministic() -> None:
+    strategy = m.LOCATOR_STRATEGIES[m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT]
+    assert strategy.slot_kind == m.SLOT_KIND_MONTHLY
+    assert strategy.root_url == m.MONTHLY_STATISTICS_ROOT_URL
+    assert m.F2_SEMANTIC_ROW_LABEL in strategy.traversal
+    assert strategy.auxiliary is False
+    for month in m.inventory_months():
+        assert m.resolve_month_locator(m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, month) is strategy
+
+
+def test_f3_delisted_company_archive_years_and_year_object_reuse() -> None:
+    strategy = m.LOCATOR_STRATEGIES[m.SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE]
+    assert strategy.slot_kind == m.SLOT_KIND_YEAR
+    assert strategy.root_url == m.DELISTED_COMPANY_ROOT_URL
+    years = sorted({int(month.split("-")[0]) for month in m.inventory_months()})
+    assert years == list(range(2017, 2026))
+    # One YEAR object's strategy identically supports every month of its
+    # year -- never a per-month refetch.
+    for month in m.inventory_months():
+        assert m.resolve_month_locator(m.SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE, month) is strategy
+
+
+def test_f4_ex_rights_split_ratio_strategy_deterministic_and_ratio_unchanged() -> None:
+    strategy = m.LOCATOR_STRATEGIES[m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE]
+    assert strategy.slot_kind == m.SLOT_KIND_MONTHLY
+    assert strategy.root_url == m.MONTHLY_STATISTICS_ROOT_URL
+    assert m.F4_SEMANTIC_ROW_LABEL in strategy.traversal
+    # F2 and F4 share the same root (Monthly Statistics) but are distinct
+    # strategies via distinct semantic rows.
+    f2_strategy = m.LOCATOR_STRATEGIES[m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT]
+    assert strategy.root_url == f2_strategy.root_url
+    assert strategy.traversal != f2_strategy.traversal
+
+
+def test_f5_slot_kind_monthly_with_auxiliary_flag() -> None:
+    strategy = m.LOCATOR_STRATEGIES[m.SOURCE_FAMILY_MONTHLY_AGGREGATE_LISTED_ISSUE_COUNTS]
+    assert strategy.slot_kind == m.SLOT_KIND_MONTHLY
+    assert strategy.auxiliary is True
+    assert strategy.root_url == m.LISTING_CO_ROOT_URL
+
+
+def test_f6_exactly_one_global_strategy() -> None:
+    global_strategies = [s for s in m.LOCATOR_STRATEGIES.values() if s.slot_kind == m.SLOT_KIND_GLOBAL]
+    assert len(global_strategies) == 1
+    strategy = global_strategies[0]
+    assert strategy.source_family == m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE
+    assert strategy.root_url == m.TOPIX_ROOT_URL
+    assert m.F6_SEMANTIC_SECTION_LABEL in strategy.traversal
+
+
+def test_f7_calendar_strategy_uses_exact_bound_template() -> None:
+    strategy = m.LOCATOR_STRATEGIES[m.SOURCE_FAMILY_JPX_CALENDAR]
+    assert strategy.slot_kind == m.SLOT_KIND_MONTHLY
+    assert strategy.root_url is None
+    assert strategy.locator_template == m.CALENDAR_MONTHLY_LOCATOR_TEMPLATE
+    assert m.resolve_f7_calendar_url(2019, 6) == "https://www.jpx.co.jp/calendar/201906.html"
+
+
+def test_f7_envelope_is_exactly_2016_09_through_2026_03() -> None:
+    months = m.calendar_envelope_months()
+    assert months[0] == "2016-09"
+    assert months[-1] == "2026-03"
+    assert len(months) == 115  # 4 (2016) + 9*12 (2017..2025) + 3 (2026)
+    extra = m.calendar_envelope_extra_months()
+    assert set(extra) == set(months) - set(m.inventory_months())
+    assert "2016-09" in extra and "2026-03" in extra
+    assert "2020-06" not in extra  # base-matrix month, not an extra envelope slot
+
+
+def test_f2_bridge_slots_derive_mechanically_from_terminal_month() -> None:
+    assert m.f2_bridge_months("2025-12") == ()
+    assert m.f2_bridge_months("2025-01") == ()
+    assert m.f2_bridge_months("2026-01") == ("2026-01",)
+    assert m.f2_bridge_months("2026-07") == (
+        "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07",
+    )
+
+
+def test_locator_contract_completeness_no_longer_requires_a_known_child_url() -> None:
+    """The methodology-completeness gate must pass once every family has a
+    reviewed root/traversal (or exact template) strategy bound -- it must
+    never require that the concrete per-month child URL is already known,
+    since that URL is only discoverable by traversing a locked official
+    root response at real execution time."""
+    for family in m.MONTHLY_COVERAGE_FAMILIES:
+        strategy = m.LOCATOR_STRATEGIES[family]
+        # No family's strategy embeds a concrete resolved child URL for any
+        # specific month/year -- only a root/template plus a traversal rule.
+        if strategy.root_url is not None:
+            assert re.fullmatch(r"\d{4}(-\d{2})?", strategy.root_url.rsplit("/", 1)[-1]) is None
+    m.verify_locator_contract_complete()  # must not raise
 
 
 def test_required_inventory_missing_causes_fail() -> None:
@@ -240,7 +364,9 @@ def test_month_end_mismatch_detected() -> None:
 
 def test_month_end_mismatch_fails_overall_pass_even_if_everything_else_passes() -> None:
     full_inventory = m.build_source_inventory(
-        locked_index={(family, month): object() for family in m.SOURCE_FAMILIES for month in m.inventory_months()}
+        locked_index={
+            (family, month): object() for family in m.MONTHLY_COVERAGE_FAMILIES for month in m.inventory_months()
+        }
     )
     evidence = m.compute_stage_a_evidence(
         inventory=full_inventory,
@@ -295,7 +421,9 @@ def test_signal_grid_binding_verified_against_real_repository_head() -> None:
 
 def _full_evidence(**overrides: object) -> dict[str, object]:
     full_inventory = m.build_source_inventory(
-        locked_index={(family, month): object() for family in m.SOURCE_FAMILIES for month in m.inventory_months()}
+        locked_index={
+            (family, month): object() for family in m.MONTHLY_COVERAGE_FAMILIES for month in m.inventory_months()
+        }
     )
     kwargs = dict(
         inventory=full_inventory,
@@ -448,24 +576,44 @@ def _fake_git_bound() -> object:
     return fake_git
 
 
-# --- V9_006_HIGH_1: incomplete locator contract stops before ANY network ---
+# --- V9_006_SOURCE_SLOT_LOCATOR: the reviewed contract is now complete -----
 
-def test_locator_contract_is_currently_incomplete() -> None:
-    """Ground truth for this whole remediation: under current reviewed
-    repository evidence, no source family has a resolvable locator for
-    every required monthly slot, so the contract is incomplete."""
+def test_locator_contract_is_now_complete() -> None:
+    """Ground truth for this remediation: every one of the seven source
+    families now has a reviewed deterministic locator strategy bound
+    (F1's TERMINAL slot plus F2-F7's monthly/year/global strategies), so
+    the pre-network methodology-completeness gate no longer fires. This is
+    NOT a claim that any concrete per-month child URL is already known --
+    only that a reviewed root/traversal (or F7's exact template) exists
+    for every required slot."""
+    m.verify_locator_contract_complete()  # must not raise
+
+
+def _incomplete_locator_strategies() -> dict[str, m.LocatorStrategy]:
+    """A deliberately incomplete registry (missing F7's strategy), used
+    only to exercise the fail-closed path -- never a claim that the real,
+    currently-bound contract is incomplete."""
+    strategies = dict(m.LOCATOR_STRATEGIES)
+    del strategies[m.SOURCE_FAMILY_JPX_CALENDAR]
+    return strategies
+
+
+def test_locator_contract_incomplete_if_a_family_strategy_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(m, "LOCATOR_STRATEGIES", _incomplete_locator_strategies())
     with pytest.raises(m.V9005StageABlocked) as excinfo:
         m.verify_locator_contract_complete()
     assert excinfo.value.reason == m.STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE
     assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
 
 
-def test_locator_contract_complete_passes_when_no_missing_cells(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(m, "resolve_month_locator", lambda family, month: object())
-    m.verify_locator_contract_complete()  # must not raise
-
-
-def test_run_stage_a_incomplete_locator_contract_stops_before_any_network(tmp_path: Path) -> None:
+def test_run_stage_a_incomplete_locator_contract_stops_before_any_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercises the CHATGPT_DECISION_REQUIRED stop path with a
+    deliberately incomplete registry -- the real, currently-bound registry
+    is complete (see test_locator_contract_is_now_complete), so this test
+    forces incompleteness rather than relying on today's contract state."""
+    monkeypatch.setattr(m, "LOCATOR_STRATEGIES", _incomplete_locator_strategies())
     calls: list[str] = []
     git_calls: list[list[str]] = []
 
@@ -521,19 +669,14 @@ def test_run_stage_a_wrong_confirmation_never_fetches(tmp_path: Path) -> None:
     assert not (tmp_path / "out").exists()
 
 
-# --- Regression coverage: once the locator contract IS complete (forced via
-# monkeypatch, simulating a future, separately reviewed extension), the
-# existing fetch/lock/evidence pipeline below the gate still behaves
-# correctly. This is not itself a claim that the contract is complete today.
+# --- Regression coverage: with the locator contract now genuinely
+# complete, the existing fetch/lock/evidence pipeline below the gate still
+# behaves correctly. All fetchers below are synthetic/offline fakes -- no
+# real network request is made.
 
-def _force_locator_contract_complete(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(m, "verify_locator_contract_complete", lambda: None)
-
-
-def test_run_stage_a_offline_reports_fail_with_safe_evidence_once_contract_forced_complete(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def test_run_stage_a_offline_reports_fail_with_safe_evidence(
+    tmp_path: Path,
 ) -> None:
-    _force_locator_contract_complete(monkeypatch)
     responses = {
         m.LISTED_ISSUES_PAGE_URL: (_synthetic_listing_page(), m.LISTED_ISSUES_PAGE_URL),
         "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls": (b"xls-bytes", "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls"),
@@ -552,15 +695,15 @@ def test_run_stage_a_offline_reports_fail_with_safe_evidence_once_contract_force
         clock=_clock,
         git=_fake_git_bound(),
     )
-    # Even with a forced-complete locator contract, the underlying monthly
-    # SOURCE_INVENTORY built from real locked evidence is still empty here
-    # (the synthetic fixtures only lock the two non-monthly artifacts), so
-    # this remains the honest FAIL outcome -- this test exists to prove the
-    # fetch/lock/evidence pipeline below the new gate still works, not to
-    # claim the real contract is complete.
+    # The pre-network locator-methodology gate now passes (every family has
+    # a reviewed strategy), but the underlying 648-record F2-F7 monthly
+    # SOURCE_INVENTORY is still empty here: this orchestration only fetches
+    # F1's terminal snapshot and the calendar page, never any real F2-F7
+    # object (that traversal-fetch implementation is a separate, future,
+    # authorized task). So this remains the honest FAIL outcome.
     assert summary["status"] == "FAIL"
     assert summary["failure_class"] == m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
-    assert summary["required_inventory_missing_count"] > 0
+    assert summary["required_inventory_missing_count"] == 648
     assert summary["terminal_snapshot_pass"] is True
     assert summary["signal_grid_binding_verified_head"] == "d" * 40
     forbidden_keys = {
@@ -575,10 +718,9 @@ def test_run_stage_a_offline_reports_fail_with_safe_evidence_once_contract_force
         assert (durable_root / name).exists()
 
 
-def test_run_stage_a_wrong_signal_grid_blob_stops_before_any_fetch_once_contract_forced_complete(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+def test_run_stage_a_wrong_signal_grid_blob_stops_before_any_fetch(
+    tmp_path: Path,
 ) -> None:
-    _force_locator_contract_complete(monkeypatch)
     calls: list[str] = []
 
     def fetcher(url: str) -> tuple[bytes, str]:
@@ -611,6 +753,14 @@ def test_run_stage_a_wrong_signal_grid_blob_stops_before_any_fetch_once_contract
 def test_cli_script_incomplete_locator_contract_prints_safe_chatgpt_decision_required(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
 ) -> None:
+    # SAFETY: the real, currently-bound locator registry is complete (see
+    # test_locator_contract_is_now_complete), so calling the CLI's
+    # production entrypoint with a valid confirmation and an unmocked
+    # registry would proceed past the gate and attempt a REAL network
+    # request via urllib. Force the registry incomplete here so this test
+    # exercises the CHATGPT_DECISION_REQUIRED path while guaranteeing the
+    # CLI never reaches the production fetcher.
+    monkeypatch.setattr(m, "LOCATOR_STRATEGIES", _incomplete_locator_strategies())
     sys.path.insert(0, str(ROOT / "scripts"))
     monkeypatch.setenv("V9_005_STAGE_A_CONFIRMATION", m.CONFIRMATION)
     import importlib

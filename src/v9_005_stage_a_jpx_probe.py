@@ -2,46 +2,51 @@
 
 Implements, without executing any real network request, the exact Stage-A
 contract frozen in
-`V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_DRAFT.md`: the seven
-required source families, the deterministic monthly `SOURCE_INVENTORY`,
-first-complete-payload raw locking with full provenance, the reconstruction/
-validation evidence items, and the exact `FREE_JPX_METADATA_PROBE_PASS`
-conjunction. Importing or unit-testing this module performs no network I/O;
-production execution is gated behind `scripts/run_v9_005_stage_a_jpx_probe.py`
-and the single atomic `scripts/run_v9_005_stage_a_jpx_probe.ps1` entrypoint,
-neither of which this implementation task authorizes to run against a real
-network.
+`V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_DRAFT.md` and the exact
+reviewed locator/inventory contract in
+`V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md` and
+`V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT.md`: the seven source
+families' heterogeneous `SOURCE_OBJECT_INVENTORY` slot kinds (`MONTHLY`,
+`YEAR`, `TERMINAL`, `GLOBAL`), the deterministic 648-record
+`MONTHLY_COVERAGE_MATRIX` (F2-F7 x 2017-01..2025-12; F1 has zero monthly
+cells and is `TERMINAL_SEED` only), first-complete-payload raw locking with
+full provenance, the reconstruction/validation evidence items, and the
+exact `FREE_JPX_METADATA_PROBE_PASS` conjunction. Importing or
+unit-testing this module performs no network I/O; production execution is
+gated behind `scripts/run_v9_005_stage_a_jpx_probe.py` and the single
+atomic `scripts/run_v9_005_stage_a_jpx_probe.ps1` entrypoint, neither of
+which this implementation task authorizes to run against a real network.
 
 Source-locator discipline (V9_006 contract item 4): this module never
-guesses a JPX endpoint URL. Exactly two concrete JPX endpoints are reused
-verbatim from already-reviewed repository evidence/code:
+guesses a JPX endpoint URL. Every source family's locator strategy in
+`LOCATOR_STRATEGIES` is reused verbatim from the exact roots/semantic
+traversal rules bound in
+`V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md`: F1's terminal
+listed-issues page + `data_j.xls` extraction; F2/F4's shared Monthly
+Statistics root with semantic-row traversal; F3's delisted-company
+archive-year root; F5's listing/co root; F6's TOPIX root; and F7's exact
+GPT-bound `{YYYY}{MM:02d}.html` per-month calendar template. No archive
+number, mirror, alternate provider, or off-domain locator is ever guessed.
 
-- the listed-issues page + `data_j.xls` extraction pattern, reused from
-  `src/v8k_public_source_preparation.py` / `scripts/build_v8_partition_manifest.py`;
-- the JPX Calendar page, reused from `src/v7_jpx_calendar.py`.
-
-No other source family has a per-month archive locator established in
-reviewed repository evidence
-(`V9_004_EXTERNAL_SOURCE_EVIDENCE.md`, `V9_005_HIGH_2_EXTERNAL_SOURCE_EVIDENCE.md`
-describe availability in prose, not exact URLs). Per the source-locator
-discipline, this is not a new methodology decision to invent a URL pattern;
-it is the already-specified fail-closed behavior ("Unknown or ambiguous is
-MISSING") applied deterministically: every monthly `SOURCE_INVENTORY` cell
-for which repository evidence supplies no exact per-month locator resolves
-to `MISSING` until a future, separately reviewed task supplies one.
-
-V9_006_HIGH_1: because every monthly `SOURCE_INVENTORY` cell is currently
-`MISSING`, real Stage-A execution would be a knowingly doomed real-network
-run -- guaranteed to reach `FREE_JPX_METADATA_PROBE_FAIL` before making a
-single request. That is not an acceptable substitute for stopping. Before
-touching the filesystem, git, or the network at all, `run_stage_a` calls
-`verify_locator_contract_complete()`, which raises
-`V9005StageABlocked(STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE)` --
-reported as `failure_class=CHATGPT_DECISION_REQUIRED`, never
-`SOURCE_OR_DATA_FEASIBILITY_FAILURE` -- whenever any required family/month
-cell has no mechanically resolvable locator. `SOURCE_OR_DATA_FEASIBILITY_
-FAILURE` remains reserved for a genuine result produced only after the
-locator contract is complete and the actual approved source probe has run.
+V9_006_HIGH_1 / HIGH_1A / F1_TERMINAL_SEED / STAGE_A_LOCATOR_CONTRACT:
+`verify_locator_contract_complete()` is a pre-network methodology-
+completeness check, not a claim that any concrete per-month URL is
+already known. It verifies that every required slot -- the base
+648-record matrix, F1's mandatory `TERMINAL` slot, F2's post-2025 bridge
+slots (mechanically derived from the terminal snapshot month `T`), and
+F7's envelope slots outside 2017-2025 -- has a *reviewed deterministic
+locator strategy* bound in `LOCATOR_STRATEGIES`. It does not, and must
+not, require a child URL that can only be discovered by traversing a
+locked official JPX root response at real execution time -- that
+traversal is real Stage-A network work, gated behind a fresh, separate,
+explicit human authorization this task does not create. Before touching
+the filesystem, git, or the network at all, `run_stage_a` calls this
+check, which raises `V9005StageABlocked(STAGE_A_SOURCE_LOCATOR_CONTRACT_
+INCOMPLETE)` -- reported as `failure_class=CHATGPT_DECISION_REQUIRED`,
+never `SOURCE_OR_DATA_FEASIBILITY_FAILURE` -- only if some required slot
+still has no reviewed strategy at all. `SOURCE_OR_DATA_FEASIBILITY_
+FAILURE` remains reserved for a genuine result produced only after real
+Stage-A execution actually attempts (and fails) the reviewed traversal.
 """
 
 from __future__ import annotations
@@ -52,6 +57,7 @@ import os
 import re
 import subprocess
 import urllib.parse
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -89,6 +95,18 @@ SOURCE_FAMILIES: tuple[str, ...] = (
     SOURCE_FAMILY_JPX_CALENDAR,
 )
 
+# Per V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT: F1 is TERMINAL_SEED only
+# and has zero base MONTHLY_COVERAGE_MATRIX cells. The monthly grid covers
+# F2-F7 only.
+MONTHLY_COVERAGE_FAMILIES: tuple[str, ...] = (
+    SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+    SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE,
+    SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE,
+    SOURCE_FAMILY_MONTHLY_AGGREGATE_LISTED_ISSUE_COUNTS,
+    SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
+    SOURCE_FAMILY_JPX_CALENDAR,
+)
+
 INVENTORY_FIRST_YEAR_MONTH = (2017, 1)
 INVENTORY_LAST_YEAR_MONTH = (2025, 12)
 
@@ -108,8 +126,37 @@ CALENDAR_PAGE_COVERED_YEARS = (2026, 2027)
 CALENDAR_PAGE_COVERAGE_START = "2026-01-01"
 CALENDAR_PAGE_COVERAGE_END = "2027-12-31"
 
+# F2/F4 share one root + semantic-row traversal (V9_006_STAGE_A_SOURCE_SLOT_
+# LOCATOR_METHODOLOGY.md F2/F4).
+MONTHLY_STATISTICS_ROOT_URL = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/index.html"
+F2_SEMANTIC_ROW_LABEL = "Changes in Listed Companies and Issues, Etc."
+F4_SEMANTIC_ROW_LABEL = "Ex-New, Ex-Rights, Etc."
+
+# F3: delisted-company archive (YEAR objects).
+DELISTED_COMPANY_ROOT_URL = "https://www.jpx.co.jp/english/listing/stocks/delisted/index.html"
+
+# F5: monthly aggregate listed-issue counts (auxiliary=true).
+LISTING_CO_ROOT_URL = "https://www.jpx.co.jp/english/listing/co/index.html"
+
+# F6: TOPIX Historical Index Value (one GLOBAL object).
+TOPIX_ROOT_URL = "https://www.jpx.co.jp/english/markets/indices/topix/"
+F6_SEMANTIC_SECTION_LABEL = "Historical Index Value"
+
+# F7: exact GPT-bound per-month calendar locator template and acquisition
+# envelope (V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md F7).
+CALENDAR_MONTHLY_LOCATOR_TEMPLATE = "https://www.jpx.co.jp/calendar/{year:04d}{month:02d}.html"
+CALENDAR_ENVELOPE_FIRST_YEAR_MONTH = (2016, 9)
+CALENDAR_ENVELOPE_LAST_YEAR_MONTH = (2026, 3)
+
 TERMINAL_PERIOD = "TERMINAL"
 CALENDAR_PERIOD = "CURRENT"
+
+# --- Source-slot kinds (V9_006_SOURCE_SLOT_LOCATOR_HIGH_1) ------------------
+SLOT_KIND_MONTHLY = "MONTHLY"
+SLOT_KIND_YEAR = "YEAR"
+SLOT_KIND_TERMINAL = "TERMINAL"
+SLOT_KIND_GLOBAL = "GLOBAL"
+VALID_SLOT_KINDS = frozenset({SLOT_KIND_MONTHLY, SLOT_KIND_YEAR, SLOT_KIND_TERMINAL, SLOT_KIND_GLOBAL})
 
 # --- Failure classes ---------------------------------------------------------
 PLUMBING_FAILURE_RETRIABLE = "PLUMBING_FAILURE_RETRIABLE"
@@ -219,6 +266,100 @@ def extract_data_j_xls_url(page_bytes: bytes) -> str:
         raise V9005StageABlocked(SOURCE_OR_DATA_FEASIBILITY_FAILURE)
     resolved = urllib.parse.urljoin(LISTED_ISSUES_PAGE_URL, match.group(1))
     return validate_jpx_url(resolved, reason="OFF_DOMAIN_REDIRECT_REJECTED")
+
+
+def resolve_f7_calendar_url(year: int, month: int) -> str:
+    """Exact GPT-bound per-month F7 locator: no traversal, no discovery --
+    the URL is computed directly from the template."""
+    if isinstance(year, bool) or isinstance(month, bool) or not isinstance(year, int) or not isinstance(month, int):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    if not 1 <= month <= 12:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    url = CALENDAR_MONTHLY_LOCATOR_TEMPLATE.format(year=year, month=month)
+    return validate_jpx_url(url)
+
+
+# --- Reviewed deterministic locator strategy registry (V9_006_SOURCE_SLOT_
+# LOCATOR_HIGH_1 / F1_TERMINAL_SEED_PREFREEZE_AMENDMENT) --------------------
+#
+# Each entry records the exact reviewed root/semantic-traversal rule (or,
+# for F7, the exact reviewed per-month template) for one of the seven
+# source families -- never a resolved child URL. A family's presence here
+# means its locator *strategy* is reviewed and deterministic; the concrete
+# child object for a given month/year is only discoverable by actually
+# traversing the locked official root response at real Stage-A execution
+# time, which this registry never requires in advance.
+
+@dataclass(frozen=True)
+class LocatorStrategy:
+    source_family: str
+    slot_kind: str
+    root_url: str | None
+    traversal: str
+    auxiliary: bool = False
+    locator_template: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.slot_kind not in VALID_SLOT_KINDS:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        if self.root_url is not None:
+            validate_jpx_url(self.root_url)
+        if self.root_url is None and self.locator_template is None:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+
+
+LOCATOR_STRATEGIES: dict[str, LocatorStrategy] = {
+    SOURCE_FAMILY_LISTED_ISSUES_MONTH_END: LocatorStrategy(
+        source_family=SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
+        slot_kind=SLOT_KIND_TERMINAL,
+        root_url=LISTED_ISSUES_PAGE_URL,
+        traversal="unique same-domain data_j.xls link from the official listed-issues page",
+    ),
+    SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT: LocatorStrategy(
+        source_family=SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+        slot_kind=SLOT_KIND_MONTHLY,
+        root_url=MONTHLY_STATISTICS_ROOT_URL,
+        traversal=(
+            "official archive-year selector -> semantic row "
+            f"'{F2_SEMANTIC_ROW_LABEL}' -> requested month column -> unique same-domain object"
+        ),
+    ),
+    SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE: LocatorStrategy(
+        source_family=SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE,
+        slot_kind=SLOT_KIND_YEAR,
+        root_url=DELISTED_COMPANY_ROOT_URL,
+        traversal="official archive-year selector -> one YEAR object may cover its 12 months",
+    ),
+    SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE: LocatorStrategy(
+        source_family=SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE,
+        slot_kind=SLOT_KIND_MONTHLY,
+        root_url=MONTHLY_STATISTICS_ROOT_URL,
+        traversal=(
+            "official archive-year selector -> semantic row "
+            f"'{F4_SEMANTIC_ROW_LABEL}' -> requested month column -> unique same-domain object"
+        ),
+    ),
+    SOURCE_FAMILY_MONTHLY_AGGREGATE_LISTED_ISSUE_COUNTS: LocatorStrategy(
+        source_family=SOURCE_FAMILY_MONTHLY_AGGREGATE_LISTED_ISSUE_COUNTS,
+        slot_kind=SLOT_KIND_MONTHLY,
+        root_url=LISTING_CO_ROOT_URL,
+        traversal="official archive selector -> requested month -> unique same-domain object",
+        auxiliary=True,
+    ),
+    SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE: LocatorStrategy(
+        source_family=SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
+        slot_kind=SLOT_KIND_GLOBAL,
+        root_url=TOPIX_ROOT_URL,
+        traversal=f"unique same-domain object under semantic section '{F6_SEMANTIC_SECTION_LABEL}'",
+    ),
+    SOURCE_FAMILY_JPX_CALENDAR: LocatorStrategy(
+        source_family=SOURCE_FAMILY_JPX_CALENDAR,
+        slot_kind=SLOT_KIND_MONTHLY,
+        root_url=None,
+        traversal="exact bound per-month template, no discovery",
+        locator_template=CALENDAR_MONTHLY_LOCATOR_TEMPLATE,
+    ),
+}
 
 
 # --- Transport with retry (item 3: classify only per AI_REAL_EXECUTION_RUNBOOK.md) --
@@ -554,10 +695,10 @@ def derive_stage_b_global_end_exclusive(
 
 # --- Deterministic monthly SOURCE_INVENTORY ---------------------------------
 
-def inventory_months() -> tuple[str, ...]:
+def _year_month_range(first: tuple[int, int], last: tuple[int, int]) -> tuple[str, ...]:
     months: list[str] = []
-    year, month = INVENTORY_FIRST_YEAR_MONTH
-    while (year, month) <= INVENTORY_LAST_YEAR_MONTH:
+    year, month = first
+    while (year, month) <= last:
         months.append(f"{year:04d}-{month:02d}")
         month += 1
         if month > 12:
@@ -566,56 +707,116 @@ def inventory_months() -> tuple[str, ...]:
     return tuple(months)
 
 
-def resolve_month_locator(source_family: str, month: str) -> None:
-    """No reviewed per-month JPX archive endpoint exists in repository
-    evidence for any of the seven Stage-A source families: the two concrete
-    reviewed endpoints (listed-issues page, calendar page) are current-state
-    pages, not per-month archives. Every monthly grid cell therefore has no
-    resolvable locator until a future, separately reviewed task supplies
-    one -- this is deterministic fail-closed behavior, not a guessed URL."""
-    if source_family not in SOURCE_FAMILIES:
+def inventory_months() -> tuple[str, ...]:
+    """The base MONTHLY_COVERAGE_MATRIX months: 2017-01 through 2025-12
+    (108 months). F1 has zero cells over this range (TERMINAL_SEED only);
+    the matrix covers MONTHLY_COVERAGE_FAMILIES only (F2-F7)."""
+    return _year_month_range(INVENTORY_FIRST_YEAR_MONTH, INVENTORY_LAST_YEAR_MONTH)
+
+
+def _parse_year_month(value: str) -> tuple[int, int]:
+    if not isinstance(value, str):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    match = re.fullmatch(r"(\d{4})-(\d{2})", value)
+    if not match:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    year, month = int(match.group(1)), int(match.group(2))
+    if not 1 <= month <= 12:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    return year, month
+
+
+def f2_bridge_months(terminal_month: str) -> tuple[str, ...]:
+    """F2's mandatory post-2025 bridge slots, mechanically derived from the
+    terminal snapshot month T: every month from 2026-01 through T
+    inclusive, needed to reverse-reconstruct from T back through 2025-12.
+    These are additional mandatory SOURCE_OBJECT_INVENTORY slots outside
+    the 648-record base matrix, using the exact same reviewed F2 strategy.
+    Returns an empty tuple if T is on/before 2025-12 (no bridge needed)."""
+    terminal_year_month = _parse_year_month(terminal_month)
+    if terminal_year_month <= INVENTORY_LAST_YEAR_MONTH:
+        return ()
+    return _year_month_range((2026, 1), terminal_year_month)
+
+
+def calendar_envelope_months() -> tuple[str, ...]:
+    """All required F7 calendar months: 2016-09 through 2026-03 inclusive."""
+    return _year_month_range(CALENDAR_ENVELOPE_FIRST_YEAR_MONTH, CALENDAR_ENVELOPE_LAST_YEAR_MONTH)
+
+
+def calendar_envelope_extra_months() -> tuple[str, ...]:
+    """F7 envelope months outside the base 2017-01..2025-12 matrix: these
+    are additional mandatory slots outside the 648-record base matrix,
+    using the exact same reviewed F7 per-month template."""
+    base = set(inventory_months())
+    return tuple(month for month in calendar_envelope_months() if month not in base)
+
+
+def resolve_month_locator(source_family: str, month: str) -> LocatorStrategy:
+    """Return the reviewed deterministic locator strategy bound for this
+    monthly-coverage source family (F2-F7). This never requires a concrete
+    child URL that can only be discovered by traversing a locked official
+    JPX root response at real execution time -- it only requires that a
+    reviewed strategy (root + semantic traversal, or F7's exact per-month
+    template) already exists in `LOCATOR_STRATEGIES`. F1 is excluded: it
+    is TERMINAL_SEED only and has zero monthly cells (V9_006_F1_TERMINAL_
+    SEED_PREFREEZE_AMENDMENT)."""
+    if source_family not in MONTHLY_COVERAGE_FAMILIES:
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
     if month not in inventory_months():
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
-    return None
+    strategy = LOCATOR_STRATEGIES.get(source_family)
+    if strategy is None:
+        raise V9005StageABlocked(STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE)
+    return strategy
 
 
 def verify_locator_contract_complete() -> None:
-    """V9_006_HIGH_1 pre-network locator-readiness check. Real Stage-A
-    execution must not cross the JPX network boundary while the
-    deterministic locator/cadence contract for the seven required source
-    families and every required monthly slot is incomplete. This performs
-    no I/O and invents no URL, cadence, N/A rule, archive period, retry
-    rule, or source substitution -- it only asks `resolve_month_locator`
-    whether every required cell can already be mechanically resolved from
-    already-reviewed repository evidence. A knowingly doomed real-network
-    run (one where every cell is already known to be MISSING before any
-    request) is not an acceptable substitute for this check: it stops
-    before the run even begins, not after a guaranteed-FAIL result."""
-    incomplete_cells = [
-        (family, month)
-        for month in inventory_months()
-        for family in SOURCE_FAMILIES
-        if resolve_month_locator(family, month) is None
-    ]
-    if incomplete_cells:
+    """Pre-network locator-*methodology*-readiness check. Real Stage-A
+    execution must not cross the JPX network boundary while any required
+    slot -- F1's mandatory TERMINAL slot, the 648-record base
+    MONTHLY_COVERAGE_MATRIX (F2-F7 x 108 months), or F7's envelope slots
+    outside 2017-2025 -- has no reviewed deterministic locator strategy
+    bound in `LOCATOR_STRATEGIES`. This performs no I/O and invents no
+    URL, cadence, N/A rule, archive period, retry rule, or source
+    substitution. It does NOT require that a concrete per-month/per-year
+    child URL is already known -- discovering that child URL by
+    traversing a locked official JPX root response is real Stage-A
+    network work, gated behind a fresh, separate, explicit human
+    authorization this check does not create. F2's post-2025 bridge slots
+    are not enumerated here because they depend on the terminal snapshot
+    month T, which is only known after a real F1 fetch; they reuse the
+    exact same reviewed F2 strategy verified below, so their completeness
+    already follows from F2's binding (see `f2_bridge_months`)."""
+    missing_family_strategies = [family for family in SOURCE_FAMILIES if family not in LOCATOR_STRATEGIES]
+    if missing_family_strategies:
         raise V9005StageABlocked(STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE)
+    for month in inventory_months():
+        for family in MONTHLY_COVERAGE_FAMILIES:
+            resolve_month_locator(family, month)
+    # F7 envelope slots (2016-09..2016-12, 2026-01..2026-03) reuse the
+    # exact same F2/F7 family-level strategy already verified above; no
+    # separate per-slot lookup is needed for locator-methodology
+    # completeness.
 
 
 def build_source_inventory(
     locked_index: Mapping[tuple[str, str], Any] | None = None,
 ) -> list[dict[str, Any]]:
+    """The base MONTHLY_COVERAGE_MATRIX: exactly `MONTHLY_COVERAGE_
+    FAMILIES` (F2-F7) x `inventory_months()` (108 months) = 648 records.
+    F1 has no record here at all -- not AVAILABLE, not NOT_APPLICABLE_
+    BY_SOURCE_CONTRACT, not MISSING -- per V9_006_F1_TERMINAL_SEED_
+    PREFREEZE_AMENDMENT."""
     locked_index = locked_index or {}
     records: list[dict[str, Any]] = []
     for month in inventory_months():
-        for family in SOURCE_FAMILIES:
-            # resolve_month_locator is called for its fail-closed validation
-            # (unknown family/month) and as the documented seam a future,
-            # separately reviewed task would extend with a real per-month
-            # locator. It returns None for every family/month today, so a
-            # cell is AVAILABLE only once actually present in locked_index;
-            # otherwise it is MISSING -- never a guessed AVAILABLE/
-            # NOT_APPLICABLE status.
+        for family in MONTHLY_COVERAGE_FAMILIES:
+            # resolve_month_locator validates the reviewed strategy exists;
+            # a cell is AVAILABLE only once actually present in
+            # locked_index (i.e. really fetched and locked this run),
+            # otherwise MISSING -- never a guessed AVAILABLE/NOT_APPLICABLE
+            # status.
             resolve_month_locator(family, month)
             if (family, month) in locked_index:
                 status = INVENTORY_AVAILABLE
@@ -689,7 +890,11 @@ def compute_stage_a_evidence(
     listing_transition_pass = _family_fully_covered(inventory, SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT)
     delisting_transition_pass = _family_fully_covered(inventory, SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE)
     market_transition_pass = listing_transition_pass
-    security_type_pass = _family_fully_covered(inventory, SOURCE_FAMILY_LISTED_ISSUES_MONTH_END)
+    # Per V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT, F1 (source of
+    # security-type classification) has zero MONTHLY_COVERAGE_MATRIX cells
+    # -- it is gated exclusively by the mandatory TERMINAL object, not
+    # monthly-family coverage.
+    security_type_pass = bool(terminal_snapshot_locked)
     effective_date_pass = listing_transition_pass and delisting_transition_pass and market_transition_pass
     canonical_identity_pass = bool(terminal_snapshot_locked) and security_type_pass
     calendar_family_covered = _family_fully_covered(inventory, SOURCE_FAMILY_JPX_CALENDAR)
@@ -896,20 +1101,27 @@ def fetch_terminal_snapshot(
 
 __all__ = [
     "ALLOWED_HOST_SUFFIX", "BOUND_SIGNAL_GRID_BLOB_SHA", "BOUND_SIGNAL_GRID_PATH",
-    "CALENDAR_PAGE_URL", "CHATGPT_DECISION_REQUIRED", "CONFIRMATION", "GOVERNANCE_FAILURE",
-    "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING", "INVENTORY_NOT_APPLICABLE",
-    "LISTED_ISSUES_PAGE_URL", "PLUMBING_FAILURE_RETRIABLE", "PROBE_SIGNAL_GRID_CONTRACT_MISMATCH",
-    "SOURCE_FAMILIES", "SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE", "SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE",
-    "SOURCE_FAMILY_JPX_CALENDAR", "SOURCE_FAMILY_LISTED_ISSUES_MONTH_END",
-    "SOURCE_FAMILY_MONTHLY_AGGREGATE_LISTED_ISSUE_COUNTS", "SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT",
-    "SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE", "SOURCE_OR_DATA_FEASIBILITY_FAILURE",
-    "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE", "STAGE", "STUDY",
+    "CALENDAR_ENVELOPE_FIRST_YEAR_MONTH", "CALENDAR_ENVELOPE_LAST_YEAR_MONTH",
+    "CALENDAR_MONTHLY_LOCATOR_TEMPLATE", "CALENDAR_PAGE_URL", "CHATGPT_DECISION_REQUIRED", "CONFIRMATION",
+    "DELISTED_COMPANY_ROOT_URL", "F2_SEMANTIC_ROW_LABEL", "F4_SEMANTIC_ROW_LABEL", "F6_SEMANTIC_SECTION_LABEL",
+    "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
+    "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
+    "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_ROOT_URL", "PLUMBING_FAILURE_RETRIABLE",
+    "PROBE_SIGNAL_GRID_CONTRACT_MISMATCH", "SLOT_KIND_GLOBAL", "SLOT_KIND_MONTHLY", "SLOT_KIND_TERMINAL",
+    "SLOT_KIND_YEAR", "SOURCE_FAMILIES", "SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE",
+    "SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE", "SOURCE_FAMILY_JPX_CALENDAR",
+    "SOURCE_FAMILY_LISTED_ISSUES_MONTH_END", "SOURCE_FAMILY_MONTHLY_AGGREGATE_LISTED_ISSUE_COUNTS",
+    "SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT", "SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE",
+    "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE", "STAGE", "STUDY",
+    "TOPIX_ROOT_URL", "VALID_SLOT_KINDS",
     "V9005StageABlocked", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
-    "canonical_bytes", "compute_month_end_mismatch_count", "compute_stage_a_evidence",
+    "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
+    "compute_month_end_mismatch_count", "compute_stage_a_evidence",
     "derive_final_signal_d0", "derive_stage_b_global_end_exclusive", "ensure_locked_payload",
-    "extract_data_j_xls_url", "fetch_once_with_retry", "fetch_terminal_snapshot", "initialize_output_root",
-    "inventory_months", "lock_first_complete_payload", "nth_trading_day_after", "read_locked_payload",
-    "reconstruct_security_state", "reconstruction_is_deterministic", "resolve_month_locator", "run_stage_a",
+    "extract_data_j_xls_url", "f2_bridge_months", "fetch_once_with_retry", "fetch_terminal_snapshot",
+    "initialize_output_root", "inventory_months", "lock_first_complete_payload", "nth_trading_day_after",
+    "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
+    "resolve_f7_calendar_url", "resolve_month_locator", "run_stage_a",
     "sha256_bytes", "validate_jpx_url", "verify_locator_contract_complete", "verify_raw_provenance",
     "verify_signal_grid_binding",
 ]
