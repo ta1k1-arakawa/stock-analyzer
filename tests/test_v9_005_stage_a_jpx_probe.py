@@ -448,48 +448,55 @@ def _fake_git_bound() -> object:
     return fake_git
 
 
-def test_run_stage_a_offline_reports_fail_with_safe_evidence(tmp_path: Path) -> None:
-    responses = {
-        m.LISTED_ISSUES_PAGE_URL: (_synthetic_listing_page(), m.LISTED_ISSUES_PAGE_URL),
-        "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls": (b"xls-bytes", "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls"),
-        m.CALENDAR_PAGE_URL: (_synthetic_calendar_html(), m.CALENDAR_PAGE_URL),
-    }
+# --- V9_006_HIGH_1: incomplete locator contract stops before ANY network ---
+
+def test_locator_contract_is_currently_incomplete() -> None:
+    """Ground truth for this whole remediation: under current reviewed
+    repository evidence, no source family has a resolvable locator for
+    every required monthly slot, so the contract is incomplete."""
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.verify_locator_contract_complete()
+    assert excinfo.value.reason == m.STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE
+    assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
+
+
+def test_locator_contract_complete_passes_when_no_missing_cells(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(m, "resolve_month_locator", lambda family, month: object())
+    m.verify_locator_contract_complete()  # must not raise
+
+
+def test_run_stage_a_incomplete_locator_contract_stops_before_any_network(tmp_path: Path) -> None:
+    calls: list[str] = []
+    git_calls: list[list[str]] = []
 
     def fetcher(url: str) -> tuple[bytes, str]:
-        return responses[url]
+        calls.append(url)
+        raise AssertionError("must not fetch while the locator contract is incomplete")
 
-    summary = m.run_stage_a(
-        output_root=tmp_path / "stage-a-out",
-        repo_root=str(ROOT),
-        confirmation=m.CONFIRMATION,
-        fetcher=fetcher,
-        sleep=_no_sleep,
-        clock=_clock,
-        git=_fake_git_bound(),
-    )
-    # This is the honest, expected offline/no-locator outcome: the monthly
-    # SOURCE_INVENTORY has no resolvable per-month locator for any of the
-    # seven families under current reviewed evidence, so Stage A FAILs.
-    assert summary["status"] == "FAIL"
-    assert summary["failure_class"] == m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
-    assert summary["required_inventory_missing_count"] > 0
-    assert summary["terminal_snapshot_pass"] is True
-    assert summary["signal_grid_binding_verified_head"] == "d" * 40
-    # Safe-only fields: no raw payload bytes, ticker/security identity, or
-    # price/OHLCV values anywhere in the safe summary.
-    forbidden_keys = {
-        "raw", "payload", "price", "close", "open", "high", "low", "volume",
-        "ticker", "security_identity", "canonical_security_identity",
-    }
-    assert set(summary) & forbidden_keys == set()
-    serialized = json.dumps(summary, ensure_ascii=False)
-    assert "xls-bytes" not in serialized  # never leak locked raw payload content
-    durable_root = tmp_path / "stage-a-out"
-    for name in ("inventory.json", "reconstruction.json", "result.json", "receipt.json"):
-        assert (durable_root / name).exists()
-    assert (durable_root / "result.json").read_text(encoding="utf-8").strip() == json.dumps(
-        summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
+    def fake_git(args: list[str]) -> str:
+        git_calls.append(args)
+        raise AssertionError("must not call git while the locator contract is incomplete")
+
+    out = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_stage_a(
+            output_root=out,
+            repo_root=str(ROOT),
+            confirmation=m.CONFIRMATION,
+            fetcher=fetcher,
+            sleep=_no_sleep,
+            clock=_clock,
+            git=fake_git,
+        )
+    assert excinfo.value.reason == m.STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE
+    assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
+    # Never SOURCE_OR_DATA_FEASIBILITY_FAILURE: that class is reserved for a
+    # genuine result after the locator contract is complete and the probe
+    # actually ran.
+    assert excinfo.value.failure_class != m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
+    assert calls == []
+    assert git_calls == []
+    assert not out.exists()  # no durable state created for a stop this early
 
 
 def test_run_stage_a_wrong_confirmation_never_fetches(tmp_path: Path) -> None:
@@ -514,7 +521,64 @@ def test_run_stage_a_wrong_confirmation_never_fetches(tmp_path: Path) -> None:
     assert not (tmp_path / "out").exists()
 
 
-def test_run_stage_a_wrong_signal_grid_blob_stops_before_any_fetch(tmp_path: Path) -> None:
+# --- Regression coverage: once the locator contract IS complete (forced via
+# monkeypatch, simulating a future, separately reviewed extension), the
+# existing fetch/lock/evidence pipeline below the gate still behaves
+# correctly. This is not itself a claim that the contract is complete today.
+
+def _force_locator_contract_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(m, "verify_locator_contract_complete", lambda: None)
+
+
+def test_run_stage_a_offline_reports_fail_with_safe_evidence_once_contract_forced_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _force_locator_contract_complete(monkeypatch)
+    responses = {
+        m.LISTED_ISSUES_PAGE_URL: (_synthetic_listing_page(), m.LISTED_ISSUES_PAGE_URL),
+        "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls": (b"xls-bytes", "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls"),
+        m.CALENDAR_PAGE_URL: (_synthetic_calendar_html(), m.CALENDAR_PAGE_URL),
+    }
+
+    def fetcher(url: str) -> tuple[bytes, str]:
+        return responses[url]
+
+    summary = m.run_stage_a(
+        output_root=tmp_path / "stage-a-out",
+        repo_root=str(ROOT),
+        confirmation=m.CONFIRMATION,
+        fetcher=fetcher,
+        sleep=_no_sleep,
+        clock=_clock,
+        git=_fake_git_bound(),
+    )
+    # Even with a forced-complete locator contract, the underlying monthly
+    # SOURCE_INVENTORY built from real locked evidence is still empty here
+    # (the synthetic fixtures only lock the two non-monthly artifacts), so
+    # this remains the honest FAIL outcome -- this test exists to prove the
+    # fetch/lock/evidence pipeline below the new gate still works, not to
+    # claim the real contract is complete.
+    assert summary["status"] == "FAIL"
+    assert summary["failure_class"] == m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
+    assert summary["required_inventory_missing_count"] > 0
+    assert summary["terminal_snapshot_pass"] is True
+    assert summary["signal_grid_binding_verified_head"] == "d" * 40
+    forbidden_keys = {
+        "raw", "payload", "price", "close", "open", "high", "low", "volume",
+        "ticker", "security_identity", "canonical_security_identity",
+    }
+    assert set(summary) & forbidden_keys == set()
+    serialized = json.dumps(summary, ensure_ascii=False)
+    assert "xls-bytes" not in serialized
+    durable_root = tmp_path / "stage-a-out"
+    for name in ("inventory.json", "reconstruction.json", "result.json", "receipt.json"):
+        assert (durable_root / name).exists()
+
+
+def test_run_stage_a_wrong_signal_grid_blob_stops_before_any_fetch_once_contract_forced_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _force_locator_contract_complete(monkeypatch)
     calls: list[str] = []
 
     def fetcher(url: str) -> tuple[bytes, str]:
@@ -540,6 +604,30 @@ def test_run_stage_a_wrong_signal_grid_blob_stops_before_any_fetch(tmp_path: Pat
         )
     assert excinfo.value.reason == m.PROBE_SIGNAL_GRID_CONTRACT_MISMATCH
     assert calls == []
+
+
+# --- Safe stdout for the CHATGPT_DECISION_REQUIRED stop (CLI) --------------
+
+def test_cli_script_incomplete_locator_contract_prints_safe_chatgpt_decision_required(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    sys.path.insert(0, str(ROOT / "scripts"))
+    monkeypatch.setenv("V9_005_STAGE_A_CONFIRMATION", m.CONFIRMATION)
+    import importlib
+
+    cli = importlib.import_module("run_v9_005_stage_a_jpx_probe")
+    importlib.reload(cli)
+    output_root = tmp_path / "cli-out"
+    exit_code = cli.main(["--output-root", str(output_root), "--repo-root", str(ROOT)])
+    assert exit_code == 2
+    out = capsys.readouterr().out.strip()
+    payload = json.loads(out)
+    assert payload["execution_result"] == "BLOCKED"
+    assert payload["failure_class"] == "CHATGPT_DECISION_REQUIRED"
+    assert payload["status"] == "CHATGPT_DECISION_REQUIRED"
+    assert payload["reason"] == "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE"
+    assert payload["network_request_count"] == 0
+    assert not output_root.exists()
 
 
 # --- Safe stdout / no identity leakage (CLI script) -------------------------

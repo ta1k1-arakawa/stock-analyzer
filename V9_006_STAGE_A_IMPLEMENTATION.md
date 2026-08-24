@@ -37,7 +37,7 @@ in chat, and it makes zero real network requests itself.
   binding, output-root collision check, and an interactively typed Stage-A
   confirmation token) before any network request; no chat-supplied
   authorization is baked into the file.
-- `tests/test_v9_005_stage_a_jpx_probe.py` -- 54 tests, entirely offline
+- `tests/test_v9_005_stage_a_jpx_probe.py` -- 58 tests, entirely offline
   (synthetic fixtures and injected fake fetchers/git callables only).
 
 ## Source-locator discipline (contract item 4)
@@ -59,25 +59,38 @@ split/right-treatment archive, monthly aggregate counts, TOPIX historical
 index) in prose, but no reviewed repository evidence supplies their exact
 per-month archive URLs. Per the source-locator discipline, inventing a URL
 pattern for those families would itself be a new methodology decision, so
-this implementation does not attempt it. Instead, per the design draft's own
-already-specified rule ("Unknown or ambiguous is MISSING"), every monthly
-`SOURCE_INVENTORY` cell for a family/month lacking a reviewed locator
-resolves deterministically to `MISSING` -- this is fail-closed behavior
-already authorized by the frozen Stage-A contract, not a new decision, so no
-`CHATGPT_DECISION_REQUIRED` STOP was required for the implementation as a
-whole. `resolve_month_locator` is the single documented seam a future,
-separately reviewed task would extend with additional reviewed per-month
-locators.
+this implementation does not attempt it. `resolve_month_locator` is the
+single documented seam a future, separately reviewed task would extend with
+additional reviewed per-month locators; it returns no locator for any
+family/month today.
 
-Because every monthly grid cell is `MISSING` under current reviewed
-evidence, `run_stage_a` executed for real today would deterministically
-report `FREE_JPX_METADATA_PROBE_FAIL` with
-`failure_class=SOURCE_OR_DATA_FEASIBILITY_FAILURE`. This is the honest,
-expected outcome given `V9_004_FREE_DATA_SOURCE_FEASIBILITY_AUDIT.md`'s own
-`FREE_PIT_UNIVERSE_FEASIBILITY=PARTIAL_NOT_PROVEN` conclusion, and is
-exercised directly by
-`test_run_stage_a_offline_reports_fail_with_safe_evidence`. The single
-locked calendar page also only covers 2026-2027 (the same years
+**V9_006_HIGH_1 remediation.** The original implementation converted that
+universal "no locator" condition into a real fetch-and-FAIL run: it still
+crossed the JPX network boundary (fetching the two non-monthly artifacts
+that do have a locator) before computing a guaranteed `FREE_JPX_METADATA_
+PROBE_FAIL`. GPT's review correctly identified this as unacceptable: a
+knowingly doomed real-network run is not a substitute for stopping before
+the boundary, and `V9_004_FREE_DATA_SOURCE_FEASIBILITY_AUDIT.md`'s own
+`FREE_PIT_UNIVERSE_FEASIBILITY=PARTIAL_NOT_PROVEN` conclusion means the
+locator contract for the seven required source families/monthly slots was
+never actually complete in the first place. `run_stage_a` now calls
+`verify_locator_contract_complete()` as its very first step -- before
+touching the filesystem, git, or the network -- which raises
+`V9005StageABlocked(STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE)`
+(`failure_class=CHATGPT_DECISION_REQUIRED`, never `SOURCE_OR_DATA_
+FEASIBILITY_FAILURE`) whenever any required family/month cell lacks a
+mechanically resolvable locator. Under current reviewed evidence every cell
+lacks one, so real execution today stops immediately: zero fetch calls,
+zero git calls, and no output-root directory is even created. See
+`V9_006_HIGH_1_REVIEW.md` for the full finding and remediation record.
+
+`SOURCE_OR_DATA_FEASIBILITY_FAILURE` remains reserved for a genuine result
+produced only after the locator contract is complete and the actual
+approved source probe has run -- it is exercised in tests only with the
+locator-contract gate forced complete via monkeypatch, simulating a future,
+separately reviewed extension (`test_run_stage_a_offline_reports_fail_with_
+safe_evidence_once_contract_forced_complete`). In that forced scenario, the
+single locked calendar page also only covers 2026-2027 (the same years
 `src/v7_jpx_calendar.py` already handles), which is insufficient to
 mechanically derive `FINAL_SIGNAL_D0` (requires coverage back to
 2018-01-01); `derive_stage_b_global_end_exclusive` fails closed with
@@ -155,10 +168,11 @@ or embedded in this file.
 
 ## Next action
 
-`GPT_EXACT_SHA_V9_006_STAGE_A_IMPLEMENTATION_REVIEW`: obtain GPT's
-independent exact-SHA review of this implementation commit before any real
-Stage-A execution. Real execution additionally requires: this review's
-PASS; the environment readiness ordering in `AI_REAL_EXECUTION_RUNBOOK.md`
-SS16-19; and a fresh, separate, explicit point-of-use human network
-authorization obtained after that review PASS (not the authorization
-already given in chat, which this task did not consume).
+`GPT_EXACT_SHA_V9_006_HIGH_1_REVIEW`: obtain GPT's independent exact-SHA
+review of this HIGH-1 remediation commit before any real Stage-A execution.
+Real execution additionally requires: this review's PASS (and PASS of any
+other still-open V9_006 findings); the environment readiness ordering in
+`AI_REAL_EXECUTION_RUNBOOK.md` SS16-19; and a fresh, separate, explicit
+point-of-use human network authorization obtained after that review PASS
+(not the authorization already given in chat, which this task did not
+consume).

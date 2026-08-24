@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.v9_005_stage_a_jpx_probe import (  # noqa: E402
+    CHATGPT_DECISION_REQUIRED,
     STAGE,
     STUDY,
     V9005StageABlocked,
@@ -48,8 +49,8 @@ def _utc_clock() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _safe_report(failure_class: str, network_request_count: int) -> dict[str, object]:
-    return {
+def _safe_report(failure_class: str, network_request_count: int, *, reason: str | None = None) -> dict[str, object]:
+    report: dict[str, object] = {
         "schema_version": FAILURE_SCHEMA_VERSION,
         "study": STUDY,
         "stage": STAGE,
@@ -57,6 +58,13 @@ def _safe_report(failure_class: str, network_request_count: int) -> dict[str, ob
         "failure_class": failure_class,
         "network_request_count": network_request_count,
     }
+    if failure_class == CHATGPT_DECISION_REQUIRED:
+        # A governance/methodology stop, not a source/data feasibility
+        # result: surface the explicit STATUS/reason contract so an
+        # operator or reviewer sees this is not a real probe outcome.
+        report["status"] = CHATGPT_DECISION_REQUIRED
+        report["reason"] = reason or CHATGPT_DECISION_REQUIRED
+    return report
 
 
 def _print(value: dict[str, object]) -> None:
@@ -86,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
             clock=_utc_clock,
         )
     except V9005StageABlocked as exc:
-        _print(_safe_report(exc.failure_class, exc.network_request_count))
+        _print(_safe_report(exc.failure_class, exc.network_request_count, reason=exc.reason))
         return 2
     except Exception:
         # Defense-in-depth: an ordinary (non-V9005StageABlocked) exception

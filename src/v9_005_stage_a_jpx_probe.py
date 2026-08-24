@@ -29,6 +29,19 @@ it is the already-specified fail-closed behavior ("Unknown or ambiguous is
 MISSING") applied deterministically: every monthly `SOURCE_INVENTORY` cell
 for which repository evidence supplies no exact per-month locator resolves
 to `MISSING` until a future, separately reviewed task supplies one.
+
+V9_006_HIGH_1: because every monthly `SOURCE_INVENTORY` cell is currently
+`MISSING`, real Stage-A execution would be a knowingly doomed real-network
+run -- guaranteed to reach `FREE_JPX_METADATA_PROBE_FAIL` before making a
+single request. That is not an acceptable substitute for stopping. Before
+touching the filesystem, git, or the network at all, `run_stage_a` calls
+`verify_locator_contract_complete()`, which raises
+`V9005StageABlocked(STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE)` --
+reported as `failure_class=CHATGPT_DECISION_REQUIRED`, never
+`SOURCE_OR_DATA_FEASIBILITY_FAILURE` -- whenever any required family/month
+cell has no mechanically resolvable locator. `SOURCE_OR_DATA_FEASIBILITY_
+FAILURE` remains reserved for a genuine result produced only after the
+locator contract is complete and the actual approved source probe has run.
 """
 
 from __future__ import annotations
@@ -105,12 +118,24 @@ GOVERNANCE_FAILURE = "GOVERNANCE_FAILURE"
 IMPLEMENTATION_FAILURE = "IMPLEMENTATION_FAILURE"
 PROBE_SIGNAL_GRID_CONTRACT_MISMATCH = "PROBE_SIGNAL_GRID_CONTRACT_MISMATCH"
 
+# --- V9_006_HIGH_1: pre-network locator-readiness stop ----------------------
+# This is a governance/methodology stop, not a source/data feasibility
+# result: it means the deterministic locator contract for the seven Stage-A
+# source families and every required monthly slot is not yet mechanically
+# complete from already-reviewed repository evidence, so real execution
+# must not cross the JPX network boundary at all. It must never be reported
+# as SOURCE_OR_DATA_FEASIBILITY_FAILURE, which is reserved for a genuine
+# probe result after a complete locator contract was actually executed.
+CHATGPT_DECISION_REQUIRED = "CHATGPT_DECISION_REQUIRED"
+STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE = "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE"
+
 PUBLIC_FAILURE_CLASSES = frozenset({
     PLUMBING_FAILURE_RETRIABLE,
     SOURCE_OR_DATA_FEASIBILITY_FAILURE,
     GOVERNANCE_FAILURE,
     IMPLEMENTATION_FAILURE,
     PROBE_SIGNAL_GRID_CONTRACT_MISMATCH,
+    CHATGPT_DECISION_REQUIRED,
 })
 
 _INTERNAL_REASON_TO_PUBLIC_FAILURE_CLASS: dict[str, str] = {
@@ -121,6 +146,7 @@ _INTERNAL_REASON_TO_PUBLIC_FAILURE_CLASS: dict[str, str] = {
     PROBE_SIGNAL_GRID_CONTRACT_MISMATCH: PROBE_SIGNAL_GRID_CONTRACT_MISMATCH,
     "OFF_DOMAIN_REQUEST_REJECTED": SOURCE_OR_DATA_FEASIBILITY_FAILURE,
     "OFF_DOMAIN_REDIRECT_REJECTED": SOURCE_OR_DATA_FEASIBILITY_FAILURE,
+    STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE: CHATGPT_DECISION_REQUIRED,
 }
 
 MAX_ATTEMPTS = 3
@@ -554,6 +580,28 @@ def resolve_month_locator(source_family: str, month: str) -> None:
     return None
 
 
+def verify_locator_contract_complete() -> None:
+    """V9_006_HIGH_1 pre-network locator-readiness check. Real Stage-A
+    execution must not cross the JPX network boundary while the
+    deterministic locator/cadence contract for the seven required source
+    families and every required monthly slot is incomplete. This performs
+    no I/O and invents no URL, cadence, N/A rule, archive period, retry
+    rule, or source substitution -- it only asks `resolve_month_locator`
+    whether every required cell can already be mechanically resolved from
+    already-reviewed repository evidence. A knowingly doomed real-network
+    run (one where every cell is already known to be MISSING before any
+    request) is not an acceptable substitute for this check: it stops
+    before the run even begins, not after a guaranteed-FAIL result."""
+    incomplete_cells = [
+        (family, month)
+        for month in inventory_months()
+        for family in SOURCE_FAMILIES
+        if resolve_month_locator(family, month) is None
+    ]
+    if incomplete_cells:
+        raise V9005StageABlocked(STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE)
+
+
 def build_source_inventory(
     locked_index: Mapping[tuple[str, str], Any] | None = None,
 ) -> list[dict[str, Any]]:
@@ -735,9 +783,14 @@ def run_stage_a(
     """Real-execution orchestration entrypoint. NEVER invoked with a real
     fetcher by this implementation task -- production real execution is
     gated behind the .ps1 atomic entrypoint and a fresh, separate, explicit
-    human network authorization not created by this task."""
+    human network authorization not created by this task.
+
+    Per V9_006_HIGH_1, this stops before touching the filesystem, git, or
+    the network at all if the deterministic Stage-A locator contract is not
+    yet mechanically complete (see `verify_locator_contract_complete`)."""
     if confirmation != CONFIRMATION:
         raise V9005StageABlocked(GOVERNANCE_FAILURE)
+    verify_locator_contract_complete()
     root = initialize_output_root(output_root)
     signal_grid_head = verify_signal_grid_binding(repo_root, git=git)
 
@@ -843,18 +896,20 @@ def fetch_terminal_snapshot(
 
 __all__ = [
     "ALLOWED_HOST_SUFFIX", "BOUND_SIGNAL_GRID_BLOB_SHA", "BOUND_SIGNAL_GRID_PATH",
-    "CALENDAR_PAGE_URL", "CONFIRMATION", "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE",
-    "INVENTORY_AVAILABLE", "INVENTORY_MISSING", "INVENTORY_NOT_APPLICABLE",
+    "CALENDAR_PAGE_URL", "CHATGPT_DECISION_REQUIRED", "CONFIRMATION", "GOVERNANCE_FAILURE",
+    "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING", "INVENTORY_NOT_APPLICABLE",
     "LISTED_ISSUES_PAGE_URL", "PLUMBING_FAILURE_RETRIABLE", "PROBE_SIGNAL_GRID_CONTRACT_MISMATCH",
     "SOURCE_FAMILIES", "SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE", "SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE",
     "SOURCE_FAMILY_JPX_CALENDAR", "SOURCE_FAMILY_LISTED_ISSUES_MONTH_END",
     "SOURCE_FAMILY_MONTHLY_AGGREGATE_LISTED_ISSUE_COUNTS", "SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT",
-    "SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE", "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "STAGE", "STUDY",
+    "SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE", "SOURCE_OR_DATA_FEASIBILITY_FAILURE",
+    "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE", "STAGE", "STUDY",
     "V9005StageABlocked", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
     "canonical_bytes", "compute_month_end_mismatch_count", "compute_stage_a_evidence",
     "derive_final_signal_d0", "derive_stage_b_global_end_exclusive", "ensure_locked_payload",
     "extract_data_j_xls_url", "fetch_once_with_retry", "fetch_terminal_snapshot", "initialize_output_root",
     "inventory_months", "lock_first_complete_payload", "nth_trading_day_after", "read_locked_payload",
     "reconstruct_security_state", "reconstruction_is_deterministic", "resolve_month_locator", "run_stage_a",
-    "sha256_bytes", "validate_jpx_url", "verify_raw_provenance", "verify_signal_grid_binding",
+    "sha256_bytes", "validate_jpx_url", "verify_locator_contract_complete", "verify_raw_provenance",
+    "verify_signal_grid_binding",
 ]
