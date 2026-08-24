@@ -108,14 +108,73 @@ run still stops before any filesystem/git/network access.
 remains `OPEN`; not remediated by this task, per this task's explicit
 prohibition. `security_type_pass` and its semantics were not touched.
 
+## HIGH_2 exact-SHA remediation review
+
+```text
+REVIEWED_SHA=ed70bc8f42beabef5aac76242a7aaba9c9ab1b6a
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+RESULT=PASS
+```
+
+GPT's independent exact-SHA review of the `V9_006_LOCATOR_IMPL_HIGH_2`
+remediation (reviewed commit `ed70bc8f42beabef5aac76242a7aaba9c9ab1b6a`,
+parent `afc59fb285e09aa8c7225ce6f855d16801c67584`) is `PASS`.
+`V9_006_LOCATOR_IMPL_HIGH_2=RESOLVED`.
+
+## Finding 3 status update
+
+`V9_006_LOCATOR_IMPL_HIGH_3_SECURITY_TYPE_GATE_OUT_OF_SCOPE_WEAKENING`:
+remediated in task `V9_006_LOCATOR_IMPL_HIGH_3_SECURITY_TYPE_FAIL_CLOSED`.
+The previous `security_type_pass = bool(terminal_snapshot_locked)` falsely
+equated "a terminal object exists" with V9_005's `SECURITY_TYPE` evidence
+requirement (domestic ordinary-common-stock eligibility must be
+determinable for every reconstructed identity/date needed by V9 without
+future security state; `UNKNOWN` fails). `compute_stage_a_evidence()` now
+takes an explicit `security_type_validation_pass: bool` input, and
+`security_type_pass = bool(security_type_validation_pass)` -- never
+inferred from `terminal_snapshot_locked`, family coverage, row count, or
+any other proxy. Production `run_stage_a()` passes
+`security_type_validation_pass=False` (statically proven by
+`test_production_security_type_validation_pass_is_hardcoded_false`),
+because the actual semantic security-type validator has not yet been
+implemented or independently reviewed; this `False` will only be replaced
+by that future validator's real result. `terminal_snapshot_pass` remains an
+independent gate based solely on terminal-snapshot locking -- the two gates
+are proven not to be conflated by
+`test_terminal_snapshot_locked_true_with_security_type_validation_false_fails_security_type`,
+`test_terminal_snapshot_locked_alone_can_never_make_security_type_pass`,
+and
+`test_synthetic_security_type_validation_true_feeds_conjunction_independent_of_terminal_lock`.
+This task removes only the unsafe proxy; it does NOT implement the actual
+semantic security-type parser/classifier, and does NOT touch
+`canonical_identity_pass`'s formula, `effective_date_pass`,
+`reconstruct_security_state`, or `reconstruction_is_deterministic` --
+`canonical_identity_pass = bool(terminal_snapshot_locked) and
+security_type_pass` is textually unchanged and simply now correctly
+reflects the fixed `security_type_pass`. Original V9_006 HIGH_2 (full
+semantic reconstruction/validation), original HIGH_3 (raw
+provenance/content-lock), and original HIGH_4 (redirect handling) remain
+explicitly OPEN and out of scope. `ACQUISITION_IMPLEMENTATION_COMPLETE`
+remains `False` and `verify_acquisition_implementation_ready()` is
+unchanged, so a valid real run still stops before any
+filesystem/git/network access.
+
+`V9_006_LOCATOR_IMPL_HIGH_3=REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW`
+
 ## What this review closure does not do
 
 This is not a GPT review -- it records GPT's independent PASS of the
-HIGH_1 remediation, and this task's own remediation claim for finding 2
-only. It creates no network, data, T1, or design-freeze authority, and does
-not by itself authorize any Stage-A execution, which remains `BLOCK`ed
-pending: GPT's independent exact-SHA review of this HIGH_2 remediation
-(`GPT_EXACT_SHA_V9_006_LOCATOR_IMPL_HIGH_2_REVIEW`); remediation and PASS of
-finding 3; a future, separately reviewed F2-F7 acquisition-pipeline
+HIGH_1 and HIGH_2 remediations, and this task's own remediation claim for
+finding 3 only. It creates no network, data, T1, or design-freeze
+authority, and does not by itself authorize any Stage-A execution, which
+remains `BLOCK`ed pending: GPT's independent exact-SHA review of this
+HIGH_3 remediation (`GPT_EXACT_SHA_V9_006_LOCATOR_IMPL_HIGH_3_REVIEW`);
+remediation and PASS of the original V9_006 HIGH_2 (full semantic
+reconstruction/validation, including the actual security-type
+parser/classifier), original HIGH_3 (raw provenance/content-lock), and
+original HIGH_4 (redirect handling) findings, none of which this task
+remediated; a future, separately reviewed F2-F7 acquisition-pipeline
 implementation task; and a fresh, separate, explicit point-of-use human
 network authorization obtained after all of the above.

@@ -208,6 +208,66 @@ and stays same-domain. The pre-existing
 network calls, zero git calls, and no output-root creation under a valid
 confirmation.
 
+## Security-type evidence fail-closed (V9_006_LOCATOR_IMPL_HIGH_3)
+
+GPT's exact-SHA review of the HIGH_2 remediation (`RESULT=PASS`, reviewed
+SHA `ed70bc8f42beabef5aac76242a7aaba9c9ab1b6a`) resolved
+`V9_006_LOCATOR_IMPL_HIGH_2`; this task remediates the third and final
+finding from the original locator-implementation review:
+`V9_006_LOCATOR_IMPL_HIGH_3_SECURITY_TYPE_GATE_OUT_OF_SCOPE_WEAKENING`.
+Original V9_006 HIGH_2 (full semantic reconstruction/validation), original
+HIGH_3 (raw provenance/content-lock), and original HIGH_4 (redirect
+handling) remain `OPEN` and are explicitly out of scope here -- see
+`V9_006_STAGE_A_LOCATOR_IMPLEMENTATION_REVIEW.md`.
+
+The finding: `security_type_pass = bool(terminal_snapshot_locked)` falsely
+equated "F1's mandatory terminal object was successfully locked" with
+V9_005's actual `SECURITY_TYPE` evidence requirement -- domestic
+ordinary-common-stock eligibility must be determinable for every
+reconstructed identity/date needed by V9 without future security state,
+with `UNKNOWN` failing. A locked terminal object proves nothing about
+whether that classification is actually determinable.
+
+The fix, WITHOUT implementing the full semantic validator: `compute_stage_a_
+evidence()` gains an explicit `security_type_validation_pass: bool`
+parameter, and `security_type_pass = bool(security_type_validation_pass)`
+-- never inferred from `terminal_snapshot_locked`, family coverage, row
+count, or any other proxy. Production `run_stage_a()` passes
+`security_type_validation_pass=False` (with a comment explaining this is
+intentionally fail-closed pending the future independently reviewed
+validator), because that validator has not yet been implemented or
+reviewed. `terminal_snapshot_pass` remains an independent gate based solely
+on terminal-snapshot locking, unconflated with `security_type_pass`.
+`canonical_identity_pass`'s formula (`bool(terminal_snapshot_locked) and
+security_type_pass`) is textually unchanged -- it simply now correctly
+reflects the fixed, no-longer-falsely-derived `security_type_pass`, per
+this task's explicit instruction not to touch canonical-identity/effective-
+date/reconstruction semantics. `ACQUISITION_IMPLEMENTATION_COMPLETE`
+remains `False` and `verify_acquisition_implementation_ready()` is
+unchanged, so a valid real run still stops before any
+filesystem/git/network access.
+
+Tests: `test_terminal_snapshot_locked_true_with_security_type_validation_false_fails_security_type`
+proves a locked terminal snapshot cannot make `security_type_pass` true on
+its own; `test_terminal_snapshot_locked_alone_can_never_make_security_type_pass`
+sweeps both values of `terminal_snapshot_locked` with
+`security_type_validation_pass=False` to prove `security_type_pass` stays
+`False` either way;
+`test_synthetic_security_type_validation_true_feeds_conjunction_independent_of_terminal_lock`
+proves a synthetic `True` can drive `security_type_pass=True` even with
+`terminal_snapshot_locked=False`, showing the two gates are independent
+(this synthetic input tests conjunction mechanics only -- it is not a claim
+that production semantic validation exists);
+`test_production_security_type_validation_pass_is_hardcoded_false` is a
+static-source proof (via `inspect.getsource`) that `run_stage_a()` always
+passes `security_type_validation_pass=False`. All pre-existing
+`compute_stage_a_evidence` call sites and the `_full_evidence` test helper
+were updated to pass the new required keyword (the helper defaults it to a
+clearly-commented synthetic `True`, so the pre-existing PASS/FAIL
+conjunction tests continue to isolate their own conditions under test), and
+a new parametrized case (`security_type_validation_pass: False`) was added
+to `test_exact_pass_conjunction_false_if_any_single_condition_fails`.
+
 ## Signal-grid binding (contract item 5)
 
 `verify_signal_grid_binding` is called immediately after output-root
@@ -284,17 +344,20 @@ or embedded in this file.
 
 ## Next action
 
-`GPT_EXACT_SHA_V9_006_LOCATOR_IMPL_HIGH_2_REVIEW`: obtain GPT's independent
-exact-SHA review of this F1-exact-root-binding remediation
-(`V9_006_LOCATOR_IMPL_HIGH_2`) before any real Stage-A execution.
-`V9_006_LOCATOR_IMPL_HIGH_1` is already `RESOLVED` (GPT exact-SHA `PASS`,
-reviewed SHA `afc59fb285e09aa8c7225ce6f855d16801c67584`). Real execution
-additionally requires: this HIGH_2 review's PASS; PASS of the still-`OPEN`
-finding `V9_006_LOCATOR_IMPL_HIGH_3` (`security_type_pass` semantic gate
-weakening), not remediated by this task; PASS of any other still-open
-V9_006 findings (including HIGH_2 semantic reconstruction, HIGH_3 raw
-provenance/content-lock boundary, and HIGH_4 redirect-before-body-
-consumption); a future, separately reviewed task that actually implements
+`GPT_EXACT_SHA_V9_006_LOCATOR_IMPL_HIGH_3_REVIEW`: obtain GPT's independent
+exact-SHA review of this security-type-evidence-fail-closed remediation
+(`V9_006_LOCATOR_IMPL_HIGH_3`) before any real Stage-A execution.
+`V9_006_LOCATOR_IMPL_HIGH_1` and `V9_006_LOCATOR_IMPL_HIGH_2` are already
+`RESOLVED` (GPT exact-SHA `PASS`, reviewed SHAs
+`afc59fb285e09aa8c7225ce6f855d16801c67584` and
+`ed70bc8f42beabef5aac76242a7aaba9c9ab1b6a` respectively). Real execution
+additionally requires: this HIGH_3 review's PASS; PASS of the original
+V9_006 HIGH_2 finding (full semantic reconstruction/validation, including
+the actual security-type parser/classifier that will someday replace this
+task's hardcoded `security_type_validation_pass=False`), the original
+HIGH_3 finding (raw provenance/content-lock boundary), and the original
+HIGH_4 finding (redirect-before-body-consumption), none of which this task
+remediated; a future, separately reviewed task that actually implements
 the complete F2-F7 acquisition pipeline and flips
 `ACQUISITION_IMPLEMENTATION_COMPLETE` to `True` (not built by this task);
 the environment readiness ordering in `AI_REAL_EXECUTION_RUNBOOK.md`

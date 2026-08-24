@@ -949,16 +949,23 @@ def compute_stage_a_evidence(
     reconstruction_deterministic: bool,
     comparable_month_end_mismatch_count: int,
     raw_provenance_pass: bool,
+    security_type_validation_pass: bool,
 ) -> dict[str, Any]:
     required_inventory_missing_count = sum(1 for record in inventory if record["status"] == INVENTORY_MISSING)
     listing_transition_pass = _family_fully_covered(inventory, SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT)
     delisting_transition_pass = _family_fully_covered(inventory, SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE)
     market_transition_pass = listing_transition_pass
-    # Per V9_006_F1_TERMINAL_SEED_PREFREEZE_AMENDMENT, F1 (source of
-    # security-type classification) has zero MONTHLY_COVERAGE_MATRIX cells
-    # -- it is gated exclusively by the mandatory TERMINAL object, not
-    # monthly-family coverage.
-    security_type_pass = bool(terminal_snapshot_locked)
+    # V9_006_LOCATOR_IMPL_HIGH_3: "a TERMINAL object exists" is NOT evidence
+    # that V9_005's SECURITY_TYPE requirement is satisfied -- domestic
+    # ordinary-common-stock eligibility must be determinable for every
+    # reconstructed identity/date needed by V9 without future security
+    # state, with UNKNOWN failing. security_type_pass is therefore driven
+    # only by the explicit security_type_validation_pass input, never
+    # inferred from terminal_snapshot_locked, family coverage, row count,
+    # or any other proxy. terminal_snapshot_pass (below) remains an
+    # independent gate based solely on terminal-snapshot locking; the two
+    # must never be conflated.
+    security_type_pass = bool(security_type_validation_pass)
     effective_date_pass = listing_transition_pass and delisting_transition_pass and market_transition_pass
     canonical_identity_pass = bool(terminal_snapshot_locked) and security_type_pass
     calendar_family_covered = _family_fully_covered(inventory, SOURCE_FAMILY_JPX_CALENDAR)
@@ -1127,6 +1134,15 @@ def run_stage_a(
         reconstruction_deterministic=reconstruction_deterministic,
         comparable_month_end_mismatch_count=0,
         raw_provenance_pass=raw_provenance_pass,
+        # V9_006_LOCATOR_IMPL_HIGH_3: intentionally fail-closed. The actual
+        # semantic security-type validator (domestic ordinary-common-stock
+        # eligibility, determinable for every reconstructed identity/date
+        # without future security state, UNKNOWN failing) has not yet been
+        # implemented or independently reviewed. This False will only ever
+        # be replaced by the real result of that future, separately
+        # reviewed validator -- never by a proxy such as terminal-snapshot
+        # locking, family coverage, or row count.
+        security_type_validation_pass=False,
     )
     summary = build_safe_summary(
         evidence,

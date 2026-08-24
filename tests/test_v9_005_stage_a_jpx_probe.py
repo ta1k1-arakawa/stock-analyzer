@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import socket
@@ -332,6 +333,11 @@ def test_required_inventory_missing_causes_fail() -> None:
         reconstruction_deterministic=True,
         comparable_month_end_mismatch_count=0,
         raw_provenance_pass=True,
+        # Synthetic True: isolates required_inventory_missing_count as the
+        # only cause of FAIL under test, per V9_006_LOCATOR_IMPL_HIGH_3 --
+        # not a claim that production semantic security-type validation
+        # exists.
+        security_type_validation_pass=True,
     )
     assert evidence["required_inventory_missing_count"] > 0
     assert evidence["FREE_JPX_METADATA_PROBE_PASS"] is False
@@ -375,6 +381,10 @@ def test_month_end_mismatch_fails_overall_pass_even_if_everything_else_passes() 
         reconstruction_deterministic=True,
         comparable_month_end_mismatch_count=1,
         raw_provenance_pass=True,
+        # Synthetic True: isolates the month-end mismatch as the only cause
+        # of FAIL under test ("even if everything else passes") -- not a
+        # claim that production semantic security-type validation exists.
+        security_type_validation_pass=True,
     )
     assert evidence["FREE_JPX_METADATA_PROBE_PASS"] is False
 
@@ -432,6 +442,12 @@ def _full_evidence(**overrides: object) -> dict[str, object]:
         reconstruction_deterministic=True,
         comparable_month_end_mismatch_count=0,
         raw_provenance_pass=True,
+        # Synthetic True default: exercises the evidence-conjunction
+        # mechanics only. Per V9_006_LOCATOR_IMPL_HIGH_3, this is never
+        # evidence that production semantic security-type validation
+        # exists -- production run_stage_a() always passes False (see
+        # test_production_security_type_validation_pass_is_hardcoded_false).
+        security_type_validation_pass=True,
     )
     kwargs.update(overrides)
     return m.compute_stage_a_evidence(**kwargs)
@@ -451,12 +467,67 @@ def test_exact_pass_conjunction_true_when_everything_passes() -> None:
         {"reconstruction_deterministic": False},
         {"raw_provenance_pass": False},
         {"comparable_month_end_mismatch_count": 1},
+        {"security_type_validation_pass": False},
     ],
 )
 def test_exact_pass_conjunction_false_if_any_single_condition_fails(overrides: dict[str, object]) -> None:
     evidence = _full_evidence(**overrides)
     assert evidence["FREE_JPX_METADATA_PROBE_PASS"] is False
     assert evidence["failure_class"] == m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
+
+
+# --- V9_006_LOCATOR_IMPL_HIGH_3: security_type_pass must be driven only by
+# the explicit security_type_validation_pass input, never inferred from
+# terminal_snapshot_locked (or any other proxy) as a false substitute for
+# the not-yet-implemented semantic security-type validator.
+
+def test_terminal_snapshot_locked_true_with_security_type_validation_false_fails_security_type() -> None:
+    evidence = _full_evidence(terminal_snapshot_locked=True, security_type_validation_pass=False)
+    assert evidence["terminal_snapshot_pass"] is True
+    assert evidence["security_type_pass"] is False
+    assert evidence["FREE_JPX_METADATA_PROBE_PASS"] is False
+    assert evidence["failure_class"] == m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
+
+
+def test_terminal_snapshot_locked_alone_can_never_make_security_type_pass() -> None:
+    """A locked terminal object is not, by itself, evidence that domestic
+    ordinary-common-stock eligibility is determinable -- security_type_pass
+    must stay False regardless of terminal_snapshot_locked's value unless
+    security_type_validation_pass is explicitly True."""
+    for terminal_locked in (True, False):
+        evidence = _full_evidence(
+            terminal_snapshot_locked=terminal_locked, security_type_validation_pass=False,
+        )
+        assert evidence["security_type_pass"] is False
+
+
+def test_synthetic_security_type_validation_true_feeds_conjunction_independent_of_terminal_lock() -> None:
+    """An explicit synthetic security_type_validation_pass=True can drive
+    security_type_pass=True even when terminal_snapshot_locked is False --
+    proving the two gates are independent, never conflated, and that a
+    True security_type_pass is never *derived* from terminal-snapshot
+    locking. This synthetic input tests aggregation/conjunction mechanics
+    only; it is not evidence that production semantic validation exists."""
+    evidence = _full_evidence(terminal_snapshot_locked=False, security_type_validation_pass=True)
+    assert evidence["terminal_snapshot_pass"] is False
+    assert evidence["security_type_pass"] is True
+    # Overall PASS still fails, because terminal_snapshot_pass is an
+    # independent required conjunct.
+    assert evidence["FREE_JPX_METADATA_PROBE_PASS"] is False
+
+
+def test_production_security_type_validation_pass_is_hardcoded_false() -> None:
+    """Static-source proof that run_stage_a() -- the real-execution
+    orchestration entrypoint -- always passes security_type_validation_pass
+    =False to compute_stage_a_evidence(), because the actual semantic
+    security-type validator has not yet been implemented or independently
+    reviewed. This is intentionally fail-closed and must only ever be
+    replaced by the real result of that future, separately reviewed
+    validator."""
+    source = inspect.getsource(m.run_stage_a)
+    call_start = source.index("compute_stage_a_evidence(")
+    call_text = source[call_start:call_start + source[call_start:].index(")\n") + 2]
+    assert "security_type_validation_pass=False" in call_text
 
 
 # --- Endpoint derivation ------------------------------------------------------
