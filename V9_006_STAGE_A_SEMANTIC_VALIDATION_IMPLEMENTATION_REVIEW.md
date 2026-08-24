@@ -178,3 +178,33 @@ remains `False`.
 `V9_006_HIGH_2_SEM_IMPL_HIGH_1=REMEDIATION_REVISED_AWAITING_GPT_REVIEW`.
 `V9_006_HIGH_2_SEM_IMPL_HIGH_2` and `V9_006_HIGH_2_SEM_IMPL_MEDIUM_1`
 remain `OPEN`.
+
+## HIGH_1 final GPT review and HIGH_2 orphan-event remediation
+
+```text
+REVIEWED_SHA=b3718c42e83389035d16cd2b49a2793373e95737
+PARENT_SHA=2283add8f9e2eb1c2d27d2db8815685582d57e1f
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+RESULT=PASS
+V9_006_HIGH_2_SEM_IMPL_HIGH_1=RESOLVED
+```
+
+This task remediates exactly `V9_006_HIGH_2_SEM_IMPL_HIGH_2_ORPHAN_EVENT_
+IDENTITY_NOT_REJECTED`.  Every validated, canonicalized `SemanticEvent`
+must now match one final usable terminal identity after terminal-code
+normalization.  Events are compared with the final usable `identities`
+mapping rather than raw terminal mapping keys, so a normalized match such
+as terminal key `130a` and event code `130A` is anchored, while a
+duplicate/colliding or invalid terminal-code group is not a usable anchor.
+
+An unanchored valid event records `ORPHAN_EVENT_IDENTITY`, fails
+`canonical_identity_pass` and `deterministic_reconstruction_pass`, and
+fails only its relevant evidence gate: listing, delisting, market, or
+security type.  Exact valid dates remain valid: orphan status alone does
+not change `effective_date_pass`.  Malformed-event handling and the
+separate two-run-determinism finding are unchanged.
+
+`V9_006_HIGH_2_SEM_IMPL_HIGH_2=REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW`.
+`V9_006_HIGH_2_SEM_IMPL_MEDIUM_1=OPEN`.

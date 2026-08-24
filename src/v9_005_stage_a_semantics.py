@@ -50,6 +50,7 @@ AMBIGUOUS_EFFECTIVE_DATE = "AMBIGUOUS_EFFECTIVE_DATE"
 INVALID_SEMANTIC_EVENT = "INVALID_SEMANTIC_EVENT"
 INVALID_TERMINAL_IDENTITY_STATE = "INVALID_TERMINAL_IDENTITY_STATE"
 DUPLICATE_CANONICAL_IDENTITY = "DUPLICATE_CANONICAL_IDENTITY"
+ORPHAN_EVENT_IDENTITY = "ORPHAN_EVENT_IDENTITY"
 
 
 class SemanticValidationError(ValueError):
@@ -350,6 +351,11 @@ def compute_semantic_validation_result(
     any_invalid_market = False
     any_ambiguous_date = False
     unattributed_invalid = False
+    any_orphan_listing = False
+    any_orphan_delisting = False
+    any_orphan_market = False
+    any_orphan_security_type = False
+    any_orphan_event_identity = False
 
     valid_events: list[SemanticEvent] = []
     for event in events:
@@ -424,6 +430,27 @@ def compute_semantic_validation_result(
             continue
         identities[code] = terminal_identities[raw_keys[0]]
 
+    # V9_006_HIGH_2_SEM_IMPL_HIGH_2: every validated/canonicalized event
+    # must be anchored by exactly one usable terminal identity.  Compare
+    # the event's normalized code to the final `identities` mapping, not
+    # raw terminal keys: invalid/colliding terminal groups are deliberately
+    # absent from this mapping and therefore cannot serve as an anchor.
+    # Malformed events remain governed by the existing validation path.
+    for event in valid_events:
+        if event.canonical_code in identities:
+            continue
+        reasons.add(ORPHAN_EVENT_IDENTITY)
+        any_orphan_event_identity = True
+        if event.dimension == DIMENSION_LISTED_STATE:
+            if event.before_state is False and event.after_state is True:
+                any_orphan_listing = True
+            else:
+                any_orphan_delisting = True
+        elif event.dimension == DIMENSION_MARKET_STATE:
+            any_orphan_market = True
+        elif event.dimension == DIMENSION_SECURITY_TYPE_STATE:
+            any_orphan_security_type = True
+
     collapsed, conflict_dimensions = _dedupe_and_detect_conflicts(valid_events)
     if conflict_dimensions:
         reasons.add(CONFLICTING_TRANSITION_EVIDENCE)
@@ -487,14 +514,21 @@ def compute_semantic_validation_result(
     # cannot PASS with an invalid or colliding terminal identity in the
     # input, even if every other identity/event is perfectly clean. Each
     # invalid field additionally fails its own more specific gate(s).
-    listing_ok = not any_invalid_listing and not listed_conflict and not unattributed_invalid and not any_invalid_listed_state
-    delisting_ok = (
-        not any_invalid_delisting and not listed_conflict and not unattributed_invalid and not any_invalid_listed_state
+    listing_ok = (
+        not any_invalid_listing and not listed_conflict and not unattributed_invalid
+        and not any_invalid_listed_state and not any_orphan_listing
     )
-    market_ok = not any_invalid_market and not market_conflict and not unattributed_invalid and not any_invalid_market_state
-    security_type_ok = security_type_ok and not any_invalid_security_type_state
-    canonical_identity_ok = not any_invalid_identity and not reused_code_violation
-    deterministic_reconstruction_ok = reconstruction_consistent and not any_invalid_identity
+    delisting_ok = (
+        not any_invalid_delisting and not listed_conflict and not unattributed_invalid
+        and not any_invalid_listed_state and not any_orphan_delisting
+    )
+    market_ok = (
+        not any_invalid_market and not market_conflict and not unattributed_invalid
+        and not any_invalid_market_state and not any_orphan_market
+    )
+    security_type_ok = security_type_ok and not any_invalid_security_type_state and not any_orphan_security_type
+    canonical_identity_ok = not any_invalid_identity and not reused_code_violation and not any_orphan_event_identity
+    deterministic_reconstruction_ok = reconstruction_consistent and not any_invalid_identity and not any_orphan_event_identity
     effective_date_ok = not any_ambiguous_date
 
     return {
@@ -520,6 +554,7 @@ __all__ = [
     "DIMENSION_SECURITY_TYPE_STATE",
     "INVALID_CANONICAL_CODE",
     "INVALID_SEMANTIC_EVENT",
+    "ORPHAN_EVENT_IDENTITY",
     "SECURITY_TYPE_ELIGIBLE",
     "SECURITY_TYPE_INELIGIBLE",
     "SECURITY_TYPE_UNKNOWN",

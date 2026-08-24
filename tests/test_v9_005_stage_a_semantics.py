@@ -520,6 +520,75 @@ def test_valid_byte_identical_collision_does_not_add_unrelated_invalid_field_rea
     assert sem.INVALID_TERMINAL_IDENTITY_STATE not in result["reasons"]
 
 
+# --- V9_006_HIGH_2_SEM_IMPL_HIGH_2: orphan event identities -----------------
+
+def test_orphan_listing_event_fails_identity_reconstruction_and_listing_not_date() -> None:
+    result = sem.compute_semantic_validation_result(
+        terminal_identities=_single_identity(),
+        events=[E("1302", "2020-01-06", sem.DIMENSION_LISTED_STATE, False, True, "F2")],
+    )
+    assert sem.ORPHAN_EVENT_IDENTITY in result["reasons"]
+    assert result["listing_transition_pass"] is False
+    assert result["canonical_identity_pass"] is False
+    assert result["deterministic_reconstruction_pass"] is False
+    assert result["effective_date_pass"] is True
+
+
+def test_orphan_delisting_event_fails_delisting_gate() -> None:
+    result = sem.compute_semantic_validation_result(
+        terminal_identities=_single_identity(),
+        events=[E("1302", "2020-01-06", sem.DIMENSION_LISTED_STATE, True, False, "F2")],
+    )
+    assert result["delisting_transition_pass"] is False
+    assert sem.ORPHAN_EVENT_IDENTITY in result["reasons"]
+
+
+def test_orphan_market_event_fails_market_gate() -> None:
+    result = sem.compute_semantic_validation_result(
+        terminal_identities=_single_identity(),
+        events=[E("1302", "2020-01-06", sem.DIMENSION_MARKET_STATE, "STANDARD", "PRIME", "F2")],
+    )
+    assert result["market_transition_pass"] is False
+    assert sem.ORPHAN_EVENT_IDENTITY in result["reasons"]
+
+
+def test_orphan_security_type_event_fails_security_type_gate() -> None:
+    result = sem.compute_semantic_validation_result(
+        terminal_identities=_single_identity(),
+        events=[E("1302", "2020-01-06", sem.DIMENSION_SECURITY_TYPE_STATE, sem.SECURITY_TYPE_UNKNOWN, sem.SECURITY_TYPE_ELIGIBLE, "F2")],
+    )
+    assert result["security_type_pass"] is False
+    assert sem.ORPHAN_EVENT_IDENTITY in result["reasons"]
+
+
+def test_normalized_event_code_matches_normalized_usable_terminal_identity() -> None:
+    identities = {"130a": TIS(True, "PRIME", sem.SECURITY_TYPE_ELIGIBLE)}
+    events = [E("130A", "2020-01-06", sem.DIMENSION_LISTED_STATE, False, True, "F2")]
+    result = sem.compute_semantic_validation_result(terminal_identities=identities, events=events)
+    assert sem.ORPHAN_EVENT_IDENTITY not in result["reasons"]
+    assert result["canonical_identity_pass"] is True
+    assert result["deterministic_reconstruction_pass"] is True
+
+
+def test_event_for_colliding_terminal_group_is_orphan() -> None:
+    state = TIS(True, "PRIME", sem.SECURITY_TYPE_ELIGIBLE)
+    result = sem.compute_semantic_validation_result(
+        terminal_identities={"1301": state, " 1301 ": state},
+        events=[E("1301", "2020-01-06", sem.DIMENSION_LISTED_STATE, False, True, "F2")],
+    )
+    assert sem.DUPLICATE_CANONICAL_IDENTITY in result["reasons"]
+    assert sem.ORPHAN_EVENT_IDENTITY in result["reasons"]
+
+
+def test_event_for_invalid_terminal_state_is_orphan() -> None:
+    result = sem.compute_semantic_validation_result(
+        terminal_identities={"1301": TIS(True, "", sem.SECURITY_TYPE_ELIGIBLE)},
+        events=[E("1301", "2020-01-06", sem.DIMENSION_MARKET_STATE, "STANDARD", "PRIME", "F2")],
+    )
+    assert sem.INVALID_TERMINAL_IDENTITY_STATE in result["reasons"]
+    assert sem.ORPHAN_EVENT_IDENTITY in result["reasons"]
+
+
 # --- Zero network (structural) -------------------------------------------------
 
 def test_module_has_no_network_capable_imports() -> None:
