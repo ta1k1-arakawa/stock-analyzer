@@ -68,15 +68,49 @@ root=https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html
 Resolve the unique same-domain `data_j.xls` link from that official page.
 The page/file is rolling previous-month-end material, not a historical
 monthly archive. Parse the terminal snapshot month `T` from official source
-semantics. No guessed historical URL.
+semantics. No guessed historical URL. The `slot_kind=TERMINAL` rolling
+current object described here is unchanged.
 
-**Monthly coverage mapping.** All 108 base `MONTHLY_COVERAGE_MATRIX` cells
-for this family are `NOT_APPLICABLE_BY_SOURCE_CONTRACT`, because the
-official source is mechanically rolling terminal-only, not a historical
-monthly archive -- no monthly object is ever expected for this family. One
-separate `TERMINAL` object remains mandatory outside that matrix: an
-absent or ambiguous terminal object sets `terminal_snapshot_pass=false`.
+**Monthly coverage mapping (V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A).** Official
+JPX cadence states this List of TSE-listed Issues material is updated on
+the third business day of *each month*, and its Excel files are updated
+sequentially. That official cadence mechanically proves a monthly file is
+expected every month -- it does not prove the opposite. Historical
+unavailability or overwrite of a given month's file (because the object is
+rolling/sequentially replaced) is not the same thing as the official source
+contract proving no file was ever expected for that month.
+`NOT_APPLICABLE_BY_SOURCE_CONTRACT` is therefore **prohibited** for this
+family's base monthly cells. For each base `MONTHLY_COVERAGE_MATRIX` cell
+2017-01 through 2025-12:
+
+- `AVAILABLE` if and only if an exact official historical F1 month-end
+  object for that month is uniquely resolved by the bound official
+  traversal and locked, referencing that object's `SOURCE_OBJECT_INVENTORY`
+  slot ID.
+- `MISSING` otherwise.
+
+The separate current/rolling `TERMINAL` object remains mandatory outside
+this matrix. A valid `TERMINAL` object does **not** by itself make any
+historical F1 base-month cell `AVAILABLE` -- the terminal object identifies
+only the terminal snapshot month `T`, not a full historical monthly
+archive. An absent or ambiguous terminal object still sets
+`terminal_snapshot_pass=false`, independent of the base-month cells.
 Terminal month `T` must be parsed mechanically from the object itself.
+
+**Open locator gap.** Under the currently bound F1 root/traversal
+(`https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html`
++ `data_j.xls` extraction), no historical-month locator is yet established
+-- that root/traversal only resolves the current rolling object, not a
+per-month historical archive. This is recorded as a methodology/
+source-locator blocker, not resolved by inventing a historical URL and not
+resolved by declaring the base-month cells `NOT_APPLICABLE_BY_SOURCE_
+CONTRACT`. Under this binding, every F1 base-month cell mechanically
+resolves to `MISSING` until a future, separately reviewed methodology
+decision either (a) supplies a reviewed historical F1 locator/traversal, or
+(b) decides whether `V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_
+DRAFT.md` should later remove or redefine F1's monthly requirement. Neither
+of those decisions is made by this document; `V9_005_FREE_SOURCE_PUBLIC_
+NETWORK_PROBE_DESIGN_DRAFT.md` itself is unchanged.
 
 ## F2 -- MONTHLY_STATISTICS_CHANGES_REPORT
 
@@ -250,11 +284,16 @@ stays `BLOCK`ed pending that separate decision. This task also does not
 implement any of F1-F7 in code, does not execute the probe, does not make
 any network request, and does not consume any human authorization,
 including the Stage-A authorization already given in chat.
+`V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A` additionally does not decide whether a
+historical F1 locator/traversal will later be supplied, or whether
+`V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_DRAFT.md` should later
+remove or redefine F1's monthly requirement; `V9_005_FREE_SOURCE_PUBLIC_
+NETWORK_PROBE_DESIGN_DRAFT.md` itself is not modified by this document.
 
 ## Next action
 
-`GPT_EXACT_SHA_V9_006_SOURCE_SLOT_LOCATOR_HIGH_1_REVIEW`: obtain GPT's
-independent exact-SHA review of this HIGH-1 remediation (see
+`GPT_EXACT_SHA_V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A_REVIEW`: obtain GPT's
+independent exact-SHA review of this HIGH-1A remediation (see
 `V9_006_SOURCE_SLOT_LOCATOR_HIGH_1_REVIEW.md`). A future, separately
 authorized implementation task would then wire F1-F7 -- with the
 `SOURCE_OBJECT_INVENTORY` / `MONTHLY_COVERAGE_MATRIX` two-layer model --
@@ -262,4 +301,5 @@ into `src/v9_005_stage_a_jpx_probe.py`'s `resolve_month_locator` seam
 under this exact binding -- still without executing any real network
 request until a fresh, separate, explicit Stage-A human network
 authorization is obtained after that implementation's own GPT exact-SHA
-review PASS.
+review PASS. Before then, a separate GPT methodology decision must still
+resolve F1's open historical-locator gap.

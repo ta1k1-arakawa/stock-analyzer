@@ -108,7 +108,7 @@ opening, model fitting, backtesting, profit calculation, or V9 design
 freeze, and does not consume the human's existing chat-given Stage-A
 authorization.
 
-## Next action
+## Next action (superseded by the HIGH-1A review below)
 
 `V9_006_SOURCE_SLOT_LOCATOR_HIGH_1` remains
 `REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW` -- not `PASS` or `RESOLVED`
@@ -117,3 +117,105 @@ SHA. `V9_006_SOURCE_SLOT_LOCATOR_METHODOLOGY` remains `BLOCK` overall
 pending that review. Real Stage-A execution stays `BLOCK`ed regardless,
 also pending a separate retry/backoff policy decision, implementation of
 F1-F7, and a fresh Stage-A human network authorization.
+
+## GPT exact-SHA independent review — BLOCK (HIGH-1A)
+
+```text
+REVIEWED_SHA=4a04ce0c755a1733c2aa79675047fb541ed92aa6
+PARENT_SHA=667cdad05f6961835b254e0d77ce2cbd5ebeea0e
+CRITICAL=0
+HIGH=1
+MEDIUM=0
+RESULT=BLOCK
+```
+
+FINDING=V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A_F1_NOT_APPLICABLE_MISCLASSIFICATION
+
+The F1 monthly-coverage mapping recorded above ("all 108 base cells are
+`NOT_APPLICABLE_BY_SOURCE_CONTRACT`") is invalid. The authoritative V9_005
+rule permits `NOT_APPLICABLE_BY_SOURCE_CONTRACT` only where official JPX
+source cadence/range mechanically *proves* no file is expected for a given
+month; unknown, ambiguous, or merely-unavailable evidence is `MISSING`, not
+`NOT_APPLICABLE_BY_SOURCE_CONTRACT`. Official F1 semantics already
+established by GPT review are the opposite of what the prior mapping
+assumed: the List of TSE-listed Issues is previous-month-end material,
+explicitly updated on the third business day of *each month*, with Excel
+files updated sequentially. That cadence mechanically proves a monthly file
+*is* expected every month. Historical unavailability or overwrite of a
+given month's file (because the object is rolling/sequentially replaced)
+does not prove the official contract expected no file for that month --
+conflating "we cannot currently resolve a historical locator for this
+object" with "the source contract proves nothing was expected" is exactly
+the kind of unauthorized methodology invention the fail-closed rule exists
+to prevent.
+
+FINDING_STATUS=REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW
+
+## HIGH-1A remediation implemented
+
+`V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md`'s F1 section is
+corrected. F1's `slot_kind=TERMINAL` rolling current object and its root
+(`https://www.jpx.co.jp/english/markets/statistics-equities/misc/01.html`
++ `data_j.xls` extraction) are unchanged. The monthly-coverage mapping is
+replaced:
+
+- `NOT_APPLICABLE_BY_SOURCE_CONTRACT` is now explicitly **prohibited** for
+  F1's base `MONTHLY_COVERAGE_MATRIX` cells, because official JPX cadence
+  proves a monthly file is expected every month.
+- Each base cell 2017-01 through 2025-12 is `AVAILABLE` if and only if an
+  exact official historical F1 month-end object for that month is uniquely
+  resolved by the bound official traversal and locked; otherwise
+  `MISSING`.
+- The separate current/rolling `TERMINAL` object remains mandatory and
+  unchanged in role: a valid `TERMINAL` object does not, by itself, make
+  any historical base-month cell `AVAILABLE` (it identifies only the
+  terminal snapshot month `T`); an absent or ambiguous terminal object
+  still independently sets `terminal_snapshot_pass=false`.
+- An explicit "Open locator gap" note records that no historical-month
+  locator/traversal is yet established under the currently bound F1 root.
+  No historical URL is invented, and the base-month cells are not
+  declared `NOT_APPLICABLE_BY_SOURCE_CONTRACT` to paper over that gap;
+  under this binding every F1 base-month cell mechanically resolves to
+  `MISSING` until a future, separately reviewed methodology decision
+  either supplies a reviewed historical F1 locator, or decides whether
+  `V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_DRAFT.md` should later
+  remove or redefine F1's monthly requirement. Neither decision is made
+  here, and `V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_DRAFT.md`
+  itself is not modified.
+
+No other family (F2-F7), retry policy, URL, source root, F4 ratio
+orientation, calendar envelope, or pass threshold was touched.
+
+## Authority created (HIGH-1A)
+
+```text
+NETWORK_REQUESTS=0
+DATA_ACQUIRED=false
+CODE_CHANGED=false
+PROBE_EXECUTED=false
+HUMAN_GATE_CONSUMED=false
+RETRY_POLICY_DECIDED=false
+V9_005_DESIGN_DRAFT_MODIFIED=false
+T1_OR_DESIGN_FREEZE_AUTHORITY_CREATED=false
+```
+
+This remediation is a docs-only F1 methodology correction. It does not
+authorize network access, data acquisition, T1 membership generation or
+opening, model fitting, backtesting, profit calculation, or V9 design
+freeze; does not modify `V9_005_FREE_SOURCE_PUBLIC_NETWORK_PROBE_DESIGN_
+DRAFT.md`; and does not consume the human's existing chat-given Stage-A
+authorization.
+
+## Next action
+
+`V9_006_SOURCE_SLOT_LOCATOR_HIGH_1A` remains
+`REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW` -- not `PASS` or `RESOLVED`
+-- until GPT independently reviews this remediation at its exact commit
+SHA. `V9_006_SOURCE_SLOT_LOCATOR_HIGH_1` and
+`V9_006_SOURCE_SLOT_LOCATOR_METHODOLOGY` both remain `BLOCK` pending that
+review. A further, separate GPT methodology decision is still required to
+resolve F1's open historical-locator gap (or redefine F1's monthly
+requirement) before F1 can ever reach `AVAILABLE` for any base month. Real
+Stage-A execution stays `BLOCK`ed regardless, also pending the unresolved
+retry/backoff policy decision, implementation of F1-F7, and a fresh
+Stage-A human network authorization.
