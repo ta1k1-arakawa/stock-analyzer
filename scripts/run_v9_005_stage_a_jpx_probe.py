@@ -26,6 +26,7 @@ from src.v9_005_stage_a_jpx_probe import (  # noqa: E402
     STUDY,
     V9005StageABlocked,
     run_stage_a,
+    validate_jpx_url,
 )
 
 CONFIRMATION_ENV = "V9_005_STAGE_A_CONFIRMATION"
@@ -33,12 +34,31 @@ FAILURE_SCHEMA_VERSION = "V9_005_STAGE_A_FAILURE_V1"
 PRODUCTION_USER_AGENT = "V9-005-Stage-A-JPX-Probe/1.0"
 
 
+class _JpxRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject an unsafe redirect target before urllib follows it."""
+
+    def redirect_request(
+        self,
+        req: object,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        validate_jpx_url(newurl, reason="OFF_DOMAIN_REDIRECT_REJECTED")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _production_fetcher(url: str) -> FetchResult:
     request = urllib.request.Request(url, headers={"User-Agent": PRODUCTION_USER_AGENT})
-    response = urllib.request.urlopen(request, timeout=30)
+    opener = urllib.request.build_opener(_JpxRedirectHandler())
+    response = opener.open(request, timeout=30)
     try:
+        geturl = getattr(response, "geturl", None)
+        final_url = geturl() if callable(geturl) else getattr(response, "url", url)
+        validate_jpx_url(final_url, reason="OFF_DOMAIN_REDIRECT_REJECTED")
         payload = response.read()
-        final_url = getattr(response, "url", url)
         http_status = getattr(response, "status", None)
         if http_status is None:
             getcode = getattr(response, "getcode", None)

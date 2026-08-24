@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import inspect
 import json
 import re
@@ -7,6 +8,7 @@ import socket
 import subprocess
 import sys
 import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +27,13 @@ def _clock() -> datetime:
 
 def _no_sleep(_seconds: int) -> None:
     return None
+
+
+def _production_script_module() -> object:
+    scripts_directory = str(ROOT / "scripts")
+    if scripts_directory not in sys.path:
+        sys.path.insert(0, scripts_directory)
+    return importlib.reload(importlib.import_module("run_v9_005_stage_a_jpx_probe"))
 
 
 # --- 1. No real network in tests --------------------------------------------
@@ -810,11 +819,107 @@ def test_transport_exhausted_retries_is_plumbing_failure_retriable() -> None:
     assert excinfo.value.reason == m.PLUMBING_FAILURE_RETRIABLE
 
 
-def test_raw_provenance_status_capture_does_not_remediate_high4_redirect_ordering() -> None:
-    """HIGH_4 remains deliberately out of scope: production still reads
-    the response body before looking at the final resolved URL/status."""
-    source = (ROOT / "scripts" / "run_v9_005_stage_a_jpx_probe.py").read_text(encoding="utf-8")
-    assert source.index("payload = response.read()") < source.index("final_url = getattr(response, \"url\", url)")
+@pytest.mark.parametrize(
+    "redirect_url",
+    [
+        "https://evil.example/redirected",
+        "https://jpx.co.jp.evil.example/redirected",
+        "http://www.jpx.co.jp/redirected",
+        "https://user@www.jpx.co.jp/redirected",
+        "https://www.jpx.co.jp:444/redirected",
+        "https://www.jpx.co.jp/redirected#fragment",
+    ],
+)
+def test_production_redirect_handler_rejects_unsafe_target_before_following(
+    monkeypatch: pytest.MonkeyPatch, redirect_url: str
+) -> None:
+    production = _production_script_module()
+    delegated: list[str] = []
+
+    def _delegate(*_args: object, **_kwargs: object) -> object:
+        delegated.append("followed")
+        return object()
+
+    monkeypatch.setattr(urllib.request.HTTPRedirectHandler, "redirect_request", _delegate)
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        production._JpxRedirectHandler().redirect_request(None, None, 302, "Found", None, redirect_url)
+    assert excinfo.value.reason == "OFF_DOMAIN_REDIRECT_REJECTED"
+    assert delegated == []
+
+
+def test_production_redirect_handler_allows_same_domain_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    production = _production_script_module()
+    delegated: list[str] = []
+    sentinel = object()
+
+    def _delegate(*_args: object, **_kwargs: object) -> object:
+        delegated.append("followed")
+        return sentinel
+
+    monkeypatch.setattr(urllib.request.HTTPRedirectHandler, "redirect_request", _delegate)
+    result = production._JpxRedirectHandler().redirect_request(
+        None, None, 302, "Found", None, "https://sub.jpx.co.jp/redirected"
+    )
+    assert result is sentinel
+    assert delegated == ["followed"]
+
+
+class _FakeProductionResponse:
+    def __init__(self, final_url: str, payload: bytes = b"payload", status: int = 200) -> None:
+        self._final_url = final_url
+        self._payload = payload
+        self.status = status
+        self.read_count = 0
+        self.closed = False
+
+    def geturl(self) -> str:
+        return self._final_url
+
+    def read(self) -> bytes:
+        self.read_count += 1
+        return self._payload
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeProductionOpener:
+    def __init__(self, response: _FakeProductionResponse) -> None:
+        self.response = response
+        self.requests: list[object] = []
+
+    def open(self, request: object, *, timeout: int) -> _FakeProductionResponse:
+        assert timeout == 30
+        self.requests.append(request)
+        return self.response
+
+
+def test_production_final_url_is_validated_before_body_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    production = _production_script_module()
+    response = _FakeProductionResponse("https://evil.example/final")
+    opener = _FakeProductionOpener(response)
+    monkeypatch.setattr(production.urllib.request, "build_opener", lambda *_handlers: opener)
+
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        production._production_fetcher("https://www.jpx.co.jp/start")
+    assert excinfo.value.reason == "OFF_DOMAIN_REDIRECT_REJECTED"
+    assert response.read_count == 0
+    assert response.closed is True
+
+
+def test_production_valid_final_response_is_read_once_with_observed_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production = _production_script_module()
+    response = _FakeProductionResponse("https://sub.jpx.co.jp/final", b"exact bytes", 206)
+    opener = _FakeProductionOpener(response)
+    monkeypatch.setattr(production.urllib.request, "build_opener", lambda *_handlers: opener)
+
+    result = production._production_fetcher("https://www.jpx.co.jp/start")
+    assert result == m.FetchResult(b"exact bytes", "https://sub.jpx.co.jp/final", 206)
+    assert response.read_count == 1
+    assert response.closed is True
+    assert len(opener.requests) == 1
 
 
 # --- End-to-end run_stage_a with fully synthetic, offline fixtures ---------

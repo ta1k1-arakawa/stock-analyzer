@@ -21,10 +21,9 @@ malformed metadata, record-key mismatch, or hash/length mismatch. Existing
 complete locked objects are still reprocessed without refetch; duplicate lock
 attempts remain no-overwrite implementation failures.
 
-This does not change HIGH_4: the production urllib fetcher still reads the
-body before looking at final redirect information. It does not implement
-F2-F7 acquisition/parser integration or alter
-`ACQUISITION_IMPLEMENTATION_COMPLETE=false`.
+This review now also records the separately scoped HIGH_4 redirect-boundary
+remediation below. It does not implement F2-F7 acquisition/parser integration
+or alter `ACQUISITION_IMPLEMENTATION_COMPLETE=false`.
 
 ## Exact GPT review preceding this remediation
 
@@ -65,3 +64,27 @@ orphan/hash/length/duplicate/reuse checks, HIGH_4 ordering, the deferred LOW,
 and `ACQUISITION_IMPLEMENTATION_COMPLETE=false` are unchanged.
 
 `V9_006_HIGH_3=REMEDIATION_REVISED_AWAITING_GPT_REVIEW`.
+
+## HIGH_4 exact-SHA review and remediation
+
+```text
+REVIEWED_SHA=aca54748a1d838cbd3c4ad603fc91bb6624d7ae2
+PARENT_SHA=c77eff15ecd5b6a250ebcb960214cc99dd8950a2
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+LOW=1
+RESULT=PASS
+V9_006_HIGH_3=RESOLVED
+```
+
+The production urllib boundary now installs a redirect handler which validates
+every redirect target as HTTPS on `jpx.co.jp` or a subdomain before urllib can
+follow it. The final response URL is independently validated before its body
+is read. Unsafe redirect targets therefore remain nonretryable
+`OFF_DOMAIN_REDIRECT_REJECTED` failures with no redirected-body consumption.
+Same-domain JPX redirects remain permitted. FetchResult coupling, strict
+timestamp validation, F1 discovery-before-extraction locking, and truthful
+XLS request provenance remain unchanged.
+
+`V9_006_HIGH_4=REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW`.
