@@ -480,6 +480,11 @@ def _record_key(source_family: str, applicable_period: str, requested_url: str) 
     return sha256_bytes(material)
 
 
+def source_object_slot_id(source_family: str, applicable_period: str, requested_url: str) -> str:
+    """Return the existing raw-lock key for a coverage-evidence object."""
+    return _record_key(source_family, applicable_period, requested_url)
+
+
 def _raw_paths(output_root: Path, key: str) -> tuple[Path, Path]:
     raw_dir = Path(output_root) / "raw"
     return raw_dir / (key + ".bin"), raw_dir / (key + ".json")
@@ -938,29 +943,55 @@ def verify_acquisition_implementation_ready() -> None:
         raise V9005StageABlocked(STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE)
 
 
+def _normalized_coverage_references(
+    coverage_references: Mapping[tuple[str, str], Sequence[str]] | None,
+) -> dict[tuple[str, str], list[str]]:
+    if coverage_references is None:
+        return {}
+    if not isinstance(coverage_references, Mapping):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+
+    normalized: dict[tuple[str, str], list[str]] = {}
+    valid_months = frozenset(inventory_months())
+    for key, slot_ids in coverage_references.items():
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        source_family, month = key
+        if source_family not in MONTHLY_COVERAGE_FAMILIES or month not in valid_months:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        if isinstance(slot_ids, (str, bytes)) or not isinstance(slot_ids, Sequence):
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        for slot_id in slot_ids:
+            if not isinstance(slot_id, str) or re.fullmatch(r"[0-9a-f]{64}", slot_id) is None:
+                raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        normalized[(source_family, month)] = sorted(set(slot_ids))
+    return normalized
+
+
 def build_source_inventory(
-    locked_index: Mapping[tuple[str, str], Any] | None = None,
+    coverage_references: Mapping[tuple[str, str], Sequence[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """The base MONTHLY_COVERAGE_MATRIX: exactly `MONTHLY_COVERAGE_
     FAMILIES` (F2-F7) x `inventory_months()` (108 months) = 648 records.
     F1 has no record here at all -- not AVAILABLE, not NOT_APPLICABLE_
     BY_SOURCE_CONTRACT, not MISSING -- per V9_006_F1_TERMINAL_SEED_
     PREFREEZE_AMENDMENT."""
-    locked_index = locked_index or {}
+    normalized_references = _normalized_coverage_references(coverage_references)
     records: list[dict[str, Any]] = []
     for month in inventory_months():
         for family in MONTHLY_COVERAGE_FAMILIES:
-            # resolve_month_locator validates the reviewed strategy exists;
-            # a cell is AVAILABLE only once actually present in
-            # locked_index (i.e. really fetched and locked this run),
-            # otherwise MISSING -- never a guessed AVAILABLE/NOT_APPLICABLE
-            # status.
+            # This foundation accepts only validated raw-lock slot-ID
+            # references. Family-specific sufficiency (F3 YEAR fan-out, F6
+            # GLOBAL fan-out, F5 comparability) remains future work.
             resolve_month_locator(family, month)
-            if (family, month) in locked_index:
-                status = INVENTORY_AVAILABLE
-            else:
-                status = INVENTORY_MISSING
-            records.append({"source_family": family, "month": month, "status": status})
+            source_object_slot_ids = normalized_references.get((family, month), [])
+            status = INVENTORY_AVAILABLE if source_object_slot_ids else INVENTORY_MISSING
+            records.append({
+                "source_family": family,
+                "month": month,
+                "status": status,
+                "source_object_slot_ids": source_object_slot_ids,
+            })
     return records
 
 
@@ -1229,7 +1260,7 @@ def run_stage_a(
     except (V7JpxCalendarBlocked, V9005StageABlocked) as exc:
         endpoint_failure_reason = getattr(exc, "reason", str(exc))
 
-    inventory = build_source_inventory(locked_index={})
+    inventory = build_source_inventory()
 
     # V9_006_HIGH_2_SEMANTIC_VALIDATION_IMPLEMENTATION: production has no
     # acquired F2-F7 structured semantic evidence yet -- the F2-F7
@@ -1311,7 +1342,7 @@ __all__ = [
     "initialize_output_root", "inventory_months", "lock_first_complete_payload", "nth_trading_day_after",
     "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
     "resolve_f7_calendar_url", "resolve_month_locator", "run_stage_a",
-    "sha256_bytes", "validate_jpx_url", "verify_acquisition_implementation_ready",
+    "sha256_bytes", "source_object_slot_id", "validate_jpx_url", "verify_acquisition_implementation_ready",
     "verify_locator_contract_complete", "verify_raw_provenance",
     "verify_signal_grid_binding",
 ]

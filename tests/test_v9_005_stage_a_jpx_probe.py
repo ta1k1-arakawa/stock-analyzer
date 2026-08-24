@@ -29,6 +29,18 @@ def _no_sleep(_seconds: int) -> None:
     return None
 
 
+def _slot_id(source_family: str, month: str, suffix: str = "one") -> str:
+    return m.source_object_slot_id(source_family, month, f"https://www.jpx.co.jp/{suffix}")
+
+
+def _full_coverage_references() -> dict[tuple[str, str], list[str]]:
+    return {
+        (family, month): [_slot_id(family, month)]
+        for family in m.MONTHLY_COVERAGE_FAMILIES
+        for month in m.inventory_months()
+    }
+
+
 def _production_script_module() -> object:
     scripts_directory = str(ROOT / "scripts")
     if scripts_directory not in sys.path:
@@ -274,6 +286,7 @@ def test_inventory_defaults_to_missing_for_every_cell() -> None:
     assert len(inventory) == 648
     assert len(inventory) == len(m.inventory_months()) * len(m.MONTHLY_COVERAGE_FAMILIES)
     assert all(record["status"] == m.INVENTORY_MISSING for record in inventory)
+    assert all(record["source_object_slot_ids"] == [] for record in inventory)
 
 
 def test_monthly_coverage_matrix_is_exactly_f2_through_f7() -> None:
@@ -291,14 +304,56 @@ def test_f1_has_zero_monthly_cells_and_a_separate_terminal_slot() -> None:
         m.resolve_month_locator(m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, m.inventory_months()[0])
 
 
-def test_inventory_available_only_when_locked() -> None:
+def test_source_object_slot_id_reuses_the_existing_raw_lock_key() -> None:
+    slot_id = m.source_object_slot_id("FAMILY", "2020-01", "https://www.jpx.co.jp/object")
+    assert slot_id == m._record_key("FAMILY", "2020-01", "https://www.jpx.co.jp/object")
+    assert re.fullmatch(r"[0-9a-f]{64}", slot_id)
+
+
+def test_inventory_available_only_with_valid_slot_id_references() -> None:
     month = m.inventory_months()[0]
     family = m.SOURCE_FAMILY_JPX_CALENDAR
-    inventory = m.build_source_inventory(locked_index={(family, month): object()})
+    slot_id = _slot_id(family, month)
+    inventory = m.build_source_inventory(coverage_references={(family, month): [slot_id]})
     record = next(r for r in inventory if r["source_family"] == family and r["month"] == month)
     assert record["status"] == m.INVENTORY_AVAILABLE
+    assert record["source_object_slot_ids"] == [slot_id]
     other = next(r for r in inventory if r["source_family"] == family and r["month"] != month)
     assert other["status"] == m.INVENTORY_MISSING
+
+
+def test_inventory_slot_id_references_are_sorted_deduplicated_and_empty_is_missing() -> None:
+    month = m.inventory_months()[0]
+    family = m.SOURCE_FAMILY_JPX_CALENDAR
+    first, second = _slot_id(family, month, "a"), _slot_id(family, month, "b")
+    inventory = m.build_source_inventory(coverage_references={(family, month): [second, first, second]})
+    record = next(r for r in inventory if r["source_family"] == family and r["month"] == month)
+    assert record["status"] == m.INVENTORY_AVAILABLE
+    assert record["source_object_slot_ids"] == sorted({first, second})
+    missing = m.build_source_inventory(coverage_references={(family, month): []})
+    assert next(r for r in missing if r["source_family"] == family and r["month"] == month)["status"] == m.INVENTORY_MISSING
+
+
+@pytest.mark.parametrize("slot_ids", [object(), [object()], ["A" * 64], ["a" * 63], ["g" * 64]])
+def test_inventory_rejects_arbitrary_or_invalid_slot_ids(slot_ids: object) -> None:
+    family, month = m.SOURCE_FAMILY_JPX_CALENDAR, m.inventory_months()[0]
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.build_source_inventory(coverage_references={(family, month): slot_ids})  # type: ignore[dict-item]
+    assert excinfo.value.reason == m.IMPLEMENTATION_FAILURE
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        (m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, "2017-01"),
+        ("UNKNOWN_FAMILY", "2017-01"),
+        (m.SOURCE_FAMILY_JPX_CALENDAR, "2016-12"),
+    ],
+)
+def test_inventory_rejects_non_base_coverage_keys(key: tuple[str, str]) -> None:
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.build_source_inventory(coverage_references={key: ["a" * 64]})
+    assert excinfo.value.reason == m.IMPLEMENTATION_FAILURE
 
 
 def test_unknown_family_or_month_is_ambiguous_fail_closed() -> None:
@@ -469,9 +524,7 @@ def test_month_end_mismatch_detected() -> None:
 
 def test_month_end_mismatch_fails_overall_pass_even_if_everything_else_passes() -> None:
     full_inventory = m.build_source_inventory(
-        locked_index={
-            (family, month): object() for family in m.MONTHLY_COVERAGE_FAMILIES for month in m.inventory_months()
-        }
+        coverage_references=_full_coverage_references()
     )
     evidence = m.compute_stage_a_evidence(
         inventory=full_inventory,
@@ -547,9 +600,7 @@ def _synthetic_semantic_result(**overrides: object) -> dict[str, object]:
 
 def _full_evidence(**overrides: object) -> dict[str, object]:
     full_inventory = m.build_source_inventory(
-        locked_index={
-            (family, month): object() for family in m.MONTHLY_COVERAGE_FAMILIES for month in m.inventory_months()
-        }
+        coverage_references=_full_coverage_references()
     )
     semantic_overrides = {key: overrides.pop(key) for key in list(overrides) if key in _SEMANTIC_RESULT_KEYS}
     kwargs = dict(
