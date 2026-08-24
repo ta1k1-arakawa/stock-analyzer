@@ -49,10 +49,12 @@ in chat, and it makes zero real network requests itself.
   `compute_semantic_validation_result`. Zero network access; imports
   nothing from `v9_005_stage_a_jpx_probe.py` (the dependency runs the
   other way).
-- `tests/test_v9_005_stage_a_semantics.py` -- 57 tests, entirely offline,
+- `tests/test_v9_005_stage_a_semantics.py` -- 64 tests, entirely offline,
   covering every methodology rule bound in
   `V9_006_STAGE_A_SEMANTIC_VALIDATION_METHODOLOGY.md` plus terminal-
-  identity validation/collision-detection regression coverage.
+  identity validation/collision-detection regression coverage (including
+  a colliding entry's own field validity and total, never-raising
+  handling of unhashable field values).
 
 ## Source-locator discipline (contract item 4)
 
@@ -471,6 +473,45 @@ states still fail, and a regression check that a normal single-key valid
 terminal identity behaves unchanged. All 45 pre-existing semantics tests
 continue to pass.
 
+## Total terminal-state validation for colliding entries (V9_006_HIGH_2_SEM_IMPL_HIGH_1_MEDIUM_1)
+
+GPT's exact-SHA review of the HIGH_1 remediation (`RESULT=BLOCK`, one
+residual `MEDIUM`, reviewed SHA `2283add8f9e2eb1c2d27d2db8815685582d57e1f`)
+found the substantive HIGH_1 remediation sound but incomplete: the
+collision-exclusion `continue` ran BEFORE `_validate_terminal_identity_
+state` was ever called for a colliding raw entry, so a colliding entry's
+own malformed field (e.g. `security_type_state="BOGUS"`, `listed_
+state=1`, an empty `market_state`, or a non-`TerminalIdentityState` value)
+never failed its specific gate -- only the generic duplicate-identity
+failures fired. Separately, `_validate_terminal_identity_state`'s
+`security_type_state in VALID_SECURITY_TYPE_STATES` check could raise
+`TypeError` for an unhashable `security_type_state` (a list or dict)
+instead of failing closed.
+
+The fix, in `src/v9_005_stage_a_semantics.py` only: the identity-building
+loop now validates every raw entry's fields FIRST -- including every
+entry participating in a collision -- aggregating per-field invalid flags
+across all raw entries in the normalized group before applying collision/
+invalidity exclusion from `identities`/reconstruction. A colliding entry's
+own invalid field now additionally fails exactly the gate(s) that field is
+responsible for, while a fully-valid byte-identical collision still
+produces only the `DUPLICATE_CANONICAL_IDENTITY` reason (no fabricated
+`INVALID_TERMINAL_IDENTITY_STATE`). `_validate_terminal_identity_state`
+now checks `isinstance(state.security_type_state, str)` BEFORE the
+frozenset membership test, so an unhashable value fails closed rather than
+raising -- the function is now total over its input domain. All previously
+reviewed canonical-code/collision/reconstruction methodology is otherwise
+unchanged; orphan-event handling and the two-run determinism gate were not
+touched; `src/v9_005_stage_a_jpx_probe.py` was not modified.
+
+Tests: `tests/test_v9_005_stage_a_semantics.py` grows from 57 to 64 tests,
+adding a collision with a bogus `security_type_state`, a collision with
+`listed_state=1`, a collision with an empty `market_state`, a collision
+containing a non-`TerminalIdentityState` value, an unhashable list/dict
+`security_type_state` proven not to raise, and a valid byte-identical
+collision proven to add only the duplicate reason. All 57 pre-existing
+tests continue to pass.
+
 ## Signal-grid binding (contract item 5)
 
 `verify_signal_grid_binding` is called immediately after output-root
@@ -548,9 +589,12 @@ or embedded in this file.
 ## Next action
 
 `GPT_EXACT_SHA_V9_006_HIGH_2_SEM_IMPL_HIGH_1_REVIEW`: obtain GPT's
-independent exact-SHA review of this terminal-identity-validation-and-
-collision-detection remediation (`V9_006_HIGH_2_SEM_IMPL_HIGH_1`) before
-any real Stage-A execution. `V9_006_LOCATOR_IMPL_HIGH_1`,
+independent exact-SHA review of this revised terminal-identity-validation-
+and-collision-detection remediation
+(`V9_006_HIGH_2_SEM_IMPL_HIGH_1=REMEDIATION_REVISED_AWAITING_GPT_REVIEW`,
+now including total per-entry field validation for colliding entries and
+a never-raising `_validate_terminal_identity_state`) before any real
+Stage-A execution. `V9_006_LOCATOR_IMPL_HIGH_1`,
 `V9_006_LOCATOR_IMPL_HIGH_2`, and `V9_006_LOCATOR_IMPL_HIGH_3` are already
 `RESOLVED`, closing the locator/inventory-contract implementation review
 chain (`V9_006_STAGE_A_LOCATOR_IMPLEMENTATION=PASS`,

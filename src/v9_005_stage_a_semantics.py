@@ -211,7 +211,14 @@ def _validate_terminal_identity_state(state: object) -> _TerminalStateValidity:
         return _TerminalStateValidity(False, False, False)
     listed_state_valid = isinstance(state.listed_state, bool)
     market_state_valid = isinstance(state.market_state, str) and state.market_state != ""
-    security_type_state_valid = state.security_type_state in VALID_SECURITY_TYPE_STATES
+    # V9_006_HIGH_2_SEM_IMPL_HIGH_1_MEDIUM_1: check `isinstance(..., str)`
+    # BEFORE the frozenset membership test -- an unhashable value (a list,
+    # a dict) passed straight to `in VALID_SECURITY_TYPE_STATES` would
+    # raise TypeError instead of failing closed. This function must never
+    # raise for any input.
+    security_type_state_valid = (
+        isinstance(state.security_type_state, str) and state.security_type_state in VALID_SECURITY_TYPE_STATES
+    )
     return _TerminalStateValidity(listed_state_valid, market_state_valid, security_type_state_valid)
 
 
@@ -385,23 +392,37 @@ def compute_semantic_validation_result(
     any_invalid_market_state = False
     any_invalid_security_type_state = False
     for code, raw_keys in normalized_groups.items():
-        if len(raw_keys) > 1:
+        # V9_006_HIGH_2_SEM_IMPL_HIGH_1_MEDIUM_1: validate every raw
+        # entry's TerminalIdentityState fields FIRST -- including entries
+        # that also participate in a normalized-code collision. A
+        # colliding entry's own malformed field must still fail the
+        # specific gate(s) it is responsible for; field validation must
+        # never be skipped merely because len(raw_keys) > 1.
+        is_duplicate = len(raw_keys) > 1
+        if is_duplicate:
             any_invalid_identity = True
             reasons.add(DUPLICATE_CANONICAL_IDENTITY)
+
+        group_all_valid = True
+        for raw_key in raw_keys:
+            validity = _validate_terminal_identity_state(terminal_identities[raw_key])
+            if not validity.all_valid:
+                any_invalid_identity = True
+                reasons.add(INVALID_TERMINAL_IDENTITY_STATE)
+                group_all_valid = False
+                if not validity.listed_state_valid:
+                    any_invalid_listed_state = True
+                if not validity.market_state_valid:
+                    any_invalid_market_state = True
+                if not validity.security_type_state_valid:
+                    any_invalid_security_type_state = True
+
+        if is_duplicate or not group_all_valid:
+            # Neither a colliding entry nor an invalid one enters
+            # reconstruction -- no silent overwrite, no untrustworthy
+            # state used as a reconstruction anchor.
             continue
-        state = terminal_identities[raw_keys[0]]
-        validity = _validate_terminal_identity_state(state)
-        if not validity.all_valid:
-            any_invalid_identity = True
-            reasons.add(INVALID_TERMINAL_IDENTITY_STATE)
-            if not validity.listed_state_valid:
-                any_invalid_listed_state = True
-            if not validity.market_state_valid:
-                any_invalid_market_state = True
-            if not validity.security_type_state_valid:
-                any_invalid_security_type_state = True
-            continue
-        identities[code] = state
+        identities[code] = terminal_identities[raw_keys[0]]
 
     collapsed, conflict_dimensions = _dedupe_and_detect_conflicts(valid_events)
     if conflict_dimensions:

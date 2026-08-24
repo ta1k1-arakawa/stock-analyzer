@@ -107,3 +107,74 @@ point-of-use human network authorization obtained after all of the above.
 `ACQUISITION_IMPLEMENTATION_COMPLETE` remains `False` and
 `verify_acquisition_implementation_ready()` is unchanged, so a valid real
 run still stops before any filesystem/git/network access.
+
+## HIGH_1 residual finding (this task's target)
+
+```text
+REVIEWED_SHA=2283add8f9e2eb1c2d27d2db8815685582d57e1f
+PARENT_SHA=85d22b3c409a467bcd8084ba4b3d3a4f4516ee64
+CRITICAL=0
+HIGH=0
+MEDIUM=1
+RESULT=BLOCK
+
+FINDING:
+V9_006_HIGH_2_SEM_IMPL_HIGH_1_MEDIUM_1_COLLISION_BYPASSES_TOTAL_TERMINAL_STATE_VALIDATION
+```
+
+GPT's independent exact-SHA review of the HIGH_1 remediation (reviewed
+commit `2283add8f9e2eb1c2d27d2db8815685582d57e1f`, parent
+`85d22b3c409a467bcd8084ba4b3d3a4f4516ee64`) found the substantive HIGH_1
+remediation sound, but `RESULT=BLOCK` on one residual `MEDIUM`: the
+collision-exclusion `continue` in the identity-building loop ran BEFORE
+`_validate_terminal_identity_state` was ever called for a colliding raw
+entry, so a colliding entry's own malformed field (e.g. a
+`security_type_state` of `"BOGUS"`, `listed_state=1`, an empty
+`market_state`, or a non-`TerminalIdentityState` value) never failed its
+specific gate -- only `DUPLICATE_CANONICAL_IDENTITY`'s
+`canonical_identity_pass`/`deterministic_reconstruction_pass` failures
+fired, silently dropping the more specific
+`listing_transition_pass`/`delisting_transition_pass`/`market_transition_
+pass`/`security_type_pass` failures that entry's own bad field should also
+have caused. Separately, `_validate_terminal_identity_state`'s
+`security_type_state in VALID_SECURITY_TYPE_STATES` membership test could
+raise `TypeError` for an unhashable `security_type_state` (a list or
+dict), rather than failing closed -- a validation function must be total
+over its input domain, never raise for a malformed value.
+
+**Remediation implemented this task:** the identity-building loop now
+validates every raw entry's `TerminalIdentityState` fields FIRST --
+including every entry participating in a collision -- aggregating
+per-field invalid flags across all raw entries in the normalized group
+before applying collision/invalidity exclusion from `identities`/
+reconstruction. Collision semantics are unchanged (`DUPLICATE_CANONICAL_
+IDENTITY`, neither entry enters `canonical_state`, `canonical_identity_
+pass`/`deterministic_reconstruction_pass` both fail, even for
+byte-identical states); a colliding entry's own invalid field now
+additionally fails exactly the gate(s) that field is responsible for
+(invalid `listed_state` -> `listing_transition_pass`/`delisting_
+transition_pass`; invalid `market_state` -> `market_transition_pass`;
+invalid `security_type_state` -> `security_type_pass`). A fully-valid,
+byte-identical collision still produces only `DUPLICATE_CANONICAL_
+IDENTITY` -- no fabricated `INVALID_TERMINAL_IDENTITY_STATE` reason.
+`_validate_terminal_identity_state` now checks `isinstance(state.security_
+type_state, str)` BEFORE the frozenset membership test, so an unhashable
+`security_type_state` (list, dict) fails closed (`security_type_state_
+valid=False`) rather than raising `TypeError`; this function is now total
+-- it never raises for any input.
+
+`tests/test_v9_005_stage_a_semantics.py` grows from 57 to 64 tests, adding
+coverage for: a collision where one entry has an out-of-enum
+`security_type_state`; a collision where one entry has `listed_state=1`; a
+collision where one entry has an empty `market_state`; a collision
+containing a non-`TerminalIdentityState` value; an unhashable list/dict
+`security_type_state` not raising and failing closed; and a valid
+byte-identical collision producing only the duplicate reason. All 57
+pre-existing tests continue to pass unchanged. `src/v9_005_stage_a_jpx_
+probe.py` was not modified; orphan-event handling and the two-run
+determinism gate were not touched; `ACQUISITION_IMPLEMENTATION_COMPLETE`
+remains `False`.
+
+`V9_006_HIGH_2_SEM_IMPL_HIGH_1=REMEDIATION_REVISED_AWAITING_GPT_REVIEW`.
+`V9_006_HIGH_2_SEM_IMPL_HIGH_2` and `V9_006_HIGH_2_SEM_IMPL_MEDIUM_1`
+remain `OPEN`.
