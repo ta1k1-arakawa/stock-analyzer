@@ -612,6 +612,138 @@ def _monthly_statistics_acquisition_responses() -> dict[str, m.FetchResult]:
     return responses
 
 
+def _monthly_statistics_enumeration_responses(years: range) -> dict[str, m.FetchResult]:
+    responses: dict[str, m.FetchResult] = {}
+    root_links = "".join(f'<a href="{year}.html">{year}</a>' for year in years)
+    responses[m.MONTHLY_STATISTICS_ROOT_URL] = m.FetchResult(root_links.encode(), m.MONTHLY_STATISTICS_ROOT_URL, 200)
+    for year in years:
+        year_url = f"https://www.jpx.co.jp/english/markets/statistics-equities/monthly/{year}.html"
+        headers = "".join(f"<th>{year}-{month:02d}</th>" for month in range(1, 13))
+        f2_cells = "".join(f'<td><a href="f2-{year}-{month:02d}.xlsx">F2</a></td>' for month in range(1, 13))
+        f4_cells = "".join(f'<td><a href="f4-{year}-{month:02d}.xlsx">F4</a></td>' for month in range(1, 13))
+        html = (
+            f"<table><tr><th>Report</th>{headers}</tr>"
+            f"<tr><th>{m.F2_SEMANTIC_ROW_LABEL}</th>{f2_cells}</tr>"
+            f"<tr><th>{m.F4_SEMANTIC_ROW_LABEL}</th>{f4_cells}</tr></table>"
+        ).encode()
+        responses[year_url] = m.FetchResult(html, year_url, 200)
+        for family in ("f2", "f4"):
+            for month in range(1, 13):
+                child_url = f"https://www.jpx.co.jp/english/markets/statistics-equities/monthly/{family}-{year}-{month:02d}.xlsx"
+                responses[child_url] = m.FetchResult(child_url.encode(), child_url, 200)
+    return responses
+
+
+def test_f2_f4_required_slot_enumeration_is_exact_reusable_and_keeps_bridge_separate(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    responses = _monthly_statistics_enumeration_responses(range(2017, 2027))
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return responses[url]
+
+    result = m.acquire_f2_f4_required_slots(
+        root, terminal_month="2025-12", fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    expected_base_keys = {
+        (family, month)
+        for month in m.inventory_months()
+        for family in (m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE)
+    }
+    assert set(result.base_coverage_references) == expected_base_keys
+    assert len(result.base_coverage_references) == 216
+    assert result.f2_bridge_references == {}
+    assert all(len(slot_ids) == 1 for slot_ids in result.base_coverage_references.values())
+    inventory = m.build_source_inventory(result.base_coverage_references, output_root=root)
+    assert len(inventory) == 648
+    assert sum(record["status"] == m.INVENTORY_AVAILABLE and record["source_family"] == m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT for record in inventory) == 108
+    assert sum(record["status"] == m.INVENTORY_AVAILABLE and record["source_family"] == m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE for record in inventory) == 108
+    assert all(record["status"] == m.INVENTORY_MISSING for record in inventory if record["source_family"] not in {
+        m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE,
+    })
+    support_ids = {
+        m.source_object_slot_id(m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, m.MONTHLY_STATISTICS_DISCOVERY_ROOT, m.MONTHLY_STATISTICS_ROOT_URL),
+        *(m.source_object_slot_id(m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, m.monthly_statistics_discovery_year_period(year), f"https://www.jpx.co.jp/english/markets/statistics-equities/monthly/{year}.html") for year in range(2017, 2027)),
+    }
+    returned_ids = {slot_id for slot_ids in result.base_coverage_references.values() for slot_id in slot_ids}
+    assert not returned_ids & support_ids
+    assert calls.count(m.MONTHLY_STATISTICS_ROOT_URL) == 1
+    for year in range(2017, 2026):
+        assert calls.count(f"https://www.jpx.co.jp/english/markets/statistics-equities/monthly/{year}.html") == 1
+    repeat = m.acquire_f2_f4_required_slots(
+        root, terminal_month="2025-12", fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert repeat.network_attempt_count == 0
+    bridge = m.acquire_f2_f4_required_slots(
+        root, terminal_month="2026-03", fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert tuple(bridge.f2_bridge_references) == ("2026-01", "2026-02", "2026-03")
+    assert all(len(slot_ids) == 1 for slot_ids in bridge.f2_bridge_references.values())
+    verified = m._verified_raw_lock_index(root)
+    for month, (slot_id,) in bridge.f2_bridge_references.items():
+        assert verified[slot_id]["source_family"] == m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT
+        assert verified[slot_id]["applicable_period"] == month
+    assert not ({slot_id for ids in bridge.f2_bridge_references.values() for slot_id in ids} & support_ids)
+    extension = m.acquire_f2_f4_required_slots(
+        root, terminal_month="2026-04", fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert extension.network_attempt_count == 1
+    assert calls.count(m.MONTHLY_STATISTICS_ROOT_URL) == 1
+    assert calls.count("https://www.jpx.co.jp/english/markets/statistics-equities/monthly/2026.html") == 1
+
+
+def test_f2_f4_required_slot_enumeration_fails_closed_before_or_during_acquisition(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    calls: list[str] = []
+
+    def no_fetch(url: str) -> m.FetchResult:
+        calls.append(url)
+        raise AssertionError("malformed terminal month must fail before acquisition")
+
+    with pytest.raises(m.V9005StageABlocked):
+        m.acquire_f2_f4_required_slots(root, terminal_month="bad", fetcher=no_fetch, sleep=_no_sleep, clock=_clock)
+    assert calls == []
+    responses = _monthly_statistics_enumeration_responses(range(2017, 2026))
+
+    def failing_fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        if url.endswith("f2-2017-02.xlsx"):
+            raise m.V9005StageABlocked(m.IMPLEMENTATION_FAILURE)
+        return responses[url]
+
+    with pytest.raises(m.V9005StageABlocked):
+        m.acquire_f2_f4_required_slots(root, terminal_month="2025-12", fetcher=failing_fetcher, sleep=_no_sleep, clock=_clock)
+    assert not any(url.endswith("f4-2017-02.xlsx") for url in calls)
+
+
+def test_f2_f4_required_slot_validation_rejects_a_family_or_period_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    monkeypatch.setattr(m, "inventory_months", lambda: ("2020-03",))
+    f2_url = "https://www.jpx.co.jp/f2.xlsx"
+    f4_url = "https://www.jpx.co.jp/f4.xlsx"
+    m.lock_first_complete_payload(
+        root, source_family=m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, applicable_period="2020-04",
+        requested_url=f2_url, fetch_result=m.FetchResult(b"f2", f2_url, 200), retrieval_timestamp_utc="2026-08-24T03:00:00Z",
+    )
+    f2_slot = m.source_object_slot_id(m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "2020-04", f2_url)
+    m.lock_first_complete_payload(
+        root, source_family=m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE, applicable_period="2020-03",
+        requested_url=f4_url, fetch_result=m.FetchResult(b"f4", f4_url, 200), retrieval_timestamp_utc="2026-08-24T03:00:00Z",
+    )
+    f4_slot = m.source_object_slot_id(m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE, "2020-03", f4_url)
+    with pytest.raises(m.V9005StageABlocked):
+        m._validate_f2_f4_required_slot_references(
+            root,
+            {
+                (m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "2020-03"): (f2_slot,),
+                (m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE, "2020-03"): (f4_slot,),
+            },
+            {},
+            (),
+        )
+
+
 def test_f2_f4_single_slot_acquisition_reuses_shared_support_and_returns_child_ids(tmp_path: Path) -> None:
     root = m.initialize_output_root(tmp_path / "out")
     responses = _monthly_statistics_acquisition_responses()

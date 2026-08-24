@@ -610,6 +610,15 @@ class FetchResult:
     resolved_url: str
     http_status: int
 
+
+@dataclass(frozen=True)
+class F2F4RequiredSlotAcquisition:
+    """Separate F2/F4 base and F2-only bridge reference domains."""
+
+    base_coverage_references: Mapping[tuple[str, str], tuple[str, ...]]
+    f2_bridge_references: Mapping[str, tuple[str, ...]]
+    network_attempt_count: int
+
 def fetch_once_with_retry(
     url: str,
     fetcher: Callable[[str], FetchResult],
@@ -1104,6 +1113,90 @@ def f2_bridge_months(terminal_month: str) -> tuple[str, ...]:
     if terminal_year_month <= INVENTORY_LAST_YEAR_MONTH:
         return ()
     return _year_month_range((2026, 1), terminal_year_month)
+
+
+def _validate_f2_f4_required_slot_references(
+    output_root: str | os.PathLike[str],
+    base_references: Mapping[tuple[str, str], tuple[str, ...]],
+    bridge_references: Mapping[str, tuple[str, ...]],
+    bridge_months: Sequence[str],
+) -> None:
+    families = (
+        SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+        SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE,
+    )
+    base_months = inventory_months()
+    expected_base_keys = {(family, month) for month in base_months for family in families}
+    if set(base_references) != expected_base_keys:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    if set(bridge_references) != set(bridge_months) or set(bridge_references) & set(base_months):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+
+    verified_locks = _verified_raw_lock_index(output_root)
+
+    def validate_one(slot_ids: tuple[str, ...], family: str, month: str) -> None:
+        if not isinstance(slot_ids, tuple) or len(slot_ids) != 1:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        slot_id = slot_ids[0]
+        if not isinstance(slot_id, str) or re.fullmatch(r"[0-9a-f]{64}", slot_id) is None:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        metadata = verified_locks.get(slot_id)
+        if (
+            metadata is None
+            or metadata.get("source_family") != family
+            or metadata.get("applicable_period") != month
+        ):
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+
+    for (family, month), slot_ids in base_references.items():
+        validate_one(slot_ids, family, month)
+    for month, slot_ids in bridge_references.items():
+        validate_one(slot_ids, SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, month)
+
+
+def acquire_f2_f4_required_slots(
+    output_root: str | os.PathLike[str],
+    *,
+    terminal_month: str,
+    fetcher: Callable[[str], FetchResult],
+    sleep: Callable[[int], None],
+    clock: Callable[[], datetime],
+) -> F2F4RequiredSlotAcquisition:
+    """Acquire exactly the required F2/F4 base slots and F2 bridge slots."""
+    bridge_months = f2_bridge_months(terminal_month)
+    base_references: dict[tuple[str, str], tuple[str, ...]] = {}
+    bridge_references: dict[str, tuple[str, ...]] = {}
+    attempts = 0
+    for month in inventory_months():
+        for family in (
+            SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+            SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE,
+        ):
+            slot_id, slot_attempts = acquire_f2_f4_monthly_evidence(
+                output_root,
+                source_family=family,
+                requested_month=month,
+                fetcher=fetcher,
+                sleep=sleep,
+                clock=clock,
+            )
+            base_references[(family, month)] = (slot_id,)
+            attempts += slot_attempts
+    for month in bridge_months:
+        slot_id, slot_attempts = acquire_f2_f4_monthly_evidence(
+            output_root,
+            source_family=SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+            requested_month=month,
+            fetcher=fetcher,
+            sleep=sleep,
+            clock=clock,
+        )
+        bridge_references[month] = (slot_id,)
+        attempts += slot_attempts
+    _validate_f2_f4_required_slot_references(
+        output_root, base_references, bridge_references, bridge_months,
+    )
+    return F2F4RequiredSlotAcquisition(base_references, bridge_references, attempts)
 
 
 def calendar_envelope_months() -> tuple[str, ...]:
@@ -1601,7 +1694,7 @@ __all__ = [
     "DELISTED_COMPANY_ROOT_URL", "F2_SEMANTIC_ROW_LABEL", "F4_SEMANTIC_ROW_LABEL", "F6_SEMANTIC_SECTION_LABEL",
     "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
     "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
-    "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
+    "F2F4RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
     "MONTHLY_STATISTICS_ROOT_URL", "PLUMBING_FAILURE_RETRIABLE",
     "PROBE_SIGNAL_GRID_CONTRACT_MISMATCH", "SLOT_KIND_GLOBAL", "SLOT_KIND_MONTHLY", "SLOT_KIND_TERMINAL",
     "SLOT_KIND_YEAR", "SOURCE_FAMILIES", "SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE",
@@ -1611,7 +1704,7 @@ __all__ = [
     "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE",
     "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE", "STAGE", "STUDY",
     "TOPIX_ROOT_URL", "VALID_SLOT_KINDS",
-    "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
+    "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "acquire_f2_f4_required_slots", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
     "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
     "compute_month_end_mismatch_count", "compute_stage_a_evidence",
     "derive_final_signal_d0", "derive_stage_b_global_end_exclusive", "ensure_locked_payload",
