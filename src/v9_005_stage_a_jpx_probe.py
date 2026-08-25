@@ -2011,7 +2011,12 @@ def _f6_analyze_dom(
     return doc_order, raw_text, leaf_most_ids
 
 
-def _f6_extract_label_occurrences(text: str) -> list[dict[str, Any]]:
+def _f6_parse_full_dom(text: str) -> _F6DomElement:
+    """Parse already-decoded document text into a validated full DOM tree,
+    or raise `_F6RootStructureExtractionFailed(_F6_MALFORMED_DOM_STRUCTURE)`.
+    Shared by the root-structure label-occurrence extractor and the section
+    neighborhood probe so both use exactly one HTML normalization/parsing
+    methodology -- no second, inconsistent DOM-building path is created."""
     parser = _F6RootStructureHtmlParser()
     try:
         parser.feed(text)
@@ -2020,8 +2025,13 @@ def _f6_extract_label_occurrences(text: str) -> list[dict[str, Any]]:
         raise _F6RootStructureExtractionFailed(_F6_MALFORMED_DOM_STRUCTURE) from exc
     if parser.invalid_structure or len(parser._stack) != 1:
         raise _F6RootStructureExtractionFailed(_F6_MALFORMED_DOM_STRUCTURE)
+    return parser.root
+
+
+def _f6_extract_label_occurrences(text: str) -> list[dict[str, Any]]:
+    root = _f6_parse_full_dom(text)
     target_normalized = _f6_normalize_text(F6_SEMANTIC_SECTION_LABEL)
-    doc_order, raw_text, leaf_most_ids = _f6_analyze_dom(parser.root, target_normalized)
+    doc_order, raw_text, leaf_most_ids = _f6_analyze_dom(root, target_normalized)
     occurrence_elements = [node for node in doc_order if id(node) in leaf_most_ids]
     return [
         {"dom_path": _f6_dom_path(node), "anchors": _f6_build_anchors(node, raw_text)}
@@ -2125,6 +2135,258 @@ def run_f6_root_structure_probe_offline(output_root: str | os.PathLike[str]) -> 
     locked = read_f6_root_structure_diagnostic_lock(output_root)
     artifact = parse_f6_root_structure_probe(locked)
     write_f6_root_structure_probe_artifact(output_root, artifact)
+    return artifact
+
+
+# --- F6 section neighborhood diagnostic (fully offline) ----------------------
+# V9_006_STAGE_A_F6_SECTION_NEIGHBORHOOD_PROBE_OFFLINE_IMPLEMENTATION:
+# implements exactly section 4 (and the section-2.2 semantic-heading rule
+# it depends on) of
+# V9_006_STAGE_A_F6_ROOT_STRUCTURE_ADJUDICATION_AND_NEIGHBORHOOD_PROBE_
+# DESIGN.md. This seam reads ONLY the already-existing
+# F6_ROOT_STRUCTURE_DIAGNOSTIC raw lock (via the existing
+# read_f6_root_structure_diagnostic_lock -- no fetcher/sleep/clock, no
+# network/fetch/retry/ensure_locked_payload/lock_first_complete_payload
+# call, no new or modified raw lock) and reuses the existing reviewed F6
+# DOM/parser/raw-href utilities verbatim. It never resolves or follows any
+# href, never selects/ranks/binds a GLOBAL child, and never maps its
+# diagnostic-only outcomes to F6 AVAILABLE/MISSING.
+
+F6_SECTION_NEIGHBORHOOD_PROBE_RESULT_SCHEMA_VERSION = "V9_006_STAGE_A_F6_SECTION_NEIGHBORHOOD_PROBE_RESULT_V1"
+F6_SECTION_NEIGHBORHOOD_PROBE_DIAGNOSTIC_NAME = "V9_006_STAGE_A_F6_SECTION_NEIGHBORHOOD_PROBE"
+F6_SECTION_NEIGHBORHOOD_PROBE_RESULT_FILENAME = "V9_006_STAGE_A_F6_SECTION_NEIGHBORHOOD_PROBE_RESULT.json"
+
+NEIGHBORHOOD_CAPTURED = "NEIGHBORHOOD_CAPTURED"
+SEMANTIC_HEADING_AMBIGUOUS = "SEMANTIC_HEADING_AMBIGUOUS"
+# STRUCTURE_EXTRACTION_FAILED (already defined above for the root-structure
+# probe) is reused verbatim as this diagnostic's third outcome.
+
+NEIGHBORHOOD_RELATION_BEFORE_HEADING = "BEFORE_HEADING"
+NEIGHBORHOOD_RELATION_HEADING = "HEADING"
+NEIGHBORHOOD_RELATION_AFTER_HEADING = "AFTER_HEADING"
+NEIGHBORHOOD_RELATION_INSIDE_HEADING = "INSIDE_HEADING"
+
+_F6_REQUIRED_SEMANTIC_HEADING_TAG = "h2"
+_F6_REQUIRED_SEMANTIC_HEADING_CLASS = "heading-title"
+_F6_FRAGMENT_HREF_RE = re.compile(r"^#([^#]+)$")
+_F6_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+
+
+def _f6_is_self_or_descendant(node: _F6DomElement, ancestor: _F6DomElement) -> bool:
+    current: _F6DomElement | None = node
+    while current is not None:
+        if current is ancestor:
+            return True
+        current = current.parent
+    return False
+
+
+def _f6_is_proper_descendant(node: _F6DomElement, ancestor: _F6DomElement) -> bool:
+    return node is not ancestor and _f6_is_self_or_descendant(node, ancestor)
+
+
+def _f6_element_identity(node: _F6DomElement) -> dict[str, Any]:
+    return {
+        "dom_path": _f6_dom_path(node),
+        "tag": node.tag,
+        "id": node.attrs.get("id"),
+        "classes": _f6_normalized_classes(node.attrs.get("class")),
+    }
+
+
+def _f6_identify_semantic_heading(
+    doc_order: Sequence[_F6DomElement], occurrence_elements: Sequence[_F6DomElement],
+) -> _F6DomElement | None:
+    """Deterministic semantic-heading identity rule (design section 2.2).
+    Returns None on any zero/multiple/wrong-tag/wrong-class/inconsistent
+    outcome -- the caller reports SEMANTIC_HEADING_AMBIGUOUS, never a
+    fallback, ranked, or guessed candidate. No literal fragment or id value
+    (including `heading_14`) is ever hardcoded; every candidate is derived
+    only from the locked payload's own leaf-most label occurrences and DOM
+    `id` attributes each time this runs."""
+    candidates: list[tuple[_F6DomElement, str]] = []
+    for node in occurrence_elements:
+        if node.tag != "a":
+            continue
+        unambiguous, raw_href = _f6_raw_attribute_value(node.raw_starttag_text, "href")
+        if not unambiguous:
+            raise _F6RootStructureExtractionFailed(_F6_AMBIGUOUS_RAW_HREF_ATTRIBUTE)
+        if raw_href is None:
+            continue
+        match = _F6_FRAGMENT_HREF_RE.match(raw_href)
+        if match:
+            candidates.append((node, match.group(1)))
+    if len(candidates) != 1:
+        return None
+    _, fragment_id = candidates[0]
+
+    id_matches = [node for node in doc_order if node.attrs.get("id") == fragment_id]
+    if len(id_matches) != 1:
+        return None
+    target = id_matches[0]
+
+    if target.tag != _F6_REQUIRED_SEMANTIC_HEADING_TAG:
+        return None
+    if _F6_REQUIRED_SEMANTIC_HEADING_CLASS not in _f6_normalized_classes(target.attrs.get("class")):
+        return None
+
+    contained = [node for node in occurrence_elements if _f6_is_self_or_descendant(node, target)]
+    if len(contained) != 1:
+        return None
+    return target
+
+
+def _f6_neighborhood_children(parent: _F6DomElement, heading: _F6DomElement) -> list[dict[str, Any]]:
+    siblings = _f6_element_siblings(parent)
+    heading_index = next(index for index, sibling in enumerate(siblings) if sibling is heading)
+    children: list[dict[str, Any]] = []
+    for index, node in enumerate(siblings):
+        if index < heading_index:
+            relation = NEIGHBORHOOD_RELATION_BEFORE_HEADING
+        elif index == heading_index:
+            relation = NEIGHBORHOOD_RELATION_HEADING
+        else:
+            relation = NEIGHBORHOOD_RELATION_AFTER_HEADING
+        children.append({**_f6_element_identity(node), "relation": relation})
+    return children
+
+
+def _f6_neighborhood_anchors_and_headings(
+    parent: _F6DomElement, heading: _F6DomElement,
+    doc_order: Sequence[_F6DomElement], raw_text: Mapping[int, str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    index_of = {id(node): index for index, node in enumerate(doc_order)}
+    heading_index = index_of[id(heading)]
+    anchors: list[dict[str, Any]] = []
+    headings: list[dict[str, Any]] = []
+    for node in doc_order:
+        if not _f6_is_proper_descendant(node, parent):
+            continue
+        if _f6_is_self_or_descendant(node, heading):
+            relation = NEIGHBORHOOD_RELATION_INSIDE_HEADING
+        elif index_of[id(node)] < heading_index:
+            relation = NEIGHBORHOOD_RELATION_BEFORE_HEADING
+        else:
+            relation = NEIGHBORHOOD_RELATION_AFTER_HEADING
+        if node.tag == "a":
+            anchor = _f6_anchor_of(node, raw_text)
+            anchor["relation"] = relation
+            anchors.append(anchor)
+        elif node.tag in _F6_HEADING_TAGS:
+            headings.append({
+                "dom_path": _f6_dom_path(node),
+                "tag": node.tag,
+                "text": _f6_normalize_text(raw_text.get(id(node), "")),
+            })
+    return anchors, headings
+
+
+def _f6_neighborhood_base_fields(locked: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": F6_SECTION_NEIGHBORHOOD_PROBE_RESULT_SCHEMA_VERSION,
+        "diagnostic": F6_SECTION_NEIGHBORHOOD_PROBE_DIAGNOSTIC_NAME,
+        "requested_url": locked["requested_url"],
+        "resolved_url": locked["resolved_url"],
+        "byte_length": locked["byte_length"],
+        "sha256": locked["sha256"],
+        "retrieval_timestamp_utc": locked["retrieval_timestamp_utc"],
+    }
+
+
+_F6_NEIGHBORHOOD_EMPTY_RESULT_FIELDS: dict[str, Any] = {
+    "semantic_heading": None, "parent_container": None,
+    "children": [], "anchors": [], "headings": [],
+}
+
+
+def parse_f6_section_neighborhood_probe(locked: Mapping[str, Any]) -> dict[str, Any]:
+    """Pure and deterministic: derive the
+    V9_006_STAGE_A_F6_SECTION_NEIGHBORHOOD_PROBE_RESULT_V1 artifact from an
+    already-locked F6_ROOT_STRUCTURE_DIAGNOSTIC raw payload. Touches no
+    filesystem, network, or clock. Never records arbitrary page text,
+    numerical TOPIX/index observations, raw payload bytes, a resolved href,
+    or a chosen/ranked child URL."""
+    base = _f6_neighborhood_base_fields(locked)
+    try:
+        text = _f6_decode_strict_utf8(locked["raw"])
+    except UnicodeDecodeError:
+        return {
+            **base, **_F6_NEIGHBORHOOD_EMPTY_RESULT_FIELDS,
+            "status": STRUCTURE_EXTRACTION_FAILED, "failure_reason": _F6_PAYLOAD_DECODE_FAILED,
+        }
+    try:
+        root = _f6_parse_full_dom(text)
+        target_normalized = _f6_normalize_text(F6_SEMANTIC_SECTION_LABEL)
+        doc_order, raw_text, leaf_most_ids = _f6_analyze_dom(root, target_normalized)
+        occurrence_elements = [node for node in doc_order if id(node) in leaf_most_ids]
+        heading = _f6_identify_semantic_heading(doc_order, occurrence_elements)
+        if heading is None:
+            return {
+                **base, **_F6_NEIGHBORHOOD_EMPTY_RESULT_FIELDS,
+                "status": SEMANTIC_HEADING_AMBIGUOUS, "failure_reason": None,
+            }
+        parent = heading.parent
+        if parent is None:
+            # The semantic heading is the document's own top-level node --
+            # there is no immediate parent element to scope a container
+            # around. Deterministic, but not a captured neighborhood.
+            return {
+                **base, **_F6_NEIGHBORHOOD_EMPTY_RESULT_FIELDS,
+                "status": STRUCTURE_EXTRACTION_FAILED, "failure_reason": _F6_MALFORMED_DOM_STRUCTURE,
+            }
+        children = _f6_neighborhood_children(parent, heading)
+        anchors, headings = _f6_neighborhood_anchors_and_headings(parent, heading, doc_order, raw_text)
+    except _F6RootStructureExtractionFailed as exc:
+        return {
+            **base, **_F6_NEIGHBORHOOD_EMPTY_RESULT_FIELDS,
+            "status": STRUCTURE_EXTRACTION_FAILED, "failure_reason": exc.reason,
+        }
+    return {
+        **base,
+        "status": NEIGHBORHOOD_CAPTURED,
+        "failure_reason": None,
+        "semantic_heading": _f6_element_identity(heading),
+        "parent_container": _f6_element_identity(parent),
+        "children": children,
+        "anchors": anchors,
+        "headings": headings,
+    }
+
+
+def write_f6_section_neighborhood_probe_artifact(
+    output_root: str | os.PathLike[str], artifact: Mapping[str, Any],
+) -> Path:
+    """Write the section-neighborhood diagnostic artifact under the same
+    dedicated diagnostic output_root (never production Stage-A output).
+    First write is an atomic create; if the artifact already exists, reuse
+    it only when the recomputed canonical bytes are byte-identical,
+    otherwise fail closed. Never overwrites."""
+    path = Path(output_root) / F6_SECTION_NEIGHBORHOOD_PROBE_RESULT_FILENAME
+    payload = canonical_bytes(artifact)
+    if path.exists():
+        try:
+            existing = path.read_bytes()
+        except Exception as exc:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+        if existing != payload:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        return path
+    _atomic_create(path, payload)
+    return path
+
+
+def run_f6_section_neighborhood_probe_offline(output_root: str | os.PathLike[str]) -> dict[str, Any]:
+    """Fully offline seam: reads only the already-locked
+    F6_ROOT_STRUCTURE_DIAGNOSTIC raw payload (the same diagnostic raw lock
+    the root-structure probe reuses -- no new raw lock is created or
+    modified), parses it deterministically, and writes/reuses the
+    section-neighborhood result artifact. Never accepts a fetcher, sleep,
+    or clock, and never calls a network/fetch/retry/ensure_locked_payload/
+    lock_first_complete_payload function -- SOURCE_DATA_NETWORK_REQUESTS is
+    always 0 for this path. Never selects, ranks, or binds a GLOBAL child."""
+    locked = read_f6_root_structure_diagnostic_lock(output_root)
+    artifact = parse_f6_section_neighborhood_probe(locked)
+    write_f6_section_neighborhood_probe_artifact(output_root, artifact)
     return artifact
 
 
@@ -2338,6 +2600,11 @@ __all__ = [
     "F6_ROOT_STRUCTURE_DIAGNOSTIC", "F6_ROOT_STRUCTURE_PROBE_RESULT_FILENAME",
     "F6_ROOT_STRUCTURE_PROBE_RESULT_SCHEMA_VERSION", "F6_ROOT_STRUCTURE_PROBE_DIAGNOSTIC_NAME",
     "F6_ROOT_STRUCTURE_PROBE_CONFIRMATION",
+    "F6_SECTION_NEIGHBORHOOD_PROBE_RESULT_SCHEMA_VERSION", "F6_SECTION_NEIGHBORHOOD_PROBE_DIAGNOSTIC_NAME",
+    "F6_SECTION_NEIGHBORHOOD_PROBE_RESULT_FILENAME",
+    "NEIGHBORHOOD_CAPTURED", "SEMANTIC_HEADING_AMBIGUOUS",
+    "NEIGHBORHOOD_RELATION_BEFORE_HEADING", "NEIGHBORHOOD_RELATION_HEADING",
+    "NEIGHBORHOOD_RELATION_AFTER_HEADING", "NEIGHBORHOOD_RELATION_INSIDE_HEADING",
     "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
     "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
     "F2F4RequiredSlotAcquisition", "F3RequiredSlotAcquisition", "F7RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
@@ -2357,12 +2624,13 @@ __all__ = [
     "derive_final_signal_d0", "derive_stage_b_global_end_exclusive", "ensure_locked_payload",
     "extract_data_j_xls_url", "f2_bridge_months", "fetch_once_with_retry",
     "initialize_output_root", "inventory_months", "lock_first_complete_payload", "monthly_statistics_discovery_year_period", "nth_trading_day_after",
-    "parse_f6_root_structure_probe", "read_f6_root_structure_diagnostic_lock",
+    "parse_f6_root_structure_probe", "parse_f6_section_neighborhood_probe", "read_f6_root_structure_diagnostic_lock",
     "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
     "resolve_delisted_company_year_url", "resolve_f7_calendar_url", "resolve_month_locator", "resolve_monthly_statistics_evidence_url",
     "resolve_monthly_statistics_year_page_url", "run_f6_root_structure_probe_offline",
-    "run_f6_root_structure_probe_network", "run_stage_a",
+    "run_f6_root_structure_probe_network", "run_f6_section_neighborhood_probe_offline", "run_stage_a",
     "sha256_bytes", "source_object_slot_id", "validate_jpx_url", "verify_acquisition_implementation_ready",
     "verify_locator_contract_complete", "verify_raw_provenance",
     "verify_signal_grid_binding", "write_f6_root_structure_probe_artifact",
+    "write_f6_section_neighborhood_probe_artifact",
 ]
