@@ -93,6 +93,12 @@ STUDY = "V9_CROSS_SECTIONAL_CLOSE_AUCTION"
 STAGE = "V9_005_STAGE_A_JPX_METADATA_PROBE"
 CONFIRMATION = "V9_005_STAGE_A_HUMAN_AUTHORIZE_JPX_METADATA_PROBE"
 
+# F6 root-structure diagnostic: a dedicated one-shot confirmation, distinct
+# from production Stage-A's CONFIRMATION above. The production token must
+# never satisfy this diagnostic gate -- see run_f6_root_structure_probe_
+# network's confirmation check.
+F6_ROOT_STRUCTURE_PROBE_CONFIRMATION = "V9_006_F6_ROOT_STRUCTURE_PROBE_ONE_SHOT"
+
 # --- Signal-grid prefreeze binding (V9_005_HIGH_2B) ------------------------
 BOUND_SIGNAL_GRID_PATH = "V9_CROSS_SECTIONAL_CLOSE_AUCTION_DESIGN_DRAFT.md"
 BOUND_SIGNAL_GRID_BLOB_SHA = "9135183b7fc5097602fa40fcda8f1b0448220244"
@@ -2122,6 +2128,59 @@ def run_f6_root_structure_probe_offline(output_root: str | os.PathLike[str]) -> 
     return artifact
 
 
+# --- F6 root-structure diagnostic (network executor) -------------------------
+# V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_NETWORK_EXECUTOR: executable
+# plumbing only. NEVER invoked with a real fetcher by this implementation
+# task. Sets no network authorization flag, consumes no production human
+# authorization, and does not authorize production Stage A, a GLOBAL-child
+# fetch, or F5/any other source. Future real execution still requires its
+# own fresh, explicit, one-shot human authorization obtained AFTER GPT
+# exact-SHA review of this implementation, per
+# V9_006_STAGE_A_F6_PUBLIC_ROOT_STRUCTURE_PROBE_DESIGN.md.
+
+def run_f6_root_structure_probe_network(
+    *,
+    output_root: str | os.PathLike[str],
+    confirmation: str,
+    fetcher: Callable[[str], FetchResult],
+    sleep: Callable[[int], None],
+    clock: Callable[[], datetime],
+) -> dict[str, Any]:
+    """Real-execution diagnostic entrypoint for exactly TOPIX_ROOT_URL --
+    one logical source object, no discovery of any other URL, no href
+    following, no child fetch. Requires its own dedicated one-shot
+    F6_ROOT_STRUCTURE_PROBE_CONFIRMATION; production Stage-A's CONFIRMATION
+    does NOT satisfy this gate. The confirmation check happens before any
+    filesystem initialization or fetcher call. output_root must be brand
+    new -- initialize_output_root is called exactly once and itself fails
+    closed if output_root already exists, so rerunning against an
+    already-used output_root fails closed rather than acquiring/refetching.
+    Acquisition uses only the existing reviewed fetch_once_with_retry
+    retry/backoff/redirect policy verbatim -- no alternate URL, provider,
+    manual retry, or fallback. The first complete payload is raw-locked via
+    lock_first_complete_payload BEFORE any parsing. Only then is the
+    already-reviewed offline seam (run_f6_root_structure_probe_offline)
+    invoked to parse the just-locked bytes -- this never duplicates parser
+    logic, and a parser/extraction failure after the raw lock exists never
+    triggers a refetch or a child request; the raw lock and whatever
+    deterministic artifact the offline seam produces are both preserved."""
+    if confirmation != F6_ROOT_STRUCTURE_PROBE_CONFIRMATION:
+        raise V9005StageABlocked(GOVERNANCE_FAILURE)
+    root = initialize_output_root(output_root)
+    result, requests_used = fetch_once_with_retry(TOPIX_ROOT_URL, fetcher, sleep)
+    now = clock()
+    lock_first_complete_payload(
+        root,
+        source_family=SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
+        applicable_period=F6_ROOT_STRUCTURE_DIAGNOSTIC,
+        requested_url=TOPIX_ROOT_URL,
+        fetch_result=result,
+        retrieval_timestamp_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    artifact = run_f6_root_structure_probe_offline(root)
+    return {**artifact, "network_request_count": requests_used}
+
+
 # --- Orchestration -----------------------------------------------------------
 
 def run_stage_a(
@@ -2278,6 +2337,7 @@ __all__ = [
     "DELISTED_COMPANY_DISCOVERY_ROOT", "DELISTED_COMPANY_ROOT_URL", "F2_SEMANTIC_ROW_LABEL", "F4_SEMANTIC_ROW_LABEL", "F6_SEMANTIC_SECTION_LABEL",
     "F6_ROOT_STRUCTURE_DIAGNOSTIC", "F6_ROOT_STRUCTURE_PROBE_RESULT_FILENAME",
     "F6_ROOT_STRUCTURE_PROBE_RESULT_SCHEMA_VERSION", "F6_ROOT_STRUCTURE_PROBE_DIAGNOSTIC_NAME",
+    "F6_ROOT_STRUCTURE_PROBE_CONFIRMATION",
     "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
     "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
     "F2F4RequiredSlotAcquisition", "F3RequiredSlotAcquisition", "F7RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
@@ -2300,7 +2360,8 @@ __all__ = [
     "parse_f6_root_structure_probe", "read_f6_root_structure_diagnostic_lock",
     "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
     "resolve_delisted_company_year_url", "resolve_f7_calendar_url", "resolve_month_locator", "resolve_monthly_statistics_evidence_url",
-    "resolve_monthly_statistics_year_page_url", "run_f6_root_structure_probe_offline", "run_stage_a",
+    "resolve_monthly_statistics_year_page_url", "run_f6_root_structure_probe_offline",
+    "run_f6_root_structure_probe_network", "run_stage_a",
     "sha256_bytes", "source_object_slot_id", "validate_jpx_url", "verify_acquisition_implementation_ready",
     "verify_locator_contract_complete", "verify_raw_provenance",
     "verify_signal_grid_binding", "write_f6_root_structure_probe_artifact",

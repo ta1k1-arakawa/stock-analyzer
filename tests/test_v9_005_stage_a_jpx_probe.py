@@ -2552,3 +2552,419 @@ def test_f6_root_structure_diagnostic_slot_cannot_populate_f6_inventory(tmp_path
 
 def test_f6_root_structure_acquisition_implementation_complete_still_false() -> None:
     assert m.ACQUISITION_IMPLEMENTATION_COMPLETE is False
+
+
+# --- V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_NETWORK_EXECUTOR ----------------
+# Every fetcher here is synthetic (no real socket, no real network). This
+# section proves the network-executor plumbing without ever performing a
+# real network request, per this task's authority boundary.
+
+def _f6_captured_fetcher(url: str) -> m.FetchResult:
+    return m.FetchResult(b"<h2>Historical Index Value</h2>", url, 200)
+
+
+def test_f6_root_structure_network_wrong_confirmation_fails_closed_before_filesystem_or_fetch(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return _f6_captured_fetcher(url)
+
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_root_structure_probe_network(
+            output_root=output_root, confirmation="wrong-token",
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.GOVERNANCE_FAILURE
+    assert calls == []
+    assert not output_root.exists()
+
+
+def test_f6_root_structure_network_production_stage_a_confirmation_does_not_satisfy_this_gate(
+    tmp_path: Path,
+) -> None:
+    assert m.CONFIRMATION != m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return _f6_captured_fetcher(url)
+
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_root_structure_probe_network(
+            output_root=output_root, confirmation=m.CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.GOVERNANCE_FAILURE
+    assert calls == []
+
+
+def test_f6_root_structure_network_requests_only_topix_root_url_once(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return _f6_captured_fetcher(url)
+
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_root_structure_probe_network(
+        output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert calls == [m.TOPIX_ROOT_URL]
+    assert artifact["requested_url"] == m.TOPIX_ROOT_URL
+    assert artifact["network_request_count"] == 1
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+
+
+def test_f6_root_structure_network_same_domain_redirect_preserves_requested_and_resolved_url(
+    tmp_path: Path,
+) -> None:
+    redirected_url = "https://www.jpx.co.jp/english/markets/indices/topix/redirected.html"
+
+    def fetcher(_url: str) -> m.FetchResult:
+        return m.FetchResult(b"<h2>Historical Index Value</h2>", redirected_url, 200)
+
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_root_structure_probe_network(
+        output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert artifact["requested_url"] == m.TOPIX_ROOT_URL
+    assert artifact["resolved_url"] == redirected_url
+    locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.F6_ROOT_STRUCTURE_DIAGNOSTIC, m.TOPIX_ROOT_URL,
+    )
+    assert locked is not None
+    assert locked["requested_url"] == m.TOPIX_ROOT_URL
+    assert locked["resolved_url"] == redirected_url
+
+
+def test_f6_root_structure_network_raw_lock_exists_before_parser_is_invoked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, bool] = {}
+    original_offline = m.run_f6_root_structure_probe_offline
+
+    def spy_offline(root: object) -> dict[str, object]:
+        locked = m.read_locked_payload(
+            root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.F6_ROOT_STRUCTURE_DIAGNOSTIC, m.TOPIX_ROOT_URL,
+        )
+        seen["raw_lock_exists_when_offline_seam_called"] = locked is not None
+        return original_offline(root)
+
+    monkeypatch.setattr(m, "run_f6_root_structure_probe_offline", spy_offline)
+    output_root = tmp_path / "out"
+    m.run_f6_root_structure_probe_network(
+        output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+        fetcher=_f6_captured_fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert seen["raw_lock_exists_when_offline_seam_called"] is True
+
+
+def test_f6_root_structure_network_successful_payload_produces_offline_seam_artifact(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_root_structure_probe_network(
+        output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+        fetcher=_f6_captured_fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+    assert artifact["label_occurrence_count"] == 1
+    result_path = output_root / m.F6_ROOT_STRUCTURE_PROBE_RESULT_FILENAME
+    assert result_path.exists()
+    on_disk = json.loads(result_path.read_bytes())
+    assert on_disk["status"] == m.STRUCTURE_CAPTURED
+    assert on_disk["schema_version"] == m.F6_ROOT_STRUCTURE_PROBE_RESULT_SCHEMA_VERSION
+
+
+def test_f6_root_structure_network_ambiguous_result_still_produces_durable_artifact_no_refetch(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return m.FetchResult(b"<h2>Nothing Here</h2>", url, 200)
+
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_root_structure_probe_network(
+        output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert artifact["status"] == m.STRUCTURE_AMBIGUOUS
+    assert artifact["label_occurrence_count"] == 0
+    assert (output_root / m.F6_ROOT_STRUCTURE_PROBE_RESULT_FILENAME).exists()
+    assert calls == [m.TOPIX_ROOT_URL]
+
+
+def test_f6_root_structure_network_extraction_failed_preserves_raw_lock_no_refetch(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    malformed = b"<h2>Historical Index Value</h3>"
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return m.FetchResult(malformed, url, 200)
+
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_root_structure_probe_network(
+        output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert artifact["status"] == m.STRUCTURE_EXTRACTION_FAILED
+    assert calls == [m.TOPIX_ROOT_URL]
+    locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.F6_ROOT_STRUCTURE_DIAGNOSTIC, m.TOPIX_ROOT_URL,
+    )
+    assert locked is not None
+    assert locked["raw"] == malformed
+
+
+def test_f6_root_structure_network_retryable_transport_before_payload_uses_existing_retry(
+    tmp_path: Path,
+) -> None:
+    attempts: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        attempts.append(url)
+        if len(attempts) < 2:
+            raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+        return _f6_captured_fetcher(url)
+
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_root_structure_probe_network(
+        output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert len(attempts) == 2
+    assert artifact["network_request_count"] == 2
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+
+
+def test_f6_root_structure_network_exhausted_transport_failure_produces_no_artifact(
+    tmp_path: Path,
+) -> None:
+    def fetcher(url: str) -> m.FetchResult:
+        raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_root_structure_probe_network(
+            output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.reason == m.PLUMBING_FAILURE_RETRIABLE
+    assert not (output_root / m.F6_ROOT_STRUCTURE_PROBE_RESULT_FILENAME).exists()
+
+
+def test_f6_root_structure_network_off_domain_redirect_rejected(tmp_path: Path) -> None:
+    def fetcher(_url: str) -> m.FetchResult:
+        return m.FetchResult(b"payload", "https://evil.example/redirected", 200)
+
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_root_structure_probe_network(
+            output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.reason == "OFF_DOMAIN_REDIRECT_REJECTED"
+    assert not (output_root / m.F6_ROOT_STRUCTURE_PROBE_RESULT_FILENAME).exists()
+
+
+def test_f6_root_structure_network_rerun_against_existing_output_root_fails_closed(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return _f6_captured_fetcher(url)
+
+    output_root = tmp_path / "out"
+    m.run_f6_root_structure_probe_network(
+        output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert len(calls) == 1
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_root_structure_probe_network(
+            output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert len(calls) == 1  # never acquired/refetched on rerun
+
+
+def test_f6_root_structure_network_never_invokes_run_stage_a(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _blocked(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("run_stage_a invoked by the F6 diagnostic network executor")
+
+    monkeypatch.setattr(m, "run_stage_a", _blocked)
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_root_structure_probe_network(
+        output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+        fetcher=_f6_captured_fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+
+
+def test_f6_root_structure_network_no_real_socket_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _blocked(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("real network socket attempted during F6 network executor test")
+
+    monkeypatch.setattr(socket, "socket", _blocked)
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_root_structure_probe_network(
+        output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+        fetcher=_f6_captured_fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert artifact["status"] == m.STRUCTURE_CAPTURED
+
+
+def test_f6_root_structure_network_acquisition_implementation_complete_still_false() -> None:
+    assert m.ACQUISITION_IMPLEMENTATION_COMPLETE is False
+
+
+# --- V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_NETWORK_EXECUTOR: CLI script ----
+
+F6_NETWORK_CLI_MODULE_NAME = "run_v9_006_f6_root_structure_probe"
+F6_NETWORK_CLI_CONFIRMATION_ENV = "V9_006_F6_ROOT_STRUCTURE_PROBE_CONFIRMATION"
+
+
+def _f6_network_cli() -> object:
+    scripts_directory = str(ROOT / "scripts")
+    if scripts_directory not in sys.path:
+        sys.path.insert(0, scripts_directory)
+    return importlib.reload(importlib.import_module(F6_NETWORK_CLI_MODULE_NAME))
+
+
+def test_cli_f6_root_structure_never_imports_production_run_stage_a() -> None:
+    text = (ROOT / "scripts" / "run_v9_006_f6_root_structure_probe.py").read_text(encoding="utf-8")
+    assert "run_stage_a" not in text
+
+
+def test_cli_f6_root_structure_missing_confirmation_makes_zero_fetch_calls(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    monkeypatch.delenv(F6_NETWORK_CLI_CONFIRMATION_ENV, raising=False)
+    cli = _f6_network_cli()
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_production_fetcher", lambda url: calls.append(url) or m.FetchResult(b"x", url, 200))
+    output_root = tmp_path / "cli-out"
+    exit_code = cli.main(["--output-root", str(output_root)])
+    assert exit_code == 2
+    assert calls == []
+    assert not output_root.exists()
+    out = capsys.readouterr().out.strip()
+    payload = json.loads(out)
+    assert payload["execution_result"] == "BLOCKED"
+    assert payload["failure_class"] == "GOVERNANCE_FAILURE"
+    assert payload["network_request_count"] == 0
+
+
+def test_cli_f6_root_structure_wrong_confirmation_makes_zero_fetch_calls(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(F6_NETWORK_CLI_CONFIRMATION_ENV, "wrong-token")
+    cli = _f6_network_cli()
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_production_fetcher", lambda url: calls.append(url) or m.FetchResult(b"x", url, 200))
+    output_root = tmp_path / "cli-out"
+    exit_code = cli.main(["--output-root", str(output_root)])
+    assert exit_code == 2
+    assert calls == []
+    out = capsys.readouterr().out.strip()
+    payload = json.loads(out)
+    assert payload["failure_class"] == "GOVERNANCE_FAILURE"
+    assert payload["network_request_count"] == 0
+
+
+def test_cli_f6_root_structure_production_confirmation_does_not_satisfy_this_gate(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(F6_NETWORK_CLI_CONFIRMATION_ENV, m.CONFIRMATION)
+    cli = _f6_network_cli()
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_production_fetcher", lambda url: calls.append(url) or m.FetchResult(b"x", url, 200))
+    output_root = tmp_path / "cli-out"
+    exit_code = cli.main(["--output-root", str(output_root)])
+    assert exit_code == 2
+    assert calls == []
+    out = capsys.readouterr().out.strip()
+    payload = json.loads(out)
+    assert payload["failure_class"] == "GOVERNANCE_FAILURE"
+
+
+def test_cli_f6_root_structure_safe_stdout_excludes_sensitive_fields(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(F6_NETWORK_CLI_CONFIRMATION_ENV, m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION)
+    cli = _f6_network_cli()
+
+    def fake_fetcher(url: str) -> m.FetchResult:
+        # The anchor and the unrelated numeric TOPIX-like table are
+        # siblings of the matching <h2>, not descendants -- a descendant's
+        # own text would pollute the h2's aggregated label text and break
+        # the exact match.
+        payload = (
+            b"<div><a href=\"page.html?a=1&amp;b=2\">CSV</a>"
+            b"<table><tr><td>2024-01-04</td><td>1783.51</td></tr></table>"
+            b"<h2>Historical Index Value</h2></div>"
+        )
+        return m.FetchResult(payload, url, 200)
+
+    monkeypatch.setattr(cli, "_production_fetcher", fake_fetcher)
+    output_root = tmp_path / "cli-out"
+    exit_code = cli.main(["--output-root", str(output_root)])
+    assert exit_code == 0
+    out = capsys.readouterr().out.strip()
+    payload = json.loads(out)
+    assert set(payload) == {
+        "status", "label_occurrence_count", "requested_url", "resolved_url",
+        "http_status", "byte_length", "sha256", "retrieval_timestamp_utc",
+        "network_request_count", "artifact_path",
+    }
+    assert payload["status"] == m.STRUCTURE_CAPTURED
+    assert payload["label_occurrence_count"] == 1
+    assert "occurrences" not in out
+    assert "anchors" not in out
+    assert "page.html?a=1&amp;b=2" not in out
+    assert "Historical Index Value" not in out
+    assert "CSV" not in out
+    assert "1783.51" not in out
+    assert "2024-01-04" not in out
+    assert Path(payload["artifact_path"]).exists()
+
+
+def test_cli_f6_root_structure_extraction_failure_still_prints_only_safe_fields(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(F6_NETWORK_CLI_CONFIRMATION_ENV, m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION)
+    cli = _f6_network_cli()
+
+    def fake_fetcher(url: str) -> m.FetchResult:
+        return m.FetchResult(b"<h2>Historical Index Value</h3>", url, 200)
+
+    monkeypatch.setattr(cli, "_production_fetcher", fake_fetcher)
+    output_root = tmp_path / "cli-out"
+    exit_code = cli.main(["--output-root", str(output_root)])
+    assert exit_code == 0
+    out = capsys.readouterr().out.strip()
+    payload = json.loads(out)
+    assert payload["status"] == m.STRUCTURE_EXTRACTION_FAILED
+    assert set(payload) == {
+        "status", "label_occurrence_count", "requested_url", "resolved_url",
+        "http_status", "byte_length", "sha256", "retrieval_timestamp_utc",
+        "network_request_count", "artifact_path",
+    }
