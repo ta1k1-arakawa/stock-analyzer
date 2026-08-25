@@ -2230,7 +2230,13 @@ def _f6_identify_semantic_heading(
     if _F6_REQUIRED_SEMANTIC_HEADING_CLASS not in _f6_normalized_classes(target.attrs.get("class")):
         return None
 
-    contained = [node for node in occurrence_elements if _f6_is_self_or_descendant(node, target)]
+    # Design section 2.2 step 6 requires the qualifying leaf-most exact-label
+    # occurrence to be found AMONG THE TARGET H2'S DESCENDANTS -- the target
+    # itself must never satisfy this step (V9_006_F6_NEIGHBORHOOD_MEDIUM_1).
+    # Using self-or-descendant here would let an h2 whose own entire text is
+    # the label count as its own qualifying occurrence, silently broadening
+    # the frozen methodology beyond what section 2.2 actually specifies.
+    contained = [node for node in occurrence_elements if _f6_is_proper_descendant(node, target)]
     if len(contained) != 1:
         return None
     return target

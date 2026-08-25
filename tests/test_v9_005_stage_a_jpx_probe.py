@@ -2701,6 +2701,40 @@ def test_f6_neighborhood_target_contains_multiple_label_descendants_is_ambiguous
     assert artifact["status"] == m.SEMANTIC_HEADING_AMBIGUOUS
 
 
+def test_f6_neighborhood_semantic_heading_self_text_not_accepted_as_descendant_is_ambiguous(
+    tmp_path: Path,
+) -> None:
+    """V9_006_F6_NEIGHBORHOOD_MEDIUM_1: design section 2.2 step 6 requires
+    the qualifying leaf-most exact-label occurrence to be found among the
+    target h2's DESCENDANTS. When the h2's own entire text is the label
+    (no descendant element carries it separately), the h2 itself is the
+    leaf-most occurrence -- but it is not a descendant of itself, so step 6
+    must fail and this must be SEMANTIC_HEADING_AMBIGUOUS, never a silently
+    accepted match. Contrast with
+    test_f6_neighborhood_observed_shape_identifies_semantic_heading_without_
+    literal_id and test_f6_neighborhood_literal_heading_14_not_hardcoded
+    above, both of which wrap the label in a descendant <span> and
+    correctly resolve to a unique semantic heading."""
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b'<a href="#x">Historical Index Value</a>'
+            b'<div>'
+            b'<h2 id="x" class="heading-title">Historical Index Value</h2>'
+            b'</div>'
+        ),
+    )
+    artifact = m.run_f6_section_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.SEMANTIC_HEADING_AMBIGUOUS
+    assert artifact["failure_reason"] is None
+    assert artifact["semantic_heading"] is None
+    assert artifact["parent_container"] is None
+    assert artifact["children"] == []
+    assert artifact["anchors"] == []
+    assert artifact["headings"] == []
+
+
 def test_f6_neighborhood_parent_children_preserve_dom_order_and_relation(tmp_path: Path) -> None:
     root = m.initialize_output_root(tmp_path / "out")
     _lock_f6_diagnostic(
@@ -2709,7 +2743,7 @@ def test_f6_neighborhood_parent_children_preserve_dom_order_and_relation(tmp_pat
             b'<a href="#x">Historical Index Value</a>'
             b'<div>'
             b'<p>before1</p><span>before2</span>'
-            b'<h2 id="x" class="heading-title">Historical Index Value</h2>'
+            b'<h2 id="x" class="heading-title"><span>Historical Index Value</span></h2>'
             b'<p>after1</p><span>after2</span>'
             b'</div>'
         ),
@@ -2756,7 +2790,7 @@ def test_f6_neighborhood_raw_href_source_exact_never_resolved(tmp_path: Path) ->
         root,
         (
             b'<a href="#x">Historical Index Value</a>'
-            b'<div><h2 id="x" class="heading-title">Historical Index Value</h2>'
+            b'<div><h2 id="x" class="heading-title"><span>Historical Index Value</span></h2>'
             b'<a href="page.html?a=1&amp;b=2">L</a></div>'
         ),
     )
@@ -2773,7 +2807,7 @@ def test_f6_neighborhood_ambiguous_duplicate_raw_href_fails_extraction(tmp_path:
         root,
         (
             b'<a href="#x">Historical Index Value</a>'
-            b'<div><h2 id="x" class="heading-title">Historical Index Value</h2>'
+            b'<div><h2 id="x" class="heading-title"><span>Historical Index Value</span></h2>'
             b'<a href="a.html" href="b.html"><img src="i.png"></a></div>'
         ),
     )
@@ -2791,7 +2825,7 @@ def test_f6_neighborhood_descendant_headings_only_h1_to_h6_normalized_text(tmp_p
         (
             b'<a href="#x">Historical Index Value</a>'
             b'<div>'
-            b'<h2 id="x" class="heading-title">Historical   Index\n Value</h2>'
+            b'<h2 id="x" class="heading-title"><span>Historical   Index\n Value</span></h2>'
             b'<h4>Sub Section</h4>'
             b'<p>not a heading</p>'
             b'<strong>Also not a heading</strong>'
@@ -2813,7 +2847,7 @@ def test_f6_neighborhood_unrelated_text_and_topix_values_absent_from_artifact(tm
         (
             b'<a href="#x">Historical Index Value</a>'
             b'<div>'
-            b'<h2 id="x" class="heading-title">Historical Index Value</h2>'
+            b'<h2 id="x" class="heading-title"><span>Historical Index Value</span></h2>'
             b'<table><tr><td>2024-01-04</td><td>1783.51</td></tr></table>'
             b'<p>some unrelated paragraph text</p>'
             b'</div>'
@@ -2832,7 +2866,7 @@ def test_f6_neighborhood_same_lock_reprocessed_is_byte_identical_no_overwrite(tm
     _lock_f6_diagnostic(
         root,
         b'<a href="#x">Historical Index Value</a>'
-        b'<div><h2 id="x" class="heading-title">Historical Index Value</h2></div>',
+        b'<div><h2 id="x" class="heading-title"><span>Historical Index Value</span></h2></div>',
     )
     first = m.run_f6_section_neighborhood_probe_offline(root)
     second = m.run_f6_section_neighborhood_probe_offline(root)
@@ -2846,7 +2880,7 @@ def test_f6_neighborhood_divergent_existing_artifact_fails_closed_no_overwrite(t
     _lock_f6_diagnostic(
         root,
         b'<a href="#x">Historical Index Value</a>'
-        b'<div><h2 id="x" class="heading-title">Historical Index Value</h2></div>',
+        b'<div><h2 id="x" class="heading-title"><span>Historical Index Value</span></h2></div>',
     )
     first = m.run_f6_section_neighborhood_probe_offline(root)
     result_path = root / m.F6_SECTION_NEIGHBORHOOD_PROBE_RESULT_FILENAME
@@ -2928,7 +2962,7 @@ def test_f6_neighborhood_offline_seam_calls_no_network_fetch_retry_ensure_or_run
     _lock_f6_diagnostic(
         root,
         b'<a href="#x">Historical Index Value</a>'
-        b'<div><h2 id="x" class="heading-title">Historical Index Value</h2></div>',
+        b'<div><h2 id="x" class="heading-title"><span>Historical Index Value</span></h2></div>',
     )
 
     def _blocked(*_args: object, **_kwargs: object) -> None:
@@ -2955,7 +2989,7 @@ def test_f6_neighborhood_diagnostic_cannot_populate_f6_inventory(tmp_path: Path)
     locked = _lock_f6_diagnostic(
         root,
         b'<a href="#x">Historical Index Value</a>'
-        b'<div><h2 id="x" class="heading-title">Historical Index Value</h2></div>',
+        b'<div><h2 id="x" class="heading-title"><span>Historical Index Value</span></h2></div>',
     )
     diagnostic_slot_id = m.source_object_slot_id(
         m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.F6_ROOT_STRUCTURE_DIAGNOSTIC, m.TOPIX_ROOT_URL,
@@ -2978,7 +3012,7 @@ def test_f6_neighborhood_artifact_never_selects_or_binds_a_global_child(tmp_path
     _lock_f6_diagnostic(
         root,
         b'<a href="#x">Historical Index Value</a>'
-        b'<div><h2 id="x" class="heading-title">Historical Index Value</h2>'
+        b'<div><h2 id="x" class="heading-title"><span>Historical Index Value</span></h2>'
         b'<a href="child.html">Child</a></div>',
     )
     artifact = m.run_f6_section_neighborhood_probe_offline(root)

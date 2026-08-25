@@ -2,7 +2,7 @@
 
 ```text
 task=V9_006_STAGE_A_F6_SECTION_NEIGHBORHOOD_PROBE_OFFLINE_IMPLEMENTATION
-status=IMPLEMENTED_AWAITING_GPT_REVIEW
+status=BLOCK
 network_executed=false
 global_child_selected=false
 ACQUISITION_IMPLEMENTATION_COMPLETE=false
@@ -157,3 +157,65 @@ authorize any future real acquisition or any future production
 child-locator use -- both still require their own fresh, explicit,
 one-shot human authorization at their own point of use, per the governing
 design documents.
+
+## MEDIUM_1 review and remediation
+
+```text
+REVIEWED_SHA=a55518da64db6d42e7ef4b0365f6cde0fc1df3d0
+CRITICAL=0
+HIGH=0
+MEDIUM=1
+RESULT=BLOCK
+FINDING=V9_006_F6_NEIGHBORHOOD_MEDIUM_1_SEMANTIC_HEADING_SELF_ACCEPTED_AS_DESCENDANT
+```
+
+`V9_006_F6_NEIGHBORHOOD_MEDIUM_1_SEMANTIC_HEADING_SELF_ACCEPTED_AS_
+DESCENDANT`: design section 2.2 step 6 requires the target `h2` to
+contain exactly one leaf-most exact-label occurrence AMONG ITS
+DESCENDANTS. The reviewed `_f6_identify_semantic_heading` instead used
+`_f6_is_self_or_descendant(node, target)` for that check, so a target `h2`
+whose own entire text was the label (no separate descendant element
+carrying it) could satisfy step 6 by counting itself -- silently
+broadening the frozen methodology beyond what section 2.2 actually
+specifies.
+
+**Remediation implemented this task:** the containment check in
+`_f6_identify_semantic_heading` now uses the existing
+`_f6_is_proper_descendant(node, target)` helper (the same helper already
+used elsewhere in this module for "within immediate parent" scoping) in
+place of `_f6_is_self_or_descendant`. The target `h2` itself can never
+satisfy step 6; only a genuine descendant leaf-most occurrence can. No
+other semantic-heading rule (fragment-candidate uniqueness, `id`
+uniqueness, `h2`/tag requirement, `heading-title` class requirement,
+leaf-most normalization), artifact schema, classification, parent-
+container scope, raw-`href` handling, offline/read-only behavior,
+determinism/no-overwrite discipline, network policy, or GLOBAL-child
+state was touched.
+
+Seven existing "successful" (`NEIGHBORHOOD_CAPTURED`) synthetic fixtures
+that had relied on the target `h2`'s own text directly carrying the label
+(with no descendant element) were updated to wrap the label in a
+descendant `<span>` instead, preserving exactly what each test was
+already intended to prove (document order/relation, raw-`href`
+exactness, heading-text normalization, absence of unrelated text,
+byte-identical reprocessing/no-overwrite, no-network-call proof, and the
+exact artifact key set) without weakening any of them. A new dedicated
+regression test,
+`test_f6_neighborhood_semantic_heading_self_text_not_accepted_as_
+descendant_is_ambiguous`, proves the exact reviewed finding fixture (an
+`h2` whose own text alone is the label, wrapped only in a plain `<div>`
+parent) now produces `SEMANTIC_HEADING_AMBIGUOUS` with `semantic_heading`,
+`parent_container` all `null` and `children`/`anchors`/`headings` all
+empty; the two existing descendant-`<span>`-with-nonliteral-fragment
+positive tests
+(`test_f6_neighborhood_observed_shape_identifies_semantic_heading_
+without_literal_id` and `test_f6_neighborhood_literal_heading_14_not_
+hardcoded`) are preserved unchanged and still pass, proving the positive
+path still resolves correctly.
+
+`PYTHONPATH=. pytest tests/test_v9_005_stage_a_jpx_probe.py -q`: 246
+passed (245 existing + 1 new). `git diff --check`: clean.
+`SOURCE_DATA_NETWORK_REQUESTS=0`.
+
+`V9_006_F6_NEIGHBORHOOD_MEDIUM_1_SEMANTIC_HEADING_SELF_ACCEPTED_AS_DESCENDANT=REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW`
+`V9_006_STAGE_A_F6_SECTION_NEIGHBORHOOD_PROBE_OFFLINE_IMPLEMENTATION=BLOCK`
