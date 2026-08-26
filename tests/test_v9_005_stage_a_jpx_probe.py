@@ -3028,6 +3028,485 @@ def test_f6_neighborhood_acquisition_implementation_complete_still_false() -> No
     assert m.ACQUISITION_IMPLEMENTATION_COMPLETE is False
 
 
+# --- V9_006_STAGE_A_F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_OFFLINE_IMPLEMENTATION
+# Fully offline: every fixture below is synthetic and uses only an existing
+# diagnostic raw-lock shape. No test invokes a real network or source-data
+# acquisition path.
+
+def test_f6_one_level_h_p_g_mechanics_use_nonliteral_identity(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b"<html><body>"
+            b'<nav id="nav-before"><a href="#fragment-token">Historical Index Value</a></nav>'
+            b'<article id="grand-token" class="grand z grand">'
+            b'<div id="parent-token" class="parent-token">'
+            b'<h2 id="fragment-token" class="heading-title"><span>Historical Index Value</span></h2>'
+            b"</div></article>"
+            b"</body></html>"
+        ),
+    )
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.EXPANDED_NEIGHBORHOOD_CAPTURED
+    assert artifact["semantic_heading"]["id"] == "fragment-token"
+    assert artifact["parent_container"]["id"] == "parent-token"
+    assert artifact["expanded_container"]["id"] == "grand-token"
+    assert artifact["expanded_container"]["tag"] == "article"
+    assert artifact["expanded_container"]["classes"] == ["grand", "z"]
+
+
+def test_f6_one_level_does_not_hardcode_observed_heading_section_literals(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b"<html><body>"
+            b'<div id="heading_14" class="heading-title"><p>decoy only</p></div>'
+            b'<section class="JPX-section"><p>another decoy</p></section>'
+            b'<nav><a href="#mechanically-derived">Historical Index Value</a></nav>'
+            b'<article id="actual-grand" class="actual-grand">'
+            b'<div id="actual-parent" class="actual-parent">'
+            b'<h2 id="mechanically-derived" class="heading-title">'
+            b"<span>Historical Index Value</span></h2>"
+            b"</div></article>"
+            b"</body></html>"
+        ),
+    )
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.EXPANDED_NEIGHBORHOOD_CAPTURED
+    assert artifact["semantic_heading"]["id"] == "mechanically-derived"
+    assert artifact["expanded_container"]["id"] == "actual-grand"
+    assert artifact["expanded_container"]["tag"] == "article"
+    assert artifact["expanded_container"]["classes"] == ["actual-grand"]
+    assert "heading_14" not in json.dumps(artifact)
+    assert "JPX-section" not in json.dumps(artifact)
+
+
+def test_f6_one_level_semantic_heading_failure_is_ambiguous(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>',
+    )
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.SEMANTIC_HEADING_AMBIGUOUS
+    assert artifact["failure_reason"] is None
+    assert artifact["semantic_heading"] is None
+    assert artifact["parent_container"] is None
+    assert artifact["expanded_container"] is None
+    assert artifact["children"] == []
+    assert artifact["anchors"] == []
+    assert artifact["headings"] == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        (
+            b'<a href="#target">Historical Index Value</a>'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+        ),
+        (
+            b'<a href="#target">Historical Index Value</a>'
+            b'<div id="parent-only">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+            b"</div>"
+        ),
+    ],
+)
+def test_f6_one_level_missing_ancestor_fails_structure(tmp_path: Path, payload: bytes) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, payload)
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_EXTRACTION_FAILED
+    assert artifact["semantic_heading"] is None
+    assert artifact["parent_container"] is None
+    assert artifact["expanded_container"] is None
+    assert artifact["children"] == []
+    assert artifact["anchors"] == []
+    assert artifact["headings"] == []
+
+
+def test_f6_one_level_direct_children_preserve_order_and_relation_to_p(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b'<main id="grand">'
+            b'<nav id="before"><a href="#target">Historical Index Value</a></nav>'
+            b'<div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+            b"</div>"
+            b'<aside id="after"></aside>'
+            b"</main>"
+        ),
+    )
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.EXPANDED_NEIGHBORHOOD_CAPTURED
+    children = artifact["children"]
+    assert [child["id"] for child in children] == ["before", "parent", "after"]
+    assert [child["relation_to_P"] for child in children] == [
+        m.ONE_LEVEL_RELATION_BEFORE_P,
+        m.ONE_LEVEL_RELATION_P,
+        m.ONE_LEVEL_RELATION_AFTER_P,
+    ]
+    assert sum(child["relation_to_P"] == m.ONE_LEVEL_RELATION_P for child in children) == 1
+
+
+def test_f6_one_level_requires_p_to_be_exactly_one_direct_child_of_g() -> None:
+    grand = m._F6DomElement("main", {}, None)
+    parent = m._F6DomElement("div", {}, grand)
+    grand.children.extend([parent, parent])
+    with pytest.raises(m._F6RootStructureExtractionFailed) as excinfo:
+        m._f6_one_level_children(grand, parent)
+    assert excinfo.value.reason == m._F6_ONE_LEVEL_PARENT_NOT_DIRECT_CHILD
+
+
+def test_f6_one_level_all_descendant_anchors_preserve_order_and_ownership(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b'<main id="grand">'
+            b'<nav id="nav-owner"><a href="#target">Historical Index Value</a></nav>'
+            b'<a id="direct-anchor" href="direct.html">Direct</a>'
+            b'<div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+            b'<a href="inside.html">Inside parent</a>'
+            b"</div>"
+            b'<section id="after-owner"><div><a href="nested.html">Nested</a></div></section>'
+            b"</main>"
+        ),
+    )
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.EXPANDED_NEIGHBORHOOD_CAPTURED
+    anchors = artifact["anchors"]
+    assert [anchor["raw_href"] for anchor in anchors] == [
+        "#target", "direct.html", "inside.html", "nested.html",
+    ]
+    assert [anchor["owning_child_relation_to_P"] for anchor in anchors] == [
+        m.ONE_LEVEL_RELATION_BEFORE_P,
+        m.ONE_LEVEL_RELATION_BEFORE_P,
+        m.ONE_LEVEL_RELATION_P,
+        m.ONE_LEVEL_RELATION_AFTER_P,
+    ]
+    assert [anchor["owning_immediate_element_child_of_G"]["id"] for anchor in anchors] == [
+        "nav-owner", "direct-anchor", "parent", "after-owner",
+    ]
+    direct_anchor = anchors[1]
+    assert direct_anchor["owning_immediate_element_child_of_G"]["dom_path"] == direct_anchor["dom_path"]
+    assert direct_anchor["owning_immediate_element_child_of_G"]["tag"] == "a"
+
+
+def test_f6_one_level_raw_href_is_exact_and_never_resolved(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b'<main id="grand">'
+            b'<nav><a href="#target">Historical Index Value</a></nav>'
+            b'<div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+            b'<a href="page.html?a=1&amp;b=2">Exact</a>'
+            b"</div></main>"
+        ),
+    )
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.EXPANDED_NEIGHBORHOOD_CAPTURED
+    hrefs = [anchor["raw_href"] for anchor in artifact["anchors"]]
+    assert hrefs == ["#target", "page.html?a=1&amp;b=2"]
+    assert "page.html?a=1&b=2" not in hrefs
+    assert m.TOPIX_ROOT_URL not in hrefs[1]
+
+
+def test_f6_one_level_ambiguous_raw_href_fails_structure(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b'<main id="grand">'
+            b'<nav><a href="#target">Historical Index Value</a></nav>'
+            b'<div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+            b'<a href="a.html" href="b.html">Ambiguous</a>'
+            b"</div></main>"
+        ),
+    )
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_EXTRACTION_FAILED
+    assert artifact["failure_reason"] == m._F6_AMBIGUOUS_RAW_HREF_ATTRIBUTE
+    assert artifact["semantic_heading"] is None
+    assert artifact["parent_container"] is None
+    assert artifact["expanded_container"] is None
+    assert artifact["anchors"] == []
+    assert artifact["headings"] == []
+
+
+def test_f6_one_level_descendant_headings_preserve_order_normalization_ownership(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b'<main id="grand">'
+            b'<h3 id="before-heading">  First   Heading </h3>'
+            b'<nav><a href="#target">Historical Index Value</a></nav>'
+            b'<div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical   Index\n Value</span></h2>'
+            b'<h1 id="parent-heading"> Parent Heading </h1>'
+            b"</div>"
+            b'<section id="after"><div><h6>  Last Heading  </h6></div></section>'
+            b"</main>"
+        ),
+    )
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.EXPANDED_NEIGHBORHOOD_CAPTURED
+    headings = artifact["headings"]
+    assert [(heading["tag"], heading["normalized_heading_text"]) for heading in headings] == [
+        ("h3", "First Heading"),
+        ("h2", "Historical Index Value"),
+        ("h1", "Parent Heading"),
+        ("h6", "Last Heading"),
+    ]
+    assert [heading["owning_immediate_element_child_of_G"]["id"] for heading in headings] == [
+        "before-heading", "parent", "parent", "after",
+    ]
+    assert [heading["owning_child_relation_to_P"] for heading in headings] == [
+        m.ONE_LEVEL_RELATION_BEFORE_P,
+        m.ONE_LEVEL_RELATION_P,
+        m.ONE_LEVEL_RELATION_P,
+        m.ONE_LEVEL_RELATION_AFTER_P,
+    ]
+
+
+def test_f6_one_level_artifact_excludes_unrelated_text_and_numerical_topix_values(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b'<main id="grand">'
+            b'<nav><a href="#target">Historical Index Value</a></nav>'
+            b'<div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+            b'<table><tbody><tr><td>2024-01-04</td><td>1783.51</td></tr></tbody></table>'
+            b"<p>arbitrary surrounding page text</p>"
+            b"</div></main>"
+        ),
+    )
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.EXPANDED_NEIGHBORHOOD_CAPTURED
+    serialized = json.dumps(artifact)
+    assert "2024-01-04" not in serialized
+    assert "1783.51" not in serialized
+    assert "arbitrary surrounding page text" not in serialized
+
+
+def test_f6_one_level_artifact_has_exact_top_level_key_set(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b'<main id="grand"><div id="parent">'
+            b'<h2 id="target" class="heading-title">'
+            b'<span>Historical Index Value</span></h2>'
+            b"</div></main>"
+            b'<nav><a href="#target">Historical Index Value</a></nav>'
+        ),
+    )
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.EXPANDED_NEIGHBORHOOD_CAPTURED
+    assert set(artifact.keys()) == {
+        "schema_version", "diagnostic", "requested_url", "resolved_url",
+        "byte_length", "sha256", "retrieval_timestamp_utc", "status",
+        "failure_reason", "semantic_heading", "parent_container",
+        "expanded_container", "children", "anchors", "headings",
+    }
+    assert not {"selected_global_child", "ranked_candidates", "score", "resolved_href"} & set(artifact)
+
+
+def test_f6_one_level_same_locked_bytes_are_byte_identical(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b'<nav><a href="#target">Historical Index Value</a></nav>'
+            b'<main id="grand"><div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+            b"</div></main>"
+        ),
+    )
+    first = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    first_bytes = (root / m.F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_FILENAME).read_bytes()
+    second = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    second_bytes = (root / m.F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_FILENAME).read_bytes()
+    assert first == second
+    assert first_bytes == second_bytes == m.canonical_bytes(first)
+
+
+def test_f6_one_level_divergent_artifact_fails_closed_without_overwrite(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b'<nav><a href="#target">Historical Index Value</a></nav>'
+            b'<main id="grand"><div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+            b"</div></main>"
+        ),
+    )
+    first = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    result_path = root / m.F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_FILENAME
+    original_bytes = result_path.read_bytes()
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.write_f6_one_level_expanded_neighborhood_probe_artifact(
+            root, {**first, "status": "TAMPERED"},
+        )
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert result_path.read_bytes() == original_bytes
+
+
+def test_f6_one_level_missing_lock_fails_closed(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    with pytest.raises(m.V9005StageABlocked):
+        m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert not (root / m.F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_FILENAME).exists()
+
+
+def test_f6_one_level_corrupt_lock_fails_closed(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    locked = _lock_f6_diagnostic(
+        root,
+        b'<main id="grand"><div id="parent">'
+        b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+        b"</div></main>",
+    )
+    key = m.source_object_slot_id(
+        locked["source_family"], locked["applicable_period"], locked["requested_url"],
+    )
+    (root / "raw" / f"{key}.bin").write_bytes(b"tampered-raw-lock")
+    with pytest.raises(m.V9005StageABlocked):
+        m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+
+
+def test_f6_one_level_wrong_identity_lock_fails_closed(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    m.lock_first_complete_payload(
+        root,
+        source_family=m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
+        applicable_period="TOPIX_DISCOVERY_ROOT",
+        requested_url=m.TOPIX_ROOT_URL,
+        fetch_result=m.FetchResult(
+            b'<main id="grand"><div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+            b"</div></main>",
+            m.TOPIX_ROOT_URL,
+            200,
+        ),
+        retrieval_timestamp_utc="2026-08-24T00:00:00Z",
+    )
+    with pytest.raises(m.V9005StageABlocked):
+        m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        (
+            b'<nav><a href="#target">Historical Index Value</a></nav>'
+            b'<main id="grand"><div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value \xff</span></h2>'
+            b"</div></main>"
+        ),
+        (
+            b'<nav><a href="#target">Historical Index Value</a></nav>'
+            b'<main id="grand"><div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</h2>'
+            b"</div></main>"
+        ),
+    ],
+)
+def test_f6_one_level_invalid_utf8_or_malformed_dom_fails_closed(
+    tmp_path: Path, payload: bytes,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, payload)
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.STRUCTURE_EXTRACTION_FAILED
+    assert artifact["semantic_heading"] is None
+    assert artifact["parent_container"] is None
+    assert artifact["expanded_container"] is None
+
+
+def test_f6_one_level_offline_seam_calls_no_network_or_acquisition_functions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        (
+            b'<nav><a href="#target">Historical Index Value</a></nav>'
+            b'<main id="grand"><div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+            b"</div></main>"
+        ),
+    )
+
+    def _blocked(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("network or acquisition function invoked by one-level offline seam")
+
+    monkeypatch.setattr(m, "fetch_once_with_retry", _blocked)
+    monkeypatch.setattr(m, "ensure_locked_payload", _blocked)
+    monkeypatch.setattr(m, "lock_first_complete_payload", _blocked)
+    monkeypatch.setattr(m, "run_stage_a", _blocked)
+    artifact = m.run_f6_one_level_expanded_neighborhood_probe_offline(root)
+    assert artifact["status"] == m.EXPANDED_NEIGHBORHOOD_CAPTURED
+
+    for func in (
+        m.parse_f6_one_level_expanded_neighborhood_probe,
+        m.write_f6_one_level_expanded_neighborhood_probe_artifact,
+        m.run_f6_one_level_expanded_neighborhood_probe_offline,
+    ):
+        parameters = set(inspect.signature(func).parameters)
+        assert parameters.isdisjoint({"fetcher", "sleep", "clock"})
+
+
+def test_f6_one_level_diagnostic_cannot_populate_f6_inventory(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    locked = _lock_f6_diagnostic(
+        root,
+        (
+            b'<nav><a href="#target">Historical Index Value</a></nav>'
+            b'<main id="grand"><div id="parent">'
+            b'<h2 id="target" class="heading-title"><span>Historical Index Value</span></h2>'
+            b"</div></main>"
+        ),
+    )
+    diagnostic_slot_id = m.source_object_slot_id(
+        locked["source_family"], locked["applicable_period"], locked["requested_url"],
+    )
+    with pytest.raises(m.V9005StageABlocked):
+        m.build_source_inventory({
+            (m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.F6_ROOT_STRUCTURE_DIAGNOSTIC): (
+                diagnostic_slot_id,
+            ),
+        })
+    inventory = m.build_source_inventory()
+    f6_records = [
+        record for record in inventory
+        if record["source_family"] == m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE
+    ]
+    assert all(record["status"] == m.INVENTORY_MISSING for record in f6_records)
+
+
+def test_f6_one_level_acquisition_implementation_complete_remains_false() -> None:
+    assert m.ACQUISITION_IMPLEMENTATION_COMPLETE is False
+
+
+
 # --- V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_NETWORK_EXECUTOR ----------------
 # Every fetcher here is synthetic (no real socket, no real network). This
 # section proves the network-executor plumbing without ever performing a

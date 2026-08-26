@@ -2396,6 +2396,235 @@ def run_f6_section_neighborhood_probe_offline(output_root: str | os.PathLike[str
     return artifact
 
 
+# --- F6 one-level expanded neighborhood diagnostic (fully offline) ----------
+# V9_006_STAGE_A_F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_OFFLINE_IMPLEMENTATION:
+# implements the exact one-level-expanded scope G from the reviewed design.
+# It reuses the shared F6 DOM, text-normalization, raw-href, identity, lock
+# reader, canonical serialization, and atomic-create utilities above. It reads
+# only the existing F6_ROOT_STRUCTURE_DIAGNOSTIC raw lock, never accepts a
+# fetcher/sleep/clock, performs no network operation, and never selects or
+# binds a GLOBAL child.
+
+F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_SCHEMA_VERSION = (
+    "V9_006_STAGE_A_F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_SCHEMA_V1"
+)
+F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_DIAGNOSTIC_NAME = (
+    "V9_006_STAGE_A_F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE"
+)
+F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_FILENAME = (
+    "V9_006_STAGE_A_F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT.json"
+)
+
+EXPANDED_NEIGHBORHOOD_CAPTURED = "EXPANDED_NEIGHBORHOOD_CAPTURED"
+ONE_LEVEL_RELATION_BEFORE_P = "BEFORE_P"
+ONE_LEVEL_RELATION_P = "P"
+ONE_LEVEL_RELATION_AFTER_P = "AFTER_P"
+
+_F6_ONE_LEVEL_PARENT_MISSING = "ONE_LEVEL_PARENT_MISSING"
+_F6_ONE_LEVEL_EXPANDED_PARENT_MISSING = "ONE_LEVEL_EXPANDED_PARENT_MISSING"
+_F6_ONE_LEVEL_PARENT_NOT_DIRECT_CHILD = "ONE_LEVEL_PARENT_NOT_DIRECT_CHILD"
+_F6_ONE_LEVEL_OWNER_NOT_DIRECT_CHILD = "ONE_LEVEL_OWNER_NOT_DIRECT_CHILD"
+
+
+def _f6_one_level_empty_result_fields() -> dict[str, Any]:
+    return {
+        "semantic_heading": None,
+        "parent_container": None,
+        "expanded_container": None,
+        "children": [],
+        "anchors": [],
+        "headings": [],
+    }
+
+
+def _f6_one_level_children(
+    expanded_parent: _F6DomElement, parent: _F6DomElement,
+) -> tuple[list[dict[str, Any]], dict[int, str]]:
+    direct_children = _f6_element_siblings(expanded_parent)
+    parent_matches = [child for child in direct_children if child is parent]
+    if len(parent_matches) != 1:
+        raise _F6RootStructureExtractionFailed(_F6_ONE_LEVEL_PARENT_NOT_DIRECT_CHILD)
+    parent_index = next(index for index, child in enumerate(direct_children) if child is parent)
+
+    children: list[dict[str, Any]] = []
+    relation_by_child_id: dict[int, str] = {}
+    for index, child in enumerate(direct_children):
+        if index < parent_index:
+            relation = ONE_LEVEL_RELATION_BEFORE_P
+        elif index == parent_index:
+            relation = ONE_LEVEL_RELATION_P
+        else:
+            relation = ONE_LEVEL_RELATION_AFTER_P
+        relation_by_child_id[id(child)] = relation
+        children.append({**_f6_element_identity(child), "relation_to_P": relation})
+    return children, relation_by_child_id
+
+
+def _f6_one_level_owner(
+    node: _F6DomElement, expanded_parent: _F6DomElement,
+) -> _F6DomElement:
+    current = node
+    while current.parent is not expanded_parent:
+        if current.parent is None:
+            raise _F6RootStructureExtractionFailed(_F6_ONE_LEVEL_OWNER_NOT_DIRECT_CHILD)
+        current = current.parent
+    return current
+
+
+def _f6_one_level_descendant_records(
+    expanded_parent: _F6DomElement,
+    doc_order: Sequence[_F6DomElement],
+    raw_text: Mapping[int, str],
+    relation_by_child_id: Mapping[int, str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    anchors: list[dict[str, Any]] = []
+    headings: list[dict[str, Any]] = []
+    for node in doc_order:
+        if not _f6_is_proper_descendant(node, expanded_parent):
+            continue
+        if node.tag != "a" and node.tag not in _F6_HEADING_TAGS:
+            continue
+
+        owner = _f6_one_level_owner(node, expanded_parent)
+        relation = relation_by_child_id.get(id(owner))
+        if relation is None:
+            raise _F6RootStructureExtractionFailed(_F6_ONE_LEVEL_OWNER_NOT_DIRECT_CHILD)
+        owner_identity = _f6_element_identity(owner)
+
+        if node.tag == "a":
+            anchor = _f6_anchor_of(node, raw_text)
+            anchors.append({
+                "dom_path": anchor["dom_path"],
+                "normalized_visible_text": anchor["text"],
+                "raw_href": anchor["href"],
+                "owning_immediate_element_child_of_G": owner_identity,
+                "owning_child_relation_to_P": relation,
+            })
+        else:
+            headings.append({
+                "dom_path": _f6_dom_path(node),
+                "tag": node.tag,
+                "normalized_heading_text": _f6_normalize_text(raw_text.get(id(node), "")),
+                "owning_immediate_element_child_of_G": owner_identity,
+                "owning_child_relation_to_P": relation,
+            })
+    return anchors, headings
+
+
+def _f6_one_level_base_fields(locked: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_SCHEMA_VERSION,
+        "diagnostic": F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_DIAGNOSTIC_NAME,
+        "requested_url": locked["requested_url"],
+        "resolved_url": locked["resolved_url"],
+        "byte_length": locked["byte_length"],
+        "sha256": locked["sha256"],
+        "retrieval_timestamp_utc": locked["retrieval_timestamp_utc"],
+    }
+
+
+def parse_f6_one_level_expanded_neighborhood_probe(
+    locked: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Derive the exact G-scope artifact from one existing F6 raw lock.
+
+    The parser and DOM analysis are the already-reviewed F6 utilities. This
+    function touches no filesystem, network, or clock, and records no page
+    text, numerical observation, resolved href, or selected child URL.
+    """
+    base = _f6_one_level_base_fields(locked)
+    try:
+        text = _f6_decode_strict_utf8(locked["raw"])
+    except UnicodeDecodeError:
+        return {
+            **base,
+            **_f6_one_level_empty_result_fields(),
+            "status": STRUCTURE_EXTRACTION_FAILED,
+            "failure_reason": _F6_PAYLOAD_DECODE_FAILED,
+        }
+
+    try:
+        root = _f6_parse_full_dom(text)
+        target_normalized = _f6_normalize_text(F6_SEMANTIC_SECTION_LABEL)
+        doc_order, raw_text, leaf_most_ids = _f6_analyze_dom(root, target_normalized)
+        occurrence_elements = [node for node in doc_order if id(node) in leaf_most_ids]
+        heading = _f6_identify_semantic_heading(doc_order, occurrence_elements)
+        if heading is None:
+            return {
+                **base,
+                **_f6_one_level_empty_result_fields(),
+                "status": SEMANTIC_HEADING_AMBIGUOUS,
+                "failure_reason": None,
+            }
+
+        parent = heading.parent
+        if parent is None or parent is root:
+            raise _F6RootStructureExtractionFailed(_F6_ONE_LEVEL_PARENT_MISSING)
+        expanded_parent = parent.parent
+        if expanded_parent is None or expanded_parent is root:
+            raise _F6RootStructureExtractionFailed(_F6_ONE_LEVEL_EXPANDED_PARENT_MISSING)
+
+        children, relation_by_child_id = _f6_one_level_children(expanded_parent, parent)
+        anchors, headings = _f6_one_level_descendant_records(
+            expanded_parent, doc_order, raw_text, relation_by_child_id,
+        )
+    except _F6RootStructureExtractionFailed as exc:
+        return {
+            **base,
+            **_f6_one_level_empty_result_fields(),
+            "status": STRUCTURE_EXTRACTION_FAILED,
+            "failure_reason": exc.reason,
+        }
+
+    return {
+        **base,
+        "status": EXPANDED_NEIGHBORHOOD_CAPTURED,
+        "failure_reason": None,
+        "semantic_heading": _f6_element_identity(heading),
+        "parent_container": _f6_element_identity(parent),
+        "expanded_container": _f6_element_identity(expanded_parent),
+        "children": children,
+        "anchors": anchors,
+        "headings": headings,
+    }
+
+
+def write_f6_one_level_expanded_neighborhood_probe_artifact(
+    output_root: str | os.PathLike[str], artifact: Mapping[str, Any],
+) -> Path:
+    """Atomically create or byte-identically reuse the G-scope artifact.
+
+    A divergent existing artifact fails closed and is never overwritten.
+    """
+    path = Path(output_root) / F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_FILENAME
+    payload = canonical_bytes(artifact)
+    if path.exists():
+        try:
+            existing = path.read_bytes()
+        except Exception as exc:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+        if existing != payload:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        return path
+    _atomic_create(path, payload)
+    return path
+
+
+def run_f6_one_level_expanded_neighborhood_probe_offline(
+    output_root: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Read only the existing F6 diagnostic raw lock and produce the G artifact.
+
+    This seam accepts no fetcher, sleep, or clock, performs no network
+    operation, and never selects, ranks, or binds an F6 GLOBAL child.
+    """
+    locked = read_f6_root_structure_diagnostic_lock(output_root)
+    artifact = parse_f6_one_level_expanded_neighborhood_probe(locked)
+    write_f6_one_level_expanded_neighborhood_probe_artifact(output_root, artifact)
+    return artifact
+
+
+
 # --- F6 root-structure diagnostic (network executor) -------------------------
 # V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_NETWORK_EXECUTOR: executable
 # plumbing only. NEVER invoked with a real fetcher by this implementation
@@ -2611,6 +2840,11 @@ __all__ = [
     "NEIGHBORHOOD_CAPTURED", "SEMANTIC_HEADING_AMBIGUOUS",
     "NEIGHBORHOOD_RELATION_BEFORE_HEADING", "NEIGHBORHOOD_RELATION_HEADING",
     "NEIGHBORHOOD_RELATION_AFTER_HEADING", "NEIGHBORHOOD_RELATION_INSIDE_HEADING",
+    "F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_SCHEMA_VERSION",
+    "F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_DIAGNOSTIC_NAME",
+    "F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_FILENAME",
+    "EXPANDED_NEIGHBORHOOD_CAPTURED", "ONE_LEVEL_RELATION_BEFORE_P",
+    "ONE_LEVEL_RELATION_P", "ONE_LEVEL_RELATION_AFTER_P",
     "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
     "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
     "F2F4RequiredSlotAcquisition", "F3RequiredSlotAcquisition", "F7RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
@@ -2631,12 +2865,15 @@ __all__ = [
     "extract_data_j_xls_url", "f2_bridge_months", "fetch_once_with_retry",
     "initialize_output_root", "inventory_months", "lock_first_complete_payload", "monthly_statistics_discovery_year_period", "nth_trading_day_after",
     "parse_f6_root_structure_probe", "parse_f6_section_neighborhood_probe", "read_f6_root_structure_diagnostic_lock",
+    "parse_f6_one_level_expanded_neighborhood_probe",
     "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
     "resolve_delisted_company_year_url", "resolve_f7_calendar_url", "resolve_month_locator", "resolve_monthly_statistics_evidence_url",
     "resolve_monthly_statistics_year_page_url", "run_f6_root_structure_probe_offline",
     "run_f6_root_structure_probe_network", "run_f6_section_neighborhood_probe_offline", "run_stage_a",
+    "run_f6_one_level_expanded_neighborhood_probe_offline",
     "sha256_bytes", "source_object_slot_id", "validate_jpx_url", "verify_acquisition_implementation_ready",
     "verify_locator_contract_complete", "verify_raw_provenance",
     "verify_signal_grid_binding", "write_f6_root_structure_probe_artifact",
     "write_f6_section_neighborhood_probe_artifact",
+    "write_f6_one_level_expanded_neighborhood_probe_artifact",
 ]
