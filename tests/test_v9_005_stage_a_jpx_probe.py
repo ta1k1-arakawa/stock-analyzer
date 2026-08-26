@@ -3506,6 +3506,458 @@ def test_f6_one_level_acquisition_implementation_complete_remains_false() -> Non
     assert m.ACQUISITION_IMPLEMENTATION_COMPLETE is False
 
 
+# --- V9_006_STAGE_A_F6_GLOBAL_CHILD_LOCATOR_IMPLEMENTATION ------------------
+# Fully offline: every fixture below is synthetic and uses only an existing
+# F6_ROOT_STRUCTURE_DIAGNOSTIC raw-lock shape. No test fetches the located
+# child or inspects child content.
+
+def _global_locator_fixture(
+    *,
+    body: bytes,
+    before_g: bytes = b"",
+    after_g: bytes = b"",
+    boundary_id: bytes = b"boundary-owner",
+    boundary_heading_id: bytes = b"boundary-heading",
+) -> bytes:
+    return (
+        b"<html><body>"
+        b'<nav id="semantic-link"><a href="#semantic-token">Historical Index Value</a></nav>'
+        + before_g
+        + b'<article id="expanded-token" class="scope-token">'
+        + b'<div id="parent-token" class="parent-token">'
+        + b'<h2 id="semantic-token" class="heading-title">'
+        + b"<span>Historical Index Value</span></h2>"
+        + b"</div>"
+        + body
+        + b'<section id="' + boundary_id + b'"><h2 id="' + boundary_heading_id
+        + b'"><span>Later structure marker</span></h2></section>'
+        + after_g
+        + b"</article></body></html>"
+    )
+
+
+def _assert_global_locator_chatgpt_stop(
+    root: Path, payload: bytes, *, resolved_url: str | None = None,
+) -> None:
+    _lock_f6_diagnostic(root, payload, resolved_url=resolved_url)
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_global_child_locator_offline(root)
+    assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
+
+
+def test_f6_global_locator_h_p_g_n_and_unique_anchor_are_mechanical(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(
+            body=(
+                b'<div id="body-token"><a href="objects/blob">not a filename signal</a></div>'
+            ),
+        ),
+        resolved_url="https://www.jpx.co.jp/english/markets/indices/topix/root-final.html",
+    )
+    result = m.run_f6_global_child_locator_offline(root)
+    assert result["status"] == m.GLOBAL_CHILD_LOCATOR_RESOLVED
+    assert result["semantic_heading"]["id"] == "semantic-token"
+    assert result["parent_container"]["id"] == "parent-token"
+    assert result["expanded_container"]["id"] == "expanded-token"
+    assert result["boundary_heading"]["id"] == "boundary-heading"
+    assert result["boundary_owner"]["id"] == "boundary-owner"
+    assert [child["id"] for child in result["section_body_children"]] == ["body-token"]
+    assert result["candidate_anchor_count"] == 1
+    assert result["candidate_anchor"]["raw_href"] == "objects/blob"
+    assert result["resolved_global_child_url"] == (
+        "https://www.jpx.co.jp/english/markets/indices/topix/objects/blob"
+    )
+
+
+def test_f6_global_locator_does_not_hardcode_observed_literals(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    payload = (
+        b"<html><body>"
+        b'<div id="heading_14" class="heading-title"><p>decoy</p></div>'
+        b'<section class="JPX-section"><p>decoy</p></section>'
+        + _global_locator_fixture(
+            before_g=b'<aside id="heading_18"><p>outside scope</p></aside>',
+            body=b'<div id="body-actual"><a href="object-without-xls">arbitrary label</a></div>',
+        )
+        + b"</body></html>"
+    )
+    _lock_f6_diagnostic(root, payload)
+    result = m.run_f6_global_child_locator_offline(root)
+    serialized = json.dumps(result)
+    assert result["expanded_container"]["id"] == "expanded-token"
+    assert result["semantic_heading"]["id"] == "semantic-token"
+    assert "heading_14" not in serialized
+    assert "heading_18" not in serialized
+    assert "JPX-section" not in serialized
+    assert "topixyear_e.xls" not in serialized
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'<div><h2 id="not-target" class="heading-title"><span>not the label</span></h2></div>',
+        (
+            b'<a href="#semantic-token">Historical Index Value</a>'
+            b'<h2 id="semantic-token" class="heading-title"><span>Historical Index Value</span></h2>'
+        ),
+        (
+            b'<a href="#semantic-token">Historical Index Value</a>'
+            b'<div id="parent-only"><h2 id="semantic-token" class="heading-title">'
+            b'<span>Historical Index Value</span></h2></div>'
+        ),
+    ],
+)
+def test_f6_global_locator_missing_or_ambiguous_h_p_g_fails_closed(
+    tmp_path: Path, payload: bytes,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _assert_global_locator_chatgpt_stop(root, payload)
+
+
+def test_f6_global_locator_p_must_be_exactly_one_direct_child_of_g(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(
+            body=b'<div id="body"><a href="object">one</a></div>',
+        ),
+    )
+
+    def _duplicate_parent(*_args: object, **_kwargs: object) -> object:
+        raise m._F6RootStructureExtractionFailed(m._F6_ONE_LEVEL_PARENT_NOT_DIRECT_CHILD)
+
+    monkeypatch.setattr(m, "_f6_one_level_children", _duplicate_parent)
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_global_child_locator_offline(root)
+    assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
+
+
+def test_f6_global_locator_no_later_boundary_fails_closed_without_end_fallback(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    payload = (
+        b'<nav><a href="#semantic-token">Historical Index Value</a></nav>'
+        b'<main id="expanded-token"><div id="parent-token">'
+        b'<h2 id="semantic-token" class="heading-title"><span>Historical Index Value</span></h2>'
+        b'</div><div id="body"><a href="object">one</a></div></main>'
+    )
+    _assert_global_locator_chatgpt_stop(root, payload)
+
+
+def test_f6_global_locator_earliest_n_excludes_h2_inside_p_and_before_p(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    payload = (
+        b'<nav><a href="#semantic-token">Historical Index Value</a></nav>'
+        b'<main id="expanded-token">'
+        b'<div id="before-owner"><h2 id="before-heading">Before P</h2></div>'
+        b'<div id="parent-token">'
+        b'<h2 id="semantic-token" class="heading-title"><span>Historical Index Value</span></h2>'
+        b'<h2 id="inside-parent">Inside P</h2>'
+        b'</div>'
+        b'<div id="body-one"><a href="object-without-extension">one</a></div>'
+        b'<div id="first-boundary"><h2 id="first-n">First N</h2></div>'
+        b'<div id="second-boundary"><h2 id="second-n">Second N</h2></div>'
+        b'</main>'
+    )
+    _lock_f6_diagnostic(root, payload)
+    result = m.run_f6_global_child_locator_offline(root)
+    assert result["boundary_heading"]["id"] == "first-n"
+    assert result["boundary_owner"]["id"] == "first-boundary"
+    assert [child["id"] for child in result["section_body_children"]] == ["body-one"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'<div id="body-empty"></div>',
+        (
+            b'<div id="body-many"><a href="first">first</a>'
+            b'<span><a href="second">second</a></span></div>'
+        ),
+    ],
+)
+def test_f6_global_locator_candidate_anchor_count_must_be_exactly_one(
+    tmp_path: Path, body: bytes,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _assert_global_locator_chatgpt_stop(root, _global_locator_fixture(body=body))
+
+
+def test_f6_global_locator_direct_child_anchor_is_included_and_owns_itself(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(
+            body=b'<a id="direct-anchor" href="direct-object">visible text is not a heuristic</a>',
+        ),
+    )
+    result = m.run_f6_global_child_locator_offline(root)
+    assert result["candidate_anchor"]["raw_href"] == "direct-object"
+    assert result["candidate_anchor"]["dom_path"][-1]["id"] == "direct-anchor"
+    assert result["resolved_global_child_url"].endswith("/topix/direct-object")
+
+
+def test_f6_global_locator_nested_anchor_is_included_under_body_child(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(
+            body=b'<div id="body-nested"><span><a href="nested-object">nested</a></span></div>',
+        ),
+    )
+    result = m.run_f6_global_child_locator_offline(root)
+    assert result["candidate_anchor"]["raw_href"] == "nested-object"
+    assert result["resolved_global_child_url"].endswith("/topix/nested-object")
+
+
+def test_f6_global_locator_preserves_raw_href_and_does_not_use_requested_url(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    requested_url = m.TOPIX_ROOT_URL
+    final_url = "https://www.jpx.co.jp/english/alternate/root-final.html"
+    payload = _global_locator_fixture(
+        body=b'<div id="body"><a href="object?x=1&amp;y=2">entity spelling</a></div>',
+    )
+    _lock_f6_diagnostic(root, payload, resolved_url=final_url)
+    result = m.run_f6_global_child_locator_offline(root)
+    assert result["requested_url"] == requested_url
+    assert result["resolved_url"] == final_url
+    assert result["candidate_anchor"]["raw_href"] == "object?x=1&amp;y=2"
+    assert result["resolved_global_child_url"] == (
+        "https://www.jpx.co.jp/english/alternate/object?x=1&amp;y=2"
+    )
+    assert requested_url not in result["resolved_global_child_url"]
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        b"https://evil.example/object",
+        b"http://www.jpx.co.jp/object",
+    ],
+)
+def test_f6_global_locator_enforces_resolved_https_allowed_domain(
+    tmp_path: Path, href: bytes,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(body=b'<div id="body"><a href="' + href + b'">unsafe</a></div>'),
+    )
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_global_child_locator_offline(root)
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert excinfo.value.network_request_count == 0
+
+
+def test_f6_global_locator_absent_or_ambiguous_raw_href_fails_closed(
+    tmp_path: Path,
+) -> None:
+    payloads = [
+        _global_locator_fixture(body=b'<div id="body"><a>missing</a></div>'),
+        _global_locator_fixture(
+            body=b'<div id="body"><a href="first" href="second">ambiguous</a></div>',
+        ),
+    ]
+    for index, payload in enumerate(payloads):
+        root = m.initialize_output_root(tmp_path / f"out-{index}")
+        _lock_f6_diagnostic(root, payload)
+        with pytest.raises(m.V9005StageABlocked):
+            m.run_f6_global_child_locator_offline(root)
+
+
+def test_f6_global_locator_uses_no_filename_extension_or_text_heuristic(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(
+            body=b'<div id="body"><a href="opaque?id=7">not preferred</a></div>',
+        ),
+    )
+    result = m.run_f6_global_child_locator_offline(root)
+    assert result["candidate_anchor_count"] == 1
+    assert result["resolved_global_child_url"].endswith("/topix/opaque?id=7")
+
+
+def test_f6_global_locator_excludes_unrelated_text_table_cells_and_year_values(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(
+            body=(
+                b'<div id="body"><table><tbody><tr><td>2017-01-04</td>'
+                b'<td>1783.51</td></tr></tbody></table>'
+                b"<p>arbitrary surrounding text</p>"
+                b'<a href="opaque-object">anchor</a></div>'
+            ),
+        ),
+    )
+    result = m.run_f6_global_child_locator_offline(root)
+    serialized = json.dumps(result)
+    assert "2017-01-04" not in serialized
+    assert "1783.51" not in serialized
+    assert "arbitrary surrounding text" not in serialized
+
+
+def test_f6_global_locator_result_has_no_selection_or_inventory_status_fields(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(body=b'<div id="body"><a href="opaque-object">x</a></div>'),
+    )
+    result = m.run_f6_global_child_locator_offline(root)
+    assert result["status"] not in {m.INVENTORY_AVAILABLE, m.INVENTORY_MISSING}
+    assert not {
+        "selected_global_child", "bound_global_child", "ranked_candidates",
+        "score", "candidate_scores", "resolved_href",
+    } & set(result)
+    assert result["resolved_global_child_url"]
+
+
+def test_f6_global_locator_same_locked_input_is_deterministic_and_does_not_write_raw_lock(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    locked = _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(body=b'<div id="body"><a href="opaque-object">x</a></div>'),
+    )
+    raw_files_before = sorted(path.name for path in (root / "raw").iterdir())
+    first = m.run_f6_global_child_locator_offline(root)
+    second = m.run_f6_global_child_locator_offline(root)
+    raw_files_after = sorted(path.name for path in (root / "raw").iterdir())
+    assert first == second
+    assert first["sha256"] == locked["sha256"]
+    assert raw_files_after == raw_files_before
+
+
+def test_f6_global_locator_offline_seam_calls_no_fetch_retry_lock_or_stage_a(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(body=b'<div id="body"><a href="opaque-object">x</a></div>'),
+    )
+
+    def _blocked(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("global locator invoked network or acquisition code")
+
+    monkeypatch.setattr(m, "fetch_once_with_retry", _blocked)
+    monkeypatch.setattr(m, "ensure_locked_payload", _blocked)
+    monkeypatch.setattr(m, "lock_first_complete_payload", _blocked)
+    monkeypatch.setattr(m, "run_stage_a", _blocked)
+    result = m.run_f6_global_child_locator_offline(root)
+    assert result["status"] == m.GLOBAL_CHILD_LOCATOR_RESOLVED
+    for func in (
+        m.parse_f6_global_child_locator,
+        m.run_f6_global_child_locator_offline,
+    ):
+        parameters = set(inspect.signature(func).parameters)
+        assert parameters.isdisjoint({"fetcher", "sleep", "clock"})
+
+
+@pytest.mark.parametrize(
+    "payload_kind",
+    ["missing", "corrupt", "wrong_identity"],
+)
+def test_f6_global_locator_missing_corrupt_or_wrong_identity_lock_fails_closed(
+    tmp_path: Path, payload_kind: str,
+) -> None:
+    root = m.initialize_output_root(tmp_path / payload_kind)
+    if payload_kind == "missing":
+        with pytest.raises(m.V9005StageABlocked):
+            m.run_f6_global_child_locator_offline(root)
+        return
+    if payload_kind == "corrupt":
+        locked = _lock_f6_diagnostic(
+            root,
+            _global_locator_fixture(body=b'<div id="body"><a href="opaque-object">x</a></div>'),
+        )
+        key = m.source_object_slot_id(
+            locked["source_family"], locked["applicable_period"], locked["requested_url"],
+        )
+        (root / "raw" / f"{key}.bin").write_bytes(b"corrupt")
+    else:
+        m.lock_first_complete_payload(
+            root,
+            source_family=m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
+            applicable_period="OTHER_ROOT",
+            requested_url=m.TOPIX_ROOT_URL,
+            fetch_result=m.FetchResult(
+                _global_locator_fixture(body=b'<div id="body"><a href="opaque-object">x</a></div>'),
+                m.TOPIX_ROOT_URL,
+                200,
+            ),
+            retrieval_timestamp_utc="2026-08-24T00:00:00Z",
+        )
+    with pytest.raises(m.V9005StageABlocked):
+        m.run_f6_global_child_locator_offline(root)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        (
+            b'<nav><a href="#semantic-token">Historical Index Value</a></nav>'
+            b'<main><div><h2 id="semantic-token" class="heading-title">'
+            b'<span>Historical Index Value \xff</span></h2></div></main>'
+        ),
+        (
+            b'<nav><a href="#semantic-token">Historical Index Value</a></nav>'
+            b'<main><div><h2 id="semantic-token" class="heading-title">'
+            b'<span>Historical Index Value</h2></div></main>'
+        ),
+    ],
+)
+def test_f6_global_locator_invalid_utf8_or_malformed_dom_fails_closed(
+    tmp_path: Path, payload: bytes,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(root, payload)
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_global_child_locator_offline(root)
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+
+
+def test_f6_global_locator_does_not_populate_f6_inventory_or_acquisition_state(
+    tmp_path: Path,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(body=b'<div id="body"><a href="opaque-object">x</a></div>'),
+    )
+    result = m.run_f6_global_child_locator_offline(root)
+    assert result["status"] == m.GLOBAL_CHILD_LOCATOR_RESOLVED
+    inventory = m.build_source_inventory()
+    f6_records = [
+        record for record in inventory
+        if record["source_family"] == m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE
+    ]
+    assert f6_records
+    assert all(record["status"] == m.INVENTORY_MISSING for record in f6_records)
+    assert m.ACQUISITION_IMPLEMENTATION_COMPLETE is False
+
+
 
 # --- V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_NETWORK_EXECUTOR ----------------
 # Every fetcher here is synthetic (no real socket, no real network). This

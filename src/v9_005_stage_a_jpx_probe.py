@@ -50,14 +50,16 @@ Stage-A execution actually attempts (and fails) the reviewed traversal.
 
 V9_006_LOCATOR_IMPL_HIGH_1: a complete locator-*strategy* registry is not
 the same thing as a complete acquisition *implementation*. No code in this
-module yet actually walks a locked official F2-F7 root response to find
-each required child object for every base/bridge/envelope slot -- that
-traversal-fetch pipeline is separate, future, authorized work. Running
-Stage A today would otherwise fetch only the two objects that do have an
-implemented fetch path (F1's terminal snapshot, the calendar page) and then
-report the remaining 648 slots `MISSING` -- a knowingly incomplete
-acquisition run, no better than the knowingly doomed run V9_006_HIGH_1
-already forbade. `run_stage_a` therefore also calls
+module walks locked official F2-F5/F7 root responses to find each required
+child object for every base/bridge/envelope slot, and the F6 code added
+later in this module only resolves one child URL from an existing lock; it
+does not acquire or inspect that child. The traversal-fetch pipeline is
+separate, future, authorized work. Running Stage A today would otherwise
+fetch only the two objects that do have an implemented fetch path (F1's
+terminal snapshot, the calendar page) and then report the remaining 648
+slots `MISSING` -- a knowingly incomplete acquisition run, no better than
+the knowingly doomed run V9_006_HIGH_1 already forbade. `run_stage_a`
+therefore also calls
 `verify_acquisition_implementation_ready()`, immediately after the locator-
 contract check and still before touching the filesystem, git, or the
 network, which raises `V9005StageABlocked(STAGE_A_ACQUISITION_
@@ -253,8 +255,17 @@ _INTERNAL_REASON_TO_PUBLIC_FAILURE_CLASS: dict[str, str] = {
     GOVERNANCE_FAILURE: GOVERNANCE_FAILURE,
     IMPLEMENTATION_FAILURE: IMPLEMENTATION_FAILURE,
     PROBE_SIGNAL_GRID_CONTRACT_MISMATCH: PROBE_SIGNAL_GRID_CONTRACT_MISMATCH,
+    CHATGPT_DECISION_REQUIRED: CHATGPT_DECISION_REQUIRED,
     "OFF_DOMAIN_REQUEST_REJECTED": SOURCE_OR_DATA_FEASIBILITY_FAILURE,
     "OFF_DOMAIN_REDIRECT_REJECTED": SOURCE_OR_DATA_FEASIBILITY_FAILURE,
+    "GLOBAL_LOCATOR_SEMANTIC_HEADING_AMBIGUOUS": CHATGPT_DECISION_REQUIRED,
+    "GLOBAL_LOCATOR_PARENT_MISSING": CHATGPT_DECISION_REQUIRED,
+    "GLOBAL_LOCATOR_EXPANDED_PARENT_MISSING": CHATGPT_DECISION_REQUIRED,
+    "GLOBAL_LOCATOR_BOUNDARY_MISSING": CHATGPT_DECISION_REQUIRED,
+    "GLOBAL_LOCATOR_BOUNDARY_AMBIGUOUS": CHATGPT_DECISION_REQUIRED,
+    "GLOBAL_LOCATOR_CANDIDATE_ANCHOR_COUNT_NOT_ONE": CHATGPT_DECISION_REQUIRED,
+    "GLOBAL_LOCATOR_RAW_HREF_MISSING": CHATGPT_DECISION_REQUIRED,
+    "ONE_LEVEL_PARENT_NOT_DIRECT_CHILD": CHATGPT_DECISION_REQUIRED,
     STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE: CHATGPT_DECISION_REQUIRED,
     STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE: CHATGPT_DECISION_REQUIRED,
 }
@@ -617,7 +628,13 @@ LOCATOR_STRATEGIES: dict[str, LocatorStrategy] = {
         source_family=SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
         slot_kind=SLOT_KIND_GLOBAL,
         root_url=TOPIX_ROOT_URL,
-        traversal=f"unique same-domain object under semantic section '{F6_SEMANTIC_SECTION_LABEL}'",
+        traversal=(
+            f"semantic heading '{F6_SEMANTIC_SECTION_LABEL}' -> "
+            "H immediate parent P -> P immediate parent G -> earliest "
+            "qualifying later h2 N -> direct-child SECTION_BODY interval -> "
+            "exactly one descendant anchor resolved against the locked root "
+            "final URL"
+        ),
     ),
     SOURCE_FAMILY_JPX_CALENDAR: LocatorStrategy(
         source_family=SOURCE_FAMILY_JPX_CALENDAR,
@@ -2624,6 +2641,197 @@ def run_f6_one_level_expanded_neighborhood_probe_offline(
     return artifact
 
 
+# --- F6 GLOBAL child locator (locked-root offline implementation) ------------
+# V9_006_STAGE_A_F6_GLOBAL_CHILD_LOCATOR_IMPLEMENTATION:
+# implements only the GPT-reviewed locator methodology. It reads the
+# existing F6_ROOT_STRUCTURE_DIAGNOSTIC lock, reuses the reviewed F6 DOM,
+# semantic-heading, proper-descendant, ownership, raw-href, and URL
+# resolution helpers, and exposes one mechanically resolved child URL
+# identity. It never fetches or locks that child, inspects child content,
+# proves coverage years, writes a raw lock, or feeds F6 inventory.
+
+F6_GLOBAL_CHILD_LOCATOR_RESULT_SCHEMA_VERSION = (
+    "V9_006_STAGE_A_F6_GLOBAL_CHILD_LOCATOR_RESULT_V1"
+)
+F6_GLOBAL_CHILD_LOCATOR_DIAGNOSTIC_NAME = "V9_006_STAGE_A_F6_GLOBAL_CHILD_LOCATOR"
+GLOBAL_CHILD_LOCATOR_RESOLVED = "GLOBAL_CHILD_LOCATOR_RESOLVED"
+
+_F6_GLOBAL_LOCATOR_NO_SEMANTIC_HEADING = "GLOBAL_LOCATOR_SEMANTIC_HEADING_AMBIGUOUS"
+_F6_GLOBAL_LOCATOR_PARENT_MISSING = "GLOBAL_LOCATOR_PARENT_MISSING"
+_F6_GLOBAL_LOCATOR_EXPANDED_PARENT_MISSING = "GLOBAL_LOCATOR_EXPANDED_PARENT_MISSING"
+_F6_GLOBAL_LOCATOR_BOUNDARY_MISSING = "GLOBAL_LOCATOR_BOUNDARY_MISSING"
+_F6_GLOBAL_LOCATOR_BOUNDARY_AMBIGUOUS = "GLOBAL_LOCATOR_BOUNDARY_AMBIGUOUS"
+_F6_GLOBAL_LOCATOR_CANDIDATE_COUNT = "GLOBAL_LOCATOR_CANDIDATE_ANCHOR_COUNT_NOT_ONE"
+_F6_GLOBAL_LOCATOR_RAW_HREF_MISSING = "GLOBAL_LOCATOR_RAW_HREF_MISSING"
+
+
+def _f6_global_locator_base_fields(locked: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": F6_GLOBAL_CHILD_LOCATOR_RESULT_SCHEMA_VERSION,
+        "diagnostic": F6_GLOBAL_CHILD_LOCATOR_DIAGNOSTIC_NAME,
+        "requested_url": locked["requested_url"],
+        "resolved_url": locked["resolved_url"],
+        "byte_length": locked["byte_length"],
+        "sha256": locked["sha256"],
+        "retrieval_timestamp_utc": locked["retrieval_timestamp_utc"],
+    }
+
+
+def _f6_global_locator_chatgpt_stop(reason: str) -> None:
+    # The locator has no permitted fallback when a reviewed mechanical
+    # identity cannot be resolved. Keep the internal reason for diagnostics
+    # while exposing the governed public failure class.
+    raise V9005StageABlocked(reason)
+
+
+def parse_f6_global_child_locator(locked: Mapping[str, Any]) -> dict[str, Any]:
+    """Resolve one F6 GLOBAL child URL from one existing root raw lock.
+
+    H, P, G, N, the SECTION_BODY interval, and the exact-one anchor gate are
+    all derived from the locked DOM. The returned URL is only a mechanically
+    resolved identity; this function performs no child fetch or content
+    inspection and does not produce an inventory status.
+    """
+    base = _f6_global_locator_base_fields(locked)
+    try:
+        text = _f6_decode_strict_utf8(locked["raw"])
+        root = _f6_parse_full_dom(text)
+        target_normalized = _f6_normalize_text(F6_SEMANTIC_SECTION_LABEL)
+        doc_order, raw_text, leaf_most_ids = _f6_analyze_dom(root, target_normalized)
+        occurrence_elements = [node for node in doc_order if id(node) in leaf_most_ids]
+        heading = _f6_identify_semantic_heading(doc_order, occurrence_elements)
+    except UnicodeDecodeError as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+    except _F6RootStructureExtractionFailed as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+    except (AttributeError, KeyError, TypeError) as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+    if heading is None:
+        _f6_global_locator_chatgpt_stop(_F6_GLOBAL_LOCATOR_NO_SEMANTIC_HEADING)
+
+    parent = heading.parent
+    if parent is None or parent is root:
+        _f6_global_locator_chatgpt_stop(_F6_GLOBAL_LOCATOR_PARENT_MISSING)
+    expanded_parent = parent.parent
+    if expanded_parent is None or expanded_parent is root:
+        _f6_global_locator_chatgpt_stop(_F6_GLOBAL_LOCATOR_EXPANDED_PARENT_MISSING)
+
+    try:
+        children, _relation_by_child_id = _f6_one_level_children(expanded_parent, parent)
+    except _F6RootStructureExtractionFailed as exc:
+        if exc.reason == _F6_ONE_LEVEL_PARENT_NOT_DIRECT_CHILD:
+            _f6_global_locator_chatgpt_stop(exc.reason)
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+    direct_children = _f6_element_siblings(expanded_parent)
+    direct_child_index = {id(child): index for index, child in enumerate(direct_children)}
+    parent_index = direct_child_index.get(id(parent))
+    if parent_index is None or len([child for child in direct_children if child is parent]) != 1:
+        _f6_global_locator_chatgpt_stop(_F6_ONE_LEVEL_PARENT_NOT_DIRECT_CHILD)
+
+    heading_indexes = [index for index, node in enumerate(doc_order) if node is heading]
+    if len(heading_indexes) != 1:
+        _f6_global_locator_chatgpt_stop(_F6_GLOBAL_LOCATOR_NO_SEMANTIC_HEADING)
+    heading_index = heading_indexes[0]
+
+    boundary_candidates: list[tuple[int, _F6DomElement, _F6DomElement]] = []
+    try:
+        for index, node in enumerate(doc_order):
+            if index <= heading_index or node.tag != "h2":
+                continue
+            if not _f6_is_proper_descendant(node, expanded_parent):
+                continue
+            if _f6_is_self_or_descendant(node, parent):
+                continue
+            owner = _f6_one_level_owner(node, expanded_parent)
+            owner_index = direct_child_index.get(id(owner))
+            if owner_index is None or owner_index <= parent_index:
+                continue
+            boundary_candidates.append((index, node, owner))
+    except _F6RootStructureExtractionFailed as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+    if not boundary_candidates:
+        _f6_global_locator_chatgpt_stop(_F6_GLOBAL_LOCATOR_BOUNDARY_MISSING)
+    earliest_index = min(index for index, _node, _owner in boundary_candidates)
+    earliest = [
+        candidate for candidate in boundary_candidates
+        if candidate[0] == earliest_index
+    ]
+    if len(earliest) != 1:
+        _f6_global_locator_chatgpt_stop(_F6_GLOBAL_LOCATOR_BOUNDARY_AMBIGUOUS)
+    _boundary_index, boundary_heading, boundary_owner = earliest[0]
+    boundary_owner_index = direct_child_index.get(id(boundary_owner))
+    if boundary_owner_index is None or boundary_owner_index <= parent_index:
+        _f6_global_locator_chatgpt_stop(_F6_GLOBAL_LOCATOR_BOUNDARY_AMBIGUOUS)
+
+    section_body_children = direct_children[parent_index + 1:boundary_owner_index]
+    section_body_child_ids = {id(child) for child in section_body_children}
+    candidates: list[_F6DomElement] = []
+    try:
+        for node in doc_order:
+            if node.tag != "a" or not _f6_is_proper_descendant(node, expanded_parent):
+                continue
+            owner = _f6_one_level_owner(node, expanded_parent)
+            owner_index = direct_child_index.get(id(owner))
+            if owner_index is None:
+                raise _F6RootStructureExtractionFailed(_F6_ONE_LEVEL_OWNER_NOT_DIRECT_CHILD)
+            if id(owner) in section_body_child_ids:
+                candidates.append(node)
+    except _F6RootStructureExtractionFailed as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+    if len(candidates) != 1:
+        _f6_global_locator_chatgpt_stop(_F6_GLOBAL_LOCATOR_CANDIDATE_COUNT)
+
+    try:
+        candidate_anchor = _f6_anchor_of(candidates[0], raw_text)
+    except _F6RootStructureExtractionFailed as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+    raw_href = candidate_anchor["href"]
+    if not isinstance(raw_href, str) or not raw_href:
+        _f6_global_locator_chatgpt_stop(_F6_GLOBAL_LOCATOR_RAW_HREF_MISSING)
+
+    # The final resolved URL from the locked TOPIX root is the only permitted
+    # base. The requested URL is provenance only and is never a resolution
+    # input. _resolve_locked_page_link applies the reviewed HTTPS and
+    # allowed-JPX-domain validation.
+    resolved_global_child_url = _resolve_locked_page_link(locked["resolved_url"], raw_href)
+
+    return {
+        **base,
+        "status": GLOBAL_CHILD_LOCATOR_RESOLVED,
+        "failure_reason": None,
+        "semantic_heading": _f6_element_identity(heading),
+        "parent_container": _f6_element_identity(parent),
+        "expanded_container": _f6_element_identity(expanded_parent),
+        "boundary_heading": _f6_element_identity(boundary_heading),
+        "boundary_owner": _f6_element_identity(boundary_owner),
+        "section_body_children": [
+            _f6_element_identity(child) for child in section_body_children
+        ],
+        "candidate_anchor_count": len(candidates),
+        "candidate_anchor": {
+            "dom_path": candidate_anchor["dom_path"],
+            "raw_href": raw_href,
+        },
+        "resolved_global_child_url": resolved_global_child_url,
+    }
+
+
+def run_f6_global_child_locator_offline(
+    output_root: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Read the existing F6 root lock and run only the reviewed locator.
+
+    This seam has no fetcher, retry, sleep, clock, raw-lock writer, child
+    fetch, or child-content parser. It never populates F6 inventory status.
+    """
+    locked = read_f6_root_structure_diagnostic_lock(output_root)
+    return parse_f6_global_child_locator(locked)
+
+
 
 # --- F6 root-structure diagnostic (network executor) -------------------------
 # V9_006_STAGE_A_F6_ROOT_STRUCTURE_PROBE_NETWORK_EXECUTOR: executable
@@ -2845,6 +3053,8 @@ __all__ = [
     "F6_ONE_LEVEL_EXPANDED_NEIGHBORHOOD_PROBE_RESULT_FILENAME",
     "EXPANDED_NEIGHBORHOOD_CAPTURED", "ONE_LEVEL_RELATION_BEFORE_P",
     "ONE_LEVEL_RELATION_P", "ONE_LEVEL_RELATION_AFTER_P",
+    "F6_GLOBAL_CHILD_LOCATOR_RESULT_SCHEMA_VERSION",
+    "F6_GLOBAL_CHILD_LOCATOR_DIAGNOSTIC_NAME", "GLOBAL_CHILD_LOCATOR_RESOLVED",
     "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
     "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
     "F2F4RequiredSlotAcquisition", "F3RequiredSlotAcquisition", "F7RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
@@ -2871,6 +3081,7 @@ __all__ = [
     "resolve_monthly_statistics_year_page_url", "run_f6_root_structure_probe_offline",
     "run_f6_root_structure_probe_network", "run_f6_section_neighborhood_probe_offline", "run_stage_a",
     "run_f6_one_level_expanded_neighborhood_probe_offline",
+    "parse_f6_global_child_locator", "run_f6_global_child_locator_offline",
     "sha256_bytes", "source_object_slot_id", "validate_jpx_url", "verify_acquisition_implementation_ready",
     "verify_locator_contract_complete", "verify_raw_provenance",
     "verify_signal_grid_binding", "write_f6_root_structure_probe_artifact",
