@@ -265,6 +265,8 @@ _INTERNAL_REASON_TO_PUBLIC_FAILURE_CLASS: dict[str, str] = {
     "GLOBAL_LOCATOR_BOUNDARY_AMBIGUOUS": CHATGPT_DECISION_REQUIRED,
     "GLOBAL_LOCATOR_CANDIDATE_ANCHOR_COUNT_NOT_ONE": CHATGPT_DECISION_REQUIRED,
     "GLOBAL_LOCATOR_RAW_HREF_MISSING": CHATGPT_DECISION_REQUIRED,
+    "GLOBAL_LOCATOR_AMBIGUOUS_RAW_HREF": CHATGPT_DECISION_REQUIRED,
+    "GLOBAL_LOCATOR_URL_RESOLUTION_FAILED": CHATGPT_DECISION_REQUIRED,
     "ONE_LEVEL_PARENT_NOT_DIRECT_CHILD": CHATGPT_DECISION_REQUIRED,
     STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE: CHATGPT_DECISION_REQUIRED,
     STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE: CHATGPT_DECISION_REQUIRED,
@@ -2663,6 +2665,8 @@ _F6_GLOBAL_LOCATOR_BOUNDARY_MISSING = "GLOBAL_LOCATOR_BOUNDARY_MISSING"
 _F6_GLOBAL_LOCATOR_BOUNDARY_AMBIGUOUS = "GLOBAL_LOCATOR_BOUNDARY_AMBIGUOUS"
 _F6_GLOBAL_LOCATOR_CANDIDATE_COUNT = "GLOBAL_LOCATOR_CANDIDATE_ANCHOR_COUNT_NOT_ONE"
 _F6_GLOBAL_LOCATOR_RAW_HREF_MISSING = "GLOBAL_LOCATOR_RAW_HREF_MISSING"
+_F6_GLOBAL_LOCATOR_AMBIGUOUS_RAW_HREF = "GLOBAL_LOCATOR_AMBIGUOUS_RAW_HREF"
+_F6_GLOBAL_LOCATOR_URL_RESOLUTION_FAILED = "GLOBAL_LOCATOR_URL_RESOLUTION_FAILED"
 
 
 def _f6_global_locator_base_fields(locked: Mapping[str, Any]) -> dict[str, Any]:
@@ -2684,6 +2688,21 @@ def _f6_global_locator_chatgpt_stop(reason: str) -> None:
     raise V9005StageABlocked(reason)
 
 
+def _f6_global_locator_resolve_child_url(
+    root_final_resolved_url: str, raw_href: str,
+) -> str:
+    """Translate only the F6 locator's reviewed URL-identity failures.
+
+    The shared resolver remains unchanged for F2/F3/F4 callers. This
+    locator-local wrapper maps resolution, HTTPS, and allowed-domain
+    failures to the governed failure class required by the F6 methodology.
+    """
+    try:
+        return _resolve_locked_page_link(root_final_resolved_url, raw_href)
+    except (TypeError, ValueError, V9005StageABlocked) as exc:
+        raise V9005StageABlocked(_F6_GLOBAL_LOCATOR_URL_RESOLUTION_FAILED) from exc
+
+
 def parse_f6_global_child_locator(locked: Mapping[str, Any]) -> dict[str, Any]:
     """Resolve one F6 GLOBAL child URL from one existing root raw lock.
 
@@ -2703,6 +2722,8 @@ def parse_f6_global_child_locator(locked: Mapping[str, Any]) -> dict[str, Any]:
     except UnicodeDecodeError as exc:
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
     except _F6RootStructureExtractionFailed as exc:
+        if exc.reason == _F6_AMBIGUOUS_RAW_HREF_ATTRIBUTE:
+            _f6_global_locator_chatgpt_stop(_F6_GLOBAL_LOCATOR_AMBIGUOUS_RAW_HREF)
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
     except (AttributeError, KeyError, TypeError) as exc:
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
@@ -2788,6 +2809,8 @@ def parse_f6_global_child_locator(locked: Mapping[str, Any]) -> dict[str, Any]:
     try:
         candidate_anchor = _f6_anchor_of(candidates[0], raw_text)
     except _F6RootStructureExtractionFailed as exc:
+        if exc.reason == _F6_AMBIGUOUS_RAW_HREF_ATTRIBUTE:
+            _f6_global_locator_chatgpt_stop(_F6_GLOBAL_LOCATOR_AMBIGUOUS_RAW_HREF)
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
     raw_href = candidate_anchor["href"]
     if not isinstance(raw_href, str) or not raw_href:
@@ -2797,7 +2820,9 @@ def parse_f6_global_child_locator(locked: Mapping[str, Any]) -> dict[str, Any]:
     # base. The requested URL is provenance only and is never a resolution
     # input. _resolve_locked_page_link applies the reviewed HTTPS and
     # allowed-JPX-domain validation.
-    resolved_global_child_url = _resolve_locked_page_link(locked["resolved_url"], raw_href)
+    resolved_global_child_url = _f6_global_locator_resolve_child_url(
+        locked["resolved_url"], raw_href,
+    )
 
     return {
         **base,

@@ -1,9 +1,10 @@
 # V9_006 Stage-A F6 GLOBAL child locator implementation review
 
 ~~~text
-task=V9_006_STAGE_A_F6_GLOBAL_CHILD_LOCATOR_IMPLEMENTATION
-status=IMPLEMENTED_AWAITING_GPT_REVIEW
+task=V9_006_F6_GLOBAL_LOCATOR_MEDIUM_1_FAILURE_CLASS_DRIFT
+status=REMEDIATED_AWAITING_GPT_REVIEW
 implementation_parent_sha=0d262b0b912ebeb01910992cf59ab9927bacb440
+reviewed_implementation_sha=e93d0cbef674e8b679442b246ddb9a23fa3f05c1
 offline_only=true
 real_raw_lock_execution=false
 source_data_network_requests=0
@@ -57,9 +58,8 @@ the SECTION_BODY direct-child identities, the exact-one anchor's DOM
 path/raw href, and its mechanically resolved child URL identity. It
 contains no child bytes, child content, year proof, ranking, score, or
 F6 inventory status. Fail-closed locator ambiguity is reported through
-the governed CHATGPT_DECISION_REQUIRED failure class; malformed,
-ambiguous raw-attribute, lock, and URL-validation failures remain
-fail-closed implementation failures.
+the governed CHATGPT_DECISION_REQUIRED failure class; malformed or corrupt
+locks and invalid UTF-8/DOM remain fail-closed implementation failures.
 
 ## Authority boundary
 
@@ -103,3 +103,35 @@ RESULT=PASS
 The tuple above is the supplied exact-SHA review of the methodology
 parent. It is not an independent PASS of this implementation. The next
 action is GPT exact-SHA review of the committed implementation.
+
+## Medium-1 failure-class remediation
+
+The supplied GPT review of the implementation SHA identified
+V9_006_F6_GLOBAL_LOCATOR_MEDIUM_1_FAILURE_CLASS_DRIFT:
+
+~~~text
+REVIEWED_SHA=e93d0cbef674e8b679442b246ddb9a23fa3f05c1
+CRITICAL=0
+HIGH=0
+MEDIUM=1
+LOW=1
+RESULT=BLOCK
+~~~
+
+The remediation adds only locator-local exception translation. Ambiguous
+or duplicate raw href extraction, URL-resolution failure, non-HTTPS
+resolved URLs, and non-allowed-JPX resolved URLs now expose
+failure_class=CHATGPT_DECISION_REQUIRED for the F6 GLOBAL locator. Missing
+raw href already had that class and remains unchanged.
+
+The shared _resolve_locked_page_link helper is unchanged. Focused
+regression coverage proves the pre-existing F2, F3, F4, and F7 failure
+classes remain IMPLEMENTATION_FAILURE. Malformed or corrupt locks remain
+offline, fail-closed implementation failures. The full targeted command
+now reports 298 passed in 11.44s with SOURCE_DATA_NETWORK_REQUESTS=0.
+
+This one-finding remediation does not change H/P/G/N, SECTION_BODY,
+candidate count, raw-href spelling, URL base, locator methodology, child
+fetch/content authority, inventory population, or acquisition-complete
+state. It remains awaiting GPT exact-SHA review and is not self-called
+PASS by the execution agent.

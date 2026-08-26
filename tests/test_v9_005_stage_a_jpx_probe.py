@@ -3758,7 +3758,7 @@ def test_f6_global_locator_enforces_resolved_https_allowed_domain(
     )
     with pytest.raises(m.V9005StageABlocked) as excinfo:
         m.run_f6_global_child_locator_offline(root)
-    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
     assert excinfo.value.network_request_count == 0
 
 
@@ -3774,8 +3774,73 @@ def test_f6_global_locator_absent_or_ambiguous_raw_href_fails_closed(
     for index, payload in enumerate(payloads):
         root = m.initialize_output_root(tmp_path / f"out-{index}")
         _lock_f6_diagnostic(root, payload)
-        with pytest.raises(m.V9005StageABlocked):
+        with pytest.raises(m.V9005StageABlocked) as excinfo:
             m.run_f6_global_child_locator_offline(root)
+        assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
+
+
+def test_f6_global_locator_url_failure_translation_does_not_change_f2_f3_f4_f7() -> None:
+    """The shared resolver keeps its existing IMPLEMENTATION_FAILURE class.
+
+    F7 has a fixed template rather than a shared-page-link resolver, so its
+    invalid template input is the corresponding unchanged local failure.
+    """
+    failure_calls = (
+        lambda: m.resolve_monthly_statistics_year_page_url(
+            _year_selector_html(("https://evil.example/2020.html", "2020")),
+            m.MONTHLY_STATISTICS_ROOT_URL,
+            2020,
+        ),
+        lambda: m.resolve_delisted_company_year_url(
+            b'<a href="https://evil.example/2020.html">2020</a>',
+            "https://www.jpx.co.jp/english/listing/stocks/delisted/archive/index.html",
+            2020,
+        ),
+        lambda: m.resolve_monthly_statistics_evidence_url(
+            _monthly_statistics_year_html(f2_href="https://evil.example/f2.xlsx"),
+            "https://www.jpx.co.jp/monthly/2020.html",
+            m.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT,
+            "2020-03",
+            selected_year=2020,
+        ),
+        lambda: m.resolve_monthly_statistics_evidence_url(
+            _monthly_statistics_year_html(f4_href="https://evil.example/f4.xlsx"),
+            "https://www.jpx.co.jp/monthly/2020.html",
+            m.SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE,
+            "2020-03",
+            selected_year=2020,
+        ),
+        lambda: m.resolve_f7_calendar_url(2020, 13),
+    )
+    for failure_call in failure_calls:
+        with pytest.raises(m.V9005StageABlocked) as excinfo:
+            failure_call()
+        assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+
+
+def test_f6_global_locator_corrupt_lock_remains_offline_implementation_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    locked = _lock_f6_diagnostic(
+        root,
+        _global_locator_fixture(body=b'<div id="body"><a href="opaque-object">x</a></div>'),
+    )
+    key = m.source_object_slot_id(
+        locked["source_family"], locked["applicable_period"], locked["requested_url"],
+    )
+    (root / "raw" / f"{key}.bin").write_bytes(b"corrupt")
+
+    def _blocked(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("corrupt-lock path invoked network or acquisition code")
+
+    monkeypatch.setattr(m, "fetch_once_with_retry", _blocked)
+    monkeypatch.setattr(m, "ensure_locked_payload", _blocked)
+    monkeypatch.setattr(m, "lock_first_complete_payload", _blocked)
+    monkeypatch.setattr(m, "run_stage_a", _blocked)
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_global_child_locator_offline(root)
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
 
 
 def test_f6_global_locator_uses_no_filename_extension_or_text_heuristic(
