@@ -189,6 +189,36 @@ F6_SEMANTIC_SECTION_LABEL = "Historical Index Value"
 # of this module.
 F6_ROOT_STRUCTURE_DIAGNOSTIC = "F6_ROOT_STRUCTURE_DIAGNOSTIC"
 
+# F6 production ROOT/GLOBAL raw acquisition (V9_006_STAGE_A_F6_PRODUCTION_
+# ROOT_GLOBAL_RAW_ACQUISITION_DESIGN.md): the two production raw-lock
+# applicable_period identities. Permanently distinct from
+# F6_ROOT_STRUCTURE_DIAGNOSTIC above -- the diagnostic lock/artifact and its
+# observed child href/URL must never be copied, aliased, compared against,
+# or substituted for these production identities or their requested URLs.
+TOPIX_DISCOVERY_ROOT = "TOPIX_DISCOVERY_ROOT"
+TOPIX_GLOBAL_2017_2025 = "TOPIX_GLOBAL_2017_2025"
+
+# Dedicated, fresh, non-reusable one-shot confirmation identity for this
+# production acquisition only. Distinct from both production Stage-A's
+# CONFIRMATION and the F6 diagnostic's F6_ROOT_STRUCTURE_PROBE_CONFIRMATION;
+# neither of those satisfies this gate, and this one satisfies neither of
+# those.
+F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_TASK_ID = "V9_006_STAGE_A_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION"
+F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION = "V9_006_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_ONE_SHOT"
+
+# Dedicated durable gate-receipt identity. Published exactly once, before
+# the first ROOT fetch, under the production output_root; never overwritten,
+# reset, deleted, or reused by this module.
+F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_SCHEMA_VERSION = (
+    "V9_006_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_V1"
+)
+F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME = (
+    "V9_006_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT.json"
+)
+_F6_PRODUCTION_GATE_RECEIPT_FIELDS = frozenset({
+    "schema_version", "task", "confirmation_contract", "gate_consumed", "consumption_timestamp_utc",
+})
+
 # F7: exact GPT-bound per-month calendar locator template and acquisition
 # envelope (V9_006_STAGE_A_SOURCE_SLOT_LOCATOR_METHODOLOGY.md F7).
 CALENDAR_MONTHLY_LOCATOR_TEMPLATE = "https://www.jpx.co.jp/calendar/{year:04d}{month:02d}.html"
@@ -2911,6 +2941,149 @@ def run_f6_root_structure_probe_network(
     return {**artifact, "network_request_count": requests_used}
 
 
+# --- F6 production ROOT/GLOBAL raw acquisition (network executor) ----------
+# V9_006_STAGE_A_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_IMPLEMENTATION:
+# executable plumbing only. NEVER invoked with a real fetcher by this
+# implementation task. Consumes neither production Stage-A's CONFIRMATION
+# nor the F6 diagnostic's F6_ROOT_STRUCTURE_PROBE_CONFIRMATION -- only its
+# own dedicated F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION.
+# Future real execution still requires its own fresh, explicit, one-shot
+# human authorization obtained AFTER GPT exact-SHA review of this
+# implementation, per
+# V9_006_STAGE_A_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_DESIGN.md.
+
+def _write_f6_production_acquisition_gate_receipt(
+    root: Path, *, consumption_timestamp_utc: str,
+) -> Path:
+    """Durably publish the dedicated production gate receipt exactly once,
+    strictly before any ROOT fetch. Persists only the fixed, publicly known
+    confirmation-contract identity -- never the raw confirmation value the
+    caller supplied. Reuses the same atomic no-overwrite primitive as every
+    other durable artifact in this module, so a second publish attempt
+    fails closed rather than overwriting."""
+    receipt = {
+        "schema_version": F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_SCHEMA_VERSION,
+        "task": F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_TASK_ID,
+        "confirmation_contract": F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        "gate_consumed": True,
+        "consumption_timestamp_utc": consumption_timestamp_utc,
+    }
+    assert set(receipt) == _F6_PRODUCTION_GATE_RECEIPT_FIELDS
+    path = root / F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME
+    _atomic_create(path, canonical_bytes(receipt))
+    return path
+
+
+def run_f6_production_root_global_raw_acquisition_network(
+    *,
+    output_root: str | os.PathLike[str],
+    confirmation: str,
+    fetcher: Callable[[str], FetchResult],
+    sleep: Callable[[int], None],
+    clock: Callable[[], datetime],
+) -> dict[str, Any]:
+    """Real-execution production entrypoint for exactly the two F6 raw
+    objects bound in V9_006_STAGE_A_F6_PRODUCTION_ROOT_GLOBAL_RAW_
+    ACQUISITION_DESIGN.md: TOPIX_DISCOVERY_ROOT, then -- only after locator
+    success -- TOPIX_GLOBAL_2017_2025.
+
+    Sequence, matching the reviewed design exactly:
+      1. reject a missing/wrong confirmation before any filesystem access
+         (zero filesystem creation, zero fetches);
+      2. initialize_output_root -- fails closed if output_root already
+         exists, so an existing output root, receipt, or raw lock is
+         rejected before any fetch, never silently reused or overwritten;
+      3. durably publish the dedicated gate receipt (never the raw
+         confirmation value) before the first fetch;
+      4. fetch exactly TOPIX_ROOT_URL once via the existing frozen
+         fetch_once_with_retry policy, then immediately raw-lock the first
+         complete payload as TOPIX_DISCOVERY_ROOT before any locator or
+         semantic step -- this ROOT is never refetched afterward;
+      5. run the exact reviewed parse_f6_global_child_locator on the newly
+         locked production ROOT bytes -- never the diagnostic offline
+         reader, never the previously observed diagnostic child URL/href;
+      6. on locator failure of either already-reviewed failure class, the
+         ROOT lock is preserved, zero CHILD requests are made, and the
+         original V9005StageABlocked (CHATGPT_DECISION_REQUIRED or
+         IMPLEMENTATION_FAILURE, exactly as the locator itself classifies
+         it) propagates unchanged, annotated only with the accurate total
+         network_request_count;
+      7. on locator success, fetch exactly its mechanically resolved child
+         URL once via the identical retry policy, then immediately raw-lock
+         the first complete CHILD payload as TOPIX_GLOBAL_2017_2025;
+      8. STOP -- this function never opens, decodes, or otherwise inspects
+         CHILD content, never proves coverage, never populates F6
+         AVAILABLE/MISSING, and never calls run_stage_a or any F1-F5/F7
+         acquisition path.
+    """
+    if confirmation != F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION:
+        raise V9005StageABlocked(GOVERNANCE_FAILURE)
+    root = initialize_output_root(output_root)
+
+    receipt_timestamp_utc = clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _write_f6_production_acquisition_gate_receipt(
+        root, consumption_timestamp_utc=receipt_timestamp_utc,
+    )
+
+    root_result, root_requests = fetch_once_with_retry(TOPIX_ROOT_URL, fetcher, sleep)
+    root_retrieval_timestamp_utc = clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    root_locked = lock_first_complete_payload(
+        root,
+        source_family=SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
+        applicable_period=TOPIX_DISCOVERY_ROOT,
+        requested_url=TOPIX_ROOT_URL,
+        fetch_result=root_result,
+        retrieval_timestamp_utc=root_retrieval_timestamp_utc,
+    )
+
+    try:
+        locator_result = parse_f6_global_child_locator(root_locked)
+    except V9005StageABlocked as exc:
+        # The ROOT lock above is already durable and is preserved as-is;
+        # this only corrects the reported total request count to include
+        # the ROOT fetch the locator itself performed no network for.
+        exc.network_request_count = root_requests
+        raise
+
+    child_url = locator_result["resolved_global_child_url"]
+    child_result, child_requests = fetch_once_with_retry(child_url, fetcher, sleep)
+    child_retrieval_timestamp_utc = clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    child_locked = lock_first_complete_payload(
+        root,
+        source_family=SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
+        applicable_period=TOPIX_GLOBAL_2017_2025,
+        requested_url=child_url,
+        fetch_result=child_result,
+        retrieval_timestamp_utc=child_retrieval_timestamp_utc,
+    )
+
+    return {
+        "status": "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_COMPLETE",
+        "gate_consumed": True,
+        "root": {
+            "requested_url": root_locked["requested_url"],
+            "resolved_url": root_locked["resolved_url"],
+            "http_status": root_locked["http_status"],
+            "byte_length": root_locked["byte_length"],
+            "sha256": root_locked["sha256"],
+            "retrieval_timestamp_utc": root_locked["retrieval_timestamp_utc"],
+        },
+        "locator_status": locator_result["status"],
+        "candidate_anchor_count": locator_result["candidate_anchor_count"],
+        "child": {
+            "requested_url": child_locked["requested_url"],
+            "resolved_url": child_locked["resolved_url"],
+            "http_status": child_locked["http_status"],
+            "byte_length": child_locked["byte_length"],
+            "sha256": child_locked["sha256"],
+            "retrieval_timestamp_utc": child_locked["retrieval_timestamp_utc"],
+        },
+        "root_network_request_count": root_requests,
+        "child_network_request_count": child_requests,
+        "network_request_count": root_requests + child_requests,
+    }
+
+
 # --- Orchestration -----------------------------------------------------------
 
 def run_stage_a(
@@ -3092,7 +3265,12 @@ __all__ = [
     "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE",
     "STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE", "STAGE", "STUDY",
     "STRUCTURE_CAPTURED", "STRUCTURE_AMBIGUOUS", "STRUCTURE_EXTRACTION_FAILED",
-    "TOPIX_ROOT_URL", "VALID_SLOT_KINDS",
+    "TOPIX_ROOT_URL", "TOPIX_DISCOVERY_ROOT", "TOPIX_GLOBAL_2017_2025", "VALID_SLOT_KINDS",
+    "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_TASK_ID",
+    "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION",
+    "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_SCHEMA_VERSION",
+    "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME",
+    "run_f6_production_root_global_raw_acquisition_network",
     "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "acquire_f2_f4_required_slots", "acquire_f3_required_slots", "acquire_f7_required_slots", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
     "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
     "compute_month_end_mismatch_count", "compute_stage_a_evidence",

@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -4438,3 +4439,491 @@ def test_cli_f6_root_structure_extraction_failure_still_prints_only_safe_fields(
         "http_status", "byte_length", "sha256", "retrieval_timestamp_utc",
         "network_request_count", "artifact_path",
     }
+
+
+# --- V9_006_STAGE_A_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_IMPLEMENTATION
+# Every fetcher here is synthetic (no real socket, no real network). This
+# section proves the production ROOT/GLOBAL raw-acquisition network-executor
+# plumbing without ever performing a real network request, per this task's
+# authority boundary. Reuses _global_locator_fixture (defined above) for
+# synthetic ROOT bytes containing a mechanically resolvable GLOBAL child
+# anchor -- the exact same reviewed locator, never a diagnostic reader.
+
+def _production_root_payload(href: bytes) -> bytes:
+    return _global_locator_fixture(body=b'<div id="body"><a href="' + href + b'">x</a></div>')
+
+
+def _production_no_candidate_payload() -> bytes:
+    # SECTION_BODY has zero descendant anchors -> candidate_anchor_count=0.
+    return _global_locator_fixture(body=b'<div id="body">no anchor here</div>')
+
+
+def _production_routing_fetcher(
+    root_payload: bytes,
+    *,
+    root_url: str | None = None,
+    child_payload: bytes = b"synthetic-child-bytes-not-a-real-spreadsheet",
+    calls: list[str] | None = None,
+    root_attempts_before_success: int = 0,
+    child_attempts_before_success: int = 0,
+):
+    state = {"root_seen": 0, "child_seen": 0}
+
+    def fetcher(url: str) -> m.FetchResult:
+        if calls is not None:
+            calls.append(url)
+        if url == m.TOPIX_ROOT_URL:
+            state["root_seen"] += 1
+            if state["root_seen"] <= root_attempts_before_success:
+                raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+            return m.FetchResult(root_payload, root_url or url, 200)
+        state["child_seen"] += 1
+        if state["child_seen"] <= child_attempts_before_success:
+            raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+        return m.FetchResult(child_payload, url, 200)
+
+    return fetcher
+
+
+def test_f6_production_acquisition_wrong_confirmation_zero_filesystem_and_fetch(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"), calls=calls)
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation="wrong-token",
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.GOVERNANCE_FAILURE
+    assert calls == []
+    assert not output_root.exists()
+
+
+def test_f6_production_acquisition_diagnostic_confirmation_does_not_satisfy_this_gate(
+    tmp_path: Path,
+) -> None:
+    assert m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION != m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION
+    calls: list[str] = []
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"), calls=calls)
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_ROOT_STRUCTURE_PROBE_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.GOVERNANCE_FAILURE
+    assert calls == []
+
+
+def test_f6_production_acquisition_stage_a_confirmation_does_not_satisfy_this_gate(
+    tmp_path: Path,
+) -> None:
+    assert m.CONFIRMATION != m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION
+    calls: list[str] = []
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"), calls=calls)
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.GOVERNANCE_FAILURE
+    assert calls == []
+
+
+def test_f6_production_acquisition_existing_output_root_fails_closed_before_fetch(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "out"
+    m.initialize_output_root(output_root)  # simulates a prior attempt/state
+    calls: list[str] = []
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"), calls=calls)
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert calls == []
+    assert not (output_root / m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME).exists()
+
+
+def test_f6_production_acquisition_receipt_durable_before_first_fetch(tmp_path: Path) -> None:
+    output_root = tmp_path / "out"
+    seen: dict[str, bool] = {}
+
+    def fetcher(url: str) -> m.FetchResult:
+        seen["receipt_exists_at_first_fetch"] = (
+            output_root / m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME
+        ).exists()
+        if url == m.TOPIX_ROOT_URL:
+            return m.FetchResult(_production_root_payload(b"child-object-alpha"), url, 200)
+        return m.FetchResult(b"child-bytes", url, 200)
+
+    m.run_f6_production_root_global_raw_acquisition_network(
+        output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert seen["receipt_exists_at_first_fetch"] is True
+
+
+def test_f6_production_acquisition_full_success_locks_root_then_child(tmp_path: Path) -> None:
+    calls: list[str] = []
+    root_payload = _production_root_payload(b"child-object-alpha")
+    fetcher = _production_routing_fetcher(root_payload, calls=calls)
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_production_root_global_raw_acquisition_network(
+        output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert artifact["status"] == "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_COMPLETE"
+    assert artifact["gate_consumed"] is True
+    assert artifact["locator_status"] == m.GLOBAL_CHILD_LOCATOR_RESOLVED
+    assert artifact["candidate_anchor_count"] == 1
+    assert calls[0] == m.TOPIX_ROOT_URL
+
+    expected_child_url = urllib.parse.urljoin(m.TOPIX_ROOT_URL, "child-object-alpha")
+    assert artifact["child"]["requested_url"] == expected_child_url
+    assert calls == [m.TOPIX_ROOT_URL, expected_child_url]
+
+    root_locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_DISCOVERY_ROOT, m.TOPIX_ROOT_URL,
+    )
+    assert root_locked is not None
+    assert root_locked["raw"] == root_payload
+
+    child_locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_GLOBAL_2017_2025, expected_child_url,
+    )
+    assert child_locked is not None
+    assert child_locked["raw"] == b"synthetic-child-bytes-not-a-real-spreadsheet"
+
+    receipt_path = output_root / m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME
+    assert receipt_path.exists()
+    receipt = json.loads(receipt_path.read_bytes())
+    assert receipt["gate_consumed"] is True
+    assert receipt["confirmation_contract"] == m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION
+    assert receipt["schema_version"] == m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_SCHEMA_VERSION
+    assert m.ACQUISITION_IMPLEMENTATION_COMPLETE is False
+
+
+def test_f6_production_acquisition_root_locked_before_locator_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_root = tmp_path / "out"
+    original_locator = m.parse_f6_global_child_locator
+    seen: dict[str, bool] = {}
+
+    def spy_locator(locked: object) -> dict[str, object]:
+        root_locked = m.read_locked_payload(
+            output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_DISCOVERY_ROOT, m.TOPIX_ROOT_URL,
+        )
+        seen["root_locked_when_locator_called"] = root_locked is not None
+        return original_locator(locked)
+
+    monkeypatch.setattr(m, "parse_f6_global_child_locator", spy_locator)
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"))
+    m.run_f6_production_root_global_raw_acquisition_network(
+        output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert seen["root_locked_when_locator_called"] is True
+
+
+def test_f6_production_acquisition_locator_uses_root_final_resolved_url(tmp_path: Path) -> None:
+    redirected_root_url = "https://www.jpx.co.jp/english/markets/indices/topix/nested/page.html"
+    root_payload = _production_root_payload(b"child-object-alpha")
+    fetcher = _production_routing_fetcher(root_payload, root_url=redirected_root_url)
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_production_root_global_raw_acquisition_network(
+        output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    expected_from_resolved = urllib.parse.urljoin(redirected_root_url, "child-object-alpha")
+    expected_from_requested = urllib.parse.urljoin(m.TOPIX_ROOT_URL, "child-object-alpha")
+    assert expected_from_resolved != expected_from_requested
+    assert artifact["root"]["resolved_url"] == redirected_root_url
+    assert artifact["child"]["requested_url"] == expected_from_resolved
+
+
+def test_f6_production_acquisition_never_uses_diagnostic_reader_or_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _blocked(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("diagnostic reader invoked by production acquisition")
+
+    monkeypatch.setattr(m, "read_f6_root_structure_diagnostic_lock", _blocked)
+    output_root = tmp_path / "out"
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"))
+    m.run_f6_production_root_global_raw_acquisition_network(
+        output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    diagnostic_locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.F6_ROOT_STRUCTURE_DIAGNOSTIC, m.TOPIX_ROOT_URL,
+    )
+    assert diagnostic_locked is None
+
+
+@pytest.mark.parametrize("href", [b"child-object-alpha", b"different-name-beta.xls"])
+def test_f6_production_acquisition_child_url_is_dynamic_not_hardcoded(tmp_path: Path, href: bytes) -> None:
+    output_root = tmp_path / ("out-" + href.decode())
+    fetcher = _production_routing_fetcher(_production_root_payload(href))
+    artifact = m.run_f6_production_root_global_raw_acquisition_network(
+        output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    expected = urllib.parse.urljoin(m.TOPIX_ROOT_URL, href.decode())
+    assert artifact["child"]["requested_url"] == expected
+
+
+def test_f6_production_acquisition_chatgpt_decision_required_locator_failure_keeps_root_zero_child(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    fetcher = _production_routing_fetcher(_production_no_candidate_payload(), calls=calls)
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
+    assert calls == [m.TOPIX_ROOT_URL]
+    root_locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_DISCOVERY_ROOT, m.TOPIX_ROOT_URL,
+    )
+    assert root_locked is not None
+    child_locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_GLOBAL_2017_2025,
+        urllib.parse.urljoin(m.TOPIX_ROOT_URL, "child-object-alpha"),
+    )
+    assert child_locked is None
+
+
+def test_f6_production_acquisition_off_domain_child_href_is_chatgpt_decision_required(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    fetcher = _production_routing_fetcher(
+        _production_root_payload(b"https://evil.example/child.xls"), calls=calls,
+    )
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
+    assert calls == [m.TOPIX_ROOT_URL]
+
+
+def test_f6_production_acquisition_implementation_failure_locator_failure_keeps_root_zero_child(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    fetcher = _production_routing_fetcher(b"<h2>Historical Index Value \xff\xfe</h2>", calls=calls)
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert calls == [m.TOPIX_ROOT_URL]
+    root_locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_DISCOVERY_ROOT, m.TOPIX_ROOT_URL,
+    )
+    assert root_locked is not None
+
+
+def test_f6_production_acquisition_rerun_after_consumed_receipt_zero_new_fetches(tmp_path: Path) -> None:
+    calls: list[str] = []
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"), calls=calls)
+    output_root = tmp_path / "out"
+    m.run_f6_production_root_global_raw_acquisition_network(
+        output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert len(calls) == 2
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert len(calls) == 2  # never refetched/reacquired on rerun
+
+
+def test_f6_production_acquisition_child_bytes_never_parsed_or_decoded(tmp_path: Path) -> None:
+    garbage_child = b"\x00\x01\xff\xfe\xfd not a spreadsheet, not valid utf-8 \x80\x81"
+    fetcher = _production_routing_fetcher(
+        _production_root_payload(b"child-object-alpha"), child_payload=garbage_child,
+    )
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_production_root_global_raw_acquisition_network(
+        output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert artifact["status"] == "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_COMPLETE"
+    assert artifact["child"]["sha256"] == m.sha256_bytes(garbage_child)
+    assert artifact["child"]["byte_length"] == len(garbage_child)
+
+
+def test_f6_production_acquisition_uses_unchanged_retry_policy_constants() -> None:
+    assert m.MAX_ATTEMPTS == 3
+    assert m.MAX_RETRIES == 2
+    assert m.BACKOFF_SECONDS == (5, 30)
+
+
+def test_f6_production_acquisition_retries_root_and_child_transport_failures(tmp_path: Path) -> None:
+    fetcher = _production_routing_fetcher(
+        _production_root_payload(b"child-object-alpha"),
+        root_attempts_before_success=1, child_attempts_before_success=1,
+    )
+    output_root = tmp_path / "out"
+    artifact = m.run_f6_production_root_global_raw_acquisition_network(
+        output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert artifact["root_network_request_count"] == 2
+    assert artifact["child_network_request_count"] == 2
+    assert artifact["network_request_count"] == 4
+
+
+def test_f6_production_acquisition_never_invokes_run_stage_a_or_populates_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _blocked(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("run_stage_a invoked by F6 production acquisition")
+
+    monkeypatch.setattr(m, "run_stage_a", _blocked)
+    output_root = tmp_path / "out"
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"))
+    artifact = m.run_f6_production_root_global_raw_acquisition_network(
+        output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert artifact["status"] == "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_COMPLETE"
+    inventory = m.build_source_inventory()
+    f6_records = [
+        record for record in inventory
+        if record["source_family"] == m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE
+    ]
+    assert f6_records
+    assert all(record["status"] == m.INVENTORY_MISSING for record in f6_records)
+
+
+def test_f6_production_acquisition_no_real_socket_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _blocked(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("real network socket attempted during F6 production acquisition test")
+
+    monkeypatch.setattr(socket, "socket", _blocked)
+    output_root = tmp_path / "out"
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"))
+    artifact = m.run_f6_production_root_global_raw_acquisition_network(
+        output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert artifact["status"] == "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_COMPLETE"
+
+
+def test_f6_production_acquisition_implementation_complete_still_false() -> None:
+    assert m.ACQUISITION_IMPLEMENTATION_COMPLETE is False
+
+
+# --- V9_006_STAGE_A_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_IMPLEMENTATION:
+# CLI script -----------------------------------------------------------------
+
+F6_PRODUCTION_CLI_MODULE_NAME = "run_v9_006_f6_production_root_global_raw_acquisition"
+F6_PRODUCTION_CLI_CONFIRMATION_ENV = "V9_006_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION"
+
+
+def _f6_production_cli() -> object:
+    scripts_directory = str(ROOT / "scripts")
+    if scripts_directory not in sys.path:
+        sys.path.insert(0, scripts_directory)
+    return importlib.reload(importlib.import_module(F6_PRODUCTION_CLI_MODULE_NAME))
+
+
+def test_cli_f6_production_never_imports_run_stage_a() -> None:
+    text = (ROOT / "scripts" / "run_v9_006_f6_production_root_global_raw_acquisition.py").read_text(
+        encoding="utf-8",
+    )
+    assert "run_stage_a" not in text
+
+
+def test_cli_f6_production_missing_confirmation_zero_fetch_calls(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    monkeypatch.delenv(F6_PRODUCTION_CLI_CONFIRMATION_ENV, raising=False)
+    cli = _f6_production_cli()
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_production_fetcher", lambda url: calls.append(url) or m.FetchResult(b"x", url, 200))
+    output_root = tmp_path / "cli-out"
+    exit_code = cli.main(["--output-root", str(output_root)])
+    assert exit_code == 2
+    assert calls == []
+    assert not output_root.exists()
+    out = capsys.readouterr().out.strip()
+    payload = json.loads(out)
+    assert payload["execution_result"] == "BLOCKED"
+    assert payload["failure_class"] == "GOVERNANCE_FAILURE"
+    assert payload["network_request_count"] == 0
+
+
+def test_cli_f6_production_wrong_confirmation_zero_fetch_calls(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(F6_PRODUCTION_CLI_CONFIRMATION_ENV, "wrong-token")
+    cli = _f6_production_cli()
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_production_fetcher", lambda url: calls.append(url) or m.FetchResult(b"x", url, 200))
+    output_root = tmp_path / "cli-out"
+    exit_code = cli.main(["--output-root", str(output_root)])
+    assert exit_code == 2
+    assert calls == []
+    out = capsys.readouterr().out.strip()
+    payload = json.loads(out)
+    assert payload["failure_class"] == "GOVERNANCE_FAILURE"
+
+
+def test_cli_f6_production_safe_stdout_excludes_raw_urls_and_content(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(F6_PRODUCTION_CLI_CONFIRMATION_ENV, m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION)
+    cli = _f6_production_cli()
+    root_payload = _production_root_payload(b"child-object-alpha")
+
+    def fake_fetcher(url: str) -> m.FetchResult:
+        if url == m.TOPIX_ROOT_URL:
+            return m.FetchResult(root_payload, url, 200)
+        return m.FetchResult(b"synthetic-child-bytes", url, 200)
+
+    monkeypatch.setattr(cli, "_production_fetcher", fake_fetcher)
+    output_root = tmp_path / "cli-out"
+    exit_code = cli.main(["--output-root", str(output_root)])
+    assert exit_code == 0
+    out = capsys.readouterr().out.strip()
+    payload = json.loads(out)
+    assert set(payload) == {
+        "schema_version", "execution_result", "status", "gate_consumed",
+        "root_http_status", "root_byte_length", "root_sha256", "root_retrieval_timestamp_utc",
+        "root_requested_url_sha256", "root_resolved_url_sha256", "root_requested_resolved_url_equal",
+        "locator_status", "candidate_anchor_count",
+        "child_http_status", "child_byte_length", "child_sha256", "child_retrieval_timestamp_utc",
+        "child_requested_url_sha256", "child_resolved_url_sha256", "child_requested_resolved_url_equal",
+        "root_network_request_count", "child_network_request_count", "network_request_count",
+        "receipt_path",
+    }
+    assert payload["execution_result"] == "COMPLETE"
+    assert payload["status"] == "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_COMPLETE"
+    assert m.TOPIX_ROOT_URL not in out
+    assert "child-object-alpha" not in out
+    assert "synthetic-child-bytes" not in out
+    assert "Historical Index Value" not in out
+    assert Path(payload["receipt_path"]).exists()
