@@ -2974,6 +2974,36 @@ def _write_f6_production_acquisition_gate_receipt(
     return path
 
 
+def read_f6_production_acquisition_gate_consumed_state(
+    output_root: str | os.PathLike[str],
+) -> bool | None:
+    """Read-only, best-effort check of durable gate-receipt state for safe
+    reporting only -- this NEVER authorizes, skips, deletes, or resets
+    anything, and is never used to decide whether a fetch may proceed.
+
+    Returns True only when the exact reviewed receipt is present and
+    structurally valid with gate_consumed == True; False when output_root
+    (or the receipt within it) clearly does not exist; or None (unknown)
+    when the path exists but cannot be conclusively read/validated -- never
+    a fabricated True or False in that case.
+    """
+    path = Path(output_root) / F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME
+    if not path.exists():
+        return False
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt) != _F6_PRODUCTION_GATE_RECEIPT_FIELDS
+        or receipt.get("schema_version") != F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_SCHEMA_VERSION
+        or receipt.get("confirmation_contract") != F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION
+    ):
+        return None
+    return receipt.get("gate_consumed") is True
+
+
 def run_f6_production_root_global_raw_acquisition_network(
     *,
     output_root: str | os.PathLike[str],
@@ -3015,26 +3045,49 @@ def run_f6_production_root_global_raw_acquisition_network(
          CHILD content, never proves coverage, never populates F6
          AVAILABLE/MISSING, and never calls run_stage_a or any F1-F5/F7
          acquisition path.
+
+    Post-gate safe-report provenance (V9_006_F6_PRODUCTION_RAW_IMPL_HIGH_1):
+    once ANY network attempt has been made, every failure path -- whether it
+    raises V9005StageABlocked itself, or any other exception -- must report
+    the TOTAL number of real requests already made by this two-object
+    operation, never a fabricated 0 merely because the failure is not a
+    V9005StageABlocked or happened after the fetch that produced it. This
+    does not change fetch/retry methodology: it only tracks and reports the
+    already-mechanically-known cumulative count. `cumulative_requests` is
+    updated only immediately after a fetch call itself returns successfully
+    (never inside it), so a V9005StageABlocked raised BY fetch_once_with_
+    retry already carries that call's own accurate partial-attempt count in
+    exc.network_request_count -- adding cumulative_requests to it (rather
+    than overwriting it) is what makes cross-object totals correct.
     """
     if confirmation != F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION:
         raise V9005StageABlocked(GOVERNANCE_FAILURE)
     root = initialize_output_root(output_root)
 
-    receipt_timestamp_utc = clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    _write_f6_production_acquisition_gate_receipt(
-        root, consumption_timestamp_utc=receipt_timestamp_utc,
-    )
+    cumulative_requests = 0
 
-    root_result, root_requests = fetch_once_with_retry(TOPIX_ROOT_URL, fetcher, sleep)
-    root_retrieval_timestamp_utc = clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    root_locked = lock_first_complete_payload(
-        root,
-        source_family=SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
-        applicable_period=TOPIX_DISCOVERY_ROOT,
-        requested_url=TOPIX_ROOT_URL,
-        fetch_result=root_result,
-        retrieval_timestamp_utc=root_retrieval_timestamp_utc,
-    )
+    try:
+        receipt_timestamp_utc = clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _write_f6_production_acquisition_gate_receipt(
+            root, consumption_timestamp_utc=receipt_timestamp_utc,
+        )
+
+        root_result, root_requests = fetch_once_with_retry(TOPIX_ROOT_URL, fetcher, sleep)
+        cumulative_requests = root_requests
+        root_retrieval_timestamp_utc = clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        root_locked = lock_first_complete_payload(
+            root,
+            source_family=SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
+            applicable_period=TOPIX_DISCOVERY_ROOT,
+            requested_url=TOPIX_ROOT_URL,
+            fetch_result=root_result,
+            retrieval_timestamp_utc=root_retrieval_timestamp_utc,
+        )
+    except V9005StageABlocked as exc:
+        exc.network_request_count = cumulative_requests + exc.network_request_count
+        raise
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE, network_request_count=cumulative_requests) from exc
 
     try:
         locator_result = parse_f6_global_child_locator(root_locked)
@@ -3042,20 +3095,29 @@ def run_f6_production_root_global_raw_acquisition_network(
         # The ROOT lock above is already durable and is preserved as-is;
         # this only corrects the reported total request count to include
         # the ROOT fetch the locator itself performed no network for.
-        exc.network_request_count = root_requests
+        exc.network_request_count = cumulative_requests + exc.network_request_count
         raise
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE, network_request_count=cumulative_requests) from exc
 
-    child_url = locator_result["resolved_global_child_url"]
-    child_result, child_requests = fetch_once_with_retry(child_url, fetcher, sleep)
-    child_retrieval_timestamp_utc = clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    child_locked = lock_first_complete_payload(
-        root,
-        source_family=SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
-        applicable_period=TOPIX_GLOBAL_2017_2025,
-        requested_url=child_url,
-        fetch_result=child_result,
-        retrieval_timestamp_utc=child_retrieval_timestamp_utc,
-    )
+    try:
+        child_url = locator_result["resolved_global_child_url"]
+        child_result, child_requests = fetch_once_with_retry(child_url, fetcher, sleep)
+        cumulative_requests += child_requests
+        child_retrieval_timestamp_utc = clock().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        child_locked = lock_first_complete_payload(
+            root,
+            source_family=SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
+            applicable_period=TOPIX_GLOBAL_2017_2025,
+            requested_url=child_url,
+            fetch_result=child_result,
+            retrieval_timestamp_utc=child_retrieval_timestamp_utc,
+        )
+    except V9005StageABlocked as exc:
+        exc.network_request_count = cumulative_requests + exc.network_request_count
+        raise
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE, network_request_count=cumulative_requests) from exc
 
     return {
         "status": "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_COMPLETE",
@@ -3080,7 +3142,7 @@ def run_f6_production_root_global_raw_acquisition_network(
         },
         "root_network_request_count": root_requests,
         "child_network_request_count": child_requests,
-        "network_request_count": root_requests + child_requests,
+        "network_request_count": cumulative_requests,
     }
 
 
@@ -3271,6 +3333,7 @@ __all__ = [
     "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_SCHEMA_VERSION",
     "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME",
     "run_f6_production_root_global_raw_acquisition_network",
+    "read_f6_production_acquisition_gate_consumed_state",
     "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "acquire_f2_f4_required_slots", "acquire_f3_required_slots", "acquire_f7_required_slots", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
     "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
     "compute_month_end_mismatch_count", "compute_stage_a_evidence",

@@ -2,7 +2,7 @@
 
 ~~~text
 task=V9_006_STAGE_A_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_IMPLEMENTATION
-status=IMPLEMENTED_AWAITING_GPT_REVIEW
+status=REMEDIATED_AWAITING_GPT_REVIEW
 implementation_parent_sha=0a798cc6e6d5996b458c7bda829cec0cb982b0bc
 offline_only=true
 real_raw_lock_execution=false
@@ -153,5 +153,106 @@ implementation. This implementation does not change the design's root ->
 locator -> child order, diagnostic-URL non-promotion, raw identities, retry
 policy, the fresh one-shot human gate, pre-gate environment readiness, the
 child raw-lock-then-STOP rule, the child-content-parsing prohibition, or any
-F1/F2/F3/F4/F5/F7 rule. The next action is GPT exact-SHA independent review
-of this implementation; the execution agent does not call it PASS.
+F1/F2/F3/F4/F5/F7 rule.
+
+## High-1 remediation: post-gate safe-report provenance
+
+~~~text
+finding=V9_006_F6_PRODUCTION_RAW_IMPL_HIGH_1_POST_GATE_SAFE_REPORT_PROVENANCE
+REVIEWED_SHA=defe46f14fe3403e62315b145ae9e0484e599bab
+CRITICAL=0
+HIGH=1
+MEDIUM=0
+LOW=1
+RESULT=BLOCK
+~~~
+
+The reviewed implementation SHA above correctly implemented the acquisition
+methodology itself, but its safe failure/report provenance had three gaps:
+
+1. **Cumulative network counts.** `run_f6_production_root_global_raw_
+   acquisition_network` reported only `root_requests` (correcting a
+   locator failure's `network_request_count`), but a CHILD-stage
+   `fetch_once_with_retry` failure propagated with only that call's own
+   partial count -- never the ROOT requests already made -- and any
+   unexpected (non-`V9005StageABlocked`) exception after a completed fetch
+   was not converted at all, so it would surface as
+   `network_request_count=0` purely because it was not a
+   `V9005StageABlocked`.
+2. **Gate consumption in safe failure output.** The CLI's failure path
+   never exposed `gate_consumed`, so a post-receipt failure was
+   indistinguishable from a genuine pre-gate failure.
+3. **Raw machine path in stdout.** Success stdout printed `receipt_path`,
+   a raw local filesystem path derived from `output_root`.
+
+The remediation is entirely inside `run_f6_production_root_global_raw_
+acquisition_network`, `scripts/run_v9_006_f6_production_root_global_raw_
+acquisition.py`, and the new read-only
+`read_f6_production_acquisition_gate_consumed_state`:
+
+- The executor now tracks `cumulative_requests`, updated only immediately
+  after a fetch call itself returns successfully (never inside it). Every
+  stage (receipt write + ROOT fetch/lock; locator; CHILD fetch/lock) is
+  wrapped so a `V9005StageABlocked` has its `network_request_count`
+  corrected to `cumulative_requests + exc.network_request_count` (additive,
+  not overwritten -- a `fetch_once_with_retry` exception already carries
+  that call's own accurate partial-attempt count) and any other exception
+  is converted, fail-closed, into `V9005StageABlocked(IMPLEMENTATION_
+  FAILURE, network_request_count=cumulative_requests)`. No fetch/retry
+  methodology changed -- only already-mechanically-known counts are now
+  correctly propagated and never silently dropped to 0.
+- `read_f6_production_acquisition_gate_consumed_state` is a new read-only,
+  safe helper: it never authorizes, skips, deletes, or resets anything, and
+  is used only for reporting. It returns `True` only when the exact
+  reviewed receipt is present and structurally valid with
+  `gate_consumed == True`; `False` when the receipt clearly does not exist;
+  or `None` ("unknown" in the safe report) when the path exists but cannot
+  be conclusively read/validated -- never a fabricated value either way.
+  The CLI derives `gate_consumed` from this durable, on-disk state for
+  every failure after the confirmation check itself passes, so a
+  post-receipt failure can never look `PRE_GATE` merely because the Python
+  call raised. For a missing/wrong confirmation specifically -- the one
+  case genuinely before any filesystem access -- the CLI reports
+  `gate_consumed=false` directly, without even statting the path, so an
+  unrelated pre-existing receipt at the same `output_root` can never leak
+  into that deterministic pre-gate report. `authorization_reusable=false`
+  and `second_execution_allowed=false` are now included, unconditionally,
+  in every report.
+- CLI stdout (both success and failure) no longer includes `receipt_path`
+  or any other raw machine path/URL/payload; internal filesystem use
+  (writing the receipt under `output_root`) is unchanged.
+
+Verified test additions cover: ROOT exhaustion (`network_request_count ==
+MAX_ATTEMPTS`); ROOT success + CHILD exhaustion (`1 + MAX_ATTEMPTS`); ROOT
+retry-success + a CHILD non-retryable failure on its second attempt
+(`2 + 2 == 4`); an unexpected (plain `RuntimeError`, not
+`V9005StageABlocked`) exception injected at each of three post-receipt
+points -- between ROOT fetch and ROOT lock, inside the locator stage, and
+between CHILD fetch and CHILD lock -- each asserting the correct cumulative
+count and `IMPLEMENTATION_FAILURE`; the existing locator-failure and
+rerun-after-consumed-receipt tests now also assert
+`read_f6_production_acquisition_gate_consumed_state(...) is True`; the new
+reader's tri-state behavior (absent, present-but-no-receipt, and corrupt
+receipt) directly; and, at the CLI layer, that `gate_consumed`/
+`authorization_reusable`/`second_execution_allowed` appear in every
+failure and success report, that a post-receipt CLI failure reports
+`gate_consumed=true` with the correct count, and that neither
+`receipt_path` nor the local `output_root` path string appears anywhere in
+success or failure stdout.
+
+~~~text
+PYTHONPATH=. pytest tests/test_v9_005_stage_a_jpx_probe.py -q
+331 passed in 5.48s
+git diff --check
+clean
+SOURCE_DATA_NETWORK_REQUESTS=0
+~~~
+
+This remediation does not change the confirmation identity, gate-receipt
+schema/atomic/no-overwrite behavior, the ROOT -> lock -> locator -> CHILD
+ordering, `TOPIX_DISCOVERY_ROOT`/`TOPIX_GLOBAL_2017_2025`, locator
+methodology/failure taxonomy, diagnostic-URL non-use, retry policy, the
+child-content prohibition, inventory/fanout,
+`ACQUISITION_IMPLEMENTATION_COMPLETE=false`, or any F1-F5/F7 behavior. It
+is not self-called PASS by the execution agent. The next action is GPT
+exact-SHA independent review of this remediation.

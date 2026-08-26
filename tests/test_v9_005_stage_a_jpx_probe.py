@@ -4691,6 +4691,7 @@ def test_f6_production_acquisition_chatgpt_decision_required_locator_failure_kee
             fetcher=fetcher, sleep=_no_sleep, clock=_clock,
         )
     assert excinfo.value.failure_class == m.CHATGPT_DECISION_REQUIRED
+    assert excinfo.value.network_request_count == 1  # the ROOT fetch, preserved
     assert calls == [m.TOPIX_ROOT_URL]
     root_locked = m.read_locked_payload(
         output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_DISCOVERY_ROOT, m.TOPIX_ROOT_URL,
@@ -4701,6 +4702,7 @@ def test_f6_production_acquisition_chatgpt_decision_required_locator_failure_kee
         urllib.parse.urljoin(m.TOPIX_ROOT_URL, "child-object-alpha"),
     )
     assert child_locked is None
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is True
 
 
 def test_f6_production_acquisition_off_domain_child_href_is_chatgpt_decision_required(
@@ -4732,11 +4734,13 @@ def test_f6_production_acquisition_implementation_failure_locator_failure_keeps_
             fetcher=fetcher, sleep=_no_sleep, clock=_clock,
         )
     assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert excinfo.value.network_request_count == 1  # the ROOT fetch, preserved
     assert calls == [m.TOPIX_ROOT_URL]
     root_locked = m.read_locked_payload(
         output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_DISCOVERY_ROOT, m.TOPIX_ROOT_URL,
     )
     assert root_locked is not None
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is True
 
 
 def test_f6_production_acquisition_rerun_after_consumed_receipt_zero_new_fetches(tmp_path: Path) -> None:
@@ -4748,6 +4752,7 @@ def test_f6_production_acquisition_rerun_after_consumed_receipt_zero_new_fetches
         fetcher=fetcher, sleep=_no_sleep, clock=_clock,
     )
     assert len(calls) == 2
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is True
     with pytest.raises(m.V9005StageABlocked) as excinfo:
         m.run_f6_production_root_global_raw_acquisition_network(
             output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
@@ -4755,6 +4760,9 @@ def test_f6_production_acquisition_rerun_after_consumed_receipt_zero_new_fetches
         )
     assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
     assert len(calls) == 2  # never refetched/reacquired on rerun
+    # A rerun against an already-consumed receipt must still mechanically
+    # report gate_consumed=true (durable state), never look PRE_GATE.
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is True
 
 
 def test_f6_production_acquisition_child_bytes_never_parsed_or_decoded(tmp_path: Path) -> None:
@@ -4791,6 +4799,174 @@ def test_f6_production_acquisition_retries_root_and_child_transport_failures(tmp
     assert artifact["root_network_request_count"] == 2
     assert artifact["child_network_request_count"] == 2
     assert artifact["network_request_count"] == 4
+
+
+# --- V9_006_F6_PRODUCTION_RAW_IMPL_HIGH_1_POST_GATE_SAFE_REPORT_PROVENANCE --
+# Cumulative network-request-count and gate-consumed provenance must survive
+# every reachable post-gate failure -- transport exhaustion on either
+# object, and an entirely unexpected (non-V9005StageABlocked) exception at
+# any post-receipt stage -- never a fabricated 0/PRE_GATE.
+
+def test_f6_production_acquisition_root_exhausted_reports_cumulative_total(tmp_path: Path) -> None:
+    def fetcher(url: str) -> m.FetchResult:
+        raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.PLUMBING_FAILURE_RETRIABLE
+    assert excinfo.value.network_request_count == m.MAX_ATTEMPTS
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is True
+    root_locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_DISCOVERY_ROOT, m.TOPIX_ROOT_URL,
+    )
+    assert root_locked is None  # never a complete payload
+
+
+def test_f6_production_acquisition_root_success_child_exhausted_reports_cumulative_total(
+    tmp_path: Path,
+) -> None:
+    root_payload = _production_root_payload(b"child-object-alpha")
+
+    def fetcher(url: str) -> m.FetchResult:
+        if url == m.TOPIX_ROOT_URL:
+            return m.FetchResult(root_payload, url, 200)
+        raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.PLUMBING_FAILURE_RETRIABLE
+    assert excinfo.value.network_request_count == 1 + m.MAX_ATTEMPTS  # ROOT(1) + CHILD exhausted(3)
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is True
+    root_locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_DISCOVERY_ROOT, m.TOPIX_ROOT_URL,
+    )
+    assert root_locked is not None
+
+
+def test_f6_production_acquisition_root_retry_success_child_failure_cumulative_total(
+    tmp_path: Path,
+) -> None:
+    root_payload = _production_root_payload(b"child-object-alpha")
+    state = {"root_seen": 0, "child_seen": 0}
+
+    def fetcher(url: str) -> m.FetchResult:
+        if url == m.TOPIX_ROOT_URL:
+            state["root_seen"] += 1
+            if state["root_seen"] < 2:
+                raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+            return m.FetchResult(root_payload, url, 200)
+        state["child_seen"] += 1
+        if state["child_seen"] < 2:
+            raise urllib.error.HTTPError(url, 503, "unavailable", {}, None)
+        # Second CHILD attempt fails non-retryably: exactly 2 total CHILD
+        # attempts are consumed, not the full 3-attempt exhaustion.
+        raise urllib.error.HTTPError(url, 404, "not found", {}, None)
+
+    output_root = tmp_path / "out"
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert state["root_seen"] == 2
+    assert state["child_seen"] == 2
+    assert excinfo.value.network_request_count == 4
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is True
+
+
+def test_f6_production_acquisition_unexpected_exception_after_root_fetch_before_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_lock = m.lock_first_complete_payload
+
+    def spy_lock(root: object, *, applicable_period: str, **kwargs: object) -> dict[str, object]:
+        if applicable_period == m.TOPIX_DISCOVERY_ROOT:
+            raise RuntimeError("unexpected ROOT-lock failure, not a V9005StageABlocked")
+        return original_lock(root, applicable_period=applicable_period, **kwargs)
+
+    monkeypatch.setattr(m, "lock_first_complete_payload", spy_lock)
+    output_root = tmp_path / "out"
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"))
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert excinfo.value.network_request_count == 1  # the ROOT fetch that already happened
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is True
+
+
+def test_f6_production_acquisition_unexpected_exception_in_locator_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("unexpected locator failure, not a V9005StageABlocked")
+
+    monkeypatch.setattr(m, "parse_f6_global_child_locator", _boom)
+    output_root = tmp_path / "out"
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"))
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert excinfo.value.network_request_count == 1
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is True
+    root_locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_DISCOVERY_ROOT, m.TOPIX_ROOT_URL,
+    )
+    assert root_locked is not None
+
+
+def test_f6_production_acquisition_unexpected_exception_after_child_fetch_before_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_lock = m.lock_first_complete_payload
+
+    def spy_lock(root: object, *, applicable_period: str, **kwargs: object) -> dict[str, object]:
+        if applicable_period == m.TOPIX_GLOBAL_2017_2025:
+            raise RuntimeError("unexpected CHILD-lock failure, not a V9005StageABlocked")
+        return original_lock(root, applicable_period=applicable_period, **kwargs)
+
+    monkeypatch.setattr(m, "lock_first_complete_payload", spy_lock)
+    output_root = tmp_path / "out"
+    fetcher = _production_routing_fetcher(_production_root_payload(b"child-object-alpha"))
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.run_f6_production_root_global_raw_acquisition_network(
+            output_root=output_root, confirmation=m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+            fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+        )
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert excinfo.value.network_request_count == 2  # ROOT(1) + CHILD(1)
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is True
+    child_locked = m.read_locked_payload(
+        output_root, m.SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE, m.TOPIX_GLOBAL_2017_2025,
+        urllib.parse.urljoin(m.TOPIX_ROOT_URL, "child-object-alpha"),
+    )
+    assert child_locked is None  # never durably locked
+
+
+def test_read_f6_production_acquisition_gate_consumed_state_tri_state(tmp_path: Path) -> None:
+    output_root = tmp_path / "out"
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is False  # nothing there yet
+
+    output_root.mkdir(parents=True)
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is False  # dir exists, no receipt
+
+    receipt_path = output_root / m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME
+    receipt_path.write_text("not valid json{{{", encoding="utf-8")
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is None  # unreadable -> unknown
 
 
 def test_f6_production_acquisition_never_invokes_run_stage_a_or_populates_inventory(
@@ -4874,6 +5050,9 @@ def test_cli_f6_production_missing_confirmation_zero_fetch_calls(
     assert payload["execution_result"] == "BLOCKED"
     assert payload["failure_class"] == "GOVERNANCE_FAILURE"
     assert payload["network_request_count"] == 0
+    assert payload["gate_consumed"] is False
+    assert payload["authorization_reusable"] is False
+    assert payload["second_execution_allowed"] is False
 
 
 def test_cli_f6_production_wrong_confirmation_zero_fetch_calls(
@@ -4887,9 +5066,12 @@ def test_cli_f6_production_wrong_confirmation_zero_fetch_calls(
     exit_code = cli.main(["--output-root", str(output_root)])
     assert exit_code == 2
     assert calls == []
+    assert not output_root.exists()
     out = capsys.readouterr().out.strip()
     payload = json.loads(out)
     assert payload["failure_class"] == "GOVERNANCE_FAILURE"
+    assert payload["network_request_count"] == 0
+    assert payload["gate_consumed"] is False
 
 
 def test_cli_f6_production_safe_stdout_excludes_raw_urls_and_content(
@@ -4912,18 +5094,54 @@ def test_cli_f6_production_safe_stdout_excludes_raw_urls_and_content(
     payload = json.loads(out)
     assert set(payload) == {
         "schema_version", "execution_result", "status", "gate_consumed",
+        "authorization_reusable", "second_execution_allowed",
         "root_http_status", "root_byte_length", "root_sha256", "root_retrieval_timestamp_utc",
         "root_requested_url_sha256", "root_resolved_url_sha256", "root_requested_resolved_url_equal",
         "locator_status", "candidate_anchor_count",
         "child_http_status", "child_byte_length", "child_sha256", "child_retrieval_timestamp_utc",
         "child_requested_url_sha256", "child_resolved_url_sha256", "child_requested_resolved_url_equal",
         "root_network_request_count", "child_network_request_count", "network_request_count",
-        "receipt_path",
     }
+    assert "receipt_path" not in payload
+    assert "output_root" not in payload
     assert payload["execution_result"] == "COMPLETE"
     assert payload["status"] == "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_COMPLETE"
+    assert payload["gate_consumed"] is True
+    assert payload["authorization_reusable"] is False
+    assert payload["second_execution_allowed"] is False
+    assert payload["network_request_count"] == 2
     assert m.TOPIX_ROOT_URL not in out
     assert "child-object-alpha" not in out
     assert "synthetic-child-bytes" not in out
     assert "Historical Index Value" not in out
-    assert Path(payload["receipt_path"]).exists()
+    assert m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME not in out
+    assert str(output_root) not in out
+
+
+def test_cli_f6_production_failure_stdout_excludes_raw_urls_output_root_and_receipt_path(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(F6_PRODUCTION_CLI_CONFIRMATION_ENV, m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION)
+    cli = _f6_production_cli()
+    root_payload = _production_no_candidate_payload()
+
+    def fake_fetcher(url: str) -> m.FetchResult:
+        return m.FetchResult(root_payload, url, 200)
+
+    monkeypatch.setattr(cli, "_production_fetcher", fake_fetcher)
+    output_root = tmp_path / "cli-out"
+    exit_code = cli.main(["--output-root", str(output_root)])
+    assert exit_code == 2
+    out = capsys.readouterr().out.strip()
+    payload = json.loads(out)
+    assert payload["execution_result"] == "BLOCKED"
+    assert payload["failure_class"] == m.CHATGPT_DECISION_REQUIRED
+    assert payload["network_request_count"] == 1
+    assert payload["gate_consumed"] is True
+    assert payload["authorization_reusable"] is False
+    assert payload["second_execution_allowed"] is False
+    assert "receipt_path" not in payload
+    assert "output_root" not in payload
+    assert m.TOPIX_ROOT_URL not in out
+    assert m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME not in out
+    assert str(output_root) not in out

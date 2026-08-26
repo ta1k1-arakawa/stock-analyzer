@@ -45,8 +45,9 @@ if str(SCRIPTS_DIR) not in sys.path:
 from run_v9_005_stage_a_jpx_probe import _production_fetcher, _utc_clock  # noqa: E402
 
 from src.v9_005_stage_a_jpx_probe import (  # noqa: E402
-    F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME,
+    GOVERNANCE_FAILURE,
     V9005StageABlocked,
+    read_f6_production_acquisition_gate_consumed_state,
     run_f6_production_root_global_raw_acquisition_network,
 )
 
@@ -64,18 +65,31 @@ def _print(value: dict[str, object]) -> None:
     print(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
-def _safe_failure(failure_class: str, network_request_count: int) -> dict[str, object]:
+def _safe_failure(
+    failure_class: str, network_request_count: object, *, gate_consumed: object,
+) -> dict[str, object]:
+    # network_request_count and gate_consumed are tri-state: a bool/int when
+    # mechanically known, otherwise the literal string "unknown" -- never a
+    # fabricated 0/false when the true value cannot be proven.
     return {
         "schema_version": FAILURE_SCHEMA_VERSION,
         "execution_result": "BLOCKED",
         "failure_class": failure_class,
-        "network_request_count": network_request_count,
+        "network_request_count": (
+            network_request_count
+            if isinstance(network_request_count, int) and not isinstance(network_request_count, bool)
+            else "unknown"
+        ),
+        "gate_consumed": gate_consumed if isinstance(gate_consumed, bool) else "unknown",
+        "authorization_reusable": False,
+        "second_execution_allowed": False,
     }
 
 
-def _safe_success(artifact: dict[str, object], output_root: str) -> dict[str, object]:
+def _safe_success(artifact: dict[str, object]) -> dict[str, object]:
     # Only hashes, counts, statuses, and equality booleans ever reach
-    # stdout -- never a raw requested/resolved URL or any payload bytes.
+    # stdout -- never a raw requested/resolved URL, payload bytes, the
+    # receipt path, or the output_root path.
     root = artifact["root"]
     child = artifact["child"]
     return {
@@ -83,6 +97,8 @@ def _safe_success(artifact: dict[str, object], output_root: str) -> dict[str, ob
         "execution_result": "COMPLETE",
         "status": artifact["status"],
         "gate_consumed": artifact["gate_consumed"],
+        "authorization_reusable": False,
+        "second_execution_allowed": False,
         "root_http_status": root["http_status"],
         "root_byte_length": root["byte_length"],
         "root_sha256": root["sha256"],
@@ -102,7 +118,6 @@ def _safe_success(artifact: dict[str, object], output_root: str) -> dict[str, ob
         "root_network_request_count": artifact["root_network_request_count"],
         "child_network_request_count": artifact["child_network_request_count"],
         "network_request_count": artifact["network_request_count"],
-        "receipt_path": str(Path(output_root) / F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME),
     }
 
 
@@ -122,7 +137,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     confirmation = os.environ.get(CONFIRMATION_ENV)
     if not confirmation:
-        _print(_safe_failure("GOVERNANCE_FAILURE", 0))
+        # Zero filesystem access: never stat the output_root/receipt here --
+        # this gate was never even evaluated, so it is deterministically
+        # unconsumed regardless of unrelated prior state at that path.
+        _print(_safe_failure("GOVERNANCE_FAILURE", 0, gate_consumed=False))
         return 2
     try:
         artifact = run_f6_production_root_global_raw_acquisition_network(
@@ -133,16 +151,29 @@ def main(argv: list[str] | None = None) -> int:
             clock=_utc_clock,
         )
     except V9005StageABlocked as exc:
-        _print(_safe_failure(exc.failure_class, exc.network_request_count))
+        if exc.failure_class == GOVERNANCE_FAILURE:
+            # Only ever raised here for a wrong confirmation, always before
+            # any filesystem access -- same deterministic case as above.
+            gate_consumed: object = False
+        else:
+            # Durable receipt state is the ground truth for gate_consumed,
+            # never whether this Python call happened to return cleanly.
+            gate_consumed = read_f6_production_acquisition_gate_consumed_state(args.output_root)
+        _print(_safe_failure(exc.failure_class, exc.network_request_count, gate_consumed=gate_consumed))
         return 2
     except Exception:
         # Defense-in-depth: an ordinary (non-V9005StageABlocked) exception
-        # must never reach the user as a raw traceback/message.
-        _print(_safe_failure("IMPLEMENTATION_FAILURE", 0))
+        # must never reach the user as a raw traceback/message. The core
+        # function itself converts every reachable unexpected failure into
+        # a V9005StageABlocked with an accurate cumulative count; this
+        # branch is only for something that somehow still escaped that, so
+        # the request count genuinely cannot be proven here.
+        gate_consumed = read_f6_production_acquisition_gate_consumed_state(args.output_root)
+        _print(_safe_failure("IMPLEMENTATION_FAILURE", "unknown", gate_consumed=gate_consumed))
         return 2
     finally:
         confirmation = ""
-    _print(_safe_success(artifact, args.output_root))
+    _print(_safe_success(artifact))
     return 0
 
 
