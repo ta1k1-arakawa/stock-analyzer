@@ -2,7 +2,7 @@
 
 ~~~text
 task=V9_006_STAGE_A_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_DESIGN
-status=AWAITING_GPT_REVIEW
+status=REMEDIATED_AWAITING_GPT_REVIEW
 scope=F6_PRODUCTION_ROOT_AND_ONE_GLOBAL_CHILD_RAW_OBJECT_ONLY
 network_authorized_by_this_task=false
 network_executed_by_this_task=false
@@ -192,8 +192,29 @@ parameters.
 pre-gate readiness failure
   -> no gate consumption; JPX requests=0; STOP
 
-complete production ROOT plus locator failure
-  -> preserve ROOT lock; CHILD requests=0; STOP/CHATGPT_DECISION_REQUIRED
+complete production ROOT plus locator identity/methodology-resolution
+failure -- the already-reviewed F6 GLOBAL locator's governed
+CHATGPT_DECISION_REQUIRED class, including: semantic-heading ambiguity;
+missing P/G; invalid P direct-child identity; missing/ambiguous N;
+candidate_anchor_count != 1; missing/ambiguous raw href; or child URL
+resolution failure, non-HTTPS, or off-domain identity failure
+  -> preserve ROOT lock; CHILD requests=0; STOP/CHATGPT_DECISION_REQUIRED;
+     no fallback, diagnostic-URL substitution, or scope expansion
+
+complete production ROOT plus locator malformed/corrupt raw-lock, invalid
+UTF-8/DOM, or other condition the already-reviewed locator classifies as
+IMPLEMENTATION_FAILURE
+  -> preserve ROOT lock; CHILD requests=0; STOP; classified
+     IMPLEMENTATION_FAILURE, not CHATGPT_DECISION_REQUIRED. The locked
+     production ROOT must never be refetched to attempt a
+     software/parser/implementation repair. A later, separately reviewed
+     repair or reprocessing task may operate only on the exact preserved
+     ROOT bytes. The human authorization this task's future execution
+     consumes is not reused by that later repair; offline same-byte repair
+     does not itself require pretending the gate was unconsumed. Any later
+     network continuation (for example, a fresh CHILD request after
+     repair) requires a new GPT methodology and human authority decision;
+     this design does not pre-authorize it.
 
 complete production CHILD
   -> preserve CHILD lock; STOP; no content-driven refetch
@@ -231,5 +252,57 @@ V9_design_frozen=false
 future_profitability_established=false
 ~~~
 
+## 7. Medium-1 remediation: locator failure taxonomy
+
+~~~text
+finding=V9_006_F6_PRODUCTION_RAW_DESIGN_MEDIUM_1_LOCATOR_FAILURE_CLASS_COLLAPSE
+REVIEWED_SHA=3c6873fea13d7bca8d16ae38bcba263ef6b4f461
+CRITICAL=0
+HIGH=0
+MEDIUM=1
+LOW=1
+RESULT=BLOCK
+~~~
+
+The review of the reviewed SHA above found that section 4's prior blanket
+rule -- "complete production ROOT plus locator failure -> preserve ROOT
+lock; CHILD requests=0; STOP/CHATGPT_DECISION_REQUIRED" -- collapsed two
+already-reviewed, distinct F6 GLOBAL locator failure classes into one
+outcome. The already-reviewed locator methodology and implementation
+(`V9_006_STAGE_A_F6_GLOBAL_CHILD_LOCATOR_METHODOLOGY.md`,
+`V9_006_STAGE_A_F6_GLOBAL_CHILD_LOCATOR_IMPLEMENTATION_REVIEW.md`)
+distinguish locator identity/methodology-resolution ambiguity, which is
+`CHATGPT_DECISION_REQUIRED`, from malformed/corrupt raw-lock state or
+invalid UTF-8/DOM, which remains `IMPLEMENTATION_FAILURE`; the prior
+section 4 wording did not preserve that distinction for this future
+production operation.
+
+Section 4 is remediated to mechanically separate the two cases exactly as
+already reviewed, changing nothing else: H/P/G/N derivation, SECTION_BODY,
+the candidate-count gate, raw-href handling, URL resolution/validation, the
+production root->locator->child order, diagnostic-URL non-promotion, raw
+identities, the retry policy, the fresh one-shot human gate, pre-gate
+environment readiness, the child raw-lock-then-STOP rule, the
+child-content-parsing prohibition, and every F1/F2/F3/F4/F5/F7 rule are
+unchanged. The remediation adds one explicit rule not previously stated:
+after the first complete production ROOT is locked, that ROOT must never
+be refetched for a software/parser/implementation repair; a later,
+separately reviewed repair or reprocessing task may operate only on the
+exact preserved ROOT bytes; the human authorization this task's future
+execution consumes is not reused by that later repair; offline same-byte
+repair does not itself require pretending the gate was unconsumed; and any
+later network continuation (for example, a fresh CHILD request after
+repair) still requires a new GPT methodology and human authority decision,
+which this remediation does not grant.
+
+This remediation is docs-only. It does not implement code, execute a real
+raw-lock, make a network request, consume a human authorization, fetch a
+GLOBAL child, inspect child content, or freeze the V9 design.
+
+~~~text
+V9_006_F6_PRODUCTION_RAW_DESIGN_MEDIUM_1_LOCATOR_FAILURE_CLASS_COLLAPSE=REMEDIATED_AWAITING_GPT_REVIEW
+~~~
+
 The next action after this document is GPT exact-SHA independent review of
-this production root and GLOBAL raw acquisition design.
+this remediation to the production root and GLOBAL raw acquisition design.
+This remediation is not self-called PASS by the execution agent.
