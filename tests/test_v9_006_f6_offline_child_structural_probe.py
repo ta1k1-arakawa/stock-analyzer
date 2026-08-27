@@ -66,6 +66,8 @@ def test_output_root_binding_failures_stop_before_child_read(tmp_path: Path, mut
     with pytest.raises(probe.ProbeBlocked) as raised:
         probe.locate_metadata_only(production_state_parent=parent, output_root=root, bindings=bindings)
     assert raised.value.outcome == "CHATGPT_DECISION_REQUIRED"
+    assert raised.value.raw_bytes_read_for_integrity is False
+    assert raised.value.child_content_inspected is False
 
 
 @pytest.mark.parametrize("kind", ["missing-receipt", "duplicate-meta", "malformed-meta"])
@@ -103,6 +105,50 @@ def test_content_blind_integrity_mismatches_block_before_structural(tmp_path: Pa
         probe.run_offline_child_structural_probe(production_state_parent=parent, output_root=root, bindings=bindings, structural_inspector=inspector)
     assert raised.value.outcome == "IMPLEMENTATION_FAILURE"
     assert called is False
+    # The exact CHILD bytes were read before this mismatch was detected, but
+    # structural inspection was never reached.
+    assert raised.value.raw_bytes_read_for_integrity is True
+    assert raised.value.child_content_inspected is False
+
+
+def test_phase_b_read_exception_reports_unknown_not_false(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    parent, root, bindings, bin_path, _url = _fixture(tmp_path)
+    _meta_path, meta, raw_path = probe.locate_metadata_only(production_state_parent=parent, output_root=root, bindings=bindings)
+    assert raw_path == bin_path
+    monkeypatch.setattr(Path, "read_bytes", lambda self: (_ for _ in ()).throw(OSError("simulated read failure")))
+    with pytest.raises(probe.ProbeBlocked) as raised:
+        probe.content_blind_integrity_read(raw_path, meta, bindings=bindings)
+    assert raised.value.outcome == "IMPLEMENTATION_FAILURE"
+    # A failed read attempt does not prove bytes were never exposed; must
+    # never be fabricated False.
+    assert raised.value.raw_bytes_read_for_integrity == "unknown"
+    assert raised.value.child_content_inspected is False
+
+
+def test_phase_c_inspector_exception_reports_true_true(tmp_path: Path) -> None:
+    parent, root, bindings, _bin, _url = _fixture(tmp_path)
+
+    def raising_inspector(_raw: bytes) -> dict[str, object]:
+        raise ValueError("simulated inspector crash")
+
+    with pytest.raises(probe.ProbeBlocked) as raised:
+        probe.run_offline_child_structural_probe(production_state_parent=parent, output_root=root, bindings=bindings, structural_inspector=raising_inspector)
+    assert raised.value.outcome == "IMPLEMENTATION_FAILURE"
+    assert raised.value.raw_bytes_read_for_integrity is True
+    assert raised.value.child_content_inspected is True
+
+
+def test_phase_c_safe_evidence_validation_failure_reports_true_true(tmp_path: Path) -> None:
+    parent, root, bindings, _bin, _url = _fixture(tmp_path)
+
+    def bad_inspector(_raw: bytes) -> dict[str, object]:
+        return {"status": "STRUCTURAL_FORMAT_CAPTURED", "not_an_allowed_field": "leak"}
+
+    with pytest.raises(probe.ProbeBlocked) as raised:
+        probe.run_offline_child_structural_probe(production_state_parent=parent, output_root=root, bindings=bindings, structural_inspector=bad_inspector)
+    assert raised.value.outcome == "IMPLEMENTATION_FAILURE"
+    assert raised.value.raw_bytes_read_for_integrity is True
+    assert raised.value.child_content_inspected is True
 
 
 @pytest.mark.parametrize("status", ["STRUCTURAL_FORMAT_CAPTURED", "STRUCTURAL_FORMAT_AMBIGUOUS"])
@@ -122,3 +168,68 @@ def test_cli_failure_is_json_only_and_does_not_leak_paths_or_url(tmp_path: Path,
     output = capsys.readouterr().out
     assert output.startswith("{") and str(parent) not in output and str(root) not in output and url not in output
     assert "https://" not in output and "2026-08-27" not in output
+
+
+def test_cli_phase_a_failure_reports_false_false(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # The CLI always runs against the real frozen production bindings, so any
+    # synthetic tmp_path fixture fails the Phase A output-root hash check
+    # before any CHILD byte is read -- a genuine Phase A CLI failure.
+    parent, root, _bindings_value, _bin, _url = _fixture(tmp_path)
+    assert cli.main(["--production-state-parent", str(parent), "--output-root", str(root)]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["execution_result"] == "BLOCKED"
+    assert result["raw_bytes_read_for_integrity"] is False
+    assert result["child_content_inspected"] is False
+
+
+@pytest.mark.parametrize(
+    "raised_exc,expected_raw,expected_inspected",
+    [
+        (probe.ProbeBlocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=False), True, False),
+        (probe.ProbeBlocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity="unknown", child_content_inspected=False), "unknown", False),
+        (probe.ProbeBlocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True), True, True),
+    ],
+)
+def test_cli_forwards_module_phase_provenance_exactly(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    raised_exc: probe.ProbeBlocked,
+    expected_raw: bool | str,
+    expected_inspected: bool,
+) -> None:
+    # Proves the CLI forwards the module's exact phase-provenance fields
+    # rather than hardcoding false/false for every failure, regardless of
+    # which phase raised the ProbeBlocked.
+    def _raise(**_kwargs: object) -> None:
+        raise raised_exc
+
+    monkeypatch.setattr(cli, "run_offline_child_structural_probe", _raise)
+    parent, root, _bindings_value, _bin, url = _fixture(tmp_path)
+    assert cli.main(["--production-state-parent", str(parent), "--output-root", str(root)]) == 2
+    output = capsys.readouterr().out
+    result = json.loads(output)
+    assert result["raw_bytes_read_for_integrity"] == expected_raw
+    assert result["child_content_inspected"] is expected_inspected
+    assert str(parent) not in output and str(root) not in output and url not in output
+
+
+def test_cli_unproven_phase_exception_fails_closed_to_unknown(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An exception outside the module's tracked ProbeBlocked phases (e.g. an
+    # unanticipated bug) carries no provable boundary; the CLI must fail
+    # closed with "unknown" rather than fabricate a false "no bytes read"
+    # claim.
+    def _raise(**_kwargs: object) -> None:
+        raise RuntimeError("simulated unanticipated failure")
+
+    monkeypatch.setattr(cli, "run_offline_child_structural_probe", _raise)
+    parent, root, _bindings_value, _bin, url = _fixture(tmp_path)
+    assert cli.main(["--production-state-parent", str(parent), "--output-root", str(root)]) == 2
+    output = capsys.readouterr().out
+    result = json.loads(output)
+    assert result["status"] == "IMPLEMENTATION_FAILURE"
+    assert result["raw_bytes_read_for_integrity"] == "unknown"
+    assert result["child_content_inspected"] is False
+    assert str(parent) not in output and str(root) not in output and url not in output

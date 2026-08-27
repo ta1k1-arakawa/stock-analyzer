@@ -20,10 +20,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = run_offline_child_structural_probe(production_state_parent=args.production_state_parent, output_root=args.output_root)
     except ProbeBlocked as exc:
-        result = {"execution_result": "BLOCKED", "status": exc.outcome, "network_request_count": 0, "raw_bytes_read_for_integrity": False, "child_content_inspected": False, "coverage_evaluated": False}
+        result = {"execution_result": "BLOCKED", "status": exc.outcome, "network_request_count": 0, "raw_bytes_read_for_integrity": exc.raw_bytes_read_for_integrity, "child_content_inspected": exc.child_content_inspected, "coverage_evaluated": False}
         code = 2
     except Exception:
-        result = {"execution_result": "BLOCKED", "status": "IMPLEMENTATION_FAILURE", "network_request_count": 0, "raw_bytes_read_for_integrity": False, "child_content_inspected": False, "coverage_evaluated": False}
+        # An exception outside the module's tracked ProbeBlocked phases
+        # carries no provable boundary; fail closed with "unknown" rather
+        # than fabricating a false "no bytes were read" claim.
+        result = {"execution_result": "BLOCKED", "status": "IMPLEMENTATION_FAILURE", "network_request_count": 0, "raw_bytes_read_for_integrity": "unknown", "child_content_inspected": False, "coverage_evaluated": False}
         code = 2
     else:
         code = 0

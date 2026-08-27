@@ -44,9 +44,20 @@ FROZEN_BINDINGS = ProbeBindings()
 
 
 class ProbeBlocked(Exception):
-    def __init__(self, outcome: str):
+    """Carries exactly which information boundary was reached at failure time.
+
+    ``raw_bytes_read_for_integrity`` is ``False`` only before any CHILD byte
+    read is attempted, ``True`` once the exact CHILD bytes were successfully
+    read (regardless of what fails afterward), and ``"unknown"`` only when a
+    byte-read attempt itself failed and whether bytes were exposed cannot be
+    proven -- it must never be fabricated ``False`` in that case.
+    """
+
+    def __init__(self, outcome: str, *, raw_bytes_read_for_integrity: bool | str = False, child_content_inspected: bool = False):
         super().__init__(outcome)
         self.outcome = outcome
+        self.raw_bytes_read_for_integrity = raw_bytes_read_for_integrity
+        self.child_content_inspected = child_content_inspected
 
 
 def normalize_full_path(path: str | Path) -> str:
@@ -58,8 +69,8 @@ def output_root_id_sha256(path: str | Path) -> str:
     return sha256(normalize_full_path(path).encode("utf-8")).hexdigest()
 
 
-def _blocked(outcome: str) -> None:
-    raise ProbeBlocked(outcome)
+def _blocked(outcome: str, *, raw_bytes_read_for_integrity: bool | str = False, child_content_inspected: bool = False) -> None:
+    raise ProbeBlocked(outcome, raw_bytes_read_for_integrity=raw_bytes_read_for_integrity, child_content_inspected=child_content_inspected)
 
 
 def _receipt_is_exact(value: object) -> bool:
@@ -127,10 +138,15 @@ def content_blind_integrity_read(raw_path: Path, meta: dict[str, Any], *, bindin
     try:
         raw = raw_path.read_bytes()
     except Exception:
-        _blocked("IMPLEMENTATION_FAILURE")
+        # A failed read attempt does not prove bytes were never exposed
+        # (e.g. a partial OS-level read before the failure); never fabricate
+        # False here.
+        _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity="unknown", child_content_inspected=False)
     digest = sha256(raw).hexdigest()
     if len(raw) != bindings.child_byte_length or digest != bindings.child_sha256 or meta.get("byte_length") != len(raw) or meta.get("sha256") != digest:
-        _blocked("IMPLEMENTATION_FAILURE")
+        # The exact CHILD bytes were successfully read before this mismatch
+        # was detected.
+        _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=False)
     return raw
 
 
@@ -147,14 +163,17 @@ def _default_structural_inspector(raw: bytes) -> dict[str, Any]:
 
 
 def _safe_structural_evidence(value: object) -> dict[str, Any]:
+    # Only ever called after the structural inspection boundary (section 4)
+    # has been reached, so a rejection here always proves the CHILD bytes
+    # were read and structural inspection was invoked.
     if not isinstance(value, dict) or value.get("status") not in OUTCOMES:
-        _blocked("IMPLEMENTATION_FAILURE")
+        _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True)
     allowed = {"status", "container_format", "open_parse_status", "sheet_table_count", "structural_dimensions", "candidate_header_column_count", "candidate_date_column_count", "candidate_value_column_count"}
     if set(value) - allowed:
-        _blocked("IMPLEMENTATION_FAILURE")
+        _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True)
     safe = {key: value[key] for key in value if key in allowed}
     if not isinstance(safe.get("status"), str):
-        _blocked("IMPLEMENTATION_FAILURE")
+        _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True)
     return safe
 
 
@@ -162,5 +181,16 @@ def run_offline_child_structural_probe(*, production_state_parent: str | Path, o
     """Run A -> B -> C; no filesystem mutation and no network path exists."""
     _meta_path, meta, raw_path = locate_metadata_only(production_state_parent=production_state_parent, output_root=output_root, bindings=bindings)
     raw = content_blind_integrity_read(raw_path, meta, bindings=bindings)
-    evidence = _safe_structural_evidence(structural_inspector(raw))
+    # Structural inspection boundary reached: the exact CHILD bytes are
+    # verified and about to be handed to the structural inspector. Any
+    # failure from this point on -- inspector exception, ProbeBlocked from an
+    # injected inspector, or safe-evidence rejection -- proves both that raw
+    # bytes were read and that structural inspection was reached.
+    try:
+        raw_structural_result = structural_inspector(raw)
+    except ProbeBlocked as exc:
+        _blocked(exc.outcome, raw_bytes_read_for_integrity=True, child_content_inspected=True)
+    except Exception:
+        _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True)
+    evidence = _safe_structural_evidence(raw_structural_result)
     return {"execution_result": "COMPLETE", "status": evidence["status"], "network_request_count": 0, "raw_bytes_read_for_integrity": True, "child_content_inspected": True, "coverage_evaluated": False, "structural_evidence": evidence}
