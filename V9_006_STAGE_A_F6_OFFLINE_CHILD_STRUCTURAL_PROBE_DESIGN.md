@@ -24,6 +24,9 @@ source_family=SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE
 applicable_period=TOPIX_GLOBAL_2017_2025
 expected_child_sha256=060d74a7f5a3b413d351de05ed07f412d093a3ebf41f6ea3d4e0de3f313b4b0c
 expected_child_byte_length=36352
+expected_output_root_id_sha256=5705fa3dae30c17a57208a1a03edbb5f4fac8a0986603ba39d21229262abbeee
+expected_one_shot_receipt_count=1
+expected_production_root_count=1
 gate_consumed=true
 authorization_reusable=false
 second_execution_allowed=false
@@ -44,25 +47,36 @@ exact-SHA review are separate prerequisites.
 
 Before any CHILD bytes are read, opened, or hashed, the future runner must
 perform this metadata-only, read-only locator phase. It must mechanically
-establish one and only one
-existing production output-root candidate from durable state, without guessing
-a path, searching a wider location, copying a lock, or using a diagnostic
-artifact. The candidate must contain exactly one complete raw/meta pair whose
-metadata claims the bound source family and applicable period above. This
-phase may read durable metadata and verify its schema and identity fields, but
-it must not read the selected CHILD `.bin`, open the payload, perform a hash,
-or perform structural/content inspection. All path, URL, receipt, and raw
-metadata strings remain internal and must never be printed.
+use only the exact machine-local `ProductionStateParent` and `OutputRoot`
+supplied as transient protected execution values by the GPT-prepared
+point-of-use command. Codex and Claude Code must not select, guess, search
+for, substitute, or derive either path; paths must not be committed or
+printed. The normalized supplied OutputRoot full path must be under the
+supplied ProductionStateParent, and the runner must compute SHA-256 over the
+exact same UTF-8 full-path representation used by the production execution
+preflight. It must equal `expected_output_root_id_sha256` in section 1.
+Otherwise, it stops before a CHILD read.
 
-The future reviewed implementation must define the exact no-guess,
-metadata-only durable-state locator before it can read the CHILD. If a unique
-candidate cannot be established from existing durable state, or any pair is
-missing, malformed, mismatched, unreadable, duplicate, or otherwise
-unverifiable, it must stop before a CHILD read with
-`CHATGPT_DECISION_REQUIRED` (for absent/ambiguous location identity) or
-`IMPLEMENTATION_FAILURE` (for corrupt/unverifiable bound state). It must not
-broaden discovery, infer a location from a path convention, repair state, or
-use another object.
+The supplied OutputRoot must exist exactly once as the selected production
+root, giving `expected_production_root_count=1`; the runner must not scan any
+other filesystem location or fall back to a diagnostic root. Under that exact
+bound OutputRoot only, metadata-only verification may read the receipt and
+raw metadata. It must prove exactly one F6 production receipt with the exact
+already-consumed binding (`expected_one_shot_receipt_count=1`) and identify
+exactly one raw/meta pair whose locked metadata and raw-lock schema have the
+bound source family and applicable period. It must reject zero, duplicate,
+malformed, mismatched, unreadable, or otherwise unverifiable receipts and
+candidates. It must never select a CHILD through a raw URL or filename guess.
+
+This phase may read durable metadata and verify its schema and identity
+fields, but it must not read the selected CHILD `.bin`, open the payload,
+perform a hash, or perform structural/content inspection. If the supplied
+OutputRoot is missing, its safe path hash does not match, the root/receipt
+binding is not exact, or the metadata candidate is not uniquely provable, it
+must stop fail-closed before a CHILD read. It must not broaden discovery,
+invent recovery, infer a location from a path convention, repair state, or
+use another object. All path, URL, receipt, and raw metadata strings remain
+internal and must never be printed.
 
 The receipt may be read only to verify its exact already-consumed state; it is
 never an authorization input. `gate_consumed=true` does not authorize any
@@ -144,7 +158,11 @@ READ_CIRCULARITY`. This remediation only separates the metadata-only locator,
 content-blind integrity read, and structural inspection phases above. It does
 not address the separate
 `V9_006_F6_STRUCTURAL_PROBE_DESIGN_MEDIUM_2_PRODUCTION_ROOT_RUNTIME_BINDING_
-UNDERSPECIFIED` finding.
+UNDERSPECIFIED` finding. The Medium-2 remediation above freezes the supplied
+point-of-use ProductionStateParent/OutputRoot binding, output-root path hash,
+production-root count, receipt count, and metadata-only CHILD selection;
+MEDIUM_2 remains `REMEDIATED_AWAITING_GPT_REVIEW` and is not self-called PASS
+or RESOLVED.
 
 ```text
 GLOBAL_CHILD_FETCH_AUTHORIZED=false
