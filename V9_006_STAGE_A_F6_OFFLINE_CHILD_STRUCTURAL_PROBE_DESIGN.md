@@ -2,7 +2,7 @@
 
 ```text
 task=V9_006_STAGE_A_F6_OFFLINE_CHILD_STRUCTURAL_PROBE_DESIGN
-status=AWAITING_GPT_REVIEW
+status=REMEDIATED_AWAITING_GPT_REVIEW
 scope=READ_ONLY_OFFLINE_STRUCTURAL_FORMAT_PROBE_ONLY
 network_authorized_by_this_task=false
 network_executed_by_this_task=false
@@ -35,21 +35,23 @@ as reusable, reset, or reused. This design grants no human authority, network
 authority, refetch, URL/provider substitution, raw-lock creation, durable
 state repair, parser implementation, coverage determination, or F6 fanout.
 
-## 2. Future execution topology and preflight
+## 2. Metadata-only locator phase
 
 The future operation must run as one atomic PowerShell block directly on the
 target Windows machine, with `$ErrorActionPreference = "Stop"` inside the
 block. It must not be held by Codex or Claude Code. Its implementation and
 exact-SHA review are separate prerequisites.
 
-Before any CHILD bytes are opened, the future runner must perform metadata-
-only, read-only preflight. It must mechanically establish one and only one
+Before any CHILD bytes are read, opened, or hashed, the future runner must
+perform this metadata-only, read-only locator phase. It must mechanically
+establish one and only one
 existing production output-root candidate from durable state, without guessing
 a path, searching a wider location, copying a lock, or using a diagnostic
 artifact. The candidate must contain exactly one complete raw/meta pair whose
-metadata claims the bound source family and applicable period above. It must
-then verify the raw-lock schema, raw/meta pair integrity, byte length, and
-SHA-256 against the binding in section 1. All path, URL, receipt, and raw
+metadata claims the bound source family and applicable period above. This
+phase may read durable metadata and verify its schema and identity fields, but
+it must not read the selected CHILD `.bin`, open the payload, perform a hash,
+or perform structural/content inspection. All path, URL, receipt, and raw
 metadata strings remain internal and must never be printed.
 
 The future reviewed implementation must define the exact no-guess,
@@ -66,13 +68,31 @@ The receipt may be read only to verify its exact already-consumed state; it is
 never an authorization input. `gate_consumed=true` does not authorize any
 network or second acquisition.
 
-## 3. Read-only structural probe
+## 3. Content-blind integrity read phase
 
-Only after section 2 succeeds may the future probe open the exact verified
-CHILD bytes, read-only, solely to identify enough format structure for a later
-GPT-reviewed deterministic parser design. It may not modify, delete, reset,
-replace, copy, relock, or repair the production output root, receipt, ROOT,
-or CHILD.
+Only after section 2 succeeds may the future probe read the exact selected
+CHILD `.bin` as opaque bytes. This phase permits only actual byte-length
+calculation, SHA-256 calculation, and exact raw/meta integrity verification.
+It must prove the expected byte length and SHA-256 from section 1 before any
+structural inspection. A length, SHA-256, or raw/meta integrity mismatch must
+STOP as `IMPLEMENTATION_FAILURE`.
+
+This opaque-byte read is not file-format parsing or structural/content
+inspection. It must not open a workbook/container, decompress for inspection,
+inspect sheets/tables/cells/headers/dates/years/values, emit structural
+evidence, evaluate or infer coverage, or emit any payload-derived evidence
+other than the bound integrity result. It accurately records that raw bytes
+were read for integrity verification, while it does not set
+`GLOBAL_CHILD_CONTENT_INSPECTED=true`.
+
+## 4. Structural inspection phase
+
+Only after section 3 proves the exact expected CHILD SHA-256 and byte length
+may the future probe open the verified CHILD bytes, read-only, solely to
+identify enough format structure for a later GPT-reviewed deterministic parser
+design. Only this phase is CHILD structural/content inspection. It may not
+modify, delete, reset, replace, copy, relock, or repair the production output
+root, receipt, ROOT, or CHILD.
 
 Permitted safe evidence is limited to structural format information:
 
@@ -91,7 +111,7 @@ date, row-level values, TOPIX/index numerical values, or a coverage verdict.
 It must not use row count, row position, neighboring dates, continuity,
 first/last observations, or numerical values to infer coverage.
 
-## 4. Safe outcomes and stopping rule
+## 5. Safe outcomes and stopping rule
 
 The future probe may emit only one safe outcome:
 
@@ -116,7 +136,15 @@ F6 coverage rule remains unchanged: only a later deterministic parser may
 derive an exact covered-year set, and no row-count, positional, continuity, or
 value-based inference is permitted.
 
-## 5. Non-effects
+## 6. Medium-1 remediation scope and non-effects
+
+The GPT review of this design at `REVIEWED_SHA=268453fb693cc90f3dc2c380c9873700bed356c6`
+identified `V9_006_F6_STRUCTURAL_PROBE_DESIGN_MEDIUM_1_PRECONTENT_INTEGRITY_
+READ_CIRCULARITY`. This remediation only separates the metadata-only locator,
+content-blind integrity read, and structural inspection phases above. It does
+not address the separate
+`V9_006_F6_STRUCTURAL_PROBE_DESIGN_MEDIUM_2_PRODUCTION_ROOT_RUNTIME_BINDING_
+UNDERSPECIFIED` finding.
 
 ```text
 GLOBAL_CHILD_FETCH_AUTHORIZED=false
