@@ -86,6 +86,20 @@ def _safe_failure(
     }
 
 
+def _safe_gate_consumed_state(output_root: object) -> bool | str:
+    """Return only proven durable gate state for reporting.
+
+    The reader is itself fail-closed, but safe failure reporting must remain
+    JSON-only even if an unexpected filesystem or reader failure escapes it.
+    No exception detail or local path may reach stdout.
+    """
+    try:
+        state = read_f6_production_acquisition_gate_consumed_state(output_root)
+    except Exception:
+        return "unknown"
+    return state if isinstance(state, bool) else "unknown"
+
+
 def _safe_success(artifact: dict[str, object]) -> dict[str, object]:
     # Only hashes, counts, statuses, and equality booleans ever reach
     # stdout -- never a raw requested/resolved URL, payload bytes, the
@@ -158,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             # Durable receipt state is the ground truth for gate_consumed,
             # never whether this Python call happened to return cleanly.
-            gate_consumed = read_f6_production_acquisition_gate_consumed_state(args.output_root)
+            gate_consumed = _safe_gate_consumed_state(args.output_root)
         _print(_safe_failure(exc.failure_class, exc.network_request_count, gate_consumed=gate_consumed))
         return 2
     except Exception:
@@ -168,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         # a V9005StageABlocked with an accurate cumulative count; this
         # branch is only for something that somehow still escaped that, so
         # the request count genuinely cannot be proven here.
-        gate_consumed = read_f6_production_acquisition_gate_consumed_state(args.output_root)
+        gate_consumed = _safe_gate_consumed_state(args.output_root)
         _print(_safe_failure("IMPLEMENTATION_FAILURE", "unknown", gate_consumed=gate_consumed))
         return 2
     finally:

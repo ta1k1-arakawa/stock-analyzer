@@ -256,3 +256,55 @@ child-content prohibition, inventory/fanout,
 `ACQUISITION_IMPLEMENTATION_COMPLETE=false`, or any F1-F5/F7 behavior. It
 is not self-called PASS by the execution agent. The next action is GPT
 exact-SHA independent review of this remediation.
+
+## High-1A remediation: fail-closed gate-state reader
+
+~~~text
+finding=V9_006_F6_PRODUCTION_RAW_IMPL_HIGH_1A_GATE_STATE_READER_FAIL_CLOSED
+REVIEWED_SHA=29562ec0bf081d3d8430b6488508af7c320501a4
+CRITICAL=0
+HIGH=1
+MEDIUM=0
+RESULT=BLOCK
+~~~
+
+The supplied review found that the reporting-only durable gate-state reader
+was not genuinely fail-closed: an unguarded receipt existence probe could
+raise on ordinary filesystem uncertainty, and a structurally invalid
+receipt with gate_consumed=false (or another non-bool value) could be
+reported as false. False must mean only that receipt absence was
+mechanically proven; every present receipt whose exact schema, task,
+confirmation identity, consumed value, or timestamp cannot be proven valid
+must be unknown.
+
+The one-finding remediation changes only the reader and the CLI reporting
+boundary. The reader now uses guarded lstat/read/JSON validation, accepts
+only a regular receipt file, checks the exact field set, schema version,
+task, confirmation contract, canonical UTC timestamp, and gate_consumed is
+True, and returns None for any uncertainty or invalidity. The CLI now
+contains a defense-in-depth reporting wrapper: even if the reader itself
+unexpectedly raises, failure stdout remains whitelist JSON with
+gate_consumed=unknown and no exception detail or local path.
+
+Synthetic offline tests prove absent receipt=false and exact valid receipt=true.
+Malformed JSON, false/non-bool gate_consumed, wrong task, identity/schema,
+invalid timestamp, lstat/read PermissionError, and other unproven state
+return None. A CLI failure whose reader raises still emits safe JSON with
+gate_consumed=unknown and no output-root path, error text, or traceback.
+The targeted command used the repository development virtual environment
+because pytest was not on PATH:
+
+~~~text
+PYTHONPATH=. .venv\Scripts\python.exe -m pytest tests/test_v9_005_stage_a_jpx_probe.py -q
+341 passed in 8.76s
+git diff --check
+clean
+SOURCE_DATA_NETWORK_REQUESTS=0
+~~~
+
+No confirmation identity, receipt-write schema/atomic no-overwrite
+behavior, ROOT->lock->locator->CHILD ordering, locator methodology, retry
+policy, network semantics, output-root semantics, F1-F5/F7 behavior,
+human-gate state, or real acquisition changed. This remediation is
+REMEDIATED_AWAITING_GPT_REVIEW and is not self-called PASS by the execution
+agent.

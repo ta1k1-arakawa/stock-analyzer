@@ -74,6 +74,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import urllib.parse
 from dataclasses import dataclass
@@ -2982,14 +2983,20 @@ def read_f6_production_acquisition_gate_consumed_state(
     anything, and is never used to decide whether a fetch may proceed.
 
     Returns True only when the exact reviewed receipt is present and
-    structurally valid with gate_consumed == True; False when output_root
-    (or the receipt within it) clearly does not exist; or None (unknown)
-    when the path exists but cannot be conclusively read/validated -- never
-    a fabricated True or False in that case.
+    structurally valid with gate_consumed == True. False means only that
+    receipt absence was mechanically proven. None (unknown) covers every
+    present-but-invalid receipt and ordinary path, stat, read, JSON, or
+    schema uncertainty -- never a fabricated True or False in that case.
     """
-    path = Path(output_root) / F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME
-    if not path.exists():
+    try:
+        path = Path(output_root) / F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME
+        path_mode = path.lstat().st_mode
+    except FileNotFoundError:
         return False
+    except Exception:
+        return None
+    if not stat.S_ISREG(path_mode):
+        return None
     try:
         receipt = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -2998,10 +3005,13 @@ def read_f6_production_acquisition_gate_consumed_state(
         not isinstance(receipt, dict)
         or set(receipt) != _F6_PRODUCTION_GATE_RECEIPT_FIELDS
         or receipt.get("schema_version") != F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_SCHEMA_VERSION
+        or receipt.get("task") != F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_TASK_ID
         or receipt.get("confirmation_contract") != F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION
+        or receipt.get("gate_consumed") is not True
+        or not _is_canonical_raw_lock_timestamp(receipt.get("consumption_timestamp_utc"))
     ):
         return None
-    return receipt.get("gate_consumed") is True
+    return True
 
 
 def run_f6_production_root_global_raw_acquisition_network(

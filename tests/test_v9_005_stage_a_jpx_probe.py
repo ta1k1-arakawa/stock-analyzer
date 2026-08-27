@@ -4957,6 +4957,16 @@ def test_f6_production_acquisition_unexpected_exception_after_child_fetch_before
     assert child_locked is None  # never durably locked
 
 
+def _valid_f6_production_gate_receipt() -> dict[str, object]:
+    return {
+        "schema_version": m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_SCHEMA_VERSION,
+        "task": m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_TASK_ID,
+        "confirmation_contract": m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION,
+        "gate_consumed": True,
+        "consumption_timestamp_utc": "2026-08-24T00:00:00Z",
+    }
+
+
 def test_read_f6_production_acquisition_gate_consumed_state_tri_state(tmp_path: Path) -> None:
     output_root = tmp_path / "out"
     assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is False  # nothing there yet
@@ -4965,8 +4975,62 @@ def test_read_f6_production_acquisition_gate_consumed_state_tri_state(tmp_path: 
     assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is False  # dir exists, no receipt
 
     receipt_path = output_root / m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME
+    receipt_path.write_bytes(m.canonical_bytes(_valid_f6_production_gate_receipt()))
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is True
+
     receipt_path.write_text("not valid json{{{", encoding="utf-8")
-    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is None  # unreadable -> unknown
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("gate_consumed", False),
+        ("gate_consumed", "true"),
+        ("gate_consumed", 1),
+        ("task", "wrong-task"),
+        ("confirmation_contract", "wrong-contract"),
+        ("schema_version", "wrong-schema"),
+        ("consumption_timestamp_utc", "not-a-canonical-timestamp"),
+    ],
+)
+def test_read_f6_production_acquisition_gate_consumed_state_invalid_receipt_is_unknown(
+    tmp_path: Path, field: str, value: object,
+) -> None:
+    output_root = tmp_path / "out"
+    output_root.mkdir()
+    receipt = _valid_f6_production_gate_receipt()
+    receipt[field] = value
+    receipt_path = output_root / m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME
+    receipt_path.write_bytes(m.canonical_bytes(receipt))
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is None
+
+
+def test_read_f6_production_acquisition_gate_consumed_state_filesystem_uncertainty_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_root = tmp_path / "out"
+
+    def denied_lstat(_path: Path) -> object:
+        raise PermissionError("synthetic durable-state probe denial")
+
+    monkeypatch.setattr(Path, "lstat", denied_lstat)
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is None
+
+
+def test_read_f6_production_acquisition_gate_consumed_state_read_uncertainty_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_root = tmp_path / "out"
+    output_root.mkdir()
+    receipt_path = output_root / m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME
+    receipt_path.write_bytes(m.canonical_bytes(_valid_f6_production_gate_receipt()))
+
+    def denied_read_text(_path: Path, *args: object, **kwargs: object) -> str:
+        raise PermissionError("synthetic durable-state read denial")
+
+    monkeypatch.setattr(Path, "read_text", denied_read_text)
+    assert m.read_f6_production_acquisition_gate_consumed_state(output_root) is None
 
 
 def test_f6_production_acquisition_never_invokes_run_stage_a_or_populates_inventory(
@@ -5145,3 +5209,36 @@ def test_cli_f6_production_failure_stdout_excludes_raw_urls_output_root_and_rece
     assert m.TOPIX_ROOT_URL not in out
     assert m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME not in out
     assert str(output_root) not in out
+
+
+def test_cli_f6_production_durable_state_reader_failure_is_safe_unknown_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(F6_PRODUCTION_CLI_CONFIRMATION_ENV, m.F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_CONFIRMATION)
+    cli = _f6_production_cli()
+    output_root = tmp_path / "sensitive-output-root"
+
+    def blocked_executor(**_kwargs: object) -> None:
+        raise m.V9005StageABlocked(m.IMPLEMENTATION_FAILURE, network_request_count=0)
+
+    def denied_reader(_root: object) -> None:
+        raise PermissionError(f"durable-state inspection denied for {output_root}")
+
+    def no_fetch(_url: str) -> m.FetchResult:
+        raise AssertionError("network fetch attempted in durable-state reporting test")
+
+    monkeypatch.setattr(cli, "run_f6_production_root_global_raw_acquisition_network", blocked_executor)
+    monkeypatch.setattr(cli, "read_f6_production_acquisition_gate_consumed_state", denied_reader)
+    monkeypatch.setattr(cli, "_production_fetcher", no_fetch)
+    exit_code = cli.main(["--output-root", str(output_root)])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.err == ""
+    payload = json.loads(captured.out.strip())
+    assert payload["execution_result"] == "BLOCKED"
+    assert payload["failure_class"] == m.IMPLEMENTATION_FAILURE
+    assert payload["network_request_count"] == 0
+    assert payload["gate_consumed"] == "unknown"
+    assert str(output_root) not in captured.out
+    assert "durable-state inspection denied" not in captured.out
+    assert "Traceback" not in captured.out
