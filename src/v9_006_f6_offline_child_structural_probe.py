@@ -14,6 +14,7 @@ import re
 from typing import Any, Callable
 
 from src.v9_005_stage_a_jpx_probe import (
+    SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
     V9005StageABlocked,
     _is_canonical_raw_lock_timestamp,
     source_object_slot_id,
@@ -21,7 +22,12 @@ from src.v9_005_stage_a_jpx_probe import (
 )
 
 
-SOURCE_FAMILY = "SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE"
+# Reused verbatim from src/v9_005_stage_a_jpx_probe.py: this is the exact
+# source_family value the real F6 production raw acquisition passes when
+# locking both ROOT and CHILD. A locally redefined literal previously
+# diverged from this canonical value (V9_006_F6_STRUCTURAL_PROBE_IMPL_
+# MEDIUM_4_SOURCE_FAMILY_BINDING_LITERAL_MISMATCH).
+SOURCE_FAMILY = SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE
 APPLICABLE_PERIOD = "TOPIX_GLOBAL_2017_2025"
 EXPECTED_OUTPUT_ROOT_ID_SHA256 = "5705fa3dae30c17a57208a1a03edbb5f4fac8a0986603ba39d21229262abbeee"
 EXPECTED_CHILD_SHA256 = "060d74a7f5a3b413d351de05ed07f412d093a3ebf41f6ea3d4e0de3f313b4b0c"

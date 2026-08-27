@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from src import v9_006_f6_offline_child_structural_probe as probe
+from src.v9_005_stage_a_jpx_probe import SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE
 from scripts import run_v9_006_f6_offline_child_structural_probe as cli
 
 
@@ -330,3 +331,43 @@ def test_cli_unproven_phase_exception_fails_closed_to_unknown(
     assert result["raw_bytes_read_for_integrity"] == "unknown"
     assert result["child_content_inspected"] is False
     assert str(parent) not in output and str(root) not in output and url not in output
+
+
+# --- MEDIUM-4: source_family binding must equal the real production value,
+# never the identifier-name string it was previously mistaken for. ---------
+
+def test_canonical_value_is_topix_historical_index_value() -> None:
+    assert SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE == "TOPIX_HISTORICAL_INDEX_VALUE"
+
+
+def test_frozen_bindings_source_family_equals_canonical_v9_005_constant() -> None:
+    assert probe.FROZEN_BINDINGS.source_family == SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE
+    assert probe.SOURCE_FAMILY == SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE
+    # Never the erroneous identifier-name string this binding used to hold.
+    assert probe.FROZEN_BINDINGS.source_family != "SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE"
+
+
+def test_candidate_using_production_constant_passes_phase_a_to_phase_b(tmp_path: Path) -> None:
+    # A synthetic candidate built with the real production source_family
+    # constant (as the actual F6 raw acquisition writes it) must pass Phase A
+    # and reach Phase B.
+    parent, root, bindings, bin_path, _url = _fixture(tmp_path)
+    meta_path, value = _read_meta(root)
+    assert value["source_family"] == SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE
+    _meta_path, meta, raw_path = probe.locate_metadata_only(production_state_parent=parent, output_root=root, bindings=bindings)
+    assert raw_path == bin_path
+    raw = probe.content_blind_integrity_read(raw_path, meta, bindings=bindings)
+    assert raw == bin_path.read_bytes()
+
+
+def test_candidate_using_erroneous_identifier_name_string_rejected_before_bin_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A candidate whose source_family field holds the old, erroneous
+    # identifier-name-as-string ("SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE")
+    # instead of the real production value must never be accepted.
+    parent, root, bindings, bin_path, _url = _fixture(tmp_path)
+    meta_path, value = _read_meta(root)
+    value["source_family"] = "SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE"
+    _write_meta(meta_path, value)
+    _assert_phase_a_blocked_without_bin_read(parent, root, bindings, bin_path, monkeypatch)

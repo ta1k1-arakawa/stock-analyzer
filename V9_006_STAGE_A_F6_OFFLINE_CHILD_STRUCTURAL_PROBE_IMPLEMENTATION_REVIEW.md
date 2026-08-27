@@ -175,3 +175,81 @@ It is recorded here as a fact for GPT-5.6 Sol to triage, not self-remediated.
 
 The execution agent does not call `MEDIUM_2` `PASS`/`RESOLVED`. GPT-5.6 Sol
 remains the final independent reviewer of this exact SHA.
+
+## MEDIUM-4 remediation: source_family binding literal mismatch
+
+```text
+finding=V9_006_F6_STRUCTURAL_PROBE_IMPL_MEDIUM_4_SOURCE_FAMILY_BINDING_LITERAL_MISMATCH
+reviewed_sha=8bd42c58e211886012acc154815ce4b2ed2cd9bd
+medium_1=RESOLVED
+medium_2=RESOLVED
+status=REMEDIATED_AWAITING_GPT_REVIEW
+open_not_in_scope=V9_006_F6_STRUCTURAL_PROBE_IMPL_MEDIUM_3_SAFE_EVIDENCE_SCHEMA_NOT_FAIL_CLOSED
+```
+
+This is the exact issue flagged (but explicitly not self-remediated, as out
+of scope) in the MEDIUM-2 section above, now confirmed by GPT-5.6 Sol as its
+own finding and authorized for a targeted fix. The v9_006 module locally
+redefined a literal, `SOURCE_FAMILY = "SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_
+VALUE"`, that froze the *identifier name* of the real production constant as
+a string, instead of that constant's actual value. The real F6 production
+raw acquisition (`run_f6_production_root_global_raw_acquisition_network` in
+`src/v9_005_stage_a_jpx_probe.py`) locks both ROOT and CHILD with
+`source_family=SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE`, a v9_005 module
+constant whose actual string value is `"TOPIX_HISTORICAL_INDEX_VALUE"` (no
+`SOURCE_FAMILY_` prefix). Unremediated, a future real run of this offline
+probe against the actual production output root would find zero qualifying
+candidates for the real production metadata and fail closed to
+`CHATGPT_DECISION_REQUIRED`, never reaching Phase B/C.
+
+Remediation imports `SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE` directly
+from `src/v9_005_stage_a_jpx_probe.py` and sets
+`SOURCE_FAMILY = SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE`, reusing the
+canonical constant rather than redefining a divergent literal.
+`ProbeBindings.source_family` (used by `FROZEN_BINDINGS`) now equals the
+real production value through this single reused binding.
+`APPLICABLE_PERIOD = "TOPIX_GLOBAL_2017_2025"` is unchanged. No other
+constant, phase boundary, structural evidence schema, or MEDIUM-1/MEDIUM-2
+behavior was touched; the test fixture already referenced `probe.
+SOURCE_FAMILY` symbolically, so it now automatically builds synthetic
+candidates against the corrected canonical value with no fixture-construction
+change required.
+
+```text
+TARGETED_TEST_COMMAND=PYTHONPATH=. python3 -m pytest tests/test_v9_006_f6_offline_child_structural_probe.py -q
+TESTS_RUN=43
+TESTS_PASSED=43
+TESTS_FAILED=0
+PRODUCTION_CHILD_READS=0
+CHILD_CONTENT_INSPECTED=false
+SOURCE_DATA_NETWORK_REQUESTS=0
+HUMAN_GATES_CONSUMED=0
+DEPENDENCIES_CHANGED=false
+```
+
+New targeted synthetic regression tests cover: `SOURCE_FAMILY_TOPIX_
+HISTORICAL_INDEX_VALUE == "TOPIX_HISTORICAL_INDEX_VALUE"` directly against
+the real v9_005 constant; `FROZEN_BINDINGS.source_family` (and `probe.
+SOURCE_FAMILY`) equals that canonical value and no longer equals the old
+erroneous identifier-name string; a synthetic candidate built with the real
+production constant passes Phase A and reaches Phase B; and a candidate
+whose `source_family` field holds the old erroneous identifier-name string
+is rejected before any `.bin` read (with preserved false/false Phase-A
+provenance). All 20 MEDIUM-1 and all 19 MEDIUM-2 tests remain passing
+unchanged (39 prior + 4 new = 43). Test execution used the Claude Code Cloud
+Linux environment's `python3` with `pytest` installed in-session; the
+reviewed Windows `.venv\Scripts\python.exe` command itself was not executed,
+and no repository dependency file or canonical Windows environment was
+touched.
+
+No production CHILD/path/raw state access, network request, human-gate
+consumption/reuse, structural-evidence-schema change, dependency change, or
+F6 coverage-methodology/design/source-identity change occurred.
+`GLOBAL_CHILD_FETCH_AUTHORIZED=false`; `GLOBAL_CHILD_FETCHED=true`;
+`GLOBAL_CHILD_CONTENT_INSPECTED=false`;
+`V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=false`;
+`V9_006_STAGE_A_NETWORK_AUTHORIZED=false`; `V9_006_STAGE_A_EXECUTED=false`;
+`ACQUISITION_IMPLEMENTATION_COMPLETE=false`.
+
+The execution agent does not call `MEDIUM_4` `PASS`/`RESOLVED`. GPT-5.6 Sol
+remains the final independent reviewer of this exact SHA.
