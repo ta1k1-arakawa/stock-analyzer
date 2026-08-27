@@ -13,6 +13,13 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
+from src.v9_005_stage_a_jpx_probe import (
+    V9005StageABlocked,
+    _is_canonical_raw_lock_timestamp,
+    source_object_slot_id,
+    validate_jpx_url,
+)
+
 
 SOURCE_FAMILY = "SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE"
 APPLICABLE_PERIOD = "TOPIX_GLOBAL_2017_2025"
@@ -77,20 +84,36 @@ def _receipt_is_exact(value: object) -> bool:
     return isinstance(value, dict) and set(value) == {"schema_version", "task", "confirmation_contract", "gate_consumed", "consumption_timestamp_utc"} and value.get("schema_version") == RECEIPT_SCHEMA and value.get("task") == RECEIPT_TASK and value.get("confirmation_contract") == RECEIPT_CONTRACT and value.get("gate_consumed") is True and isinstance(value.get("consumption_timestamp_utc"), str)
 
 
-def _metadata_is_schema_valid(value: object, bindings: ProbeBindings) -> bool:
+def _metadata_is_schema_valid(value: object, meta_path: Path, bindings: ProbeBindings) -> bool:
+    """Canonical V9 raw-lock provenance validation, metadata-only (no .bin
+    read). Reuses the existing repository raw-lock URL/timestamp/key
+    semantics from src/v9_005_stage_a_jpx_probe.py rather than inventing
+    divergent rules."""
     if not isinstance(value, dict) or set(value) != RAW_FIELDS:
         return False
-    return (
-        value.get("schema_version") == "V9_005_STAGE_A_RAW_LOCK_V1"
-        and value.get("source_family") == bindings.source_family
-        and value.get("applicable_period") == bindings.applicable_period
-        and isinstance(value.get("requested_url"), str) and bool(value["requested_url"])
-        and isinstance(value.get("resolved_url"), str) and bool(value["resolved_url"])
-        and isinstance(value.get("http_status"), int) and not isinstance(value["http_status"], bool)
-        and isinstance(value.get("byte_length"), int) and not isinstance(value["byte_length"], bool)
-        and isinstance(value.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is not None
-        and isinstance(value.get("retrieval_timestamp_utc"), str)
-    )
+    if (
+        value.get("schema_version") != "V9_005_STAGE_A_RAW_LOCK_V1"
+        or value.get("source_family") != bindings.source_family
+        or value.get("applicable_period") != bindings.applicable_period
+        or isinstance(value.get("http_status"), bool)
+        or not isinstance(value.get("http_status"), int)
+        or not 100 <= value["http_status"] <= 599
+        or isinstance(value.get("byte_length"), bool)
+        or not isinstance(value.get("byte_length"), int)
+        or not isinstance(value.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", value["sha256"]) is None
+        or not _is_canonical_raw_lock_timestamp(value.get("retrieval_timestamp_utc"))
+    ):
+        return False
+    requested_url = value.get("requested_url")
+    resolved_url = value.get("resolved_url")
+    try:
+        validate_jpx_url(requested_url)
+        validate_jpx_url(resolved_url)
+    except V9005StageABlocked:
+        return False
+    expected_key = source_object_slot_id(bindings.source_family, bindings.applicable_period, requested_url)
+    return meta_path.stem == expected_key
 
 
 def locate_metadata_only(*, production_state_parent: str | Path, output_root: str | Path, bindings: ProbeBindings = FROZEN_BINDINGS) -> tuple[Path, dict[str, Any], Path]:
@@ -122,7 +145,7 @@ def locate_metadata_only(*, production_state_parent: str | Path, output_root: st
         except Exception:
             _blocked("IMPLEMENTATION_FAILURE")
         if isinstance(meta, dict) and meta.get("source_family") == bindings.source_family and meta.get("applicable_period") == bindings.applicable_period:
-            if not _metadata_is_schema_valid(meta, bindings):
+            if not _metadata_is_schema_valid(meta, meta_path, bindings):
                 _blocked("IMPLEMENTATION_FAILURE")
             raw_path = meta_path.with_suffix(".bin")
             if not raw_path.is_file():

@@ -28,18 +28,44 @@ def _fixture(tmp_path: Path, payload: bytes = b"PK\x03\x04synthetic") -> tuple[P
         "confirmation_contract": probe.RECEIPT_CONTRACT, "gate_consumed": True,
         "consumption_timestamp_utc": "2026-08-27T00:00:00Z",
     }), encoding="utf-8")
-    secret_url = "https://private.example.invalid/child"
-    meta_path = raw / ("a" * 64 + ".json")
+    # A canonical synthetic candidate: a valid JPX-domain URL and a metadata
+    # filename equal to the real repository raw-lock key derived from it, per
+    # the canonical semantics in src/v9_005_stage_a_jpx_probe.py.
+    synthetic_url = "https://www.jpx.co.jp/english/markets/indices/topix/synthetic-fixture-child"
+    key = probe.source_object_slot_id(probe.SOURCE_FAMILY, probe.APPLICABLE_PERIOD, synthetic_url)
+    meta_path = raw / (key + ".json")
     bin_path = meta_path.with_suffix(".bin")
     bin_path.write_bytes(payload)
     meta_path.write_text(json.dumps({
         "schema_version": "V9_005_STAGE_A_RAW_LOCK_V1", "source_family": probe.SOURCE_FAMILY,
-        "applicable_period": probe.APPLICABLE_PERIOD, "requested_url": secret_url,
-        "resolved_url": secret_url, "http_status": 200,
+        "applicable_period": probe.APPLICABLE_PERIOD, "requested_url": synthetic_url,
+        "resolved_url": synthetic_url, "http_status": 200,
         "retrieval_timestamp_utc": "2026-08-27T00:00:00Z", "byte_length": len(payload),
         "sha256": sha256(payload).hexdigest(),
     }), encoding="utf-8")
-    return parent, root, _bindings(root, payload), bin_path, secret_url
+    return parent, root, _bindings(root, payload), bin_path, synthetic_url
+
+
+def _read_meta(root: Path) -> tuple[Path, dict[str, object]]:
+    meta_path = next((root / "raw").glob("*.json"))
+    return meta_path, json.loads(meta_path.read_text(encoding="utf-8"))
+
+
+def _write_meta(meta_path: Path, value: dict[str, object]) -> None:
+    meta_path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def _assert_phase_a_blocked_without_bin_read(
+    parent: Path, root: Path, bindings: probe.ProbeBindings, bin_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_read = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda self: (_ for _ in ()).throw(AssertionError("bin read")) if self == bin_path else original_read(self))
+    with pytest.raises(probe.ProbeBlocked) as raised:
+        probe.locate_metadata_only(production_state_parent=parent, output_root=root, bindings=bindings)
+    # Every Phase-A rejection must preserve accurate false/false provenance:
+    # no CHILD byte was ever read.
+    assert raised.value.raw_bytes_read_for_integrity is False
+    assert raised.value.child_content_inspected is False
 
 
 def test_metadata_locator_and_default_unsupported_are_safe(tmp_path: Path) -> None:
@@ -85,6 +111,77 @@ def test_metadata_failures_do_not_read_bin(tmp_path: Path, kind: str, monkeypatc
     monkeypatch.setattr(Path, "read_bytes", lambda self: (_ for _ in ()).throw(AssertionError("bin read")) if self == bin_path else original_read(self))
     with pytest.raises(probe.ProbeBlocked):
         probe.locate_metadata_only(production_state_parent=parent, output_root=root, bindings=bindings)
+
+
+def test_off_domain_requested_url_rejected_before_bin_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    parent, root, bindings, bin_path, _url = _fixture(tmp_path)
+    meta_path, value = _read_meta(root)
+    value["requested_url"] = "https://private.example.invalid/child"
+    _write_meta(meta_path, value)
+    _assert_phase_a_blocked_without_bin_read(parent, root, bindings, bin_path, monkeypatch)
+
+
+def test_off_domain_resolved_url_rejected_before_bin_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    parent, root, bindings, bin_path, _url = _fixture(tmp_path)
+    meta_path, value = _read_meta(root)
+    value["resolved_url"] = "https://private.example.invalid/child"
+    _write_meta(meta_path, value)
+    _assert_phase_a_blocked_without_bin_read(parent, root, bindings, bin_path, monkeypatch)
+
+
+@pytest.mark.parametrize(
+    "bad_timestamp",
+    ["2026-08-27 00:00:00Z", "2026-08-27T00:00:00", "2026/08/27T00:00:00Z", "not-a-timestamp", "2026-08-27T00:00:00+00:00"],
+)
+def test_noncanonical_timestamp_rejected_before_bin_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_timestamp: str) -> None:
+    parent, root, bindings, bin_path, _url = _fixture(tmp_path)
+    meta_path, value = _read_meta(root)
+    value["retrieval_timestamp_utc"] = bad_timestamp
+    _write_meta(meta_path, value)
+    _assert_phase_a_blocked_without_bin_read(parent, root, bindings, bin_path, monkeypatch)
+
+
+@pytest.mark.parametrize("bad_status", [99, 600, True, "200", 0])
+def test_invalid_http_status_rejected_before_bin_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_status: object) -> None:
+    parent, root, bindings, bin_path, _url = _fixture(tmp_path)
+    meta_path, value = _read_meta(root)
+    value["http_status"] = bad_status
+    _write_meta(meta_path, value)
+    _assert_phase_a_blocked_without_bin_read(parent, root, bindings, bin_path, monkeypatch)
+
+
+def test_wrong_metadata_filename_key_rejected_before_bin_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Metadata content is otherwise entirely valid; only the filename stem /
+    # raw-lock key diverges from the canonical key derived from its own
+    # source_family + applicable_period + requested_url.
+    parent, root, bindings, bin_path, _url = _fixture(tmp_path)
+    meta_path, _value = _read_meta(root)
+    wrong_stem = "f" * 64
+    new_meta_path = meta_path.parent / (wrong_stem + ".json")
+    new_bin_path = meta_path.parent / (wrong_stem + ".bin")
+    meta_path.rename(new_meta_path)
+    bin_path.rename(new_bin_path)
+    _assert_phase_a_blocked_without_bin_read(parent, root, bindings, new_bin_path, monkeypatch)
+
+
+@pytest.mark.parametrize("bad_sha", ["0" * 63, "0" * 65, "g" * 64, "A" * 64, "0" * 63 + "Z"])
+def test_malformed_sha_rejected_before_bin_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_sha: str) -> None:
+    parent, root, bindings, bin_path, _url = _fixture(tmp_path)
+    meta_path, value = _read_meta(root)
+    value["sha256"] = bad_sha
+    _write_meta(meta_path, value)
+    _assert_phase_a_blocked_without_bin_read(parent, root, bindings, bin_path, monkeypatch)
+
+
+def test_canonical_synthetic_candidate_reaches_phase_b(tmp_path: Path) -> None:
+    # A fully canonical synthetic candidate (valid JPX-domain URLs, canonical
+    # timestamp/status/SHA format, and a filename equal to the real
+    # repository raw-lock key) must pass Phase A and reach Phase B.
+    parent, root, bindings, bin_path, _url = _fixture(tmp_path)
+    meta_path, meta, raw_path = probe.locate_metadata_only(production_state_parent=parent, output_root=root, bindings=bindings)
+    assert raw_path == bin_path
+    raw = probe.content_blind_integrity_read(raw_path, meta, bindings=bindings)
+    assert raw == bin_path.read_bytes()
 
 
 @pytest.mark.parametrize("kind", ["sha", "length", "meta"])
