@@ -1,0 +1,179 @@
+{
+  "by_fold": [
+    {
+      "fold": 1,
+      "max_drawdown_percent": 3.78213343,
+      "profit": 136749.10260609,
+      "skip_counts": {
+        "SKIPPED_MAX_OPEN_POSITIONS": 168,
+        "SKIPPED_NO_FUTURE_DATA": 5
+      },
+      "trades": 59,
+      "wins": 36
+    },
+    {
+      "fold": 2,
+      "max_drawdown_percent": 9.03320774,
+      "profit": 71912.41577929,
+      "skip_counts": {
+        "SKIPPED_MAX_OPEN_POSITIONS": 154,
+        "SKIPPED_NO_FUTURE_DATA": 3
+      },
+      "trades": 58,
+      "wins": 37
+    },
+    {
+      "fold": 3,
+      "max_drawdown_percent": 14.24665152,
+      "profit": 87111.43325307,
+      "skip_counts": {
+        "SKIPPED_MAX_OPEN_POSITIONS": 219,
+        "SKIPPED_NO_FUTURE_DATA": 4
+      },
+      "trades": 61,
+      "wins": 35
+    }
+  ],
+  "coordinate_evaluations": 1800,
+  "coordinate_passes": 3,
+  "failed_check_count": 0,
+  "failed_checks": [],
+  "initial_rules": {
+    "1570": {
+      "code": "1570",
+      "stop_loss_percent": 5.0,
+      "target_percent": 2.0,
+      "threshold": 0.2,
+      "validation_score": 100326.78164188
+    },
+    "4188": {
+      "code": "4188",
+      "stop_loss_percent": 5.0,
+      "target_percent": 1.0,
+      "threshold": 0.2,
+      "validation_score": 158915.22343181
+    },
+    "4689": {
+      "code": "4689",
+      "stop_loss_percent": 5.0,
+      "target_percent": 3.0,
+      "threshold": 0.15,
+      "validation_score": 92550.55736031
+    },
+    "5020": {
+      "code": "5020",
+      "stop_loss_percent": 3.0,
+      "target_percent": 1.0,
+      "threshold": 0.15,
+      "validation_score": 105603.98877202
+    },
+    "7211": {
+      "code": "7211",
+      "stop_loss_percent": 3.0,
+      "target_percent": 1.5,
+      "threshold": 0.3,
+      "validation_score": 74162.08805228
+    },
+    "7267": {
+      "code": "7267",
+      "stop_loss_percent": 2.0,
+      "target_percent": 2.0,
+      "threshold": 0.3,
+      "validation_score": 44082.81928713
+    },
+    "8306": {
+      "code": "8306",
+      "stop_loss_percent": 5.0,
+      "target_percent": 1.0,
+      "threshold": 0.15,
+      "validation_score": 128808.13096182
+    },
+    "9432": {
+      "code": "9432",
+      "stop_loss_percent": 2.0,
+      "target_percent": 1.0,
+      "threshold": 0.2,
+      "validation_score": 33290.8137266
+    }
+  },
+  "max_stock_profit_share": 22.88501636,
+  "min_fold_profit": 71912.41577929,
+  "month_win_rate": 94.73684211,
+  "positive_folds": 3,
+  "profit_by_stock": {
+    "1570": 62288.602,
+    "4188": 44836.70034199,
+    "4689": 29449.60403776,
+    "5020": 8924.88379944,
+    "7211": 58112.79162365,
+    "7267": 26646.49206016,
+    "8306": 68332.79894347,
+    "9432": -2818.92116802
+  },
+  "selected_rules": {
+    "1570": {
+      "code": "1570",
+      "stop_loss_percent": 3.0,
+      "target_percent": 2.5,
+      "threshold": 0.2,
+      "validation_score": 44257.65304491
+    },
+    "4188": {
+      "code": "4188",
+      "stop_loss_percent": 2.0,
+      "target_percent": 1.0,
+      "threshold": 0.4,
+      "validation_score": 21306.13260495
+    },
+    "4689": {
+      "code": "4689",
+      "stop_loss_percent": 2.0,
+      "target_percent": 1.5,
+      "threshold": 0.5,
+      "validation_score": 52017.13460882
+    },
+    "5020": {
+      "code": "5020",
+      "stop_loss_percent": 3.0,
+      "target_percent": 2.0,
+      "threshold": 0.15,
+      "validation_score": 70942.78057813
+    },
+    "7211": {
+      "code": "7211",
+      "stop_loss_percent": 3.0,
+      "target_percent": 1.0,
+      "threshold": 0.3,
+      "validation_score": -54931.48052225
+    },
+    "7267": {
+      "code": "7267",
+      "stop_loss_percent": 2.0,
+      "target_percent": 2.0,
+      "threshold": 0.3,
+      "validation_score": 44082.81928713
+    },
+    "8306": {
+      "code": "8306",
+      "stop_loss_percent": 5.0,
+      "target_percent": 1.0,
+      "threshold": 0.15,
+      "validation_score": 128808.13096182
+    },
+    "9432": {
+      "code": "9432",
+      "stop_loss_percent": 2.0,
+      "target_percent": 1.0,
+      "threshold": 0.15,
+      "validation_score": 29865.16259225
+    }
+  },
+  "selection_status": "PASS",
+  "skip_counts": {
+    "SKIPPED_MAX_OPEN_POSITIONS": 541,
+    "SKIPPED_NO_FUTURE_DATA": 12
+  },
+  "total_profit": 295772.95163845,
+  "trade_count": 178,
+  "worst_max_drawdown_percent": 14.24665152
+}

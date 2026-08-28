@@ -10,6 +10,7 @@ import logging
 
 import pandas as pd
 import pandas_ta as ta  # noqa: F401 — DataFrame.ta accessor を有効化
+from src.trade_simulator import simulate_execution
 
 from src import LOGGER_NAME
 
@@ -132,6 +133,9 @@ def create_target_variable(
     target_percent: float,
     entry_slippage_percent: float = 0.0,
     exit_slippage_percent: float = 0.0,
+    stop_loss_percent: float = 0.0,
+    stop_slippage_percent: float = 0.0,
+    commission_percent: float = 0.0,
 ) -> pd.DataFrame:
     """
     AIの正解データを作成する。
@@ -144,20 +148,10 @@ def create_target_variable(
 
     df = df.copy()
 
-    # エントリー価格 = 翌日の始値 (Shift -1)
-    buy_price = df["Open"].shift(-1) * (1 + entry_slippage_percent / 100)
-
-    # エグジット価格 = N日後の終値 (Shift -N)
-    sell_price = df["Close"].shift(-future_days) * (1 - exit_slippage_percent / 100)
-
-    # 収益率 (%)
-    return_percent = (sell_price - buy_price) / buy_price * 100
-
-    # 正解ラベル付け
-    # future_days 先の終値がまだ存在しない直近行は未確定のため、学習対象から外す。
     df["Target"] = pd.Series(pd.NA, index=df.index, dtype="Int64")
-    valid_idx = return_percent.notna()
-    df.loc[valid_idx, "Target"] = 0
-    df.loc[valid_idx & (return_percent >= target_percent), "Target"] = 1
+    for pos in range(len(df)):
+        execution = simulate_execution(df, pos, future_days, stop_loss_percent, entry_slippage_percent, exit_slippage_percent, stop_slippage_percent, commission_percent)
+        if execution is not None:
+            df.iloc[pos, df.columns.get_loc("Target")] = int(execution.return_percent >= target_percent)
 
     return df
