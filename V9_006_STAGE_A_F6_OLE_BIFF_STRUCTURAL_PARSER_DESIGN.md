@@ -2,7 +2,9 @@
 
 ```text
 task=V9_006_F6_DETERMINISTIC_OLE_BIFF_STRUCTURAL_PARSER_DESIGN
-status=CANDIDATE_AWAITING_GPT_REVIEW
+status=REMEDIATED_AWAITING_GPT_REVIEW
+medium_1=V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_MEDIUM_1_SAFE_PROFILE_TOPOLOGY_UNDERSPECIFIED
+medium_1_status=REMEDIATED_AWAITING_GPT_REVIEW
 scope=STRUCTURAL_FORMAT_PARSER_DESIGN_ONLY_NO_COVERAGE_NO_IMPLEMENTATION
 network_authorized_by_this_task=false
 network_executed_by_this_task=false
@@ -119,16 +121,36 @@ Safe structural evidence extends
 already-reviewed and already-`RESOLVED` closed schema
 (`container_format`, `open_parse_status`, `sheet_table_count`,
 `structural_dimensions` with `ordinal`/`row_count`/`column_count`/
-`visibility`/`object_type`) with one new nested category: a per-column
+`visibility`/`object_type`) with one new nested category, frozen under the
+new top-level safe-evidence key `cell_type_profiles`: a per-column
 cell-storage/type profile. No existing top-level key, enum member, or
 schema constraint from that prior remediation chain (MEDIUM-1 through
 MEDIUM-4 and HIGH-1) is loosened, removed, or bypassed by this design.
 
-### 5.1 Top-level and per-sheet fields (unchanged from the reviewed schema)
+**MEDIUM-1 remediation note**
+(`V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_MEDIUM_1_SAFE_PROFILE_
+TOPOLOGY_UNDERSPECIFIED`): the original version of this section named the
+new nested category but did not freeze the exact top-level key, nor enough
+cardinality/topology invariants for a future validator to mechanically
+prove complete, duplicate-free workbook coverage. Sections 5.1-5.7 below
+are the exact, closed contract that remediates this; they supersede the
+prior draft's looser wording, not the prior remediation chain's own
+already-`RESOLVED` schema, which they only extend.
+
+### 5.1 Frozen new top-level key
+
+```text
+cell_type_profiles
+```
+
+This is the exact, frozen name of the new top-level safe-evidence key. No
+other name, alias, or synonym may be used.
+
+### 5.2 Per-sheet fields (unchanged from the reviewed schema)
 
 ```text
 status                          in {STRUCTURAL_FORMAT_CAPTURED, STRUCTURAL_FORMAT_UNSUPPORTED, STRUCTURAL_FORMAT_AMBIGUOUS, CHATGPT_DECISION_REQUIRED, IMPLEMENTATION_FAILURE}
-container_format                = "OLE_COMPOUND_FILE"   (already established; unchanged by this stage)
+container_format                in {OLE_COMPOUND_FILE, ZIP_CONTAINER, UNKNOWN_CONTAINER}   (already-reviewed enum; section 5.3 below further fixes its value for STRUCTURAL_FORMAT_CAPTURED specifically)
 open_parse_status                in {PARSER_NOT_IMPLEMENTED, OPEN_PARSE_OK, OPEN_PARSE_UNSUPPORTED, OPEN_PARSE_AMBIGUOUS}
 sheet_table_count                non-bool int >= 0
 
@@ -147,12 +169,50 @@ given sheet, the future implementation records `UNKNOWN` for that sheet's
 `visibility` rather than guessing, omitting the field, or emitting anything
 else.
 
-### 5.2 New: per-column cell-storage/type profile (nested closed schema)
+### 5.3 Exact required payload for `STRUCTURAL_FORMAT_CAPTURED`
 
-For every sheet, for every column ordinal in that sheet's structural used
-range (1-based, left to right), the future implementation records exactly
-one profile object using only these closed BIFF/`xlrd` cell-type
-categories:
+When, and only when, `status == STRUCTURAL_FORMAT_CAPTURED`, the safe
+structural-evidence payload must contain **exactly** these six top-level
+keys -- no fewer, no more, and none of the prior schema's optional
+`candidate_header_column_count`/`candidate_date_column_count`/
+`candidate_value_column_count` keys, which are not part of this stage's
+`CAPTURED` payload:
+
+```text
+status                = "STRUCTURAL_FORMAT_CAPTURED"
+container_format      = "OLE_COMPOUND_FILE"     (fixed value, not merely enum membership -- already established at section 1)
+open_parse_status     = "OPEN_PARSE_OK"          (fixed value, not merely enum membership -- CAPTURED implies a successful open/parse)
+sheet_table_count      non-bool int >= 0
+structural_dimensions  a list (see 5.4)
+cell_type_profiles      a list (see 5.5)
+```
+
+### 5.4 `structural_dimensions` cardinality/topology invariants (for `CAPTURED`)
+
+```text
+type(structural_dimensions)                  = list
+len(structural_dimensions)                   = sheet_table_count
+{item.ordinal for item in structural_dimensions} = {1, 2, ..., sheet_table_count}   (exactly once each)
+order                                         = ordinal ascending == workbook order
+```
+
+Every ordinal `1..sheet_table_count` appears in `structural_dimensions`
+exactly once; there is no gap, no duplicate, and no ordinal outside that
+exact range.
+
+### 5.5 `cell_type_profiles`: per-item schema and per-sheet cardinality
+
+Each `cell_type_profiles` item must have **exactly** these three keys, no
+other:
+
+```text
+sheet_ordinal      non-bool int >= 1
+column_ordinal      non-bool int >= 1
+cell_type_counts     an object (see below)
+```
+
+`cell_type_counts` must have **exactly** these seven keys, no other, each a
+non-bool integer `>= 0`:
 
 ```text
 EMPTY
@@ -169,36 +229,70 @@ These map one-to-one onto `xlrd`'s own closed cell-type constants
 `XL_CELL_DATE`, `XL_CELL_BOOLEAN`, `XL_CELL_ERROR`) -- this design reuses
 `xlrd`'s own type taxonomy rather than inventing a divergent one.
 
+For every sheet ordinal `s` present in `structural_dimensions` (with that
+sheet's own `column_count` and `row_count`):
+
 ```text
-cell_type_profile:
-  sheet_ordinal                  matches a structural_dimensions[i].ordinal
-  column_ordinal                 non-bool int >= 1, 1-based
-  cell_type_counts:
-    EMPTY                        non-bool int >= 0
-    BLANK                        non-bool int >= 0
-    TEXT                         non-bool int >= 0
-    NUMBER                       non-bool int >= 0
-    DATE                         non-bool int >= 0
-    BOOLEAN                      non-bool int >= 0
-    ERROR                        non-bool int >= 0
+count(profiles with sheet_ordinal == s)            = structural_dimensions[s].column_count
+{profile.column_ordinal for profile with sheet_ordinal == s} = {1, 2, ..., column_count}   (exactly once each)
+if column_count == 0                                : zero profiles reference sheet s
+for every such profile                              : sum(its seven cell_type_counts values) == structural_dimensions[s].row_count
 ```
 
-Only `sheet_ordinal`, `column_ordinal`, and the seven closed-category
-nonnegative counts may appear in a `cell_type_profile` entry -- no other
-key, and no free-form nested value of any kind. Within one sheet, the sum
-of every column's seven counts equals that sheet's `row_count` (every cell
-in the structural used range has exactly one BIFF cell type); a future
-implementation should treat a violation of that invariant as
-`IMPLEMENTATION_FAILURE`, since it would indicate the profile does not
+Every column ordinal `1..column_count` for sheet `s` appears exactly once
+among the profiles referencing sheet `s`; if that sheet's `column_count` is
+`0`, no profile may reference it at all. Every profile's seven counts sum
+exactly to its sheet's `row_count`, since every cell in the structural used
+range has exactly one BIFF cell type -- this is a hard requirement, not
+merely a should: a future implementation must treat any violation as
+`IMPLEMENTATION_FAILURE`, since it would prove the profile does not
 actually describe the claimed used range.
 
-### 5.3 What must never be emitted
+Therefore, across the whole payload:
+
+```text
+len(cell_type_profiles) = sum(structural_dimensions[s].column_count for every sheet s)
+```
+
+No `cell_type_profiles` entry may reference a `sheet_ordinal` absent from
+`structural_dimensions`, or a `column_ordinal` outside `1..column_count`
+for its sheet. No two entries may share the same `(sheet_ordinal,
+column_ordinal)` pair. A future implementation must reject -- fail closed,
+never silently drop or de-duplicate -- any payload violating any invariant
+in this section or section 5.4.
+
+### 5.6 Non-`CAPTURED` statuses: existing contract preserved, unbroadened
+
+For every `status` value other than `STRUCTURAL_FORMAT_CAPTURED`
+(`STRUCTURAL_FORMAT_UNSUPPORTED`, `STRUCTURAL_FORMAT_AMBIGUOUS`,
+`CHATGPT_DECISION_REQUIRED`, `IMPLEMENTATION_FAILURE`), the `cell_type_
+profiles` key **must be absent** -- never present as an empty list, never
+`null`, never any other placeholder. The prior, already-`RESOLVED`
+safe-evidence contract for those outcomes (the optional `container_format`/
+`open_parse_status`/`sheet_table_count`/`structural_dimensions`/
+`candidate_*_column_count` fields and their existing per-field validation)
+is otherwise unchanged and unbroadened by this design; section 5.3's exact
+six-key `CAPTURED`-only payload does not apply to them.
+
+### 5.7 Canonical ordering (part of deterministic evidence identity)
+
+```text
+structural_dimensions   ordered by sheet ordinal ascending
+cell_type_profiles       ordered by sheet ordinal ascending, then column ordinal ascending (within each sheet)
+```
+
+This ordering is part of the deterministic evidence identity required by
+section 7 below -- the same exact CHILD bytes and reviewed environment must
+produce evidence in this exact canonical order, not merely the same
+multiset of entries.
+
+### 5.8 What must never be emitted
 
 Regardless of nesting depth or field name, the future implementation must
 never emit: raw bytes; a raw URL; a machine-local path; a sheet or table
 name or any other cell text; a header string or its hash; a cell value in
 any form; a format string or its hash; a date or year; a row-level value;
-or a coverage result. Counts and dimensions (sections 5.1-5.2) are the only
+or a coverage result. Counts and dimensions (sections 5.2-5.5) are the only
 permitted payload-derived signal, and only in the closed, bounded,
 enumerated forms specified above.
 
@@ -220,9 +314,11 @@ many distinct years, are present.
 same_exact_child_bytes_plus_same_reviewed_xlrd_environment => identical_structural_evidence
 sheet_and_column_ordinals                                   = 1-based
 enumeration_order                                            = workbook order
+canonical_output_ordering                                    = section 5.7 (structural_dimensions and cell_type_profiles ordering)
 heuristic_sheet_selection                                    = prohibited
 favorable_subset_selection                                   = prohibited
 sheet_and_column_coverage                                     = ALL sheets, ALL columns in each sheet's structural used range
+cardinality_and_topology_invariants                           = sections 5.3-5.5 (exact payload keys, exact counts, no unknown/duplicate references)
 count_type                                                    = exact nonnegative integers only (non-bool)
 unknown_or_new_xlrd_cell_type                                 = IMPLEMENTATION_FAILURE (never silent mapping to an existing category)
 ```
@@ -234,6 +330,10 @@ one of its seven documented constants above must stop the run as
 `IMPLEMENTATION_FAILURE` rather than be silently folded into an existing
 category or dropped -- this design would rather fail closed than let a
 future `xlrd` behavior change quietly corrupt the structural profile.
+Deterministic evidence identity requires both the exact same evidence
+values (sections 5.1-5.6) and the exact same canonical ordering
+(section 5.7); two runs that agree on content but disagree on order are not
+identical evidence.
 
 ## 8. Safe outcomes (unchanged)
 
@@ -252,7 +352,7 @@ IMPLEMENTATION_FAILURE
 ## 9. `STRUCTURAL_FORMAT_CAPTURED` grants no coverage-parser authority
 
 `STRUCTURAL_FORMAT_CAPTURED` means only that a safe structural profile
-(sections 5.1-5.2) was captured under this design's constraints. It is not
+(sections 5.1-5.7) was captured under this design's constraints. It is not
 a parser PASS for any coverage purpose, not a covered-year result, not an
 F6 availability result, and not authorization to inspect further or to
 begin coverage-parser implementation. After a future real execution of the
@@ -267,12 +367,24 @@ A future implementation of this design must, at minimum:
 
 - extend `src/v9_006_f6_offline_child_structural_probe.py`'s existing
   `_safe_structural_evidence` closed-schema validator (already independently
-  reviewed and `RESOLVED` through MEDIUM-3/MEDIUM-3A) with an exact nested
-  closed schema for the per-column `cell_type_profile` entries defined in
-  section 5.2 -- closed key set, closed nonnegative-integer-only value
-  types, no arbitrary or free-form nested values, and total (non-crashing)
-  validation for arbitrary malformed/unhashable input, exactly as the
-  existing enum/dimension validators already are;
+  reviewed and `RESOLVED` through MEDIUM-3/MEDIUM-3A) to mechanically
+  enforce, fail-closed and without crashing on arbitrary malformed or
+  unhashable input, **every** condition in sections 5.1-5.7: the frozen
+  `cell_type_profiles` key name; the exact six-key `CAPTURED`-only payload
+  and its fixed `container_format`/`open_parse_status` values;
+  `structural_dimensions`'s exact length/ordinal-set/ordering invariants;
+  each `cell_type_profiles` item's exact three-key shape and each
+  `cell_type_counts`'s exact seven-key, nonnegative-integer-only shape; the
+  per-sheet profile-count/column-ordinal-set/zero-column invariants; the
+  per-profile sum-equals-row-count invariant; the cross-payload
+  `len(cell_type_profiles) == sum(column_count)` invariant; the
+  no-unknown-sheet/no-out-of-range-column/no-duplicate-pair invariants; the
+  mandatory absence of `cell_type_profiles` for every non-`CAPTURED`
+  status; and the canonical ordering of both `structural_dimensions` and
+  `cell_type_profiles`. Any single violation of any of these must reject
+  the payload the same way the existing validator already fails closed for
+  its current schema -- never accept a partially-invalid payload, never
+  silently repair, reorder, deduplicate, or truncate it;
 - reuse `xlrd==2.0.2` from the canonical protected environment
   (`.venv-real-execution`) exclusively -- no pandas, no network, no new
   dependency;
@@ -304,3 +416,64 @@ policy, authority, or GLOBAL fanout rule, and creates no additional CHILD
 read authority, no parser-implementation authority, no network authority,
 and no human-gate consumption. It is not self-called `PASS`. The next
 action is GPT exact-SHA independent methodology review of this design.
+
+## GPT design review
+
+```text
+REVIEWED_SHA=bcebc76cd975c559c56feabb55dd9eb90b5199b8
+PARENT_SHA=27ef2cf31d7cf2acbf9d0cdd3fa43aa889d91862
+CRITICAL=0
+HIGH=0
+MEDIUM=1
+LOW=0
+RESULT=BLOCK
+MEDIUM_1=V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_MEDIUM_1_SAFE_PROFILE_TOPOLOGY_UNDERSPECIFIED
+```
+
+Finding: the design correctly specified all-sheet/all-column enumeration
+and the closed per-column cell-type profile object, but did not freeze the
+exact top-level JSON location/shape of the profile collection, nor enough
+cardinality/topology invariants for a future validator to mechanically
+prove complete, duplicate-free workbook coverage.
+
+Remediation (this revision): freezes the new top-level key exactly as
+`cell_type_profiles` (5.1); fixes the exact required six-key payload shape
+for `STRUCTURAL_FORMAT_CAPTURED` with `container_format=OLE_COMPOUND_FILE`
+and `open_parse_status=OPEN_PARSE_OK` fixed values (5.3); freezes
+`structural_dimensions`'s exact length/ordinal-set/ordering invariants for
+`CAPTURED` (5.4); freezes each `cell_type_profiles` item's exact three-key
+shape and each `cell_type_counts`'s exact seven-key shape, the per-sheet
+profile-count/column-ordinal-set/zero-column invariants, the per-profile
+sum-equals-row-count invariant (now a hard requirement, not merely
+"should"), the cross-payload total-count invariant, and the
+no-unknown/no-out-of-range/no-duplicate-reference invariants (5.5);
+freezes that `cell_type_profiles` must be absent -- never present, never
+empty, never null -- for every non-`CAPTURED` status, while explicitly
+preserving and not broadening the existing prior safe-evidence contract for
+those outcomes (5.6); freezes canonical output ordering for both
+`structural_dimensions` and `cell_type_profiles` as part of deterministic
+evidence identity (5.7); and strengthens the required future
+implementation-review scope (section 10) to require the extended validator
+mechanically enforce every one of these conditions fail-closed and
+non-crashing for arbitrary malformed input, never partially accept, repair,
+reorder, deduplicate, or truncate a violating payload.
+
+Unchanged by this remediation: the `xlrd==2.0.2` decision (section 2); the
+CHILD identity/root/integrity binding (section 1); the Phase A/B/C
+boundaries (inherited from
+`V9_006_STAGE_A_F6_OFFLINE_CHILD_STRUCTURAL_PROBE_DESIGN.md`, untouched);
+`V9_006_STAGE_A_F6_GLOBAL_COVERAGE_METHODOLOGY.md`'s coverage methodology
+(section 3, section 6); the allowed safe-outcome enum (section 8); every
+network/refetch rule (section 1); every human-gate rule (section 1); and
+every date/year/value/coverage prohibition (sections 3, 5.8, 6). No parser
+was implemented in this remediation; no production CHILD/path/raw state
+was accessed; no network request was made beyond `git fetch`/`push`; no
+human gate was consumed; no coverage was evaluated.
+
+```text
+V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_MEDIUM_1_SAFE_PROFILE_TOPOLOGY_UNDERSPECIFIED=REMEDIATED_AWAITING_GPT_REVIEW
+V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN=BLOCK
+```
+
+This design is not self-called `PASS`, and `MEDIUM_1` is not self-called
+`RESOLVED`. GPT-5.6 Sol remains the final methodology/review authority.
