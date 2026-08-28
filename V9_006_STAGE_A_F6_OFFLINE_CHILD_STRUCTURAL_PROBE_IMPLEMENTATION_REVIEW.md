@@ -496,17 +496,21 @@ literal mismatch), all `RESOLVED`, with zero new `CRITICAL`/`HIGH`/`MEDIUM`
 findings. `V9_006_STAGE_A_F6_OFFLINE_CHILD_STRUCTURAL_PROBE_IMPLEMENTATION`
 is now `PASS`.
 
-## Canonical Windows execution evidence
+## Windows general-project-venv execution evidence
 
 ```text
+finding_note=RELABELED_BY_HIGH_1_REMEDIATION_BELOW -- see that section for
+the exact wording correction; the numeric evidence below is unchanged.
 execution_performed_by=HUMAN_OPERATOR
 execution_environment=WINDOWS_POWERSHELL_LOCAL_MACHINE
-canonical_python_interpreter=LOCAL_REPOSITORY_.venv_PYTHON
+python_interpreter_used=LOCAL_REPOSITORY_GENERAL_PROJECT_.venv_PYTHON (NOT
+the protected `.venv-real-execution` canonical real-execution environment
+defined in AI_REAL_EXECUTION_RUNBOOK.md SS15)
 exact_head=59dbf0081372c0bb559d03b457e629b9b11db639
 targeted_test_command=PYTHONPATH=. .venv\Scripts\python.exe -m pytest tests/test_v9_006_f6_offline_child_structural_probe.py -q
-CANONICAL_WINDOWS_TESTS_RUN=77
-CANONICAL_WINDOWS_TESTS_PASSED=77
-CANONICAL_WINDOWS_TESTS_FAILED=0
+WINDOWS_GENERAL_PROJECT_VENV_TESTS_RUN=77
+WINDOWS_GENERAL_PROJECT_VENV_TESTS_PASSED=77
+WINDOWS_GENERAL_PROJECT_VENV_TESTS_FAILED=0
 elapsed_seconds=1.32
 TARGETED_TEST=PASS
 GIT_DIFF_CHECK=PASS
@@ -517,31 +521,118 @@ REAL_NETWORK_REQUESTS=0
 HUMAN_GATES_CONSUMED=0
 ```
 
-This canonical Windows-grounded targeted-test rerun was performed by the
-human operator on their local machine, directly against the same exact
+This Windows-grounded targeted-test rerun was performed by the human
+operator on their local machine, directly against the same exact
 `tests/test_v9_006_f6_offline_child_structural_probe.py` at head
-`59dbf0081372c0bb559d03b457e629b9b11db639`, using the repository's canonical
-local `.venv` interpreter. **Claude did not execute this Windows command --
-all Windows-grounded execution in this repository's governance is reserved
-to the human operator or direct-PowerShell entrypoints, never Claude Code
-Cloud.** It supersedes, for readiness purposes, the earlier stale-command-
-reporting LOW concern noted against this implementation's synthetic test
-provenance: the exact reviewed SHA now has an independently human-executed,
-canonical-environment, 77/77-passing confirmation, in addition to (not
-replacing) the separate Claude Code Cloud Linux synthetic runs already
-recorded above, which remain distinct evidence of the same test suite
-passing in the non-canonical development/CI environment.
+`59dbf0081372c0bb559d03b457e629b9b11db639`, using the repository's general
+project `.venv` interpreter. **Claude did not execute this Windows command
+-- all Windows-grounded execution in this repository's governance is
+reserved to the human operator or direct-PowerShell entrypoints, never
+Claude Code Cloud.** It closes, for test-command provenance purposes only,
+the earlier stale-command-reporting LOW concern noted against this
+implementation's synthetic test provenance: the exact reviewed SHA now has
+an independently human-executed, 77/77-passing confirmation using the exact
+command previously only claimed, in addition to (not replacing) the
+separate Claude Code Cloud Linux synthetic runs already recorded above,
+which remain distinct evidence of the same test suite passing in the
+non-canonical development/CI environment.
 
 No production CHILD/path/raw state was read, no network request was made,
 no human authorization gate was consumed or reused, and no coverage was
-evaluated by either the canonical Windows rerun or this recording task.
-`GLOBAL_CHILD_FETCH_AUTHORIZED=false`; `GLOBAL_CHILD_FETCHED=true`;
-`GLOBAL_CHILD_CONTENT_INSPECTED=false`;
+evaluated by either this Windows rerun or the recording task that first
+logged it. `GLOBAL_CHILD_FETCH_AUTHORIZED=false`; `GLOBAL_CHILD_FETCHED=
+true`; `GLOBAL_CHILD_CONTENT_INSPECTED=false`;
 `V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=false`;
 `V9_006_STAGE_A_NETWORK_AUTHORIZED=false`; `V9_006_STAGE_A_EXECUTED=false`;
 `ACQUISITION_IMPLEMENTATION_COMPLETE=false`; `future_profitability_
-established=false` all remain unchanged. This PASS establishes readiness of
-the offline structural-probe implementation only; it grants no network,
-production-CHILD-content-inspection, coverage-evaluation, human-gate, or
-design-freeze authority. GPT-5.6 Sol remains the final independent review
-authority for any future change to this implementation.
+established=false` all remain unchanged.
+
+## HIGH-1 remediation: general .venv misclassified as protected canonical environment
+
+```text
+finding=V9_006_F6_FINAL_RECORD_HIGH_1_GENERAL_VENV_MISCLASSIFIED_AS_PROTECTED_CANONICAL_ENVIRONMENT
+reviewed_sha=7cd7cbaa889f88072e1ab592c94139f023d0952d
+parent_sha=59dbf0081372c0bb559d03b457e629b9b11db639
+CRITICAL=0
+HIGH=1
+MEDIUM=0
+RESULT=BLOCK
+status=REMEDIATED_AWAITING_GPT_REVIEW
+```
+
+The implementation review of `59dbf0081372c0bb559d03b457e629b9b11db639`
+itself remains `PASS` with `CRITICAL=0`/`HIGH=0`/`MEDIUM=0`; `MEDIUM_1`
+through `MEDIUM_4` above remain `RESOLVED` and are not reopened by this
+finding.
+
+Finding: the section immediately above (previously titled "Canonical
+Windows execution evidence") mislabeled the human operator's genuinely
+passing Windows targeted-test run as using a "canonical" interpreter and
+described the run itself as a "canonical Windows-grounded" / "canonical-
+environment" execution. `AI_REAL_EXECUTION_RUNBOOK.md` SS15 explicitly and
+unambiguously defines:
+
+```text
+.venv                 = GENERAL_PROJECT_ENVIRONMENT_NOT_AUTHORIZED_FOR_PROTECTED_EXECUTION
+.venv-real-execution   = CANONICAL_PROTECTED_REAL_EXECUTION_ENVIRONMENT
+```
+
+The evidence recorded used `.venv\Scripts\python.exe` -- the general
+project environment, never authorized for protected execution -- not
+`.venv-real-execution\Scripts\python.exe`. Calling that run "canonical" and
+advancing `PROJECT_STATE.md.current_stage` to a "ready for GPT-prepared
+production offline execution" stage on that basis, without any protected-
+environment readiness verification (interpreter identity, dependency
+closure, environment lock/fingerprint per SS15-SS19), was therefore
+incorrect and jumped a required readiness gate.
+
+Remediation is a wording and state-classification correction only, applied
+to this doc and `PROJECT_STATE.md`; the underlying test evidence itself is
+unchanged and remains valid as exactly what it always was -- a genuine,
+human-executed, general-project-`.venv` targeted implementation test:
+
+- The section above is relabeled "Windows general-project-venv execution
+  evidence"; its `CANONICAL_WINDOWS_TESTS_*` keys are renamed
+  `WINDOWS_GENERAL_PROJECT_VENV_TESTS_*`; its `canonical_python_interpreter`
+  key is renamed `python_interpreter_used` and now states explicitly that
+  `.venv` is *not* the protected `.venv-real-execution` canonical
+  real-execution environment; all "canonical"/"canonical-environment"
+  language describing the interpreter or the execution itself is removed.
+  The exact preserved numbers are unchanged: `77 passed`, `0 failed`,
+  `elapsed_seconds=1.32`, `git diff --check` PASS, clean working tree,
+  `PRODUCTION_CHILD_READS=0`, `REAL_NETWORK_REQUESTS=0`,
+  `COVERAGE_EVALUATED=false`, `HUMAN_GATES_CONSUMED=0`.
+- `PROJECT_STATE.md`'s `V9_006_F6_STRUCTURAL_PROBE_IMPL_CANONICAL_WINDOWS_
+  TARGETED_TEST=PASS` key is renamed
+  `V9_006_F6_STRUCTURAL_PROBE_IMPL_WINDOWS_GENERAL_PROJECT_VENV_TARGETED_
+  TEST=PASS`.
+- The stale-test-command-provenance LOW closure is re-recorded to state
+  explicitly that it concerns test-command provenance only and does **not**
+  establish protected real-execution environment readiness.
+- A new `V9_006_F6_STRUCTURAL_PROBE_PROTECTED_ENVIRONMENT_READINESS=
+  PENDING` state is added: no `.venv-real-execution` interpreter
+  verification, dependency-closure check, or environment lock/fingerprint
+  has been performed for this implementation, so protected real-execution
+  readiness is not established and is not claimed.
+- `PROJECT_STATE.md.current_stage` moves from the premature "ready for
+  GPT-prepared production offline execution" stage back to
+  `PREFREEZE_FREE_SOURCE_PROBE_STAGE_A_F6_OFFLINE_CHILD_STRUCTURAL_PROBE_
+  IMPLEMENTATION_PASS_PENDING_PROTECTED_ENVIRONMENT_PREFLIGHT`.
+
+`V9_006_STAGE_A_F6_OFFLINE_CHILD_STRUCTURAL_PROBE_IMPLEMENTATION=PASS` and
+`MEDIUM_1`/`MEDIUM_2`/`MEDIUM_3`/`MEDIUM_4=RESOLVED` are preserved
+unchanged -- this finding is about environment-readiness classification and
+stage-advancement wording, not the implementation's correctness. No
+production CHILD/path/raw state access, network request, human-gate
+consumption/reuse, Python execution, or dependency/environment change
+occurred in this docs-only remediation task. `GLOBAL_CHILD_FETCH_
+AUTHORIZED=false`; `GLOBAL_CHILD_FETCHED=true`; `GLOBAL_CHILD_CONTENT_
+INSPECTED=false`; `V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=false`;
+`V9_006_STAGE_A_NETWORK_AUTHORIZED=false`; `V9_006_STAGE_A_EXECUTED=false`;
+`ACQUISITION_IMPLEMENTATION_COMPLETE=false`; `future_profitability_
+established=false` all remain unchanged.
+
+The execution agent does not call `HIGH_1` `PASS`/`RESOLVED`. GPT-5.6 Sol
+remains the final independent review authority for any future change to
+this implementation, including the eventual protected-environment
+readiness verification this finding leaves `PENDING`.
