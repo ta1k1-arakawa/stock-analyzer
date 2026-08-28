@@ -27,6 +27,17 @@ or review real PowerShell execution. The runbook supplies mandatory stable
 operational safety and does not weaken any frozen study or task-specific
 rule.
 
+For important design/implementation/review orchestration tasks (deciding
+how many findings to batch into one remediation, when a design vs.
+implementation checkpoint applies, or when a prior result needs an
+immediate recording commit vs. can be folded into the next task), also read
+`AI_RESEARCH_CHECKPOINT_WORKFLOW.md`. It only governs task-batching and
+review-checkpoint cadence to reduce orchestration round trips; it creates
+no new authority and never weakens research integrity, provenance, human
+gates, STOP discipline, or GPT exact-SHA review authority. It never
+overrides this file, `AI_RESEARCH_EXECUTION_RULES.md`,
+`AI_REAL_EXECUTION_RUNBOOK.md`, or any task-specific frozen design.
+
 ---
 
 # Evaluator v2 rules

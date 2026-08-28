@@ -4,7 +4,9 @@
 task=V9_006_F6_DETERMINISTIC_OLE_BIFF_STRUCTURAL_PARSER_DESIGN
 status=REMEDIATED_AWAITING_GPT_REVIEW
 medium_1=V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_MEDIUM_1_SAFE_PROFILE_TOPOLOGY_UNDERSPECIFIED
-medium_1_status=REMEDIATED_AWAITING_GPT_REVIEW
+medium_1_status=RESOLVED
+medium_2=V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_MEDIUM_2_XLRD_PARSE_AND_USED_RANGE_SEMANTICS_UNDERSPECIFIED
+medium_2_status=REMEDIATED_AWAITING_GPT_REVIEW
 scope=STRUCTURAL_FORMAT_PARSER_DESIGN_ONLY_NO_COVERAGE_NO_IMPLEMENTATION
 network_authorized_by_this_task=false
 network_executed_by_this_task=false
@@ -64,17 +66,30 @@ directly from memory with the canonical protected environment's reviewed
 `xlrd==2.0.2` (`REAL_EXECUTION_PYTHON_ENVIRONMENT.md` sections 4-5 and 7;
 the same pin already in the frozen seven-package environment lock). It
 does **not** use `pandas.read_excel` or any other pandas entry point for
-this structural stage, and it performs no network access:
+this structural stage, and it performs no network access. The exact open
+call, with every keyword argument frozen, is:
 
 ```python
 import xlrd
-book = xlrd.open_workbook(file_contents=verified_child_bytes)
+book = xlrd.open_workbook(
+    file_contents=verified_child_bytes,
+    formatting_info=True,
+    on_demand=False,
+    ragged_rows=False,
+)
 ```
 
 `file_contents=` opens directly from the in-memory bytes already proven, in
 Phase B of the structural-probe design, to match the exact expected SHA-256
 and byte length -- never a fresh path/file read, never a re-fetch, and
-never bytes obtained any other way. Bypassing pandas at this stage is
+never bytes obtained any other way. No path or filename input is ever
+passed to `xlrd`. `formatting_info=True` is required for the cell-type
+model this design relies on; `on_demand=False` loads every sheet eagerly
+(no lazy/partial sheet loading that could make enumeration order- or
+timing-dependent); `ragged_rows=False` is `xlrd`'s default and is stated
+explicitly here so it is frozen, not merely assumed. No retry and no
+recovery attempt wraps this call: it either returns a `Book` or raises,
+handled exactly per section 2.1. Bypassing pandas at this stage is
 deliberate: `xlrd` exposes the legacy BIFF sheet/cell/type model directly,
 without pandas' DataFrame-shaped abstraction, which is what per-cell
 structural typing (section 5 below) requires. This does not change
@@ -82,6 +97,33 @@ structural typing (section 5 below) requires. This does not change
 (`pandas` + `xlrd==2.0.2`) or its reviewed environment lock; it only
 specifies which of those two already-reviewed packages this particular
 structural stage uses.
+
+### 2.1 Open handling and failure classification
+
+```text
+xlrd.open_workbook(...) returns a Book                                          => open_parse_status = OPEN_PARSE_OK
+xlrd raises its documented format/open-rejection exception before a Book exists => status = STRUCTURAL_FORMAT_UNSUPPORTED, open_parse_status = OPEN_PARSE_UNSUPPORTED
+any other exception, anywhere in the open call or the extraction pipeline
+that follows it, not explicitly classified above                                => status = IMPLEMENTATION_FAILURE
+```
+
+`xlrd`'s own documented exception for a file it recognizes as not a valid,
+supported, or readable BIFF/OLE2 workbook is `xlrd.biffh.XLRDError`; that
+exception, raised by `xlrd.open_workbook` itself before any `Book` object
+exists, is exactly the "format/open rejection" case above. Every other
+exception -- from the open call, from sheet/row/column access, or from
+per-cell type inspection (section 5.10) -- that is not itself one of this
+design's other explicitly classified fail-closed conditions (an unknown
+cell-type code, a topology-invariant violation, etc., each already mapped
+to `IMPLEMENTATION_FAILURE` where they are defined) is likewise
+`IMPLEMENTATION_FAILURE`. This makes exception classification total across
+the entire parser: every reachable failure has exactly one classification,
+and none falls through unclassified.
+
+The future implementation must never emit exception text, traceback
+content, or any other free-form error detail in its safe result -- only the
+closed `status`/`open_parse_status` enum values above, per section 5.8's
+existing "what must never be emitted" list.
 
 ## 3. Structural-only scope: explicit non-derivation list
 
@@ -158,16 +200,21 @@ structural_dimensions[i]:
   ordinal                        non-bool int >= 1, unique, 1-based, workbook order
   row_count                      non-bool int >= 0   (sheet's structural used-range row count)
   column_count                   non-bool int >= 0   (sheet's structural used-range column count)
-  visibility                     in {VISIBLE, HIDDEN, VERY_HIDDEN, UNKNOWN}   ("mechanically available" below)
+  visibility                     in {VISIBLE, HIDDEN, VERY_HIDDEN, UNKNOWN}   (exact mapping/fail-closed rule below)
   object_type                    = "WORKSHEET"
 ```
 
-`visibility` uses the closed enum if the environment's reviewed `xlrd`
-mechanically exposes per-sheet visibility (BIFF visibility state: visible /
-hidden / very hidden); if that mechanism is unavailable or raises for a
-given sheet, the future implementation records `UNKNOWN` for that sheet's
-`visibility` rather than guessing, omitting the field, or emitting anything
-else.
+`visibility` is fixed to the exact three-way mapping from `xlrd`'s own
+per-sheet BIFF visibility value: `0 => VISIBLE`, `1 => HIDDEN`,
+`2 => VERY_HIDDEN`. Any other value `xlrd` returns for a sheet's
+visibility, or any failure to access that value for a given sheet, is
+**not** recorded as `UNKNOWN` -- it stops the whole run as
+`IMPLEMENTATION_FAILURE` (per section 2.1's exception-classification
+rule), never a guess, an omitted field, or a silently substituted value.
+`UNKNOWN` remains part of the closed `visibility` enum inherited unchanged
+from the prior, already-`RESOLVED` schema (it is not removed), but this
+specific `xlrd`-based extraction procedure has no path that legitimately
+produces it.
 
 ### 5.3 Exact required payload for `STRUCTURAL_FORMAT_CAPTURED`
 
@@ -296,6 +343,52 @@ or a coverage result. Counts and dimensions (sections 5.2-5.5) are the only
 permitted payload-derived signal, and only in the closed, bounded,
 enumerated forms specified above.
 
+### 5.9 Frozen sheet/row/column extraction mechanics
+
+```python
+sheet_table_count = book.nsheets          # exact; no filter, no exclusion
+for i in range(book.nsheets):
+    sheet = book.sheet_by_index(i)
+    ordinal = i + 1                        # emitted, 1-based
+    row_count = sheet.nrows                # exact; no trim/recompute/normalization/inference
+    column_count = sheet.ncols             # exact; no trim/recompute/normalization/inference
+```
+
+`sheet_table_count` is exactly `book.nsheets` -- every sheet `xlrd` reports,
+with no filtering by visibility, name, content, or any other criterion.
+Enumeration is `i = 0 .. book.nsheets - 1` in that exact order, via
+`book.sheet_by_index(i)`; the emitted `ordinal` is `i + 1`. `row_count` and
+`column_count` are exactly `sheet.nrows`/`sheet.ncols` as `xlrd` reports
+them for that sheet -- never trimmed, recomputed from cell content,
+normalized, or otherwise inferred. A `STRUCTURAL_FORMAT_CAPTURED`
+`structural_dimensions` item has exactly the five keys already frozen in
+section 5.2 (`ordinal`, `row_count`, `column_count`, `visibility`,
+`object_type`); `object_type` is fixed to `"WORKSHEET"` for every item, as
+already stated.
+
+### 5.10 Frozen cell-profiling extraction mechanics
+
+```python
+for rowx in range(sheet.nrows):
+    for colx in range(sheet.ncols):
+        cell_type = sheet.cell_type(rowx, colx)   # type only -- never cell_value/row_values/col_values
+        # increment exactly one of the seven frozen cell_type_counts buckets
+```
+
+For every sheet, for every `(rowx, colx)` in `range(sheet.nrows) x
+range(sheet.ncols)` (0-based, matching `xlrd`'s own indexing), the future
+implementation inspects only `sheet.cell_type(rowx, colx)` and increments
+exactly one of the seven frozen `cell_type_counts` buckets (section 5.5).
+It must never call `sheet.cell_value`, `sheet.row_values`, `sheet.col_values`,
+or any other value-returning `xlrd` accessor, for any cell, at any point --
+type inspection and value inspection are different API surfaces, and only
+the former is ever invoked. No cell may be skipped, sampled, or trimmed
+based on its value or its type; every cell in the sheet's full
+`nrows x ncols` grid is inspected and counted exactly once. A cell-type
+code that is not one of `xlrd`'s seven documented constants (section 5.5)
+stops the run as `IMPLEMENTATION_FAILURE`, per section 2.1 and section 7 --
+never silently mapped to an existing category, never dropped.
+
 ## 6. No coverage inference from structural evidence
 
 Cell-type counts, row counts, column counts, and sheet dimensions are
@@ -330,8 +423,9 @@ one of its seven documented constants above must stop the run as
 `IMPLEMENTATION_FAILURE` rather than be silently folded into an existing
 category or dropped -- this design would rather fail closed than let a
 future `xlrd` behavior change quietly corrupt the structural profile.
-Deterministic evidence identity requires both the exact same evidence
-values (sections 5.1-5.6) and the exact same canonical ordering
+Deterministic evidence identity requires the exact same evidence values
+(sections 5.1-5.6), computed via the exact same frozen extraction mechanics
+(sections 2, 2.1, 5.9, 5.10), and the exact same canonical ordering
 (section 5.7); two runs that agree on content but disagree on order are not
 identical evidence.
 
@@ -352,7 +446,9 @@ IMPLEMENTATION_FAILURE
 ## 9. `STRUCTURAL_FORMAT_CAPTURED` grants no coverage-parser authority
 
 `STRUCTURAL_FORMAT_CAPTURED` means only that a safe structural profile
-(sections 5.1-5.7) was captured under this design's constraints. It is not
+(sections 5.1-5.7, produced via the frozen extraction mechanics of
+sections 2, 2.1, 5.9, and 5.10) was captured under this design's
+constraints. It is not
 a parser PASS for any coverage purpose, not a covered-year result, not an
 F6 availability result, and not authorization to inspect further or to
 begin coverage-parser implementation. After a future real execution of the
@@ -388,6 +484,12 @@ A future implementation of this design must, at minimum:
 - reuse `xlrd==2.0.2` from the canonical protected environment
   (`.venv-real-execution`) exclusively -- no pandas, no network, no new
   dependency;
+- open the CHILD bytes with the exact frozen `xlrd.open_workbook(...)`
+  call and keyword arguments (section 2), classify open/extraction
+  exceptions exactly per section 2.1, extract sheet/row/column structure
+  exactly per section 5.9, and profile cell types exactly per section
+  5.10 -- never a path/filename input, never `cell_value`/`row_values`/
+  `col_values`, never a retry or recovery attempt around the open call;
 - preserve every existing Phase A/B/C boundary, the existing
   `raw_bytes_read_for_integrity`/`child_content_inspected` phase-provenance
   contract, and every existing safe-outcome/enum value unchanged; and
@@ -477,3 +579,86 @@ V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN=BLOCK
 
 This design is not self-called `PASS`, and `MEDIUM_1` is not self-called
 `RESOLVED`. GPT-5.6 Sol remains the final methodology/review authority.
+
+## GPT design review (MEDIUM-1 closure, MEDIUM-2 finding)
+
+```text
+REVIEWED_SHA=8ee844d8b94964ea4d1b2a3f7909fd4d224035ae
+PARENT_SHA=bcebc76cd975c559c56feabb55dd9eb90b5199b8
+CRITICAL=0
+HIGH=0
+MEDIUM=1
+LOW=0
+RESULT=BLOCK
+MEDIUM_1=RESOLVED
+MEDIUM_2=V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_MEDIUM_2_XLRD_PARSE_AND_USED_RANGE_SEMANTICS_UNDERSPECIFIED
+```
+
+`MEDIUM_1` (safe-profile topology) is `RESOLVED`. Finding `MEDIUM_2`: the
+design froze the closed evidence schema and its topology but not the exact
+`xlrd` open call/parameters, the exact sheet/row/column/cell extraction API
+calls, the exact visibility-value mapping's failure behavior, or the exact
+open/extraction exception classification -- leaving room for two compliant
+implementations to disagree on used-range semantics or failure
+classification from the same exact bytes and environment.
+
+### MEDIUM-2 remediation
+
+- Section 2 now freezes the exact `xlrd.open_workbook(file_contents=...,
+  formatting_info=True, on_demand=False, ragged_rows=False)` call, with no
+  path/filename input, no pandas, no retry, and no recovery attempt around
+  it.
+- New section 2.1 freezes open/extraction exception classification: a
+  successful `Book` => `OPEN_PARSE_OK`; `xlrd.biffh.XLRDError` raised
+  before a `Book` exists => `STRUCTURAL_FORMAT_UNSUPPORTED` +
+  `OPEN_PARSE_UNSUPPORTED`; every other exception anywhere in the open
+  call or the extraction pipeline that follows, not otherwise classified,
+  => `IMPLEMENTATION_FAILURE`. No exception text or free-form detail is
+  ever emitted.
+- Section 5.2's `visibility` fallback is corrected: `0/1/2` map exactly to
+  `VISIBLE`/`HIDDEN`/`VERY_HIDDEN`; any other value or inaccessibility is
+  no longer recorded as `UNKNOWN` -- it now stops the run as
+  `IMPLEMENTATION_FAILURE`. `UNKNOWN` remains part of the inherited closed
+  enum (not removed); this extraction procedure simply has no path that
+  legitimately produces it.
+- New section 5.9 freezes exact sheet/row/column extraction:
+  `sheet_table_count = book.nsheets`; enumeration `i = 0..nsheets-1` via
+  `book.sheet_by_index(i)`, emitted `ordinal = i + 1`; `row_count =
+  sheet.nrows` and `column_count = sheet.ncols` exactly, with no trim,
+  recompute, normalization, or inference.
+- New section 5.10 freezes exact cell profiling: for every `(rowx, colx)`
+  in the sheet's full `nrows x ncols` grid, inspect only
+  `sheet.cell_type(rowx, colx)` and increment exactly one of the seven
+  frozen `cell_type_counts` buckets; `cell_value`/`row_values`/
+  `col_values` are never called; no cell is skipped or trimmed by value or
+  type; an unrecognized cell-type code is `IMPLEMENTATION_FAILURE`.
+- Section 10's implementation-review scope gained one bullet requiring the
+  implementation to follow sections 2/2.1/5.9/5.10's exact extraction
+  procedure, not merely the output schema.
+- Cross-references to "sections 5.1-5.6/5.7" in sections 7 and 9 were
+  extended to note they are produced via the frozen extraction mechanics
+  of sections 2, 2.1, 5.9, and 5.10.
+
+The complete MEDIUM-1 topology remediation (sections 5.1, 5.3-5.8) is
+preserved unchanged by this revision.
+
+### Bounded design-closure sweep
+
+```text
+CLOSURE_SWEEP_EXTRA_FIXES=Pinned the exact exception type (xlrd.biffh.XLRDError) that triggers the "format/open rejection" branch of section 2.1's open-handling classification, and generalized that classification into a total rule covering every other exception anywhere in the open call or post-open extraction pipeline (section 2.1). This is a direct, non-methodological consequence of the already-frozen three-way open-handling classification (OPEN_PARSE_OK / STRUCTURAL_FORMAT_UNSUPPORTED+OPEN_PARSE_UNSUPPORTED / IMPLEMENTATION_FAILURE) supplied for this remediation -- it only pins which exact exception class realizes the middle branch and closes the classification so no exception anywhere in the reachable extraction pipeline is left unclassified. No coverage/date/year methodology, source/CHILD identity, evaluation/sample/threshold rule, dependency/version, outcome enum, Phase A/B/C boundary, network/refetch/gate policy, or allowed-evidence-category choice was made or changed.
+```
+
+No other remaining mechanical ambiguity requiring a methodological choice
+was found in this sweep; nothing else triggered `CHATGPT_DECISION_REQUIRED`.
+
+```text
+V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_MEDIUM_1_SAFE_PROFILE_TOPOLOGY_UNDERSPECIFIED=RESOLVED
+V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_MEDIUM_2_XLRD_PARSE_AND_USED_RANGE_SEMANTICS_UNDERSPECIFIED=REMEDIATED_AWAITING_GPT_REVIEW
+V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN=BLOCK
+```
+
+No parser was implemented, no Python was run, no production CHILD/path/raw
+state was accessed, no coverage was evaluated, no human gate was consumed,
+and no network request was made beyond `git fetch`/`push`. This design is
+not self-called `PASS`, and `MEDIUM_2` is not self-called `RESOLVED`.
+GPT-5.6 Sol remains the final methodology/review authority.
