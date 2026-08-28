@@ -334,6 +334,63 @@ def test_malformed_structural_evidence_rejected_true_true(tmp_path: Path, bad_ev
     _assert_phase_c_evidence_rejected(parent, root, bindings, bad_evidence)
 
 
+# --- MEDIUM-3A: closed-set enum membership checks must be total for
+# arbitrary (including unhashable) Python objects -- `x in a_frozenset`
+# raises TypeError for a list/dict, which must never escape as an ordinary
+# exception. Every case here must raise ProbeBlocked(true, true), never
+# TypeError. ---------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "bad_evidence",
+    [
+        {"status": []},
+        {"status": {}},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "container_format": []},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "container_format": {}},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "open_parse_status": []},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "open_parse_status": {}},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 1, "visibility": []}]},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 1, "visibility": {}}]},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 1, "object_type": []}]},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 1, "object_type": {}}]},
+    ],
+)
+def test_unhashable_enum_value_rejected_as_probeblocked_never_typeerror(tmp_path: Path, bad_evidence: object) -> None:
+    # pytest.raises(probe.ProbeBlocked) inside the shared helper lets any
+    # other exception type (e.g. TypeError from an unguarded frozenset
+    # membership check) propagate and fail the test, so this also proves
+    # the rejection is specifically ProbeBlocked, never TypeError.
+    parent, root, bindings, _bin, _url = _fixture(tmp_path)
+    _assert_phase_c_evidence_rejected(parent, root, bindings, bad_evidence)
+
+
+def test_unexpected_safe_evidence_exception_after_phase_c_reports_true_true_not_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Simulates a genuinely unanticipated bug inside safe-evidence validation
+    # (not one of the specifically-handled malformed-value cases): it must
+    # still be converted to a Phase-C ProbeBlocked(true, true) by
+    # run_offline_child_structural_probe's own boundary handling, not allowed
+    # to escape as a raw exception. If it escaped, the CLI's generic
+    # exception handler (see test_cli_unproven_phase_exception_fails_closed_
+    # to_unknown) would incorrectly report unknown/false for a failure that
+    # in fact occurred after Phase C began.
+    parent, root, bindings, _bin, _url = _fixture(tmp_path)
+
+    def _raise_unexpected(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated unanticipated safe-evidence bug")
+
+    monkeypatch.setattr(probe, "_safe_structural_evidence", _raise_unexpected)
+    with pytest.raises(probe.ProbeBlocked) as raised:
+        probe.run_offline_child_structural_probe(
+            production_state_parent=parent, output_root=root, bindings=bindings,
+            structural_inspector=lambda _raw: {"status": "STRUCTURAL_FORMAT_CAPTURED"},
+        )
+    assert raised.value.outcome == "IMPLEMENTATION_FAILURE"
+    assert raised.value.raw_bytes_read_for_integrity is True
+    assert raised.value.child_content_inspected is True
+
+
 def test_cli_failure_is_json_only_and_does_not_leak_paths_or_url(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     parent, root, _bindings_value, _bin, url = _fixture(tmp_path)
     assert cli.main(["--production-state-parent", str(parent), "--output-root", str(root)]) == 2

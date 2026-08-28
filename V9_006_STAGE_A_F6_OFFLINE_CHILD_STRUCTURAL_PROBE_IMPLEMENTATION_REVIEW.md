@@ -368,3 +368,104 @@ coverage-methodology/design/source-identity change occurred.
 
 The execution agent does not call `MEDIUM_3` `PASS`/`RESOLVED`. GPT-5.6 Sol
 remains the final independent reviewer of this exact SHA.
+
+## MEDIUM-3A remediation: unhashable value in safe-evidence enum checks
+
+```text
+finding=V9_006_F6_STRUCTURAL_PROBE_IMPL_MEDIUM_3A_UNHASHABLE_SAFE_EVIDENCE_FAIL_CLOSED
+reviewed_sha=278290f6df3afee90e5e665587c2a5596c6ec13a
+medium_1=RESOLVED
+medium_2=RESOLVED
+medium_4=RESOLVED
+medium_3=OPEN_REMEDIATION_INCOMPLETE (this task's target)
+status=REMEDIATED_AWAITING_GPT_REVIEW
+```
+
+The prior MEDIUM-3 remediation closed every allowed field to an exact enum
+or bounded-integer set, but its five closed-set membership checks (`status`
+against `OUTCOMES`; `container_format`; `open_parse_status`; a dimension's
+`visibility`; a dimension's `object_type`) each used a bare `value not in
+some_frozenset` test. Python's `in` operator on a `frozenset` hashes its
+operand first, so a malformed inspector value that is itself unhashable
+(a `list` or `dict` -- e.g. `status=[]`, `container_format={}`) raises a raw
+`TypeError` from inside the membership test itself, before the intended
+fail-closed `ProbeBlocked` path is ever reached. Reproduced directly:
+`_safe_structural_evidence({"status": []})` raised `TypeError: unhashable
+type: 'list'` rather than `ProbeBlocked`. Because this can happen after the
+Phase-C structural-inspection boundary has already been crossed, a
+`TypeError` escaping `_safe_structural_evidence` uncaught would propagate
+out of `run_offline_child_structural_probe` and -- at the CLI boundary --
+be caught only by the CLI's generic, non-`ProbeBlocked` fallback, which
+reports `raw_bytes_read_for_integrity="unknown"`/`child_content_inspected=
+false`: an inaccurate understatement of a failure that in fact occurred
+after the CHILD bytes were read and structural inspection had begun.
+
+Remediation adds `_is_allowed_enum_str(value, allowed) -> bool`
+(`isinstance(value, str) and value in allowed`), making every closed-set
+membership check total for arbitrary Python objects by guarding the hash-
+requiring `in` test with an `isinstance(value, str)` check first. Applied to
+all five enum checks: `status`, `container_format`, `open_parse_status`,
+`visibility`, `object_type`. No enum member, allowed key, or evidence
+category was added, removed, or broadened -- the exact schema from the
+prior MEDIUM-3 remediation is preserved unchanged.
+
+As defense in depth, `run_offline_child_structural_probe`'s Phase-C
+boundary now also wraps the `_safe_structural_evidence(...)` call inside the
+same `try`/`except ProbeBlocked`/`except Exception` block already used for
+the `structural_inspector(...)` call (previously it was called *after* that
+block, unprotected). Any genuinely unexpected exception raised while
+validating safe structural evidence -- not only the specific unhashable-
+value case fixed above -- is now translated fail-closed to `outcome=
+IMPLEMENTATION_FAILURE`, `raw_bytes_read_for_integrity=true`,
+`child_content_inspected=true`, and can never escape as an ordinary
+exception to reach the CLI's unproven-phase `unknown`/`false` fallback. An
+already-correct `ProbeBlocked` raised from `_safe_structural_evidence`
+(e.g. for an ordinary malformed-evidence rejection) is still re-raised via
+the same `_blocked(exc.outcome, ...)` call as before -- its outcome is
+preserved, and its `raw_bytes_read_for_integrity`/`child_content_inspected`
+fields are (re-)forced to `true`/`true`, which they already were.
+
+```text
+TARGETED_TEST_COMMAND=PYTHONPATH=. python3 -m pytest tests/test_v9_006_f6_offline_child_structural_probe.py -q
+TESTS_RUN=77
+TESTS_PASSED=77
+TESTS_FAILED=0
+PRODUCTION_CHILD_READS=0
+CHILD_CONTENT_INSPECTED=false
+SOURCE_DATA_NETWORK_REQUESTS=0
+HUMAN_GATES_CONSUMED=0
+DEPENDENCIES_CHANGED=false
+```
+
+New targeted synthetic tests cover: `status=[]`/`status={}`;
+`container_format=[]`/`{}`; `open_parse_status=[]`/`{}`; a dimension's
+`visibility=[]`/`{}`; a dimension's `object_type=[]`/`{}` -- each asserted,
+via `pytest.raises(probe.ProbeBlocked)`, to raise specifically
+`ProbeBlocked` (never `TypeError`, which would fail the assertion with a
+different exception type) with the preserved
+`raw_bytes_read_for_integrity=true`/`child_content_inspected=true`
+Phase-C-rejection contract; and a dedicated regression that monkeypatches
+`_safe_structural_evidence` itself to raise a generic, unmodeled
+`RuntimeError`, proving `run_offline_child_structural_probe` converts it to
+`ProbeBlocked(IMPLEMENTATION_FAILURE, true, true)` rather than letting it
+escape -- which is exactly the condition that would otherwise reach the
+CLI's `unknown`/`false` fallback. All 66 prior MEDIUM-1/2/3/4 tests remain
+passing unchanged (66 prior + 11 new = 77). Test execution used the Claude
+Code Cloud Linux environment's `python3` with `pytest` installed in-session;
+the reviewed Windows `.venv\Scripts\python.exe` command itself was not
+executed, and no repository dependency file or canonical Windows
+environment was touched. `scripts/run_v9_006_f6_offline_child_structural_
+probe.py` was not modified -- outside this task's allowed-files scope, and
+the fix is entirely internal to the module.
+
+No production CHILD/path/raw state access, network request, human-gate
+consumption/reuse, evidence-schema key/enum change, dependency change, or
+F6 coverage-methodology/design/source-identity change occurred.
+`GLOBAL_CHILD_FETCH_AUTHORIZED=false`; `GLOBAL_CHILD_FETCHED=true`;
+`GLOBAL_CHILD_CONTENT_INSPECTED=false`;
+`V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=false`;
+`V9_006_STAGE_A_NETWORK_AUTHORIZED=false`; `V9_006_STAGE_A_EXECUTED=false`;
+`ACQUISITION_IMPLEMENTATION_COMPLETE=false`.
+
+The execution agent does not call `MEDIUM_3` `PASS`/`RESOLVED`. GPT-5.6 Sol
+remains the final independent reviewer of this exact SHA.

@@ -206,6 +206,15 @@ def _is_nonneg_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
+def _is_allowed_enum_str(value: object, allowed: frozenset[str]) -> bool:
+    # A closed-set membership check must be total for arbitrary Python
+    # objects: `x in a_frozenset` raises TypeError for an unhashable value
+    # (e.g. a list or dict), which would otherwise escape as an ordinary
+    # exception rather than a fail-closed ProbeBlocked. Guarding with
+    # isinstance(value, str) first makes every enum check total.
+    return isinstance(value, str) and value in allowed
+
+
 def _is_valid_dimension_item(item: object) -> bool:
     if not isinstance(item, dict) or set(item) - _DIMENSION_ALLOWED_KEYS:
         return False
@@ -215,9 +224,9 @@ def _is_valid_dimension_item(item: object) -> bool:
         return False
     if "column_count" in item and not _is_nonneg_int(item["column_count"]):
         return False
-    if "visibility" in item and item["visibility"] not in _DIMENSION_VISIBILITY_VALUES:
+    if "visibility" in item and not _is_allowed_enum_str(item["visibility"], _DIMENSION_VISIBILITY_VALUES):
         return False
-    if "object_type" in item and item["object_type"] not in _DIMENSION_OBJECT_TYPE_VALUES:
+    if "object_type" in item and not _is_allowed_enum_str(item["object_type"], _DIMENSION_OBJECT_TYPE_VALUES):
         return False
     return True
 
@@ -247,10 +256,10 @@ def _safe_structural_evidence(value: object) -> dict[str, Any]:
     # values/URLs/paths/names, however deeply nested.
     if (
         not isinstance(value, dict)
-        or value.get("status") not in OUTCOMES
+        or not _is_allowed_enum_str(value.get("status"), OUTCOMES)
         or set(value) - _SAFE_EVIDENCE_ALLOWED_KEYS
-        or ("container_format" in value and value["container_format"] not in _CONTAINER_FORMATS)
-        or ("open_parse_status" in value and value["open_parse_status"] not in _OPEN_PARSE_STATUSES)
+        or ("container_format" in value and not _is_allowed_enum_str(value["container_format"], _CONTAINER_FORMATS))
+        or ("open_parse_status" in value and not _is_allowed_enum_str(value["open_parse_status"], _OPEN_PARSE_STATUSES))
         or any(key in value and not _is_nonneg_int(value[key]) for key in _NONNEGATIVE_COUNT_KEYS)
         or ("structural_dimensions" in value and not _is_valid_structural_dimensions(value["structural_dimensions"]))
     ):
@@ -265,13 +274,16 @@ def run_offline_child_structural_probe(*, production_state_parent: str | Path, o
     # Structural inspection boundary reached: the exact CHILD bytes are
     # verified and about to be handed to the structural inspector. Any
     # failure from this point on -- inspector exception, ProbeBlocked from an
-    # injected inspector, or safe-evidence rejection -- proves both that raw
-    # bytes were read and that structural inspection was reached.
+    # injected inspector, safe-evidence rejection, or any other unexpected
+    # exception while validating safe-evidence -- proves both that raw bytes
+    # were read and that structural inspection was reached, so it must never
+    # be allowed to escape as an ordinary exception and reach the CLI's
+    # unproven-phase fallback (which would wrongly report unknown/false).
     try:
         raw_structural_result = structural_inspector(raw)
+        evidence = _safe_structural_evidence(raw_structural_result)
     except ProbeBlocked as exc:
         _blocked(exc.outcome, raw_bytes_read_for_integrity=True, child_content_inspected=True)
     except Exception:
         _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True)
-    evidence = _safe_structural_evidence(raw_structural_result)
     return {"execution_result": "COMPLETE", "status": evidence["status"], "network_request_count": 0, "raw_bytes_read_for_integrity": True, "child_content_inspected": True, "coverage_evaluated": False, "structural_evidence": evidence}
