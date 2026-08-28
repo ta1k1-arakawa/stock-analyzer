@@ -636,3 +636,153 @@ The execution agent does not call `HIGH_1` `PASS`/`RESOLVED`. GPT-5.6 Sol
 remains the final independent review authority for any future change to
 this implementation, including the eventual protected-environment
 readiness verification this finding leaves `PENDING`.
+
+## HIGH-1 remediation review: PASS
+
+```text
+reviewed_sha=473b7adc973ad0a8e8ec82b3547ddfe21cf074c6
+parent_sha=7cd7cbaa889f88072e1ab592c94139f023d0952d
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+LOW=0
+RESULT=PASS
+V9_006_F6_FINAL_RECORD_HIGH_1_GENERAL_VENV_MISCLASSIFIED_AS_PROTECTED_CANONICAL_ENVIRONMENT=RESOLVED
+V9_006_STAGE_A_F6_OFFLINE_CHILD_STRUCTURAL_PROBE_IMPLEMENTATION=PASS
+```
+
+GPT-5.6 Sol's independent exact-SHA review of `473b7adc973ad0a8e8ec82b3547
+ddfe21cf074c6` closes `HIGH_1` (the general `.venv` misclassified as the
+protected canonical environment). `MEDIUM_1`/`MEDIUM_2`/`MEDIUM_3`/
+`MEDIUM_4` remain `RESOLVED`, unaffected and not reopened.
+`V9_006_STAGE_A_F6_OFFLINE_CHILD_STRUCTURAL_PROBE_IMPLEMENTATION` remains
+`PASS`.
+
+## Protected-environment point-of-use preflight (human-operated)
+
+```text
+execution_performed_by=HUMAN_OPERATOR
+exact_head=473b7adc973ad0a8e8ec82b3547ddfe21cf074c6
+PROTECTED_ENVIRONMENT_PREFLIGHT=PASS
+REAL_EXECUTION_ENVIRONMENT_READY=true
+INTERPRETER_MATCH=true
+PYTHON_VERSION=3.12.10
+PYTHON_PATCH_MATCH=true
+DEPENDENCY_READINESS=PASS
+JPX_XLS_PARSER_SYNTHETIC_PROBE=PASS
+TLS_STDLIB_PROBE=PASS
+TRUSTED_HOST_REQUEST_CONSTRUCTION_PROBE=PASS
+FILESYSTEM_PROBE=PASS
+ENVIRONMENT_LOCK_CHECK=PASS
+ENVIRONMENT_LOCK_FINGERPRINT_STATUS=FROZEN
+ENVIRONMENT_LOCK_PACKAGE_SET_MATCH=true
+ENVIRONMENT_LOCK_PACKAGE_COUNT=7
+ENVIRONMENT_LOCK_SHA256_MATCH=true
+ENVIRONMENT_FREEZE_CHECK=PASS
+ENVIRONMENT_FREEZE_EVIDENCE_GIT_SHA256_MATCH=true
+REAL_EXECUTION_ENVIRONMENT_FROZEN=true
+CHECKER_REAL_NETWORK_REQUESTS=0
+CHECKER_PRIVATE_READS=0
+CHECKER_GATES_CONSUMED=0
+CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE=YES
+```
+
+This preflight was performed by the human operator using the repository's
+canonical `.venv-real-execution` protected environment and
+`scripts/check_real_execution_env.py`'s mechanical checks (AI_REAL_
+EXECUTION_RUNBOOK.md SS15-SS19), on the human operator's own local Windows
+machine. **Claude did not execute this preflight and did not verify it
+independently** -- this docs-only recording task did not read production
+CHILD/path/raw state, run Python, perform any network operation beyond
+`git fetch`/`push`, or consume/reuse any human authorization gate. No
+machine-local path was recorded. This is the readiness verification that
+was `PENDING` after the HIGH-1 finding above; it is now satisfied.
+
+## Real production offline structural probe execution (human-operated)
+
+```text
+PRE_EXECUTION_PROVENANCE=PASS
+LOCAL_HEAD=473b7adc973ad0a8e8ec82b3547ddfe21cf074c6
+REMOTE_HEAD=473b7adc973ad0a8e8ec82b3547ddfe21cf074c6
+WORKING_TREE_CLEAN=true
+REVIEWED_IMPLEMENTATION_BLOB_MATCH=true
+FROZEN_DESIGN_POST_REVIEW_BLOB_MATCH=true
+PROTECTED_ENVIRONMENT_PREFLIGHT=PASS
+REAL_EXECUTION_ENVIRONMENT_FROZEN=true
+
+PROBE_EXIT_CODE=0
+EXECUTION_RESULT=COMPLETE
+STATUS=STRUCTURAL_FORMAT_UNSUPPORTED
+NETWORK_REQUESTS=0
+RAW_BYTES_READ_FOR_INTEGRITY=true
+CHILD_CONTENT_INSPECTED=true
+COVERAGE_EVALUATED=false
+
+STRUCTURAL_EVIDENCE={
+  "container_format":"OLE_COMPOUND_FILE",
+  "open_parse_status":"PARSER_NOT_IMPLEMENTED",
+  "sheet_table_count":0,
+  "status":"STRUCTURAL_FORMAT_UNSUPPORTED",
+  "structural_dimensions":[]
+}
+
+EXISTING_ACQUISITION_GATE_CONSUMED=true
+HUMAN_GATES_CONSUMED_THIS_RUN=0
+AUTHORIZATION_REUSABLE=false
+SECOND_ACQUISITION_ALLOWED=false
+RAW_ACQUISITION_ALLOWED=false
+RESEARCH_OPENING_ALLOWED=false
+```
+
+This is the human operator's run of the already-reviewed, already-`PASS`ed
+`run_offline_child_structural_probe` (Phase A metadata-only locate -> Phase
+B content-blind integrity read -> Phase C structural inspection, exactly as
+frozen in `V9_006_STAGE_A_F6_OFFLINE_CHILD_STRUCTURAL_PROBE_DESIGN.md`)
+against the exact already-locked production F6 GLOBAL CHILD, using the
+protected environment verified `FROZEN`/ready immediately above. **Claude
+did not execute this probe.** `STRUCTURAL_FORMAT_UNSUPPORTED` is one of the
+design's exactly five allowed safe outcomes (section 5); the returned
+`STRUCTURAL_EVIDENCE` uses only the design's permitted safe-evidence
+categories (container/open-parse enum, sheet/table count, empty structural-
+dimensions list) and contains no raw bytes, raw URL, machine-local path,
+sheet/table name or text, date, year, row-level value, or coverage verdict.
+`RAW_BYTES_READ_FOR_INTEGRITY=true` and `CHILD_CONTENT_INSPECTED=true`
+report that the exact locked CHILD bytes passed the probe's Phase-B
+integrity verification before Phase-C structural inspection was reached --
+the accurate Phase-C-boundary provenance this implementation's MEDIUM-1/
+MEDIUM-3A remediations exist to guarantee.
+
+Adjudication:
+
+- the execution contract completed successfully;
+- `STRUCTURAL_FORMAT_UNSUPPORTED` is an allowed structural result, not a
+  failure of the probe;
+- this is **not** a coverage failure;
+- this is **not** a data-quality failure;
+- this is **not** a strategy or profitability result;
+- the exact locked CHILD passed the probe's prerequisite integrity phase
+  before structural inspection was reached;
+- no covered-year set may be derived or inferred from this result;
+- no row-count, position, continuity, or value-based inference is
+  permitted;
+- no refetch is authorized by this result.
+
+No new human authorization gate was consumed by this run
+(`HUMAN_GATES_CONSUMED_THIS_RUN=0`); the existing F6 production raw-
+acquisition gate remains consumed and non-reusable
+(`EXISTING_ACQUISITION_GATE_CONSUMED=true`, `AUTHORIZATION_REUSABLE=false`).
+`SECOND_ACQUISITION_ALLOWED=false`; `RAW_ACQUISITION_ALLOWED=false`;
+`RESEARCH_OPENING_ALLOWED=false`. `V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_
+EVALUATED` remains `false`: no coverage was evaluated, computed, or
+inferred by this structural probe or this recording task, and none may be
+until a separately defined and independently reviewed deterministic parser
+exists. Any later parser methodology/implementation must be separately
+defined and independently reviewed against the exact preserved CHILD bytes,
+per the frozen design. `V9_design_frozen=false` and `future_profitability_
+established=false` remain unchanged. This recording task itself performed
+no Python execution, no network operation beyond `git fetch`/`push`, no
+production CHILD/path/raw state access, and consumed no human gate.
+
+This recording commit is not self-called `PASS`. GPT-5.6 Sol remains the
+final independent review authority over this exact-SHA structural-execution
+record.
