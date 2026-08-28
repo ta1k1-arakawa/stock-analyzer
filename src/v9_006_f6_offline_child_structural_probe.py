@@ -13,6 +13,8 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
+import xlrd
+
 from src.v9_005_stage_a_jpx_probe import (
     SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE,
     V9005StageABlocked,
@@ -44,13 +46,32 @@ OUTCOMES = frozenset({"STRUCTURAL_FORMAT_CAPTURED", "STRUCTURAL_FORMAT_UNSUPPORT
 # Closed-set enums for every allowed structural-evidence field. No field may
 # ever carry an arbitrary string: an allowed top-level key must never become
 # a channel for payload-derived text/dates/years/values/URLs/paths/names.
-_SAFE_EVIDENCE_ALLOWED_KEYS = frozenset({"status", "container_format", "open_parse_status", "sheet_table_count", "structural_dimensions", "candidate_header_column_count", "candidate_date_column_count", "candidate_value_column_count"})
+_SAFE_EVIDENCE_ALLOWED_KEYS = frozenset({"status", "container_format", "open_parse_status", "sheet_table_count", "structural_dimensions", "candidate_header_column_count", "candidate_date_column_count", "candidate_value_column_count", "cell_type_profiles"})
 _CONTAINER_FORMATS = frozenset({"OLE_COMPOUND_FILE", "ZIP_CONTAINER", "UNKNOWN_CONTAINER"})
 _OPEN_PARSE_STATUSES = frozenset({"PARSER_NOT_IMPLEMENTED", "OPEN_PARSE_OK", "OPEN_PARSE_UNSUPPORTED", "OPEN_PARSE_AMBIGUOUS"})
 _NONNEGATIVE_COUNT_KEYS = frozenset({"sheet_table_count", "candidate_header_column_count", "candidate_date_column_count", "candidate_value_column_count"})
 _DIMENSION_ALLOWED_KEYS = frozenset({"ordinal", "row_count", "column_count", "visibility", "object_type"})
 _DIMENSION_VISIBILITY_VALUES = frozenset({"VISIBLE", "HIDDEN", "VERY_HIDDEN", "UNKNOWN"})
 _DIMENSION_OBJECT_TYPE_VALUES = frozenset({"WORKSHEET", "TABLE", "UNKNOWN"})
+
+# V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN.md section 5.1/5.3-5.5:
+# the frozen cell_type_profiles top-level key and its exact nested schema.
+_CELL_TYPE_COUNT_KEYS = frozenset({"EMPTY", "BLANK", "TEXT", "NUMBER", "DATE", "BOOLEAN", "ERROR"})
+_CELL_TYPE_PROFILE_ALLOWED_KEYS = frozenset({"sheet_ordinal", "column_ordinal", "cell_type_counts"})
+_CAPTURED_REQUIRED_KEYS = frozenset({"status", "container_format", "open_parse_status", "sheet_table_count", "structural_dimensions", "cell_type_profiles"})
+
+# Design section 5.9/5.10: xlrd's own closed cell-type and sheet-visibility
+# constants, reused verbatim rather than a divergent taxonomy.
+_XLRD_CELL_TYPE_CATEGORY_BY_CODE = {
+    xlrd.XL_CELL_EMPTY: "EMPTY",
+    xlrd.XL_CELL_TEXT: "TEXT",
+    xlrd.XL_CELL_NUMBER: "NUMBER",
+    xlrd.XL_CELL_DATE: "DATE",
+    xlrd.XL_CELL_BOOLEAN: "BOOLEAN",
+    xlrd.XL_CELL_ERROR: "ERROR",
+    xlrd.XL_CELL_BLANK: "BLANK",
+}
+_XLRD_SHEET_VISIBILITY_BY_CODE = {0: "VISIBLE", 1: "HIDDEN", 2: "VERY_HIDDEN"}
 
 
 @dataclass(frozen=True)
@@ -191,15 +212,74 @@ def content_blind_integrity_read(raw_path: Path, meta: dict[str, Any], *, bindin
 
 
 def _default_structural_inspector(raw: bytes) -> dict[str, Any]:
-    # No package/container parser is introduced by this task.  Magic-byte
-    # classification is a safe format enum, never decompression or inspection.
+    """The reviewed deterministic OLE/BIFF structural parser
+    (V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN.md). Opens the
+    already-integrity-verified bytes with the frozen xlrd==2.0.2 call
+    (section 2), classifies open failures per section 2.1, and -- only on a
+    successful open -- extracts sheet/row/column structure (section 5.9)
+    and per-column cell-type-only profiles (section 5.10). Never calls
+    cell_value/row_values/col_values; never emits sheet names, header text,
+    or any payload-derived text. Any exception this function itself does
+    not catch (an unexpected open/extraction failure, or an unrecognized
+    xlrd visibility/cell-type code raised below) propagates to the caller,
+    which converts it to IMPLEMENTATION_FAILURE with accurate Phase-C
+    provenance -- never a silent mapping, never exception text exposed.
+    """
+    # Magic-byte classification is a safe format enum, never decompression
+    # or inspection; used only for the UNSUPPORTED branch below, since a
+    # successful CAPTURED open always fixes container_format to
+    # OLE_COMPOUND_FILE (design section 5.3).
     if raw.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
         container = "OLE_COMPOUND_FILE"
     elif raw.startswith(b"PK\x03\x04"):
         container = "ZIP_CONTAINER"
     else:
         container = "UNKNOWN_CONTAINER"
-    return {"status": "STRUCTURAL_FORMAT_UNSUPPORTED", "container_format": container, "open_parse_status": "PARSER_NOT_IMPLEMENTED", "sheet_table_count": 0, "structural_dimensions": []}
+
+    try:
+        book = xlrd.open_workbook(file_contents=raw, formatting_info=True, on_demand=False, ragged_rows=False)
+    except xlrd.XLRDError:
+        # Format/open rejection before any Book exists (design section 2.1).
+        return {"status": "STRUCTURAL_FORMAT_UNSUPPORTED", "container_format": container, "open_parse_status": "OPEN_PARSE_UNSUPPORTED", "sheet_table_count": 0, "structural_dimensions": []}
+
+    structural_dimensions: list[dict[str, Any]] = []
+    cell_type_profiles: list[dict[str, Any]] = []
+    for sheet_index in range(book.nsheets):
+        sheet = book.sheet_by_index(sheet_index)
+        ordinal = sheet_index + 1
+        row_count = sheet.nrows
+        column_count = sheet.ncols
+        visibility = _XLRD_SHEET_VISIBILITY_BY_CODE.get(sheet.visibility)
+        if visibility is None:
+            # Not 0/1/2, or inaccessible: fail closed, never UNKNOWN, never
+            # a guess (design section 5.2).
+            raise ValueError("unrecognized xlrd sheet visibility code")
+        structural_dimensions.append({
+            "ordinal": ordinal,
+            "row_count": row_count,
+            "column_count": column_count,
+            "visibility": visibility,
+            "object_type": "WORKSHEET",
+        })
+        for column_index in range(column_count):
+            counts = dict.fromkeys(_CELL_TYPE_COUNT_KEYS, 0)
+            for row_index in range(row_count):
+                # Type only -- never cell_value/row_values/col_values
+                # (design section 5.10).
+                category = _XLRD_CELL_TYPE_CATEGORY_BY_CODE.get(sheet.cell_type(row_index, column_index))
+                if category is None:
+                    raise ValueError("unrecognized xlrd cell type code")
+                counts[category] += 1
+            cell_type_profiles.append({"sheet_ordinal": ordinal, "column_ordinal": column_index + 1, "cell_type_counts": counts})
+
+    return {
+        "status": "STRUCTURAL_FORMAT_CAPTURED",
+        "container_format": "OLE_COMPOUND_FILE",
+        "open_parse_status": "OPEN_PARSE_OK",
+        "sheet_table_count": book.nsheets,
+        "structural_dimensions": structural_dimensions,
+        "cell_type_profiles": cell_type_profiles,
+    }
 
 
 def _is_nonneg_int(value: object) -> bool:
@@ -245,6 +325,68 @@ def _is_valid_structural_dimensions(value: object) -> bool:
     return True
 
 
+def _is_positive_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _is_valid_cell_type_counts(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != _CELL_TYPE_COUNT_KEYS:
+        return False
+    return all(_is_nonneg_int(value[key]) for key in _CELL_TYPE_COUNT_KEYS)
+
+
+def _is_valid_cell_type_profile_item(item: object) -> bool:
+    if not isinstance(item, dict) or set(item) != _CELL_TYPE_PROFILE_ALLOWED_KEYS:
+        return False
+    if not _is_positive_int(item.get("sheet_ordinal")) or not _is_positive_int(item.get("column_ordinal")):
+        return False
+    return _is_valid_cell_type_counts(item.get("cell_type_counts"))
+
+
+def _is_valid_captured_structural_dimensions(value: object, sheet_table_count: object) -> bool:
+    # design section 5.4: exact length, exact ordinal set 1..N, ascending
+    # workbook order -- a single "ordinals == range(1, N+1)" comparison
+    # proves all three simultaneously.
+    if not isinstance(value, list) or not _is_valid_structural_dimensions(value):
+        return False
+    if not isinstance(sheet_table_count, int) or isinstance(sheet_table_count, bool):
+        return False
+    return [item["ordinal"] for item in value] == list(range(1, sheet_table_count + 1))
+
+
+def _is_valid_captured_cell_type_profiles(value: object, structural_dimensions: list[dict[str, Any]]) -> bool:
+    # design section 5.5/5.7: exact per-sheet cardinality/ordinal-set, no
+    # unknown-sheet/out-of-range-column/duplicate reference, per-profile
+    # sum-equals-row_count, and strict (sheet_ordinal, column_ordinal)
+    # ascending canonical order -- a single strictly-increasing-key check
+    # proves both "no duplicate reference" and "canonical order" together.
+    if not isinstance(value, list):
+        return False
+    sheet_info = {item["ordinal"]: (item["column_count"], item["row_count"]) for item in structural_dimensions}
+    profile_counts: dict[int, int] = {}
+    previous_key: tuple[int, int] | None = None
+    for item in value:
+        if not _is_valid_cell_type_profile_item(item):
+            return False
+        key = (item["sheet_ordinal"], item["column_ordinal"])
+        if previous_key is not None and key <= previous_key:
+            return False
+        previous_key = key
+        sheet_ordinal, column_ordinal = key
+        if sheet_ordinal not in sheet_info:
+            return False
+        column_count, row_count = sheet_info[sheet_ordinal]
+        if not 1 <= column_ordinal <= column_count:
+            return False
+        if sum(item["cell_type_counts"][count_key] for count_key in _CELL_TYPE_COUNT_KEYS) != row_count:
+            return False
+        profile_counts[sheet_ordinal] = profile_counts.get(sheet_ordinal, 0) + 1
+    for item in structural_dimensions:
+        if profile_counts.get(item["ordinal"], 0) != item["column_count"]:
+            return False
+    return True
+
+
 def _safe_structural_evidence(value: object) -> dict[str, Any]:
     # Only ever called after the structural inspection boundary (section 4)
     # has been reached, so a rejection here always proves the CHILD bytes
@@ -264,6 +406,25 @@ def _safe_structural_evidence(value: object) -> dict[str, Any]:
         or ("structural_dimensions" in value and not _is_valid_structural_dimensions(value["structural_dimensions"]))
     ):
         _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True)
+
+    # V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN.md sections 5.3-5.6:
+    # STRUCTURAL_FORMAT_CAPTURED requires exactly six keys, fixed
+    # container_format/open_parse_status values, and the complete
+    # structural_dimensions/cell_type_profiles topology/cardinality/order
+    # cross-validation; every other status must never carry cell_type_profiles.
+    if value["status"] == "STRUCTURAL_FORMAT_CAPTURED":
+        structural_dimensions = value.get("structural_dimensions")
+        if (
+            set(value) != _CAPTURED_REQUIRED_KEYS
+            or value.get("container_format") != "OLE_COMPOUND_FILE"
+            or value.get("open_parse_status") != "OPEN_PARSE_OK"
+            or not _is_valid_captured_structural_dimensions(structural_dimensions, value.get("sheet_table_count"))
+            or not _is_valid_captured_cell_type_profiles(value.get("cell_type_profiles"), structural_dimensions)
+        ):
+            _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True)
+    elif "cell_type_profiles" in value:
+        _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True)
+
     return {key: value[key] for key in value if key in _SAFE_EVIDENCE_ALLOWED_KEYS}
 
 

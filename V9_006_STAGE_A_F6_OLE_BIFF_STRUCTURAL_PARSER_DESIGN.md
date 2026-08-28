@@ -662,3 +662,47 @@ state was accessed, no coverage was evaluated, no human gate was consumed,
 and no network request was made beyond `git fetch`/`push`. This design is
 not self-called `PASS`, and `MEDIUM_2` is not self-called `RESOLVED`.
 GPT-5.6 Sol remains the final methodology/review authority.
+
+## GPT design review (MEDIUM-2 closure, design PASS)
+
+```text
+REVIEWED_SHA=cc9efde8fa1531eae2f7544e7326d767cd5a4562
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+LOW=0
+RESULT=PASS
+MEDIUM_1=RESOLVED
+MEDIUM_2=RESOLVED
+V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN=PASS
+```
+
+GPT-5.6 Sol's independent exact-SHA review of
+`cc9efde8fa1531eae2f7544e7326d767cd5a4562` closes `MEDIUM_2` (`xlrd`
+parse/used-range semantics underspecified) `RESOLVED`, with `MEDIUM_1`
+(safe-profile topology underspecified) remaining `RESOLVED` from the prior
+closure, and zero new `CRITICAL`/`HIGH`/`MEDIUM`/`LOW` findings.
+`V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN` is now `PASS`: the
+frozen `xlrd==2.0.2` open call and parameters (section 2), open/extraction
+exception classification (section 2.1), the exact `cell_type_profiles`
+safe-evidence contract and its cardinality/topology/ordering invariants
+(sections 5.1-5.8), and the frozen sheet/row/column/cell extraction
+mechanics (sections 5.9-5.10) are the closed, reviewed design a future
+implementation must follow exactly. This design still authorizes no
+implementation, execution, network access, human-gate consumption, or
+coverage evaluation itself -- it remains docs-only. No methodology in this
+design was altered by recording this review.
+
+```text
+V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_MEDIUM_1_SAFE_PROFILE_TOPOLOGY_UNDERSPECIFIED=RESOLVED
+V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_MEDIUM_2_XLRD_PARSE_AND_USED_RANGE_SEMANTICS_UNDERSPECIFIED=RESOLVED
+V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN=PASS
+```
+
+No parser implementation, Python execution, production CHILD/path/raw state
+access, coverage evaluation, human-gate consumption, or network request
+beyond `git fetch`/`push` occurred in recording this review. The next
+action is the implementation checkpoint reviewed separately in
+`V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_IMPLEMENTATION_REVIEW.md`,
+itself not self-called `PASS` by the execution agent. GPT-5.6 Sol remains
+the final methodology/review authority.
