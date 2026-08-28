@@ -251,13 +251,87 @@ def test_phase_c_safe_evidence_validation_failure_reports_true_true(tmp_path: Pa
 
 @pytest.mark.parametrize("status", ["STRUCTURAL_FORMAT_CAPTURED", "STRUCTURAL_FORMAT_AMBIGUOUS"])
 def test_synthetic_structural_outcomes_after_integrity(tmp_path: Path, status: str) -> None:
+    # Only the strict frozen enums are used here -- no test-only production
+    # enum such as "SYNTHETIC".
     parent, root, bindings, _bin, _url = _fixture(tmp_path)
     result = probe.run_offline_child_structural_probe(
         production_state_parent=parent, output_root=root, bindings=bindings,
-        structural_inspector=lambda _raw: {"status": status, "container_format": "SYNTHETIC", "open_parse_status": "SYNTHETIC", "sheet_table_count": 1, "structural_dimensions": [{"ordinal": 1, "row_count": 2, "column_count": 3}]},
+        structural_inspector=lambda _raw: {
+            "status": status,
+            "container_format": "ZIP_CONTAINER",
+            "open_parse_status": "OPEN_PARSE_OK",
+            "sheet_table_count": 1,
+            "candidate_header_column_count": 2,
+            "candidate_date_column_count": 1,
+            "candidate_value_column_count": 1,
+            "structural_dimensions": [{"ordinal": 1, "row_count": 2, "column_count": 3, "visibility": "VISIBLE", "object_type": "WORKSHEET"}],
+        },
     )
     assert result["status"] == status
     assert result["coverage_evaluated"] is False
+
+
+def _assert_phase_c_evidence_rejected(parent: Path, root: Path, bindings: probe.ProbeBindings, raw_evidence: object) -> None:
+    with pytest.raises(probe.ProbeBlocked) as raised:
+        probe.run_offline_child_structural_probe(
+            production_state_parent=parent, output_root=root, bindings=bindings,
+            structural_inspector=lambda _raw: raw_evidence,
+        )
+    assert raised.value.outcome == "IMPLEMENTATION_FAILURE"
+    # Every Phase-C rejection must prove the CHILD bytes were read and
+    # structural inspection was reached, per the reviewed MEDIUM-1 contract.
+    assert raised.value.raw_bytes_read_for_integrity is True
+    assert raised.value.child_content_inspected is True
+
+
+@pytest.mark.parametrize(
+    "bad_evidence",
+    [
+        # arbitrary container_format
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "container_format": "MICROSOFT_XLSX"},
+        # arbitrary open_parse_status
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "open_parse_status": "OK"},
+        # arbitrary string injected into structural_dimensions
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": ["not-a-dict"]},
+        # nested list injected into a structural_dimensions item slot
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [["nested", "list"]]},
+        # nested dict injected as a structural_dimensions item value
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 1, "row_count": {"nested": "dict"}}]},
+        # structural_dimensions itself not a list
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": {"ordinal": 1}},
+        # extra nested dimension key
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 1, "sheet_name": "Sheet1"}]},
+        # date-like string smuggled under container_format
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "container_format": "2024-01-01"},
+        # URL-like string smuggled under open_parse_status
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "open_parse_status": "https://example.com/leak"},
+        # header/name-like string smuggled under a dimension's visibility field
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 1, "visibility": "Header Row 2024"}]},
+        # path-like string smuggled under a dimension's object_type field
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 1, "object_type": "/var/data/2024.xlsx"}]},
+        # bool where an integer count is expected
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "sheet_table_count": True},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "candidate_header_column_count": False},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 1, "row_count": True}]},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": True}]},
+        # negative count
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "sheet_table_count": -1},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "candidate_date_column_count": -5},
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 1, "column_count": -3}]},
+        # ordinal below the required minimum (1)
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 0}]},
+        # duplicate ordinal
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "structural_dimensions": [{"ordinal": 1}, {"ordinal": 1}]},
+        # status outside OUTCOMES
+        {"status": "NOT_A_REAL_OUTCOME"},
+        {"status": None},
+        # extra top-level key
+        {"status": "STRUCTURAL_FORMAT_CAPTURED", "raw_url": "https://private.example.invalid/leak"},
+    ],
+)
+def test_malformed_structural_evidence_rejected_true_true(tmp_path: Path, bad_evidence: object) -> None:
+    parent, root, bindings, _bin, _url = _fixture(tmp_path)
+    _assert_phase_c_evidence_rejected(parent, root, bindings, bad_evidence)
 
 
 def test_cli_failure_is_json_only_and_does_not_leak_paths_or_url(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

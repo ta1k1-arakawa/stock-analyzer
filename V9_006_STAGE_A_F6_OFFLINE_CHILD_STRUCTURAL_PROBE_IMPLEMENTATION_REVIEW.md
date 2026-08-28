@@ -253,3 +253,118 @@ F6 coverage-methodology/design/source-identity change occurred.
 
 The execution agent does not call `MEDIUM_4` `PASS`/`RESOLVED`. GPT-5.6 Sol
 remains the final independent reviewer of this exact SHA.
+
+## MEDIUM-3 remediation: safe evidence schema not fail-closed
+
+```text
+finding=V9_006_F6_STRUCTURAL_PROBE_IMPL_MEDIUM_3_SAFE_EVIDENCE_SCHEMA_NOT_FAIL_CLOSED
+reviewed_sha=ea45801a5618c337d1d76193ecc307ed22f2b913
+medium_1=RESOLVED
+medium_2=RESOLVED
+medium_4=RESOLVED
+status=REMEDIATED_AWAITING_GPT_REVIEW
+```
+
+Before remediation, `_safe_structural_evidence` only checked the top-level
+key set against the allowed-key list and that `status` was an `OUTCOMES`
+member; every other allowed key (`container_format`, `open_parse_status`,
+`sheet_table_count`, `structural_dimensions`, and the three
+`candidate_*_column_count` fields) accepted any value of any type with no
+further validation. An allowed top-level key was therefore an open channel:
+an injected or buggy structural inspector could place an arbitrary string
+(payload-derived text, a date, a year, a header/sheet name, a URL, a path)
+directly in `container_format`/`open_parse_status`, or nest arbitrary
+content inside `structural_dimensions` list items (extra keys, non-dict
+items, negative or boolean counts, non-enum `visibility`/`object_type`
+strings), and it would pass through to the CLI's privacy-safe JSON
+untouched.
+
+Remediation makes every allowed field closed-set/type/range validated, so no
+allowed key can carry a free-form string:
+- `status` -- unchanged, must be an exact `OUTCOMES` member;
+- `container_format`, if present -- must be exactly one of
+  `OLE_COMPOUND_FILE` / `ZIP_CONTAINER` / `UNKNOWN_CONTAINER`;
+- `open_parse_status`, if present -- must be exactly one of
+  `PARSER_NOT_IMPLEMENTED` / `OPEN_PARSE_OK` / `OPEN_PARSE_UNSUPPORTED` /
+  `OPEN_PARSE_AMBIGUOUS`;
+- `sheet_table_count` and the three `candidate_*_column_count` fields, if
+  present -- must each be a non-bool, non-negative `int`;
+- `structural_dimensions`, if present -- must be a `list` of `dict` items,
+  each restricted to exactly the allowed keys `ordinal`/`row_count`/
+  `column_count`/`visibility`/`object_type` (no extra or nested keys);
+  `ordinal` must be a non-bool int `>= 1` and unique across the list;
+  `row_count`/`column_count` must each be a non-bool, non-negative `int`;
+  `visibility`, if present, must be exactly one of `VISIBLE`/`HIDDEN`/
+  `VERY_HIDDEN`/`UNKNOWN`; `object_type`, if present, must be exactly one of
+  `WORKSHEET`/`TABLE`/`UNKNOWN`.
+
+Because every field now resolves to either a closed enum or a bounded
+integer, there is no remaining channel -- at the top level or nested inside
+`structural_dimensions` -- for payload-derived text, dates, years, header
+or sheet names, URLs, or paths to leak through an allowed key, however
+deeply placed. The reviewed evidence schema's allowed top-level key set is
+unchanged (no key added or removed), and no coverage methodology, design,
+or parsing was added. `_default_structural_inspector`'s output (`OLE_
+COMPOUND_FILE`/`ZIP_CONTAINER`/`UNKNOWN_CONTAINER`, `PARSER_NOT_IMPLEMENTED`,
+`sheet_table_count=0`, `structural_dimensions=[]`) already satisfies the
+strict schema unchanged, so default production behavior is preserved
+exactly. Every rejection still raises through the same `_blocked(...,
+raw_bytes_read_for_integrity=True, child_content_inspected=True)` path used
+before remediation, preserving the reviewed MEDIUM-1 phase-provenance
+contract for any Phase-C rejection.
+
+Existing synthetic captured/ambiguous fixtures previously used a test-only
+`"SYNTHETIC"` placeholder for `container_format`/`open_parse_status`, which
+the new strict validation correctly rejects; they now use only the strict
+frozen enums (`ZIP_CONTAINER`/`OPEN_PARSE_OK`), per the task's explicit
+instruction not to add a test-only production enum.
+
+```text
+TARGETED_TEST_COMMAND=PYTHONPATH=. python3 -m pytest tests/test_v9_006_f6_offline_child_structural_probe.py -q
+TESTS_RUN=66
+TESTS_PASSED=66
+TESTS_FAILED=0
+PRODUCTION_CHILD_READS=0
+CHILD_CONTENT_INSPECTED=false
+SOURCE_DATA_NETWORK_REQUESTS=0
+HUMAN_GATES_CONSUMED=0
+DEPENDENCIES_CHANGED=false
+```
+
+New targeted synthetic tests (all asserting the preserved
+`raw_bytes_read_for_integrity=true`/`child_content_inspected=true`
+Phase-C-rejection contract) cover: an arbitrary `container_format`;
+an arbitrary `open_parse_status`; an arbitrary string, a nested list, and a
+nested dict injected into `structural_dimensions` items;
+`structural_dimensions` itself not a list; an extra nested dimension key; a
+date-like string smuggled under `container_format`; a URL-like string
+smuggled under `open_parse_status`; header/path-like strings smuggled under
+a dimension's `visibility`/`object_type` fields; boolean values where
+`sheet_table_count`, `candidate_header_column_count`, a dimension's
+`row_count`, and `ordinal` each expect a plain integer; negative
+`sheet_table_count`, `candidate_date_column_count`, and a dimension's
+`column_count`; an `ordinal` of `0` (below the required minimum); a
+duplicate `ordinal` across two dimension items; a `status` outside
+`OUTCOMES` (an unrecognized string and `None`); and an extra top-level key.
+Also updated/added: valid strict captured and ambiguous evidence (using
+only the frozen enums, all seven optional fields present with a fully
+populated dimension item) are accepted; the default `STRUCTURAL_FORMAT_
+UNSUPPORTED` production inspector path remains accepted unchanged. All 20
+MEDIUM-1, all 19 MEDIUM-2, and all 4 MEDIUM-4 regression tests remain
+passing unchanged (43 prior + 23 new = 66). Test execution used the Claude
+Code Cloud Linux environment's `python3` with `pytest` installed in-session;
+the reviewed Windows `.venv\Scripts\python.exe` command itself was not
+executed, and no repository dependency file or canonical Windows
+environment was touched.
+
+No production CHILD/path/raw state access, network request, human-gate
+consumption/reuse, evidence-schema key change, dependency change, or F6
+coverage-methodology/design/source-identity change occurred.
+`GLOBAL_CHILD_FETCH_AUTHORIZED=false`; `GLOBAL_CHILD_FETCHED=true`;
+`GLOBAL_CHILD_CONTENT_INSPECTED=false`;
+`V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=false`;
+`V9_006_STAGE_A_NETWORK_AUTHORIZED=false`; `V9_006_STAGE_A_EXECUTED=false`;
+`ACQUISITION_IMPLEMENTATION_COMPLETE=false`.
+
+The execution agent does not call `MEDIUM_3` `PASS`/`RESOLVED`. GPT-5.6 Sol
+remains the final independent reviewer of this exact SHA.

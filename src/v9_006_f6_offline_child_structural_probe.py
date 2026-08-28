@@ -41,6 +41,17 @@ RECEIPT_CONTRACT = "V9_006_F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_ONE_SHOT"
 RAW_FIELDS = frozenset({"schema_version", "source_family", "applicable_period", "requested_url", "resolved_url", "http_status", "retrieval_timestamp_utc", "byte_length", "sha256"})
 OUTCOMES = frozenset({"STRUCTURAL_FORMAT_CAPTURED", "STRUCTURAL_FORMAT_UNSUPPORTED", "STRUCTURAL_FORMAT_AMBIGUOUS", "CHATGPT_DECISION_REQUIRED", "IMPLEMENTATION_FAILURE"})
 
+# Closed-set enums for every allowed structural-evidence field. No field may
+# ever carry an arbitrary string: an allowed top-level key must never become
+# a channel for payload-derived text/dates/years/values/URLs/paths/names.
+_SAFE_EVIDENCE_ALLOWED_KEYS = frozenset({"status", "container_format", "open_parse_status", "sheet_table_count", "structural_dimensions", "candidate_header_column_count", "candidate_date_column_count", "candidate_value_column_count"})
+_CONTAINER_FORMATS = frozenset({"OLE_COMPOUND_FILE", "ZIP_CONTAINER", "UNKNOWN_CONTAINER"})
+_OPEN_PARSE_STATUSES = frozenset({"PARSER_NOT_IMPLEMENTED", "OPEN_PARSE_OK", "OPEN_PARSE_UNSUPPORTED", "OPEN_PARSE_AMBIGUOUS"})
+_NONNEGATIVE_COUNT_KEYS = frozenset({"sheet_table_count", "candidate_header_column_count", "candidate_date_column_count", "candidate_value_column_count"})
+_DIMENSION_ALLOWED_KEYS = frozenset({"ordinal", "row_count", "column_count", "visibility", "object_type"})
+_DIMENSION_VISIBILITY_VALUES = frozenset({"VISIBLE", "HIDDEN", "VERY_HIDDEN", "UNKNOWN"})
+_DIMENSION_OBJECT_TYPE_VALUES = frozenset({"WORKSHEET", "TABLE", "UNKNOWN"})
+
 
 @dataclass(frozen=True)
 class ProbeBindings:
@@ -191,19 +202,60 @@ def _default_structural_inspector(raw: bytes) -> dict[str, Any]:
     return {"status": "STRUCTURAL_FORMAT_UNSUPPORTED", "container_format": container, "open_parse_status": "PARSER_NOT_IMPLEMENTED", "sheet_table_count": 0, "structural_dimensions": []}
 
 
+def _is_nonneg_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_valid_dimension_item(item: object) -> bool:
+    if not isinstance(item, dict) or set(item) - _DIMENSION_ALLOWED_KEYS:
+        return False
+    if "ordinal" in item and not (isinstance(item["ordinal"], int) and not isinstance(item["ordinal"], bool) and item["ordinal"] >= 1):
+        return False
+    if "row_count" in item and not _is_nonneg_int(item["row_count"]):
+        return False
+    if "column_count" in item and not _is_nonneg_int(item["column_count"]):
+        return False
+    if "visibility" in item and item["visibility"] not in _DIMENSION_VISIBILITY_VALUES:
+        return False
+    if "object_type" in item and item["object_type"] not in _DIMENSION_OBJECT_TYPE_VALUES:
+        return False
+    return True
+
+
+def _is_valid_structural_dimensions(value: object) -> bool:
+    if not isinstance(value, list):
+        return False
+    seen_ordinals: set[object] = set()
+    for item in value:
+        if not _is_valid_dimension_item(item):
+            return False
+        if "ordinal" in item:
+            if item["ordinal"] in seen_ordinals:
+                return False
+            seen_ordinals.add(item["ordinal"])
+    return True
+
+
 def _safe_structural_evidence(value: object) -> dict[str, Any]:
     # Only ever called after the structural inspection boundary (section 4)
     # has been reached, so a rejection here always proves the CHILD bytes
     # were read and structural inspection was invoked.
-    if not isinstance(value, dict) or value.get("status") not in OUTCOMES:
+    #
+    # Every allowed field is validated against a closed enum/type/range set
+    # -- never a free-form string -- so an allowed top-level key can never
+    # become a channel for arbitrary payload-derived text/dates/years/
+    # values/URLs/paths/names, however deeply nested.
+    if (
+        not isinstance(value, dict)
+        or value.get("status") not in OUTCOMES
+        or set(value) - _SAFE_EVIDENCE_ALLOWED_KEYS
+        or ("container_format" in value and value["container_format"] not in _CONTAINER_FORMATS)
+        or ("open_parse_status" in value and value["open_parse_status"] not in _OPEN_PARSE_STATUSES)
+        or any(key in value and not _is_nonneg_int(value[key]) for key in _NONNEGATIVE_COUNT_KEYS)
+        or ("structural_dimensions" in value and not _is_valid_structural_dimensions(value["structural_dimensions"]))
+    ):
         _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True)
-    allowed = {"status", "container_format", "open_parse_status", "sheet_table_count", "structural_dimensions", "candidate_header_column_count", "candidate_date_column_count", "candidate_value_column_count"}
-    if set(value) - allowed:
-        _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True)
-    safe = {key: value[key] for key in value if key in allowed}
-    if not isinstance(safe.get("status"), str):
-        _blocked("IMPLEMENTATION_FAILURE", raw_bytes_read_for_integrity=True, child_content_inspected=True)
-    return safe
+    return {key: value[key] for key in value if key in _SAFE_EVIDENCE_ALLOWED_KEYS}
 
 
 def run_offline_child_structural_probe(*, production_state_parent: str | Path, output_root: str | Path, bindings: ProbeBindings = FROZEN_BINDINGS, structural_inspector: Callable[[bytes], dict[str, Any]] = _default_structural_inspector) -> dict[str, Any]:
