@@ -1,0 +1,51 @@
+{
+  "schema_version": "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_TERMINAL_ADJUDICATION_V1",
+  "artifact_role": "SCHEMA_DISCOVERY_PHASE1_TERMINAL_ADJUDICATION",
+  "study": "V9_CROSS_SECTIONAL_CLOSE_AUCTION",
+  "stage": "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1",
+  "execution_sha": "b05a2036926538d1af730f41dd2d42e1f0499912",
+  "entrypoint_gpt_review": "PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0",
+
+  "execution_result": "BLOCKED",
+  "failure_class": "SOURCE_OR_DATA_FEASIBILITY_FAILURE",
+  "gate_consumed": true,
+  "public_acquisition_executed": true,
+  "second_execution_allowed": false,
+  "phase2_allowed": false,
+  "phase1_result_present": false,
+
+  "raw_lock_pair_count": 1,
+  "raw_lock_id_set_sha256": "8e0f0798c6da09292c964e56efb6954dd2e57ac2191b1e80c7fc03eb1d9ba621",
+  "raw_provenance_verifies": true,
+  "metadata_parse_ok": true,
+
+  "only_locked_source_family": "LISTED_ISSUES_MONTH_END",
+  "only_locked_applicable_period": "TERMINAL_DISCOVERY_ROOT",
+  "only_locked_http_status": 200,
+  "only_locked_byte_length": 30059,
+  "only_locked_sha256": "ab19c37ca50b23798b8c12c5dc7c4abc6ba865e9e9ec73f04a7daf1247c9720f",
+
+  "offline_data_j_literal_count": 0,
+  "offline_data_j_href_regex_match_count": 0,
+  "offline_extract_result": "BLOCKED",
+  "offline_extract_failure_class": "SOURCE_OR_DATA_FEASIBILITY_FAILURE",
+  "offline_diagnostic_network_requests": 0,
+  "offline_diagnostic_durable_state_modified": false,
+  "second_execution_attempted": false,
+
+  "terminal_scientific_statement": "F1_FROZEN_LOCATOR_NOT_SATISFIED_BY_LOCKED_ROOT_PAYLOAD",
+
+  "cli_reported_network_attempt_count": 0,
+  "authoritative_network_attempt_count": "UNKNOWN_POST_GATE",
+  "minimum_confirmed_successful_jpx_responses": 1,
+  "NETWORK_ATTEMPT_REPORTING_DEFECT": "OPEN",
+
+  "same_study_task_identity_retry_allowed": false,
+  "receipt_reset_or_delete_allowed": false,
+  "alternate_output_root_bypass_allowed": false,
+  "strategy_failure": false,
+  "profitability_failure": false,
+  "future_profitability_established": false,
+
+  "next_action": "GPT_EXACT_SHA_INDEPENDENT_REVIEW"
+}
