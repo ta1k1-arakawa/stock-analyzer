@@ -1,0 +1,460 @@
+# V9_006 Stage-A F6 date/year coverage parser design
+
+```text
+task=V9_006_F6_DATE_YEAR_COVERAGE_PARSER_DESIGN_CHECKPOINT
+status=CANDIDATE_AWAITING_GPT_REVIEW
+scope=DATE_YEAR_COVERAGE_PARSER_DESIGN_ONLY_NO_IMPLEMENTATION_NO_EXECUTION
+network_authorized_by_this_task=false
+network_executed_by_this_task=false
+production_child_read_by_this_task=false
+child_content_inspected_by_this_task=false
+coverage_evaluated_by_this_task=false
+human_authorization_consumed_by_this_task=false
+parser_implementation_authorized_by_this_task=false
+```
+
+This is a docs-only design for a future, separately reviewed and
+separately implemented deterministic date/year coverage parser that
+derives the exact F6 covered-year set from the same exact locked CHILD
+already `STRUCTURAL_FORMAT_CAPTURED` by the reviewed OLE/BIFF structural
+parser (`V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN.md`, design
+`PASS`; implementation `PASS` at
+`b2fcb56c0e5ace654b638664786229761dc14df8`). It does not implement,
+execute, or authorize execution of anything; it defines the exact
+deterministic derivation a future, independently reviewed implementation
+must follow, and the exact prohibitions that keep the result a mechanical
+structural fact rather than a favorable, inferred, or hand-picked outcome.
+
+## 1. Binding and authority boundary
+
+This design inherits, unmodified, the exact CHILD identity/root/integrity
+binding already frozen in
+`V9_006_STAGE_A_F6_OFFLINE_CHILD_STRUCTURAL_PROBE_DESIGN.md` section 1 and
+`V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN.md` section 1, and the
+exact Phase A (metadata-only locate) / Phase B (content-blind integrity
+read) rules already implemented in
+`src/v9_006_f6_offline_child_structural_probe.py`. No refetch, no
+URL/provider/output-root substitution, no relock, no new human
+authorization, no new network access, no second acquisition, and no
+coverage determination is granted by this design. The existing F6
+production raw-acquisition gate remains consumed and non-reusable; this
+design consumes nothing.
+
+This design additionally binds to the completed, GPT-`PASS`ed OLE/BIFF
+structural-parser implementation and its recorded real production
+execution:
+
+```text
+V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_IMPLEMENTATION=PASS (reviewed_sha=b2fcb56c0e5ace654b638664786229761dc14df8)
+structural_execution_result=STRUCTURAL_FORMAT_CAPTURED
+structural_profile_sha256=4332d0b27a1e35256abef4c0e240b2c576c20122a264374ea0c5da3729beacce
+sheet_table_count=1
+sheet_ordinal=1
+sheet_row_count=86
+sheet_column_count=10
+sheet_visibility=VISIBLE
+sheet_object_type=WORKSHEET
+date_bearing_column_ordinals=[4, 6]
+recorded_date_cell_count_column_4=19
+recorded_date_cell_count_column_6=19
+```
+
+These are established, hash-verified structural facts about the exact
+locked CHILD, recorded in
+`V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_IMPLEMENTATION_REVIEW.md`'s
+real production execution record. This design does not re-derive,
+re-select, or contradict them; it only specifies how a future
+implementation may mechanically extract calendar years from the two
+already-identified date-bearing columns, gated on reproving the exact same
+structural shape first (section 2).
+
+## 2. Structural-evidence identity gate (must run before any DATE value read)
+
+Before a future implementation may read a single `DATE`-typed cell value,
+it MUST:
+
+1. reopen the exact same already-integrity-verified CHILD bytes (the same
+   bytes Phase B already proved match `expected_child_sha256`/
+   `expected_child_byte_length`) and recompute the full reviewed structural
+   evidence, using the exact same reviewed structural inspector already
+   implemented in `src/v9_006_f6_offline_child_structural_probe.py`
+   (`_default_structural_inspector` followed by `_safe_structural_evidence`,
+   unmodified);
+2. canonicalize that evidence exactly as:
+
+```python
+canonical_bytes = json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode("utf-8")
+structural_profile_sha256 = hashlib.sha256(canonical_bytes).hexdigest()
+```
+
+3. compare `structural_profile_sha256` to the frozen expected value:
+
+```text
+expected_structural_profile_sha256=4332d0b27a1e35256abef4c0e240b2c576c20122a264374ea0c5da3729beacce
+```
+
+A mismatch of any kind -- a different `status`, a different
+`cell_type_profiles`/`structural_dimensions` shape, a different key set, or
+any other divergence from the exact reviewed structural evidence this
+design is bound to -- is `IMPLEMENTATION_FAILURE`. No `DATE` cell value may
+be read, and no year may be derived, unless this exact hash comparison
+passes first. This is not a courtesy re-check: it is the sole mechanism
+that proves, immediately before any value-level read, that the file this
+future implementation is about to parse is still exactly the structural
+shape the two preregistered date columns (section 3) were identified
+against -- never an assumption carried over from a prior run.
+
+## 3. Preregistered date-bearing columns: fixed, not selected
+
+The only date-bearing columns this design recognizes are the structurally
+preregistered 1-based column ordinals **4** and **6**, both on sheet
+ordinal **1** (section 1). A future implementation MUST NOT choose one over
+the other, MUST NOT search any other column for date-like content, and
+MUST NOT add, drop, or substitute a column ordinal for any reason,
+including a differently-shaped-but-plausible re-derivation of the CHILD.
+These two ordinals are fixed facts about the one locked CHILD this design
+is bound to (section 1), reproven structurally by the gate in section 2 on
+every run, never re-selected.
+
+## 4. Frozen reopen semantics
+
+A future implementation reopens the exact same verified bytes using the
+identical reviewed `xlrd==2.0.2` open call already frozen in
+`V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN.md` section 2 -- the
+same call already used by the structural-evidence identity gate in section
+2 above, not a second, differently-parameterized open:
+
+```python
+import xlrd
+book = xlrd.open_workbook(
+    file_contents=verified_child_bytes,
+    formatting_info=True,
+    on_demand=False,
+    ragged_rows=False,
+)
+```
+
+No path/filename input, no pandas, no retry, no recovery attempt around
+this call, exactly as already frozen. `book.datemode` (xlrd's own
+documented 1900/1904 epoch flag for the workbook) is read from this same
+`Book` object and used, unmodified, for every date-serial conversion in
+section 5 -- never assumed, hardcoded, or independently inferred.
+
+## 5. Per-column DATE-only extraction procedure
+
+For each of the two preregistered date columns (section 3) independently,
+on sheet ordinal 1:
+
+```python
+for rowx in range(sheet.nrows):
+    cell_type = sheet.cell_type(rowx, column_index)   # inspect type FIRST
+    if cell_type != xlrd.XL_CELL_DATE:
+        continue                                       # no value read for any other type
+    serial = sheet.cell_value(rowx, column_index)       # ONLY reachable when cell_type == XL_CELL_DATE
+    year = xlrd.xldate_as_tuple(serial, book.datemode)[0]   # extract ONLY the integer calendar year
+    # increment year_histogram[year] by 1; never store/emit `serial`, the
+    # full tuple, or any component other than the integer year
+```
+
+This is total and exhaustive: every row `0 .. sheet.nrows - 1` (the exact
+`row_count` already established and hash-verified in section 2, `86` for
+this CHILD) is inspected via `cell_type` first, for both columns
+independently. `cell_value` is read for a given `(row, column)` pair **only
+when** `cell_type(row, column) == xlrd.XL_CELL_DATE` -- never for
+`EMPTY`/`BLANK`/`TEXT`/`NUMBER`/`BOOLEAN`/`ERROR`, and never speculatively.
+`xlrd.xldate_as_tuple(serial, book.datemode)` returns
+`(year, month, day, hour, minute, second)`; only index `0` (the integer
+calendar year) is ever extracted, stored, or emitted -- month, day, hour,
+minute, second, and the raw `serial` value itself are read into a local
+variable only insofar as the tuple-unpack/index operation requires, and
+are never stored, logged, or emitted in any safe-evidence field. Any
+exception raised by `xldate_as_tuple` for a cell already classified
+`XL_CELL_DATE` (for example, `xlrd.xldate.XLDateAmbiguous`,
+`XLDateNegative`, `XLDateTooLarge`, or `XLDateBadDatemode` for a
+malformed/reserved serial) is not itself separately classified by this
+design; it is `IMPLEMENTATION_FAILURE`, exactly like every other exception
+this design's reviewed lineage does not explicitly classify elsewhere
+(`V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN.md` section 2.1's
+"any other exception is `IMPLEMENTATION_FAILURE`" rule, reused unchanged,
+not reinvented).
+
+### 5.1 Per-column DATE-count cross-validation (fail-closed, not hardcoded)
+
+After enumerating all rows for a given column, the total number of cells
+encountered with `cell_type == xlrd.XL_CELL_DATE` MUST exactly equal that
+column's own `cell_type_counts.DATE` value inside the same
+hash-verified structural evidence recomputed in section 2 (currently `19`
+for both column 4 and column 6, per section 1's recorded facts -- but this
+rule is stated generically against the hash-verified evidence, never as a
+hardcoded literal `19` inside a future implementation, so it remains
+correct if this design is ever bound to a different exact CHILD with a
+different recorded profile). Any mismatch -- more or fewer `DATE` cells
+encountered than the structural evidence already recorded for that exact
+column -- is `IMPLEMENTATION_FAILURE`. This proves the value-level
+extraction pass agrees with the type-only structural pass that already
+hash-gated this run, closing any gap between "the structural profile says
+19 DATE cells exist in column 4" and "value-level extraction actually
+found 19."
+
+## 6. Deterministic per-column year histogram
+
+For each of the two columns independently, a future implementation builds
+a deterministic year histogram: a list of `{"year": <int>, "count": <int>}`
+entries, one per distinct calendar year encountered in that column's
+`DATE` cells (section 5), each `count` equal to the number of `DATE` cells
+in that column whose extracted year equals that entry's `year`, sorted
+strictly ascending by `year`. Every entry's `count` is `>= 1` by
+construction (a year only appears in the histogram if at least one `DATE`
+cell in that column produced it); there is no zero-count entry and no
+duplicate year within one column's histogram. The sum of every entry's
+`count` in a column's histogram MUST equal that column's cross-validated
+`DATE` cell count (section 5.1) -- itself already proven equal to the
+hash-verified structural evidence's own count. Coverage is never inferred
+from the literal count value `19` itself, or from any count value in
+isolation; only the **set of distinct years** feeds into the covered-year
+derivation (section 8). No row position, first/last entry, or any
+ordering fact other than the frozen `year` ascending sort (needed only for
+deterministic, canonical output identity) contributes to the covered-year
+result.
+
+## 7. No favorable-column selection: cross-column identity requirement
+
+The complete year histograms for column 4 and column 6 (section 6) MUST be
+compared for exact equality -- the same set of `{year, count}` entries, in
+the same sorted order, with no entry present in one histogram and absent
+or differently-counted in the other.
+
+```text
+histogram(column_4) == histogram(column_6)  =>  status = F6_YEAR_COVERAGE_CAPTURED
+histogram(column_4) != histogram(column_6)  =>  status = F6_YEAR_COVERAGE_AMBIGUOUS
+```
+
+If the two histograms differ in any way, **no covered-year set is
+accepted**: `F6_YEAR_COVERAGE_AMBIGUOUS` is the terminal safe outcome for
+that run, `V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED` remains
+`false`, and the discrepancy is returned to GPT-5.6 Sol for an explicit
+methodology decision before any further action. A future implementation
+MUST NOT resolve a disagreement between the two columns by union,
+intersection, majority vote, nearest match, manual selection, preferring
+either column by name/position, or any other heuristic -- exact equality
+or `AMBIGUOUS`, with no third option and no silent repair.
+
+## 8. Covered-year derivation (only when the two columns agree)
+
+When, and only when, section 7's equality holds
+(`status = F6_YEAR_COVERAGE_CAPTURED`):
+
+```text
+covered_years = sorted(unique(year for every entry in either identical histogram))
+```
+
+Required years remain exactly the nine years already frozen in
+`V9_006_STAGE_A_F6_GLOBAL_COVERAGE_METHODOLOGY.md`:
+
+```text
+required_years = {2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025}
+covered_required_years  = sorted(covered_years intersect required_years)
+missing_required_years  = sorted(required_years minus covered_years)
+all_required_years_covered = (missing_required_years == [])
+```
+
+A required year is proven covered only because it is a member of
+`covered_years` -- which itself exists only when the exact same year
+appeared in **both** preregistered date columns' independently derived
+histograms (section 7). No required year may be marked covered on the
+strength of only one column, a partial match, or any inference beyond this
+mechanical set membership. `all_required_years_covered` is a structural
+fact about `covered_years` versus the fixed `required_years` set; it is
+**not** a coverage PASS/FAIL verdict for any strategy, profitability, or
+data-quality purpose (section 9), and grants no such authority (section
+9's non-authority rule, restated).
+
+## 9. Explicit prohibitions
+
+A future implementation MUST NOT, under any circumstance, use any of the
+following to derive, adjust, or substitute for the mechanical
+per-`DATE`-cell year extraction and two-column exact-match rule above:
+
+- row-position, row-count, or row-index inference of any kind;
+- first-date, last-date, minimum-date, or maximum-date inference;
+- neighboring-year, continuity, or density inference;
+- interpolation or extrapolation of any kind;
+- inspection of any index/numeric/text cell value for coverage purposes
+  (only `cell_type` may ever be inspected for a non-`DATE` cell; a
+  `DATE`-typed cell's value may be read only for its year, per section 5);
+- inspection of sheet names, header text, or any other cell text;
+- refetch, retry-with-different-parameters, or provider/URL substitution
+  of any kind;
+- changing the required-years set, the preregistered column ordinals, or
+  any other frozen parameter of this design after seeing any output it
+  produces (no post-hoc adjustment to obtain a more favorable result).
+
+## 10. Safe evidence: closed schema
+
+A future implementation's safe output is restricted to **exactly** the
+following closed set of top-level keys -- no other key, at any status:
+
+```text
+status                          in {F6_YEAR_COVERAGE_CAPTURED, F6_YEAR_COVERAGE_AMBIGUOUS, IMPLEMENTATION_FAILURE}
+structural_profile_sha256        64 lowercase-hex chars, always present (section 2's recomputed hash)
+date_column_ordinals             fixed value [4, 6], always present (section 3; non-bool ints >= 1, ascending, exactly two entries)
+year_histograms                  object; present iff status in {F6_YEAR_COVERAGE_CAPTURED, F6_YEAR_COVERAGE_AMBIGUOUS}; absent for IMPLEMENTATION_FAILURE
+covered_years                    sorted list of unique non-bool ints; present iff status == F6_YEAR_COVERAGE_CAPTURED; absent otherwise
+covered_required_years           sorted list of unique non-bool ints, subset of required_years; present iff status == F6_YEAR_COVERAGE_CAPTURED; absent otherwise
+missing_required_years           sorted list of unique non-bool ints, subset of required_years; present iff status == F6_YEAR_COVERAGE_CAPTURED; absent otherwise
+all_required_years_covered       bool; present iff status == F6_YEAR_COVERAGE_CAPTURED; absent otherwise
+raw_bytes_read_for_integrity     bool or the literal string "unknown" (inherited Phase A/B/C phase-provenance contract, unchanged)
+child_content_inspected          bool (inherited Phase A/B/C phase-provenance contract, unchanged)
+network_request_count            fixed 0
+```
+
+`year_histograms`, when present, has **exactly** two keys, the string
+forms of the two preregistered column ordinals (`"4"` and `"6"`), each
+mapped to that column's own histogram list (section 6): a list of objects
+each with **exactly** the two keys `year` (non-bool int) and `count`
+(non-bool int `>= 1`), sorted strictly ascending by `year`, with no
+duplicate `year` within one column's list. When `status ==
+F6_YEAR_COVERAGE_CAPTURED`, the two histogram lists under `"4"` and `"6"`
+MUST be identical element-for-element (section 7's equality, restated as a
+schema-level invariant a validator can mechanically check). No exact
+date, serial value, sheet name, header string, cell text, URL, or
+machine-local path may appear anywhere in this payload, at any nesting
+depth, regardless of field name -- the only permitted payload-derived
+signal is the closed enum, the hash, the two fixed column ordinals, the
+bounded year/count integers, and the derived year sets/booleans specified
+above.
+
+This design does not itself extend
+`src/v9_006_f6_offline_child_structural_probe.py`'s `_safe_structural_
+evidence` validator or invent a new module; it specifies the exact schema
+a future, separately implemented and separately reviewed validator for
+this new coverage-parser stage must enforce, fail-closed and non-crashing
+for arbitrary malformed or unhashable input, mirroring the existing
+`_is_allowed_enum_str`/closed-set/cardinality-cross-validation pattern
+already reviewed and `RESOLVED` through this repository's MEDIUM-3/
+MEDIUM-3A/MEDIUM-1(OLE-BIFF-impl) remediation chain -- never a divergent
+validation style.
+
+## 11. Determinism
+
+```text
+same_exact_child_bytes_plus_same_reviewed_xlrd_environment => identical structural_profile_sha256, identical year_histograms, identical covered-year derivation
+column_enumeration_order                                    = fixed [4, 6], never re-selected or reordered
+row_enumeration_order                                        = 0 .. sheet.nrows - 1, ascending, per column, matching xlrd's own indexing
+histogram_ordering                                            = year ascending, per column (section 6)
+cross_column_comparison                                       = exact equality, no heuristic resolution (section 7)
+count_type                                                     = exact nonnegative integers only (non-bool)
+unclassified_exception_anywhere_in_this_procedure              = IMPLEMENTATION_FAILURE (never silent mapping, never a guess)
+structural_profile_hash_mismatch                               = IMPLEMENTATION_FAILURE, no DATE value read (section 2, checked first, every run)
+```
+
+Two runs against the exact same verified CHILD bytes and the exact same
+reviewed environment must agree not only on `covered_years` but on every
+intermediate value this design defines (`structural_profile_sha256`, both
+column histograms in full) and their exact canonical ordering; two runs
+that agree on content but disagree on order, or that report different
+`year_histograms` for the same bytes, are not identical evidence.
+
+## 12. Safe outcomes and inherited escalation
+
+The safe outcomes this design's own derivation logic may produce are
+exactly:
+
+```text
+F6_YEAR_COVERAGE_CAPTURED
+F6_YEAR_COVERAGE_AMBIGUOUS
+IMPLEMENTATION_FAILURE
+```
+
+`CHATGPT_DECISION_REQUIRED` is not a new outcome this design invents; it
+remains reachable only through the unmodified, inherited Phase A binding
+checks (`V9_006_STAGE_A_F6_OFFLINE_CHILD_STRUCTURAL_PROBE_DESIGN.md`
+section 1, already implemented in
+`src/v9_006_f6_offline_child_structural_probe.py`) that this design's
+section 1 preserves unchanged and that necessarily run before this stage's
+own logic is ever reached. This design changes no F6 coverage methodology,
+required-years set, structural-parser design, Phase A/B boundary, network/
+refetch rule, or human-gate rule; it adds no new safe outcome beyond the
+three above.
+
+## 13. `F6_YEAR_COVERAGE_CAPTURED` grants no strategy/profitability authority
+
+`F6_YEAR_COVERAGE_CAPTURED` and `all_required_years_covered=true` mean only
+that the exact locked CHILD's two preregistered date columns mechanically
+agree on the same set of calendar years, and that set covers the nine
+required years 2017-2025. This is not a coverage PASS for any strategy or
+backtest purpose, not a data-quality verdict, not authorization to begin
+model fitting, historical evaluation, or any private/sealed access, and
+not authorization to inspect index values or begin any further parsing
+stage. `V9_design_frozen`, `V9_historical_evaluation_authorized`, and
+`future_profitability_established` remain `false`; this design creates no
+authority toward any of them. After a future real execution of the
+implementation this design authorizes designing, GPT must independently
+review the exact safe coverage evidence produced before any such authority
+is even considered.
+
+## 14. Required future implementation-review scope
+
+A future implementation of this design must, at minimum:
+
+- reuse the existing, already-reviewed
+  `_default_structural_inspector`/`_safe_structural_evidence` pair from
+  `src/v9_006_f6_offline_child_structural_probe.py` unmodified for the
+  section 2 identity gate -- never a re-derived or parallel structural
+  parser;
+- implement the section 2 canonicalization/hash gate exactly, and hard-stop
+  `IMPLEMENTATION_FAILURE` before any `DATE` value read on any mismatch;
+- use exactly the two preregistered column ordinals (section 3), the
+  frozen reopen call (section 4), and the frozen `cell_type`-first/
+  `cell_value`-only-for-`XL_CELL_DATE`/`xldate_as_tuple`-year-only
+  extraction procedure (section 5), including the per-column DATE-count
+  cross-validation (section 5.1);
+- build both histograms exactly per section 6, compare them exactly per
+  section 7 (no heuristic resolution), and derive `covered_years`/
+  `covered_required_years`/`missing_required_years`/
+  `all_required_years_covered` exactly per section 8, only when the two
+  histograms are identical;
+- implement a new closed-schema, fail-closed, non-crashing (arbitrary/
+  unhashable input safe, matching the existing `_is_allowed_enum_str`
+  pattern) safe-evidence validator enforcing exactly the schema in section
+  10, including the histogram cardinality/ordering/element-identity
+  cross-validation;
+- preserve every existing Phase A/B boundary and the existing
+  `raw_bytes_read_for_integrity`/`child_content_inspected` phase-provenance
+  contract unchanged; and
+- be independently GPT exact-SHA reviewed before any real execution
+  against the production CHILD, exactly like every prior stage.
+
+This design authorizes none of that implementation work itself.
+
+## Bounded design-closure sweep
+
+```text
+CLOSURE_SWEEP_EXTRA_FIXES=Named the exact xlrd date-conversion function (xlrd.xldate_as_tuple(serial, book.datemode), taking only the returned tuple's index-0 year) since the task fixed "convert that serial using xlrd's date conversion with book.datemode" without naming the specific function; xldate_as_tuple is xlrd's long-stable, publicly documented top-level date-conversion entry point (paired with the already-frozen Book.datemode attribute), and no other date-conversion behavior was introduced. Classified an unclassified xldate_as_tuple exception (for a cell already typed XL_CELL_DATE) as IMPLEMENTATION_FAILURE by direct, mechanical application of the already-frozen "any other exception is IMPLEMENTATION_FAILURE" rule from V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN.md section 2.1, rather than leaving it unclassified. Stated the section 5.1 per-column DATE-count cross-validation generically against the hash-verified structural evidence's own recorded count, rather than hardcoding the literal 19 inside the frozen procedure, since the task's own rule 2 already requires re-deriving and hash-verifying that evidence on every run -- the literal 19 is recorded only as a currently-known fact in section 1, not as a magic number in the extraction rule. Clarified that CHATGPT_DECISION_REQUIRED is not a new outcome invented by this design but remains reachable only through the already-implemented, unmodified Phase A binding checks that precede this stage. No coverage/date/year methodology, source/CHILD identity, evaluation/sample/threshold rule, dependency/version, Phase A/B boundary, network/refetch/gate policy, or required-years value was changed or newly decided by this sweep.
+```
+
+No other remaining mechanical ambiguity requiring a methodological choice
+was found in this sweep; nothing else triggered `CHATGPT_DECISION_REQUIRED`.
+
+## 15. Non-effects and preserved state
+
+```text
+GLOBAL_CHILD_FETCH_AUTHORIZED=false
+GLOBAL_CHILD_FETCHED=true
+GLOBAL_CHILD_CONTENT_INSPECTED=true
+V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN=PASS
+V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_IMPLEMENTATION=PASS
+V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=false
+V9_006_STAGE_A_NETWORK_AUTHORIZED=false
+V9_006_STAGE_A_EXECUTED=false
+ACQUISITION_IMPLEMENTATION_COMPLETE=false
+V9_design_frozen=false
+future_profitability_established=false
+```
+
+This design changes no F6 coverage methodology, required-years set,
+threshold, source, retry policy, authority, structural-parser design, or
+GLOBAL fanout rule, and creates no additional CHILD read authority, no
+coverage-parser implementation authority, no network authority, and no
+human-gate consumption. It is not self-called `PASS`. The next action is
+GPT exact-SHA independent methodology review of this design.

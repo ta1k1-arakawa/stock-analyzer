@@ -315,3 +315,148 @@ is not self-called `PASS`, and `MEDIUM_1` is not self-called `RESOLVED`.
 `V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN` remains `PASS`,
 unaffected by this implementation-level finding. GPT-5.6 Sol remains the
 final independent review authority.
+
+## Final GPT-5.6 Sol review: implementation PASS
+
+```text
+REVIEWED_SHA=b2fcb56c0e5ace654b638664786229761dc14df8
+PARENT_SHA=0143ea9b6bcf401dfd470f62dec4096b33051ca7
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+LOW=1
+RESULT=PASS
+MEDIUM_1=RESOLVED
+V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_IMPLEMENTATION=PASS
+LOW_1=V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_HEADER_STATUS_STALE_AFTER_PASS
+```
+
+GPT-5.6 Sol's independent exact-SHA review of
+`b2fcb56c0e5ace654b638664786229761dc14df8` closes `MEDIUM_1` (undeclared
+`xlwt` test dependency) `RESOLVED`, with zero new `CRITICAL`/`HIGH`/
+`MEDIUM` findings. `V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_
+IMPLEMENTATION` is now `PASS`. One `LOW` finding,
+`V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_HEADER_STATUS_STALE_AFTER_
+PASS`: the header metadata block at the top of
+`V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN.md` still read
+`status=REMEDIATED_AWAITING_GPT_REVIEW` and
+`medium_2_status=REMEDIATED_AWAITING_GPT_REVIEW`, stale since the design's
+own GPT design-closure `PASS` (recorded lower in that same document at
+`cc9efde8fa1531eae2f7544e7326d767cd5a4562`) already resolved both.
+
+### LOW-1 remediation
+
+`V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN.md`'s header block is
+updated mechanically: `status` -> `PASS`, `medium_2_status` -> `RESOLVED`.
+`medium_1_status` was already `RESOLVED` and is unchanged. No section body,
+frozen methodology, invariant, extraction mechanic, or safe-evidence
+schema in that design was touched -- only the two stale top-of-file status
+fields.
+
+```text
+V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN_HEADER_STATUS_STALE_AFTER_PASS=RESOLVED
+```
+
+No production CHILD/path/raw state access, network request beyond `git
+fetch`/`push`, human-gate consumption/reuse, coverage evaluation, Python
+execution, or methodology change occurred in this remediation. This
+remediation is not self-called `PASS`; GPT-5.6 Sol remains the final
+independent review authority.
+
+## Real production offline structural probe execution (human-operated)
+
+```text
+PRE_EXECUTION_PROVENANCE=PASS
+EXACT_HEAD=b2fcb56c0e5ace654b638664786229761dc14df8
+PROTECTED_ENVIRONMENT_PREFLIGHT=PASS
+REAL_EXECUTION_ENVIRONMENT_FROZEN=true
+CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE=YES
+
+PROBE_EXIT_CODE=0
+EXECUTION_RESULT=COMPLETE
+STATUS=STRUCTURAL_FORMAT_CAPTURED
+NETWORK_REQUESTS=0
+RAW_BYTES_READ_FOR_INTEGRITY=true
+CHILD_CONTENT_INSPECTED=true
+COVERAGE_EVALUATED=false
+
+SAFE_STRUCTURAL_SUMMARY:
+sheet_table_count=1
+sheet_ordinal=1
+row_count=86
+column_count=10
+visibility=VISIBLE
+object_type=WORKSHEET
+date_bearing_column_ordinals=[4, 6]
+date_cell_count_column_4=19
+date_cell_count_column_6=19
+
+STRUCTURAL_EVIDENCE_CANONICAL_IDENTITY:
+canonicalization=json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode("utf-8")
+structural_profile_sha256=4332d0b27a1e35256abef4c0e240b2c576c20122a264374ea0c5da3729beacce
+```
+
+This is the human operator's run of the already-reviewed, already-`PASS`ed
+`_default_structural_inspector` (the frozen `xlrd==2.0.2` OLE/BIFF parser,
+`V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN.md`, design `PASS`,
+implementation `PASS` at this exact SHA), reached via
+`run_offline_child_structural_probe`'s existing Phase A -> Phase B -> Phase
+C boundary, against the exact already-locked production F6 GLOBAL CHILD,
+using the protected environment already verified `FROZEN`/ready for this
+implementation. **Claude did not execute this probe.**
+`STRUCTURAL_FORMAT_CAPTURED` is one of the design's closed safe outcomes;
+the safe structural summary above reports only closed-enum/bounded-integer
+structural facts already permitted by the reviewed safe-evidence schema
+(sheet/column/row counts, visibility, object type, the two date-bearing
+column ordinals, and their respective `DATE` cell counts) -- it contains
+no raw bytes, raw URL, machine-local path, sheet/table name or text,
+header text, exact date, cell value, or coverage verdict.
+`RAW_BYTES_READ_FOR_INTEGRITY=true` and `CHILD_CONTENT_INSPECTED=true`
+report that the exact locked CHILD bytes passed Phase B integrity
+verification before Phase C structural inspection was reached, per this
+implementation's inherited phase-provenance contract.
+
+The frozen structural-evidence canonical identity
+(`structural_profile_sha256=4332d0b27a1e35256abef4c0e240b2c576c20122a264374ea0c5da3729beacce`,
+computed as `json.dumps(evidence, sort_keys=True,
+separators=(",", ":")).encode("utf-8")` then SHA-256-hashed) is recorded
+here exactly as reported by the human operator's run. **Claude did not
+independently recompute or verify this hash** -- doing so would require
+executing Python against the exact reviewed structural evidence for the
+real production CHILD, which this docs-and-recording task does not do (no
+Python, no production CHILD read, per this task's own constraints). This
+recorded hash is the exact value
+`V9_006_STAGE_A_F6_DATE_YEAR_COVERAGE_PARSER_DESIGN.md` section 2 freezes
+as the mandatory pre-date-read identity gate for any future coverage-parser
+implementation.
+
+Adjudication:
+
+- the execution contract completed successfully;
+- `STRUCTURAL_FORMAT_CAPTURED` is an allowed structural result;
+- date-bearing column ordinals `4` and `6` are now established structural
+  facts about the exact locked CHILD, feeding
+  `V9_006_STAGE_A_F6_DATE_YEAR_COVERAGE_PARSER_DESIGN.md` section 1's
+  binding -- not a coverage result themselves;
+- this is **not** a coverage evaluation, data-quality result, or
+  strategy/profitability result;
+- no covered-year set, date value, or index value is derived, inferred, or
+  exposed by this recording;
+- no refetch, second acquisition, or new human-gate consumption is
+  authorized by this result.
+
+No new human authorization gate was consumed by this run; the existing F6
+production raw-acquisition gate remains consumed and non-reusable.
+`V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED` remains `false`: no
+coverage was evaluated, computed, or inferred by this structural execution
+or this recording task, and none may be until the separately defined and
+independently reviewed `V9_006_STAGE_A_F6_DATE_YEAR_COVERAGE_PARSER_
+DESIGN.md` is implemented and independently reviewed against the exact
+preserved CHILD bytes. `V9_design_frozen=false` and `future_profitability_
+established=false` remain unchanged. This recording task itself performed
+no Python execution, no network operation beyond `git fetch`/`push`, no
+production CHILD/path/raw state access, and consumed no human gate.
+
+This recording commit is not self-called `PASS`. GPT-5.6 Sol remains the
+final independent review authority over this exact-SHA structural-execution
+record.
