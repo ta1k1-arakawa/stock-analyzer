@@ -333,12 +333,10 @@ If the two histograms differ in any way, **no covered-year set is
 accepted**: `F6_YEAR_COVERAGE_AMBIGUOUS` is **terminal** -- for this
 preregistered F6 date/year coverage rule, in the current V9 study
 identity, this run's `AMBIGUOUS` result ends the matter, not a step toward
-one. `V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED` (the separate,
-project-state-level flag gating any strategy/backtest use of F6 coverage)
-remains `false` after `AMBIGUOUS` -- not because no evaluation attempt was
-made, but because that flag specifically means "an accepted covered-year
-set exists for production coverage purposes," which `AMBIGUOUS` by
-definition never produces. A future implementation MUST NOT resolve a
+one. Evaluation and acceptance are separate facts at both the safe-evidence
+and project-state levels: a completed comparison has been evaluated whether
+it yields `CAPTURED` or `AMBIGUOUS`, while only `CAPTURED` has an accepted
+covered-year result. A future implementation MUST NOT resolve a
 disagreement between the two columns by union, intersection, majority
 vote, nearest match, manual selection, preferring either column by
 name/position, or any other heuristic -- exact equality or `AMBIGUOUS`,
@@ -369,6 +367,36 @@ methodology choice made after seeing the actual result it would apply to
 is not a preregistered rule at all -- it is post-hoc selection of a
 favorable outcome, exactly what section 9's prohibitions and this design's
 whole premise exist to prevent.
+
+### 7.2 Future project-state transition semantics
+
+The current project-state value remains
+`V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=false`: no production
+date/year coverage has executed. After a future execution reaches the
+completed two-histogram comparison, it MUST record evaluation separately
+from acceptance exactly as follows:
+
+```text
+F6_YEAR_COVERAGE_CAPTURED after completed comparison:
+  V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=true
+  V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_RESULT_ACCEPTED=true
+
+F6_YEAR_COVERAGE_AMBIGUOUS after completed comparison:
+  V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=true
+  V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_RESULT_ACCEPTED=false
+
+IMPLEMENTATION_FAILURE before completed comparison:
+  V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=false
+  V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_RESULT_ACCEPTED=false
+
+IMPLEMENTATION_FAILURE after completed comparison:
+  V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=true
+  V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_RESULT_ACCEPTED=false
+```
+
+`V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED` MUST NOT be redefined to
+mean acceptance. `F6_YEAR_COVERAGE_AMBIGUOUS` remains terminal under section
+7.1 even though it records a completed evaluation.
 
 ## 8. Covered-year derivation (only when the two columns agree)
 
@@ -502,6 +530,38 @@ already reviewed and `RESOLVED` through this repository's MEDIUM-3/
 MEDIUM-3A/MEDIUM-1(OLE-BIFF-impl) remediation chain -- never a divergent
 validation style.
 
+### 10.4 Mandatory derived-result cross-validation
+
+The future safe validator MUST mechanically enforce every requirement below;
+it MUST NOT trust parser-produced derived fields. It must fail closed and
+non-crashing for arbitrary malformed or unhashable nested input.
+
+For `F6_YEAR_COVERAGE_CAPTURED`, let `H` be the exact ascending year list
+from either identical histogram. The validator MUST require:
+
+- `year_histograms["4"] == year_histograms["6"]` element-for-element;
+- exactly the keys `{year, count}` in each histogram entry; a non-bool
+  integer `year`, strict ascending unique years, and a non-bool integer
+  `count >= 1`;
+- each histogram's count sum equals that ordinal's `DATE` count in the
+  hash-verified structural evidence used in the same run;
+- `covered_years == H` exactly;
+- `covered_required_years == [y for y in H if y in {2017, 2018, 2019,
+  2020, 2021, 2022, 2023, 2024, 2025}]` exactly;
+- `missing_required_years == sorted({2017, 2018, 2019, 2020, 2021, 2022,
+  2023, 2024, 2025} - set(H))` exactly;
+- `all_required_years_covered == (missing_required_years == [])`;
+- `coverage_evaluated=true`, `coverage_result_accepted=true`,
+  `structural_profile_hash_verified=true`, and `date_year_value_read=true`.
+
+For `F6_YEAR_COVERAGE_AMBIGUOUS`, the validator MUST require both complete,
+otherwise-valid histograms, their inequality, `coverage_evaluated=true`,
+`coverage_result_accepted=false`, `structural_profile_hash_verified=true`,
+and `date_year_value_read=true`; all four derived covered/missing fields
+MUST be absent. For `IMPLEMENTATION_FAILURE`, it MUST preserve the
+already-frozen phase-total provenance rules exactly and MUST NOT fabricate
+histograms or derived fields.
+
 ## 11. Determinism
 
 ```text
@@ -593,8 +653,8 @@ A future implementation of this design must, at minimum:
   10, including the `structural_profile_sha256`/`structural_profile_hash_
   verified` three-state rule (section 2.1), the `date_year_value_read`/
   `coverage_evaluated`/`coverage_result_accepted` provenance semantics
-  (sections 5, 5.1, 7), and the histogram cardinality/ordering/
-  element-identity cross-validation;
+  (sections 5, 5.1, 7), and every mandatory derived-result/structural-
+  evidence cross-validation in section 10.4;
 - preserve every existing Phase A/B boundary and the existing
   `raw_bytes_read_for_integrity`/`child_content_inspected` phase-provenance
   contract unchanged;
@@ -727,3 +787,52 @@ fetch`/`push`. The prior OLE/BIFF structural-parser implementation remains
 remediation is not self-called `PASS`, and neither `MEDIUM_1` nor
 `MEDIUM_2` is self-called `RESOLVED`. GPT-5.6 Sol remains the final
 methodology/review authority.
+
+## GPT design review (BLOCK, MEDIUM_3 + MEDIUM_4 findings, remediation)
+
+```text
+REVIEWED_SHA=343c1027dca62c7bcf6c715d26b25b978b95d139
+PARENT_SHA=1d4be751802d62dc53f039cbf730c06390e9d4be
+CRITICAL=0
+HIGH=0
+MEDIUM=2
+LOW=0
+RESULT=BLOCK
+MEDIUM_1=RESOLVED
+MEDIUM_2=RESOLVED
+MEDIUM_3=V9_006_F6_DATE_YEAR_DESIGN_PROJECT_STATE_COVERAGE_EVALUATED_SEMANTICS_DRIFT
+MEDIUM_4=V9_006_F6_DATE_YEAR_DESIGN_SAFE_VALIDATOR_DERIVED_COVERAGE_CROSS_VALIDATION_INCOMPLETE
+```
+
+**MEDIUM_3 remediation**: section 7.2 now freezes the future project-state
+transition table without changing the current unevaluated production state.
+After a completed comparison, both `CAPTURED` and terminal `AMBIGUOUS`
+record `V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED=true`; only
+`CAPTURED` records `V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_RESULT_ACCEPTED=true`.
+An implementation failure records evaluated true only when it happened after
+the completed comparison, and records result accepted false in either case.
+Evaluation is not acceptance.
+
+**MEDIUM_4 remediation**: new section 10.4 makes the future validator
+mechanically re-derive and cross-validate histogram topology, equality or
+inequality by status, per-column count sums against same-run hash-verified
+structural evidence, and all derived coverage fields against the exact
+histogram years and frozen required-years set. It also mechanically enforces
+the `AMBIGUOUS` absent-derived-field contract while preserving the
+phase-total `IMPLEMENTATION_FAILURE` contract. The validator is required to
+fail closed/non-crashing for arbitrary malformed or unhashable nested input;
+section 14 makes this a required future implementation-review item.
+
+```text
+V9_006_F6_DATE_YEAR_DESIGN_PROJECT_STATE_COVERAGE_EVALUATED_SEMANTICS_DRIFT=REMEDIATED_AWAITING_GPT_REVIEW
+V9_006_F6_DATE_YEAR_DESIGN_SAFE_VALIDATOR_DERIVED_COVERAGE_CROSS_VALIDATION_INCOMPLETE=REMEDIATED_AWAITING_GPT_REVIEW
+V9_006_STAGE_A_F6_DATE_YEAR_COVERAGE_PARSER_DESIGN=BLOCK
+```
+
+No production CHILD/path/raw state was accessed, no Python was executed, no
+DATE/year value was read, no coverage was executed or evaluated, no human
+gate was consumed, and no network request was made. The prior OLE/BIFF
+implementation `PASS` and structural execution `COMPLETE`/
+`STRUCTURAL_FORMAT_CAPTURED` remain unchanged. This remediation is not
+self-called `PASS`; GPT-5.6 Sol remains the final methodology/review
+authority.
