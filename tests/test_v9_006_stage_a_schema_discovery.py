@@ -430,7 +430,9 @@ def test_one_shot_missing_localappdata_receipt_race_and_post_gate_failure(monkey
 
 
 def exact_closure_fixture(output):
-    output = Path(output); schema.initialize_output_root(output); counter, evidence, support, profiles = [0], [], [], []
+    output = Path(output)
+    if not output.exists(): schema.initialize_output_root(output)
+    counter, evidence, support, profiles = [0], [], [], []
     raw = b"<html><table></table></html>"
     def add(family, period, domain=None):
         counter[0] += 1; url = f"https://www.jpx.co.jp/synthetic/closure-{counter[0]}.html"
@@ -450,12 +452,32 @@ def exact_closure_fixture(output):
     return schema.Phase1SchemaDiscoveryResult(tuple(evidence), tuple(profiles), tuple(schema.select_representatives(profiles)), 353), tuple(support)
 
 
+def assert_exact_phase1_closure_fixture(output, result, support):
+    profiles = result.safe_profiles
+    counts = {}
+    for item in profiles:
+        key = (item["source_family"], item["object_domain"])
+        counts[key] = counts.get(key, 0) + 1
+    assert counts == {
+        (F1, schema.ObjectDomain.TERMINAL.value): 1,
+        (F2, schema.ObjectDomain.BASE.value): 108,
+        (F3, schema.ObjectDomain.YEAR.value): 9,
+        (F4, schema.ObjectDomain.BASE.value): 108,
+        (F7, schema.ObjectDomain.BASE.value): 108,
+        (F7, schema.ObjectDomain.ENVELOPE_EXTRA.value): 7,
+    }
+    assert len(result.evidence_slot_ids) == len(set(result.evidence_slot_ids)) == len(profiles) == 341
+    assert len(support) == 12
+    assert not set(support) & {item["source_object_slot_id"] for item in profiles}
+    assert not {"F5", "F6"} & {item["source_family"] for item in profiles}
+    assert all(item["object_domain"] != "BRIDGE" for item in profiles)
+    assert len(list((Path(output) / "raw").iterdir())) == 706
+
+
 def test_real_success_closure_accepts_exact_suffix_aware_353_fixture(tmp_path):
     output = tmp_path / "closure"; result, support = exact_closure_fixture(output)
     schema._phase1_verify_success_closure(output, result)
-    assert len(list((output / "raw").iterdir())) == 706
-    assert len(result.evidence_slot_ids) == len(result.safe_profiles) == 341 and len(support) == 12
-    assert not set(support) & {item["source_object_slot_id"] for item in result.safe_profiles}
+    assert_exact_phase1_closure_fixture(output, result, support)
 
 
 @pytest.mark.parametrize("fault", ["mismatched", "malformed"])
@@ -467,6 +489,64 @@ def test_success_closure_filename_pairs_fail_closed(tmp_path, fault):
         (raw / "unexpected.txt").write_text("x", encoding="utf-8")
     with pytest.raises(V9005StageABlocked) as exc: schema._phase1_verify_success_closure(output, result)
     assert exc.value.reason == "IMPLEMENTATION_FAILURE"
+
+
+@pytest.mark.parametrize("fault", ["missing_member", "wrong_support", "unrepresented_evidence", "corrupt_provenance"])
+def test_real_success_closure_required_members_and_provenance_fail_closed(tmp_path, fault):
+    output = tmp_path / fault; result, support = exact_closure_fixture(output); raw = output / "raw"
+    if fault == "missing_member":
+        (raw / f"{result.evidence_slot_ids[0]}.bin").unlink()
+    elif fault == "wrong_support":
+        replaced = support[0]
+        (raw / f"{replaced}.bin").unlink(); (raw / f"{replaced}.json").unlink()
+        url = "https://www.jpx.co.jp/synthetic/wrong-support.html"
+        lock_first_complete_payload(output, source_family=F2, applicable_period="WRONG_SUPPORT", requested_url=url, fetch_result=FetchResult(b"<html></html>", url, 200), retrieval_timestamp_utc="2026-01-01T00:00:00Z")
+    elif fault == "unrepresented_evidence":
+        result = replace(result, evidence_slot_ids=("f" * 64,) + result.evidence_slot_ids[1:])
+    else:
+        (raw / f"{result.evidence_slot_ids[0]}.bin").write_bytes(b"corrupt")
+    with pytest.raises(V9005StageABlocked) as exc: schema._phase1_verify_success_closure(output, result)
+    assert exc.value.reason == "IMPLEMENTATION_FAILURE"
+
+
+def test_one_shot_real_success_closure_integration(tmp_path, monkeypatch):
+    local = tmp_path / "localappdata"; local.mkdir(); monkeypatch.setenv("LOCALAPPDATA", str(local))
+    seen, constructed = [], {}
+    def synthetic_core(output_root, **_kwargs):
+        seen.append(schema.read_phase1_schema_discovery_gate_consumed_state() is True)
+        result, support = exact_closure_fixture(output_root); constructed["result"] = result; constructed["support"] = support
+        return result
+    monkeypatch.setattr(schema, "run_phase1_schema_discovery_core", synthetic_core)
+    output = tmp_path / "integration-success"
+    result = schema.run_phase1_schema_discovery_one_shot(output, confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    assert seen == [True]
+    assert result == constructed["result"]
+    result_path = output / "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_RESULT.json"
+    assert result_path.is_file()
+    safe_result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert safe_result["evidence_count"] == 341
+    assert safe_result["support_raw_lock_count"] == 12
+    assert safe_result["total_raw_lock_pair_count"] == 353
+    assert safe_result["evidence_slot_ids"] == list(result.evidence_slot_ids)
+    assert_exact_phase1_closure_fixture(output, result, constructed["support"])
+
+
+def test_one_shot_real_success_closure_failure_preserves_consumed_receipt(tmp_path, monkeypatch):
+    local = tmp_path / "localappdata"; local.mkdir(); monkeypatch.setenv("LOCALAPPDATA", str(local))
+    seen = []
+    def invalid_synthetic_core(output_root, **_kwargs):
+        seen.append(schema.read_phase1_schema_discovery_gate_consumed_state() is True)
+        result, _support = exact_closure_fixture(output_root)
+        (Path(output_root) / "raw" / f"{result.evidence_slot_ids[0]}.bin").unlink()
+        return result
+    monkeypatch.setattr(schema, "run_phase1_schema_discovery_core", invalid_synthetic_core)
+    output = tmp_path / "integration-failure"
+    with pytest.raises(V9005StageABlocked) as exc:
+        schema.run_phase1_schema_discovery_one_shot(output, confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    assert exc.value.reason == "IMPLEMENTATION_FAILURE"
+    assert seen == [True]
+    assert schema.read_phase1_schema_discovery_gate_consumed_state() is True
+    assert not (output / "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_RESULT.json").exists()
 
 
 def test_validator_final_status_and_html_state_regressions(monkeypatch):

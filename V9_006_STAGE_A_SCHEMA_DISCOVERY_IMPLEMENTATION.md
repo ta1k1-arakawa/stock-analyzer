@@ -66,3 +66,11 @@ creation.
 The success closure derives raw-lock IDs with exact suffix-aware `.bin` and
 `.json` matching, requires equal 353-ID sets and exactly 706 entries, and
 rejects malformed or extra filenames.
+
+Synthetic Phase-1 boundary coverage now executes that real closure validator
+directly and through the real one-shot boundary using one exact canonical
+341-evidence/12-support/353-pair fixture. It also proves fail-closed behavior
+for a missing member, wrong support identity, unrepresented evidence ID, and
+corrupt provenance; all acquisition inputs remain synthetic and no production
+source, network, receipt, or human gate is used. This MEDIUM_2 remediation
+awaits GPT exact-SHA review; the deferred gate-docstring LOW_1 is unchanged.
