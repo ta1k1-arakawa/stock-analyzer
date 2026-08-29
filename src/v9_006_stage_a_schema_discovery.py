@@ -7,7 +7,7 @@ from hashlib import sha256
 from html.parser import HTMLParser
 import json
 import re
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from src.v9_005_stage_a_jpx_probe import (
     CHATGPT_DECISION_REQUIRED, GOVERNANCE_FAILURE, IMPLEMENTATION_FAILURE,
@@ -15,7 +15,10 @@ from src.v9_005_stage_a_jpx_probe import (
     SOURCE_FAMILY_JPX_CALENDAR, SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
     SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, V9005StageABlocked,
     INVENTORY_LAST_YEAR_MONTH, TERMINAL_PERIOD, _is_canonical_raw_lock_timestamp,
-    _parse_year_month, calendar_envelope_extra_months, inventory_months,
+    _parse_year_month, acquire_f1_terminal_evidence,
+    acquire_f2_f4_monthly_evidence, acquire_f3_required_slots,
+    acquire_f7_required_slots, calendar_envelope_extra_months, inventory_months,
+    read_locked_payload_by_slot_id,
     source_object_slot_id, validate_jpx_url,
 )
 
@@ -384,6 +387,145 @@ def select_representatives(profiles: Sequence[dict[str, Any]]) -> list[dict[str,
                 selected.extend(item for item in ordered if item["structural_profile_sha256"] != earliest["structural_profile_sha256"])
         unique = {item["source_object_slot_id"]: item for item in selected}
         return sorted(unique.values(), key=lambda item: (item["source_family"], item["applicable_period"], item["source_object_slot_id"]))
+    except V9005StageABlocked:
+        raise
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+
+@dataclass(frozen=True)
+class Phase1SchemaDiscoveryResult:
+    """Safe Phase-1 aggregate result; raw locked bytes never escape."""
+
+    evidence_slot_ids: tuple[str, ...]
+    safe_profiles: tuple[dict[str, Any], ...]
+    representative_safe_profiles: tuple[dict[str, Any], ...]
+    network_attempt_count: int
+
+
+@dataclass(frozen=True)
+class _ExpectedEvidence:
+    slot_id: str
+    family: str
+    period: str
+    domain: ObjectDomain
+
+
+def _phase1_slot(value: Any) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        _fail()
+    return value
+
+
+def _phase1_attempts(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        _fail()
+    return value
+
+
+def _phase1_single_reference(value: Any) -> str:
+    if not isinstance(value, tuple) or len(value) != 1:
+        _fail()
+    return _phase1_slot(value[0])
+
+
+def _phase1_f3_expected(value: Any) -> list[_ExpectedEvidence]:
+    references = getattr(value, "base_coverage_references", None)
+    _phase1_attempts(getattr(value, "network_attempt_count", None))
+    months = inventory_months()
+    family = SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE
+    expected_keys = {(family, month) for month in months}
+    if not isinstance(references, Mapping) or set(references) != expected_keys:
+        _fail()
+    evidence: list[_ExpectedEvidence] = []
+    for year in range(2017, 2026):
+        identifiers = [_phase1_single_reference(references[(family, f"{year}-{month:02d}")]) for month in range(1, 13)]
+        if len(set(identifiers)) != 1:
+            _fail()
+        evidence.append(_ExpectedEvidence(identifiers[0], family, str(year), ObjectDomain.YEAR))
+    if len({item.slot_id for item in evidence}) != 9:
+        _fail()
+    return evidence
+
+
+def _phase1_f7_expected(value: Any) -> list[_ExpectedEvidence]:
+    base_references = getattr(value, "base_coverage_references", None)
+    extra_references = getattr(value, "envelope_extra_references", None)
+    _phase1_attempts(getattr(value, "network_attempt_count", None))
+    family = SOURCE_FAMILY_JPX_CALENDAR
+    months, extras = inventory_months(), calendar_envelope_extra_months()
+    if (
+        not isinstance(base_references, Mapping)
+        or not isinstance(extra_references, Mapping)
+        or set(base_references) != {(family, month) for month in months}
+        or set(extra_references) != set(extras)
+    ):
+        _fail()
+    return (
+        [_ExpectedEvidence(_phase1_single_reference(base_references[(family, month)]), family, month, ObjectDomain.BASE) for month in months]
+        + [_ExpectedEvidence(_phase1_single_reference(extra_references[month]), family, month, ObjectDomain.ENVELOPE_EXTRA) for month in extras]
+    )
+
+
+def _phase1_profile_expected(output_root: Any, expected: _ExpectedEvidence) -> dict[str, Any]:
+    try:
+        locked = read_locked_payload_by_slot_id(output_root, expected.slot_id)
+        required = {
+            "schema_version", "source_family", "applicable_period", "requested_url",
+            "resolved_url", "http_status", "retrieval_timestamp_utc", "byte_length",
+            "sha256", "raw",
+        }
+        if not isinstance(locked, dict) or set(locked) != required:
+            _fail()
+        if locked["source_family"] != expected.family or locked["applicable_period"] != expected.period:
+            _fail()
+        item = VerifiedLockedObject(
+            locked["schema_version"], locked["source_family"], locked["applicable_period"],
+            locked["requested_url"], locked["resolved_url"], locked["http_status"],
+            locked["retrieval_timestamp_utc"], locked["byte_length"], expected.slot_id,
+            locked["sha256"], locked["raw"], expected.domain,
+        )
+        return profile_verified_lock(item)
+    except V9005StageABlocked:
+        raise
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+
+def run_phase1_schema_discovery_core(output_root: Any, *, fetcher: Any, sleep: Any, clock: Any) -> Phase1SchemaDiscoveryResult:
+    """Acquire/profile only the frozen Phase-1 evidence inventory via injected I/O."""
+    try:
+        expected: list[_ExpectedEvidence] = []
+        f1 = acquire_f1_terminal_evidence(output_root, fetcher=fetcher, sleep=sleep, clock=clock)
+        if not isinstance(f1, tuple) or len(f1) != 2:
+            _fail()
+        f1_slot, attempts = _phase1_slot(f1[0]), _phase1_attempts(f1[1])
+        expected.append(_ExpectedEvidence(f1_slot, SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, TERMINAL_PERIOD, ObjectDomain.TERMINAL))
+        for month in inventory_months():
+            for family in (SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE):
+                acquired = acquire_f2_f4_monthly_evidence(output_root, source_family=family, requested_month=month, fetcher=fetcher, sleep=sleep, clock=clock)
+                if not isinstance(acquired, tuple) or len(acquired) != 2:
+                    _fail()
+                slot_id, count = _phase1_slot(acquired[0]), _phase1_attempts(acquired[1])
+                expected.append(_ExpectedEvidence(slot_id, family, month, ObjectDomain.BASE))
+                attempts += count
+        f3 = acquire_f3_required_slots(output_root, fetcher=fetcher, sleep=sleep, clock=clock)
+        f3_expected = _phase1_f3_expected(f3)
+        expected.extend(f3_expected)
+        attempts += _phase1_attempts(getattr(f3, "network_attempt_count", None))
+        f7 = acquire_f7_required_slots(output_root, fetcher=fetcher, sleep=sleep, clock=clock)
+        f7_expected = _phase1_f7_expected(f7)
+        expected.extend(f7_expected)
+        attempts += _phase1_attempts(getattr(f7, "network_attempt_count", None))
+        if len(expected) != 341 or len({item.slot_id for item in expected}) != 341:
+            _fail()
+        profiles = tuple(_phase1_profile_expected(output_root, item) for item in expected)
+        if len(profiles) != 341 or len({item["source_object_slot_id"] for item in profiles}) != 341:
+            _fail()
+        return Phase1SchemaDiscoveryResult(
+            tuple(item.slot_id for item in expected), profiles,
+            tuple(select_representatives(profiles)), attempts,
+        )
     except V9005StageABlocked:
         raise
     except Exception as exc:

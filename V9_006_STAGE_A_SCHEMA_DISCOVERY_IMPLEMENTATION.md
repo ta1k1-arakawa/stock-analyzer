@@ -41,3 +41,12 @@ existing exact canonical lock pair and fails closed on absence or malformed
 provenance. Neither seam parses terminal month T, constructs schema profiles,
 or creates Phase-1 execution/gate authority. This narrow implementation is
 awaiting GPT exact-SHA review.
+
+The Phase-1 aggregate executor core now calls only the reviewed F1 terminal,
+per-month F2/F4, F3 fan-out, F7 envelope, and exact-slot lock-reader seams
+through injected fetcher/sleep/clock dependencies. It mechanically binds and
+profiles exactly 341 evidence locks (F1 1, F2 BASE 108, F3 YEAR 9, F4 BASE
+108, F7 115); support locks never become profile inputs. It returns safe
+profiles, representative profiles, evidence IDs, and aggregate attempts only.
+It creates no receipt, runner, PowerShell entrypoint, gate, or real network
+execution and awaits GPT exact-SHA review.

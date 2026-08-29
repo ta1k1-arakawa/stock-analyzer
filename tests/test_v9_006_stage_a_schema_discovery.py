@@ -4,6 +4,7 @@ from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 import copy
+from types import SimpleNamespace
 
 import pytest
 
@@ -226,6 +227,108 @@ def test_final_validator_bounds_and_single_profiler_definitions(monkeypatch):
     with pytest.raises(V9005StageABlocked): schema._validate_safe_profile(bad)
     source=Path("src/v9_006_stage_a_schema_discovery.py").read_text(encoding="utf-8")
     assert source.count("def _html_structure(") == source.count("def _ole_structure(") == source.count("def profile_verified_lock(") == 1
+
+
+def phase1_harness(monkeypatch):
+    """Synthetic-only helper/lock harness; neither fetcher nor sockets are used."""
+    events, locks = [], {}
+
+    def add(family, period, domain):
+        url = f"https://www.jpx.co.jp/synthetic/{family}-{period}-{domain.value}.html"
+        slot = source_object_slot_id(family, period, url)
+        locks[slot] = {
+            "schema_version": "V9_005_STAGE_A_RAW_LOCK_V1", "source_family": family,
+            "applicable_period": period, "requested_url": url, "resolved_url": url,
+            "http_status": 200, "retrieval_timestamp_utc": "2020-01-01T00:00:00Z",
+            "byte_length": 34, "sha256": sha256(b"<html><table></table></html>").hexdigest(),
+            "raw": b"<html><table></table></html>",
+        }
+        locks[slot]["byte_length"] = len(locks[slot]["raw"])
+        return slot
+
+    f1 = add(F1, TERMINAL_PERIOD, schema.ObjectDomain.TERMINAL)
+    f2 = {month: add(F2, month, schema.ObjectDomain.BASE) for month in schema.inventory_months()}
+    f4 = {month: add(F4, month, schema.ObjectDomain.BASE) for month in schema.inventory_months()}
+    f3 = {year: add(F3, str(year), schema.ObjectDomain.YEAR) for year in range(2017, 2026)}
+    f7_base = {month: add(F7, month, schema.ObjectDomain.BASE) for month in schema.inventory_months()}
+    f7_extra = {month: add(F7, month, schema.ObjectDomain.ENVELOPE_EXTRA) for month in schema.calendar_envelope_extra_months()}
+
+    def f1_helper(*args, **kwargs): events.append(("F1",)); return f1, 1
+    def f24_helper(*args, **kwargs):
+        events.append((kwargs["source_family"], kwargs["requested_month"])); return (f2 if kwargs["source_family"] == F2 else f4)[kwargs["requested_month"]], 2
+    def f3_helper(*args, **kwargs):
+        events.append(("F3",))
+        refs = {(F3, f"{year}-{month:02d}"): (f3[year],) for year in range(2017, 2026) for month in range(1, 13)}
+        return SimpleNamespace(base_coverage_references=refs, network_attempt_count=3)
+    def f7_helper(*args, **kwargs):
+        events.append(("F7",))
+        return SimpleNamespace(
+            base_coverage_references={(F7, month): (slot,) for month, slot in f7_base.items()},
+            envelope_extra_references={month: (slot,) for month, slot in f7_extra.items()}, network_attempt_count=4,
+        )
+    monkeypatch.setattr(schema, "acquire_f1_terminal_evidence", f1_helper)
+    monkeypatch.setattr(schema, "acquire_f2_f4_monthly_evidence", f24_helper)
+    monkeypatch.setattr(schema, "acquire_f3_required_slots", f3_helper)
+    monkeypatch.setattr(schema, "acquire_f7_required_slots", f7_helper)
+    monkeypatch.setattr(schema, "read_locked_payload_by_slot_id", lambda _root, slot: locks[slot])
+    return events, locks, f3_helper, f7_helper
+
+
+def test_phase1_core_exact_binding_counts_safe_profiles_and_representatives(monkeypatch):
+    events, _locks, _f3, _f7 = phase1_harness(monkeypatch)
+    reader_calls = []
+    original_reader = schema.read_locked_payload_by_slot_id
+    monkeypatch.setattr(schema, "read_locked_payload_by_slot_id", lambda root, slot: (reader_calls.append(slot), original_reader(root, slot))[1])
+    result = schema.run_phase1_schema_discovery_core("unused", fetcher=object(), sleep=object(), clock=object())
+    months = schema.inventory_months()
+    assert events == [("F1",)] + [(family, month) for month in months for family in (F2, F4)] + [("F3",), ("F7",)]
+    assert len(result.evidence_slot_ids) == len(set(result.evidence_slot_ids)) == len(result.safe_profiles) == 341
+    assert sum(item["source_family"] == F1 for item in result.safe_profiles) == 1
+    assert sum(item["source_family"] == F2 and item["object_domain"] == "BASE" for item in result.safe_profiles) == 108
+    assert sum(item["source_family"] == F3 and item["object_domain"] == "YEAR" for item in result.safe_profiles) == 9
+    assert sum(item["source_family"] == F4 and item["object_domain"] == "BASE" for item in result.safe_profiles) == 108
+    assert sum(item["source_family"] == F7 for item in result.safe_profiles) == 115
+    assert sum(item["source_family"] == F7 and item["object_domain"] == "BASE" for item in result.safe_profiles) == 108
+    assert sum(item["source_family"] == F7 and item["object_domain"] == "ENVELOPE_EXTRA" for item in result.safe_profiles) == 7
+    assert not [item for item in result.safe_profiles if item["source_family"] in {"F5", "F6"} or item["object_domain"] == "BRIDGE"]
+    assert result.representative_safe_profiles == tuple(schema.select_representatives(result.safe_profiles))
+    assert result.network_attempt_count == 1 + 216 * 2 + 3 + 4
+    assert all("raw" not in item for item in result.safe_profiles)
+    assert set(reader_calls) == set(result.evidence_slot_ids)  # support locks have no profiler path
+
+
+@pytest.mark.parametrize("kind", ["bad_f3", "bad_f7", "duplicate", "missing", "mismatch"])
+def test_phase1_core_malformed_evidence_fails_closed(monkeypatch, kind):
+    _events, locks, f3_helper, f7_helper = phase1_harness(monkeypatch)
+    if kind == "bad_f3":
+        def bad_f3(*args, **kwargs):
+            result = f3_helper(*args, **kwargs); result.base_coverage_references.pop((F3, "2017-01")); return result
+        monkeypatch.setattr(schema, "acquire_f3_required_slots", bad_f3)
+    elif kind == "bad_f7":
+        def bad_f7(*args, **kwargs):
+            result = f7_helper(*args, **kwargs); result.envelope_extra_references.pop(next(iter(result.envelope_extra_references))); return result
+        monkeypatch.setattr(schema, "acquire_f7_required_slots", bad_f7)
+    elif kind == "duplicate":
+        first = next(iter(locks)); second = next(iter(list(locks)[1:]))
+        locks[second] = locks[first]
+        # Return F1's ID for the first F2 object, creating an exact duplicate evidence identity.
+        original = schema.acquire_f2_f4_monthly_evidence
+        monkeypatch.setattr(schema, "acquire_f2_f4_monthly_evidence", lambda *args, **kwargs: (first, original(*args, **kwargs)[1]) if kwargs["source_family"] == F2 and kwargs["requested_month"] == schema.inventory_months()[0] else original(*args, **kwargs))
+    elif kind == "missing":
+        locks.clear()
+    else:
+        first = next(iter(locks.values())); first["source_family"] = F4
+    with pytest.raises(V9005StageABlocked) as exc:
+        schema.run_phase1_schema_discovery_core("unused", fetcher=object(), sleep=object(), clock=object())
+    assert exc.value.reason == "IMPLEMENTATION_FAILURE"
+
+
+def test_phase1_core_source_excludes_bridge_seam_and_runner_stays_closed():
+    source = Path("src/v9_006_stage_a_schema_discovery.py").read_text(encoding="utf-8")
+    assert "f2_bridge_months" not in source
+    assert "acquire_f2_f4_required_slots" not in source
+    with pytest.raises(V9005StageABlocked) as exc: schema.prepare_future_acquisition()
+    assert exc.value.reason == CHATGPT_DECISION_REQUIRED
 
 
 def test_validator_final_status_and_html_state_regressions(monkeypatch):
