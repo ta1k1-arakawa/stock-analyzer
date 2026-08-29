@@ -9,6 +9,7 @@ from html.parser import HTMLParser
 import json
 import os
 import re
+import stat
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -565,11 +566,29 @@ def read_phase1_schema_discovery_gate_consumed_state() -> bool | None:
         parent = receipt.parent
         if parent.exists() and not parent.is_dir():
             return None
-        if not receipt.exists():
-            return False
-        if receipt.is_symlink() or not receipt.is_file():
+        try:
+            before = os.lstat(receipt)
+        except FileNotFoundError:
+            try:
+                os.lstat(receipt)
+            except FileNotFoundError:
+                return False
+            except Exception:
+                return None
             return None
-        data = json.loads(receipt.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not stat.S_ISREG(before.st_mode):
+            return None
+        raw = receipt.read_bytes()
+        after = os.lstat(receipt)
+        if (
+            (before.st_dev, before.st_ino, before.st_mode, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_mode, after.st_size, after.st_mtime_ns)
+            or not stat.S_ISREG(after.st_mode)
+        ):
+            return None
+        data = json.loads(raw.decode("utf-8"))
         required = {"schema_version", "task", "confirmation_contract", "execution_sha", "gate_consumed", "consumption_timestamp_utc"}
         if (
             not isinstance(data, dict) or set(data) != required

@@ -57,3 +57,8 @@ atomic no-overwrite receipt publication before the core call, and a canonical
 safe no-overwrite result. It is synthetic-testable only through injected
 dependencies; it adds no CLI/PowerShell wrapper or production fetcher wiring
 and awaits GPT exact-SHA review.
+
+Its global receipt reader now uses fail-closed `lstat` inspection before and
+after a regular-file read: every symlink (including dangling), stat/read/type/
+schema uncertainty, or entry change is unknown and blocks before OutputRoot
+creation.

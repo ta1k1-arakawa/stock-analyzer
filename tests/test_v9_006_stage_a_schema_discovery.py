@@ -6,6 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 import copy
 import json
+import stat
 from types import SimpleNamespace
 
 import pytest
@@ -391,6 +392,25 @@ def test_one_shot_malformed_global_receipt_and_existing_output_fail_closed(monke
     assert schema.read_phase1_schema_discovery_gate_consumed_state() is False and calls == []
     receipt.parent.mkdir(parents=True, exist_ok=True); receipt.mkdir()
     assert schema.read_phase1_schema_discovery_gate_consumed_state() is None
+
+
+@pytest.mark.parametrize("target_kind", ["valid_target", "dangling_target"])
+def test_gate_reader_rejects_symlinks_uncertainty_and_blocks_before_outputroot(monkeypatch, tmp_path, target_kind):
+    calls, _result = one_shot_harness(monkeypatch, tmp_path)
+    receipt = schema._phase1_global_receipt_path(); receipt.parent.mkdir(parents=True)
+    # Synthetic lstat covers both a symlink to a valid file and a dangling
+    # symlink; neither may be followed or classified as absence.
+    monkeypatch.setattr(schema.os, "lstat", lambda _path: SimpleNamespace(st_mode=stat.S_IFLNK))
+    assert schema.read_phase1_schema_discovery_gate_consumed_state() is None
+    output = tmp_path / "blocked-output"
+    with pytest.raises(V9005StageABlocked):
+        schema.run_phase1_schema_discovery_one_shot(output, confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    assert not output.exists() and calls == []
+    monkeypatch.setattr(schema.os, "lstat", lambda _path: (_ for _ in ()).throw(OSError()))
+    assert schema.read_phase1_schema_discovery_gate_consumed_state() is None
+    with pytest.raises(V9005StageABlocked):
+        schema.run_phase1_schema_discovery_one_shot(tmp_path / "output", confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    assert calls == []
 
 
 def test_one_shot_missing_localappdata_receipt_race_and_post_gate_failure(monkeypatch, tmp_path):
