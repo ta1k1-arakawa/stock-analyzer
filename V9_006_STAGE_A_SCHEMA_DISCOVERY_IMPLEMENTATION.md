@@ -78,3 +78,11 @@ boundary are reviewed; production CLI/PowerShell real-execution wiring remains
 intentionally unavailable. `prepare_future_acquisition()` remains a runtime
 fail-closed placeholder for unauthorized or unreviewed future execution wiring;
 its documentation-only LOW_1 remediation awaits GPT exact-SHA review.
+
+The Phase-1 Python CLI now binds the exact existing V9_005 production JPX
+fetcher and UTC clock to the reviewed one-shot boundary. Its confirmation is
+environment-only, never argv; stdout is limited to safe counts/statuses and a
+slot-ID digest. Dependency seams keep its tests synthetic, including a real
+one-shot/closure success path. Production real execution and its PowerShell
+entrypoint remain unauthorized and unimplemented; this CLI layer awaits GPT
+exact-SHA review.

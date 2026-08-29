@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 import copy
+import importlib.util
 import json
 import stat
 from types import SimpleNamespace
@@ -105,9 +106,19 @@ def test_selection_is_invariant_to_sampled_or_header_text():
     assert [item["source_object_slot_id"] for item in schema.select_representatives(records)] == [item["source_object_slot_id"] for item in schema.select_representatives(changed)]
 
 
-def test_runner_has_no_argv_confirmation_and_entrypoint_is_decision_required():
+def load_phase1_cli():
+    path = Path("scripts/run_v9_006_stage_a_schema_discovery.py")
+    spec = importlib.util.spec_from_file_location("phase1_schema_discovery_cli_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_cli_has_no_argv_confirmation_and_placeholder_is_decision_required():
     runner = Path("scripts/run_v9_006_stage_a_schema_discovery.py").read_text(encoding="utf-8")
-    assert "--confirmation" not in runner and "argparse" not in runner and "os.environ" not in runner and "input(" not in runner
+    assert "--confirmation" not in runner and "input(" not in runner
+    assert "--confirmation" not in load_phase1_cli().build_parser().format_help()
     with pytest.raises(V9005StageABlocked) as exc: schema.prepare_future_acquisition()
     assert exc.value.reason == CHATGPT_DECISION_REQUIRED
 
@@ -547,6 +558,85 @@ def test_one_shot_real_success_closure_failure_preserves_consumed_receipt(tmp_pa
     assert seen == [True]
     assert schema.read_phase1_schema_discovery_gate_consumed_state() is True
     assert not (output / "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_RESULT.json").exists()
+
+
+def test_phase1_cli_binds_reviewed_production_fetcher_and_utc_clock(monkeypatch, tmp_path, capsys):
+    cli = load_phase1_cli()
+    monkeypatch.setenv(cli.CONFIRMATION_ENV, schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION)
+    production_fetcher = lambda _url: (_ for _ in ()).throw(AssertionError("unexpected fetch"))
+    utc_clock = lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(cli, "_production_fetcher", production_fetcher)
+    monkeypatch.setattr(cli, "_utc_clock", utc_clock)
+    seen = {}
+    result = SimpleNamespace(evidence_slot_ids=("a" * 64,), safe_profiles=(), representative_safe_profiles=(), network_attempt_count=0)
+    def fake_one_shot(output_root, **kwargs):
+        seen["output_root"] = output_root
+        seen.update(kwargs)
+        return result
+    monkeypatch.setattr(cli, "run_phase1_schema_discovery_one_shot", fake_one_shot)
+    assert cli.main(["--output-root", str(tmp_path / "output"), "--execution-sha", "a" * 40]) == 0
+    assert seen["fetcher"] is production_fetcher and seen["clock"] is utc_clock
+    report = json.loads(capsys.readouterr().out)
+    assert report["execution_result"] == "COMPLETE" and "https://" not in json.dumps(report)
+
+
+def test_phase1_cli_missing_or_wrong_confirmation_stops_before_one_shot(monkeypatch, tmp_path, capsys):
+    cli = load_phase1_cli(); calls = []
+    monkeypatch.setattr(cli, "run_phase1_schema_discovery_one_shot", lambda *_args, **_kwargs: calls.append(1))
+    arguments = ["--output-root", str(tmp_path / "output"), "--execution-sha", "a" * 40]
+    monkeypatch.delenv(cli.CONFIRMATION_ENV, raising=False)
+    assert cli.main(arguments, fetcher=lambda _url: (_ for _ in ()).throw(AssertionError("network"))) == 2
+    monkeypatch.setenv(cli.CONFIRMATION_ENV, "wrong")
+    assert cli.main(arguments, fetcher=lambda _url: (_ for _ in ()).throw(AssertionError("network"))) == 2
+    assert calls == [] and not (tmp_path / "output").exists()
+    assert all(json.loads(line)["gate_consumed"] is False for line in capsys.readouterr().out.splitlines())
+
+
+@pytest.mark.parametrize("blocked_state", ["consumed", "ambiguous", "output_conflict"])
+def test_phase1_cli_pre_gate_state_failures_do_not_fetch(monkeypatch, tmp_path, capsys, blocked_state):
+    cli = load_phase1_cli(); local = tmp_path / "localappdata"; local.mkdir(); monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv(cli.CONFIRMATION_ENV, schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION)
+    output = tmp_path / "output"
+    if blocked_state in {"consumed", "ambiguous"}:
+        receipt = schema._phase1_global_receipt_path(); receipt.parent.mkdir(parents=True)
+        if blocked_state == "consumed":
+            receipt.write_text(json.dumps({"schema_version": "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_GATE_RECEIPT_V1", "task": "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_REAL_EXECUTION", "confirmation_contract": schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, "execution_sha": "a" * 40, "gate_consumed": True, "consumption_timestamp_utc": "2026-01-01T00:00:00Z"}), encoding="utf-8")
+        else:
+            receipt.write_text("{}", encoding="utf-8")
+    else:
+        output.mkdir()
+    assert cli.main(["--output-root", str(output), "--execution-sha", "a" * 40], fetcher=lambda _url: (_ for _ in ()).throw(AssertionError("network")), sleep=lambda _seconds: None, clock=lambda: datetime.now(timezone.utc)) == 2
+    assert not (output / "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_RESULT.json").exists()
+    assert json.loads(capsys.readouterr().out)["execution_result"] == "BLOCKED"
+
+
+def test_phase1_cli_real_one_shot_closure_success_and_post_gate_failure(monkeypatch, tmp_path, capsys):
+    cli = load_phase1_cli(); local = tmp_path / "localappdata"; local.mkdir(); monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv(cli.CONFIRMATION_ENV, schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION)
+    constructed, seen = {}, []
+    def synthetic_core(output_root, **_kwargs):
+        seen.append(schema.read_phase1_schema_discovery_gate_consumed_state() is True)
+        result, support = exact_closure_fixture(output_root); constructed.update(result=result, support=support)
+        return result
+    monkeypatch.setattr(schema, "run_phase1_schema_discovery_core", synthetic_core)
+    output = tmp_path / "success"
+    forbidden_fetcher = lambda _url: (_ for _ in ()).throw(AssertionError("real network"))
+    assert cli.main(["--output-root", str(output), "--execution-sha", "a" * 40], fetcher=forbidden_fetcher, sleep=lambda _seconds: None, clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)) == 0
+    assert seen == [True]
+    assert_exact_phase1_closure_fixture(output, constructed["result"], constructed["support"])
+    report = json.loads(capsys.readouterr().out)
+    assert report["evidence_count"] == 341 and report["support_raw_lock_count"] == 12 and report["total_raw_lock_pair_count"] == 353
+    assert not {"F2_BRIDGE", "F5", "F6", "T"} & set(Path("scripts/run_v9_006_stage_a_schema_discovery.py").read_text(encoding="utf-8").split())
+    local_failure = tmp_path / "localappdata-failure"; local_failure.mkdir(); monkeypatch.setenv("LOCALAPPDATA", str(local_failure))
+    def invalid_synthetic_core(output_root, **_kwargs):
+        result, _support = exact_closure_fixture(output_root)
+        (Path(output_root) / "raw" / f"{result.evidence_slot_ids[0]}.bin").unlink()
+        return result
+    monkeypatch.setattr(schema, "run_phase1_schema_discovery_core", invalid_synthetic_core)
+    failed_output = tmp_path / "failure"
+    assert cli.main(["--output-root", str(failed_output), "--execution-sha", "b" * 40], fetcher=forbidden_fetcher, sleep=lambda _seconds: None, clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc)) == 2
+    assert schema.read_phase1_schema_discovery_gate_consumed_state() is True
+    assert not (failed_output / "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_RESULT.json").exists()
 
 
 def test_validator_final_status_and_html_state_regressions(monkeypatch):
