@@ -26,6 +26,10 @@ below appears to conflict with `AGENTS.md`, `AI_RESEARCH_EXECUTION_RULES.md`,
 `AI_REAL_EXECUTION_RUNBOOK.md`, a task-specific frozen design, or any
 stricter existing rule, those documents win (section 9).
 
+Throughput/quality measurement and first-pass-quality guidance live in
+`AI_RESEARCH_DEVELOPMENT_EFFICIENCY_WORKFLOW.md`; that separate contract does
+not change this workflow's batching or remediation rules.
+
 ## 1. Design checkpoint
 
 One substantive design task produces one artifact for one GPT exact-SHA

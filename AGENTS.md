@@ -38,6 +38,11 @@ gates, STOP discipline, or GPT exact-SHA review authority. It never
 overrides this file, `AI_RESEARCH_EXECUTION_RULES.md`,
 `AI_REAL_EXECUTION_RUNBOOK.md`, or any task-specific frozen design.
 
+When evaluating development speed/quality, deciding process-efficiency
+improvements, or planning important implementation/review cadence where
+first-pass quality matters, also read
+`AI_RESEARCH_DEVELOPMENT_EFFICIENCY_WORKFLOW.md`.
+
 ---
 
 # Evaluator v2 rules
