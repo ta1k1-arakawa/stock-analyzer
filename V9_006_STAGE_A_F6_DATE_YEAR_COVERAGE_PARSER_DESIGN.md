@@ -2,7 +2,11 @@
 
 ```text
 task=V9_006_F6_DATE_YEAR_COVERAGE_PARSER_DESIGN_CHECKPOINT
-status=CANDIDATE_AWAITING_GPT_REVIEW
+status=REMEDIATED_AWAITING_GPT_REVIEW
+medium_1=V9_006_F6_DATE_YEAR_DESIGN_AMBIGUOUS_POST_EXPOSURE_GOVERNANCE_AND_COVERAGE_PROVENANCE_INCORRECT
+medium_1_status=REMEDIATED_AWAITING_GPT_REVIEW
+medium_2=V9_006_F6_DATE_YEAR_DESIGN_SAFE_OUTPUT_NOT_PHASE_TOTAL_BEFORE_STRUCTURAL_HASH_EXISTS
+medium_2_status=REMEDIATED_AWAITING_GPT_REVIEW
 scope=DATE_YEAR_COVERAGE_PARSER_DESIGN_ONLY_NO_IMPLEMENTATION_NO_EXECUTION
 network_authorized_by_this_task=false
 network_executed_by_this_task=false
@@ -70,6 +74,22 @@ structural shape first (section 2).
 
 ## 2. Structural-evidence identity gate (must run before any DATE value read)
 
+**MEDIUM-2 remediation note**
+(`V9_006_F6_DATE_YEAR_DESIGN_SAFE_OUTPUT_NOT_PHASE_TOTAL_BEFORE_STRUCTURAL_
+HASH_EXISTS`): the original version of this section implied
+`structural_profile_sha256` is always a 64-lowercase-hex string, but an
+`IMPLEMENTATION_FAILURE` can occur before any hash has actually been
+computed (for example, a crash while recomputing or canonicalizing the
+structural evidence itself), which would force a future implementation to
+either fabricate a hash value or leave the safe schema not phase-total.
+This section, and section 10's schema, now freeze two always-present
+provenance fields alongside the hash gate itself:
+
+```text
+structural_profile_sha256        always present; value is either null, or exactly 64 lowercase hex characters -- never fabricated, never a placeholder
+structural_profile_hash_verified always present; bool
+```
+
 Before a future implementation may read a single `DATE`-typed cell value,
 it MUST:
 
@@ -103,6 +123,40 @@ that proves, immediately before any value-level read, that the file this
 future implementation is about to parse is still exactly the structural
 shape the two preregistered date columns (section 3) were identified
 against -- never an assumption carried over from a prior run.
+
+### 2.1 `structural_profile_sha256` / `structural_profile_hash_verified`: exact, phase-total states
+
+Exactly three states are reachable for this pair, and a future
+implementation MUST NOT fabricate a value outside them:
+
+```text
+(a) before a canonical structural hash has been successfully computed:
+    structural_profile_sha256 = null
+    structural_profile_hash_verified = false
+    (reached only if evidence recomputation/canonicalization/hashing itself
+    raises before producing a hash value -- status = IMPLEMENTATION_FAILURE,
+    date_year_value_read = false, coverage_evaluated = false)
+
+(b) a hash IS computed but does NOT equal the frozen expected value
+    4332d0b27a1e35256abef4c0e240b2c576c20122a264374ea0c5da3729beacce:
+    structural_profile_sha256 = <the actual recomputed hash>   (never the expected value, never null)
+    structural_profile_hash_verified = false
+    status = IMPLEMENTATION_FAILURE
+    date_year_value_read = false
+    coverage_evaluated = false
+
+(c) the actual recomputed hash exactly equals the frozen expected value:
+    structural_profile_sha256 = <the verified matching hash>
+    structural_profile_hash_verified = true
+    the DATE-value extraction stage (sections 3-8) may become reachable
+```
+
+No `DATE` cell value may ever be read while `structural_profile_hash_
+verified == false` -- state (c) is the only state from which sections 3-8
+may proceed. A failure reached before hash computation completes (state a)
+or that computes a mismatching hash (state b) must never report the
+expected/frozen hash value in place of the actual one, and must never
+report `null` once an actual hash value exists.
 
 ## 3. Preregistered date-bearing columns: fixed, not selected
 
@@ -142,6 +196,20 @@ section 5 -- never assumed, hardcoded, or independently inferred.
 
 ## 5. Per-column DATE-only extraction procedure
 
+**MEDIUM-1 remediation note**: `date_year_value_read` (section 10) is a
+single, monotonic provenance boolean -- not per-column -- that starts
+`false` and becomes `true` immediately before the first permitted
+`sheet.cell_value(...)` call on an `XL_CELL_DATE` cell (the marked line in
+the procedure below), across either column. Once `true`, it can never
+revert to `false` for the remainder of that run, regardless of what
+happens afterward (a later `IMPLEMENTATION_FAILURE` still reports `date_
+year_value_read=true` if the boundary was already crossed -- never
+fabricated `false`). If a run fails before ever reaching that line (for
+example, the section 2 hash gate fails, or the very first column processed
+has zero `DATE` cells and its own count cross-validation in section 5.1
+fails before any `cell_value` call), `date_year_value_read` remains
+`false`, accurately reporting that no `DATE` value was ever read.
+
 For each of the two preregistered date columns (section 3) independently,
 on sheet ordinal 1:
 
@@ -150,6 +218,8 @@ for rowx in range(sheet.nrows):
     cell_type = sheet.cell_type(rowx, column_index)   # inspect type FIRST
     if cell_type != xlrd.XL_CELL_DATE:
         continue                                       # no value read for any other type
+    # date_year_value_read -> true HERE, immediately before this call, the
+    # first time this line is reached across either column; never reverts.
     serial = sheet.cell_value(rowx, column_index)       # ONLY reachable when cell_type == XL_CELL_DATE
     year = xlrd.xldate_as_tuple(serial, book.datemode)[0]   # extract ONLY the integer calendar year
     # increment year_histogram[year] by 1; never store/emit `serial`, the
@@ -194,7 +264,16 @@ column -- is `IMPLEMENTATION_FAILURE`. This proves the value-level
 extraction pass agrees with the type-only structural pass that already
 hash-gated this run, closing any gap between "the structural profile says
 19 DATE cells exist in column 4" and "value-level extraction actually
-found 19."
+found 19." `date_year_value_read` at this failure point is `true` if at
+least one `cell_value` call for an `XL_CELL_DATE` cell already occurred in
+this run (section 5's marked line), and remains accurately `false` only in
+the specific edge case where the failing column's own encountered `DATE`
+count is `0` while the hash-verified structural evidence recorded `>= 1`
+for it, and it is the first column processed -- i.e. the mismatch is
+detected without any `cell_value` call ever having happened yet.
+`coverage_evaluated` is `false` for any section 5.1 failure: it requires
+both columns' complete histograms and the full comparison (section 7), and
+a section 5.1 failure always occurs before that point.
 
 ## 6. Deterministic per-column year histogram
 
@@ -219,30 +298,83 @@ result.
 
 ## 7. No favorable-column selection: cross-column identity requirement
 
+**MEDIUM-1 remediation note**
+(`V9_006_F6_DATE_YEAR_DESIGN_AMBIGUOUS_POST_EXPOSURE_GOVERNANCE_AND_
+COVERAGE_PROVENANCE_INCORRECT`): the original version of this section said
+`AMBIGUOUS` leaves "coverage remains unevaluated/false" and "returns to
+GPT for a methodology decision," which incorrectly conflated two different
+facts once both columns' real `DATE` values have already been read,
+enumerated, and compared: (1) whether the mechanical comparison itself was
+performed (it was), and (2) whether a covered-year set was accepted for
+production coverage purposes (it was not, and never will be for this
+preregistered rule). It also implied a live, open-ended methodology choice
+remained available after seeing the histograms, which this remediation
+closes.
+
 The complete year histograms for column 4 and column 6 (section 6) MUST be
 compared for exact equality -- the same set of `{year, count}` entries, in
 the same sorted order, with no entry present in one histogram and absent
 or differently-counted in the other.
 
 ```text
-histogram(column_4) == histogram(column_6)  =>  status = F6_YEAR_COVERAGE_CAPTURED
-histogram(column_4) != histogram(column_6)  =>  status = F6_YEAR_COVERAGE_AMBIGUOUS
+histogram(column_4) == histogram(column_6)  =>  status = F6_YEAR_COVERAGE_CAPTURED  (coverage_evaluated=true, coverage_result_accepted=true)
+histogram(column_4) != histogram(column_6)  =>  status = F6_YEAR_COVERAGE_AMBIGUOUS (coverage_evaluated=true, coverage_result_accepted=false)
 ```
 
+In both outcomes `coverage_evaluated=true`: both columns were completely
+enumerated, both `DATE` counts cross-validated (section 5.1), both
+complete histograms constructed (section 6), and the exact equality
+comparison performed. `coverage_evaluated` reports only that this
+mechanical work happened -- it never reports whether a covered-year set
+was accepted. That is `coverage_result_accepted`, which is `true` only for
+`F6_YEAR_COVERAGE_CAPTURED`.
+
 If the two histograms differ in any way, **no covered-year set is
-accepted**: `F6_YEAR_COVERAGE_AMBIGUOUS` is the terminal safe outcome for
-that run, `V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED` remains
-`false`, and the discrepancy is returned to GPT-5.6 Sol for an explicit
-methodology decision before any further action. A future implementation
-MUST NOT resolve a disagreement between the two columns by union,
-intersection, majority vote, nearest match, manual selection, preferring
-either column by name/position, or any other heuristic -- exact equality
-or `AMBIGUOUS`, with no third option and no silent repair.
+accepted**: `F6_YEAR_COVERAGE_AMBIGUOUS` is **terminal** -- for this
+preregistered F6 date/year coverage rule, in the current V9 study
+identity, this run's `AMBIGUOUS` result ends the matter, not a step toward
+one. `V9_006_STAGE_A_F6_PRODUCTION_COVERAGE_EVALUATED` (the separate,
+project-state-level flag gating any strategy/backtest use of F6 coverage)
+remains `false` after `AMBIGUOUS` -- not because no evaluation attempt was
+made, but because that flag specifically means "an accepted covered-year
+set exists for production coverage purposes," which `AMBIGUOUS` by
+definition never produces. A future implementation MUST NOT resolve a
+disagreement between the two columns by union, intersection, majority
+vote, nearest match, manual selection, preferring either column by
+name/position, or any other heuristic -- exact equality or `AMBIGUOUS`,
+with no third option and no silent repair.
+
+### 7.1 Post-`AMBIGUOUS` stopping rule (governance, not a parser mechanic)
+
+After an `F6_YEAR_COVERAGE_AMBIGUOUS` result under this preregistered rule,
+for the current V9 study identity:
+
+- do **not** change to a union, intersection, majority-vote,
+  preferred-column, or any other manual-selection rule within this study;
+- do **not** redraw, reselect, add, or drop date-bearing columns;
+- do **not** rerun this stage hoping for a different (favorable) result;
+- do **not** refetch, retry with different parameters, or substitute a
+  provider/URL.
+
+GPT-5.6 Sol may adjudicate the already-preregistered `AMBIGUOUS` result
+itself, any implementation fault that produced it, or how it should be
+governance-classified -- but MAY NOT choose a new coverage methodology for
+this same, already-exposed V9 study after having seen the two histograms.
+Any materially different coverage rule considered after observing
+`AMBIGUOUS` requires a separately identified successor study or new
+preregistration under this repository's existing governance
+(`AI_RESEARCH_EXECUTION_RULES.md`), unless a stricter pre-existing frozen
+rule already explicitly authorizes it. This rule exists because a
+methodology choice made after seeing the actual result it would apply to
+is not a preregistered rule at all -- it is post-hoc selection of a
+favorable outcome, exactly what section 9's prohibitions and this design's
+whole premise exist to prevent.
 
 ## 8. Covered-year derivation (only when the two columns agree)
 
-When, and only when, section 7's equality holds
-(`status = F6_YEAR_COVERAGE_CAPTURED`):
+When, and only when, section 7's equality holds (`status =
+F6_YEAR_COVERAGE_CAPTURED`, `coverage_evaluated=true`,
+`coverage_result_accepted=true`):
 
 ```text
 covered_years = sorted(unique(year for every entry in either identical histogram))
@@ -291,38 +423,73 @@ per-`DATE`-cell year extraction and two-column exact-match rule above:
 
 ## 10. Safe evidence: closed schema
 
-A future implementation's safe output is restricted to **exactly** the
-following closed set of top-level keys -- no other key, at any status:
+**MEDIUM-2 remediation note**: this section is rewritten so every key's
+presence/value rule is mechanically unambiguous and phase-total (never
+requiring a fabricated placeholder) at every reachable status, including
+`IMPLEMENTATION_FAILURE` reached before any structural hash exists.
+
+### 10.1 Always-present keys (present at every status, once the coverage-stage wrapper has started)
 
 ```text
 status                          in {F6_YEAR_COVERAGE_CAPTURED, F6_YEAR_COVERAGE_AMBIGUOUS, IMPLEMENTATION_FAILURE}
-structural_profile_sha256        64 lowercase-hex chars, always present (section 2's recomputed hash)
-date_column_ordinals             fixed value [4, 6], always present (section 3; non-bool ints >= 1, ascending, exactly two entries)
-year_histograms                  object; present iff status in {F6_YEAR_COVERAGE_CAPTURED, F6_YEAR_COVERAGE_AMBIGUOUS}; absent for IMPLEMENTATION_FAILURE
-covered_years                    sorted list of unique non-bool ints; present iff status == F6_YEAR_COVERAGE_CAPTURED; absent otherwise
-covered_required_years           sorted list of unique non-bool ints, subset of required_years; present iff status == F6_YEAR_COVERAGE_CAPTURED; absent otherwise
-missing_required_years           sorted list of unique non-bool ints, subset of required_years; present iff status == F6_YEAR_COVERAGE_CAPTURED; absent otherwise
-all_required_years_covered       bool; present iff status == F6_YEAR_COVERAGE_CAPTURED; absent otherwise
+structural_profile_sha256        null, or exactly 64 lowercase-hex characters (section 2.1's three-state rule)
+structural_profile_hash_verified bool (section 2.1)
+date_column_ordinals             fixed value [4, 6] (section 3; non-bool ints >= 1, ascending, exactly two entries)
 raw_bytes_read_for_integrity     bool or the literal string "unknown" (inherited Phase A/B/C phase-provenance contract, unchanged)
 child_content_inspected          bool (inherited Phase A/B/C phase-provenance contract, unchanged)
+date_year_value_read             bool (section 5's remediation note; monotonic, never reverts true -> false)
+coverage_evaluated               bool (section 7; true only once both columns fully enumerated/cross-validated/histogrammed and compared)
+coverage_result_accepted         bool; true iff status == F6_YEAR_COVERAGE_CAPTURED
 network_request_count            fixed 0
 ```
 
-`year_histograms`, when present, has **exactly** two keys, the string
-forms of the two preregistered column ordinals (`"4"` and `"6"`), each
-mapped to that column's own histogram list (section 6): a list of objects
-each with **exactly** the two keys `year` (non-bool int) and `count`
-(non-bool int `>= 1`), sorted strictly ascending by `year`, with no
-duplicate `year` within one column's list. When `status ==
-F6_YEAR_COVERAGE_CAPTURED`, the two histogram lists under `"4"` and `"6"`
-MUST be identical element-for-element (section 7's equality, restated as a
-schema-level invariant a validator can mechanically check). No exact
-date, serial value, sheet name, header string, cell text, URL, or
+### 10.2 `year_histograms`: conditionally present
+
+`year_histograms` is present **only after both columns' complete
+histograms have actually been built** (section 6) -- therefore:
+
+```text
+status == F6_YEAR_COVERAGE_CAPTURED   => year_histograms PRESENT (required)
+status == F6_YEAR_COVERAGE_AMBIGUOUS  => year_histograms PRESENT (required)
+status == IMPLEMENTATION_FAILURE      => year_histograms ABSENT, UNLESS both complete histograms had already been built (and the comparison already performed) before a later, separately-occurring failure -- in that specific case it is present, exactly as it would be for CAPTURED/AMBIGUOUS
+```
+
+When present, `year_histograms` has **exactly** two keys, the string forms
+of the two preregistered column ordinals (`"4"` and `"6"`), each mapped to
+that column's own histogram list (section 6): a list of objects each with
+**exactly** the two keys `year` (non-bool int) and `count` (non-bool int
+`>= 1`), sorted strictly ascending by `year`, with no duplicate `year`
+within one column's list. When `status == F6_YEAR_COVERAGE_CAPTURED`, the
+two histogram lists under `"4"` and `"6"` MUST be identical
+element-for-element (section 7's equality, restated as a schema-level
+invariant a validator can mechanically check); when `status ==
+F6_YEAR_COVERAGE_AMBIGUOUS`, they MUST differ in at least one respect
+(otherwise the status itself would be inconsistent with its own evidence).
+
+### 10.3 Status-specific keys
+
+```text
+F6_YEAR_COVERAGE_CAPTURED only:
+  covered_years                  sorted list of unique non-bool ints
+  covered_required_years         sorted list of unique non-bool ints, subset of required_years
+  missing_required_years         sorted list of unique non-bool ints, subset of required_years (empty list when all_required_years_covered)
+  all_required_years_covered     bool
+
+F6_YEAR_COVERAGE_AMBIGUOUS:
+  covered_years / covered_required_years / missing_required_years / all_required_years_covered  ABSENT (never emitted -- AMBIGUOUS accepts no covered-year set, section 7)
+
+IMPLEMENTATION_FAILURE:
+  covered_years / covered_required_years / missing_required_years / all_required_years_covered  ABSENT
+  coverage_result_accepted = false (10.1's general rule, restated)
+  every phase/provenance boolean (structural_profile_hash_verified, date_year_value_read, coverage_evaluated, raw_bytes_read_for_integrity, child_content_inspected) MUST reflect the actual boundary reached at failure time -- never a blanket false, never a fabricated true (sections 2.1, 5, 5.1, 7)
+```
+
+No exact date, serial value, sheet name, header string, cell text, URL, or
 machine-local path may appear anywhere in this payload, at any nesting
 depth, regardless of field name -- the only permitted payload-derived
-signal is the closed enum, the hash, the two fixed column ordinals, the
-bounded year/count integers, and the derived year sets/booleans specified
-above.
+signal is the closed enum, the hash (or `null`), the two fixed column
+ordinals, the bounded year/count integers, the phase/provenance booleans,
+and the derived year sets specified above.
 
 This design does not itself extend
 `src/v9_006_f6_offline_child_structural_probe.py`'s `_safe_structural_
@@ -377,6 +544,12 @@ required-years set, structural-parser design, Phase A/B boundary, network/
 refetch rule, or human-gate rule; it adds no new safe outcome beyond the
 three above.
 
+`F6_YEAR_COVERAGE_AMBIGUOUS` is not an intermediate or retriable state: per
+section 7.1, it is terminal for this preregistered rule in the current V9
+study identity. A future implementation must not offer, and no operator
+may invoke, a "rerun with a different rule" or "select a column" mode
+after an `AMBIGUOUS` result within this study.
+
 ## 13. `F6_YEAR_COVERAGE_CAPTURED` grants no strategy/profitability authority
 
 `F6_YEAR_COVERAGE_CAPTURED` and `all_required_years_covered=true` mean only
@@ -417,11 +590,19 @@ A future implementation of this design must, at minimum:
 - implement a new closed-schema, fail-closed, non-crashing (arbitrary/
   unhashable input safe, matching the existing `_is_allowed_enum_str`
   pattern) safe-evidence validator enforcing exactly the schema in section
-  10, including the histogram cardinality/ordering/element-identity
-  cross-validation;
+  10, including the `structural_profile_sha256`/`structural_profile_hash_
+  verified` three-state rule (section 2.1), the `date_year_value_read`/
+  `coverage_evaluated`/`coverage_result_accepted` provenance semantics
+  (sections 5, 5.1, 7), and the histogram cardinality/ordering/
+  element-identity cross-validation;
 - preserve every existing Phase A/B boundary and the existing
   `raw_bytes_read_for_integrity`/`child_content_inspected` phase-provenance
-  contract unchanged; and
+  contract unchanged;
+- enforce section 7.1's post-`AMBIGUOUS` stopping rule operationally: the
+  implementation and any tooling around it must not expose a mode that
+  reruns this stage with a different resolution rule, a different column
+  selection, or a refetch, after an `AMBIGUOUS` result within this study;
+  and
 - be independently GPT exact-SHA reviewed before any real execution
   against the production CHILD, exactly like every prior stage.
 
@@ -458,3 +639,91 @@ GLOBAL fanout rule, and creates no additional CHILD read authority, no
 coverage-parser implementation authority, no network authority, and no
 human-gate consumption. It is not self-called `PASS`. The next action is
 GPT exact-SHA independent methodology review of this design.
+
+## GPT design review (BLOCK, MEDIUM_1 + MEDIUM_2 findings, remediation)
+
+```text
+REVIEWED_SHA=1d4be751802d62dc53f039cbf730c06390e9d4be
+PARENT_SHA=b2fcb56c0e5ace654b638664786229761dc14df8
+CRITICAL=0
+HIGH=0
+MEDIUM=2
+LOW=0
+RESULT=BLOCK
+MEDIUM_1=V9_006_F6_DATE_YEAR_DESIGN_AMBIGUOUS_POST_EXPOSURE_GOVERNANCE_AND_COVERAGE_PROVENANCE_INCORRECT
+MEDIUM_2=V9_006_F6_DATE_YEAR_DESIGN_SAFE_OUTPUT_NOT_PHASE_TOTAL_BEFORE_STRUCTURAL_HASH_EXISTS
+```
+
+Finding `MEDIUM_1`: the design's original section 7 said `F6_YEAR_
+COVERAGE_AMBIGUOUS` leaves "coverage remains unevaluated/false" and
+"returns to GPT for a methodology decision," even though both real `DATE`
+column year histograms would already have been read, constructed, and
+compared by the time that status is reached -- an incorrect governance and
+coverage-provenance characterization that also implied a live methodology
+choice remained open after seeing the actual histograms.
+
+Finding `MEDIUM_2`: the design required `structural_profile_sha256` to be
+a 64-lowercase-hex string at every status, but `IMPLEMENTATION_FAILURE`
+can occur before any hash has actually been computed (for example, a
+crash while recomputing or canonicalizing the structural evidence), which
+would force a future implementation to fabricate a hash value or leave the
+safe schema not phase-total.
+
+### Remediation (this revision)
+
+**MEDIUM_1**: added `date_year_value_read`, `coverage_evaluated`, and
+`coverage_result_accepted` as always-present provenance booleans (sections
+5, 5.1, 7, 10.1); rewrote section 7 to state `coverage_evaluated=true` for
+both `CAPTURED` and `AMBIGUOUS` (the mechanical comparison happened in
+both cases) while `coverage_result_accepted` is `true` only for `CAPTURED`
+(no covered-year set is ever accepted for `AMBIGUOUS`); added new section
+7.1 freezing `F6_YEAR_COVERAGE_AMBIGUOUS` as **terminal** for this
+preregistered rule in the current V9 study identity -- no rule change, no
+column redraw/reselection, no rerun-for-a-favorable-result, no refetch;
+GPT may adjudicate the already-preregistered result, implementation
+faults, or governance classification, but may not choose a new coverage
+methodology for the same exposed study after seeing the histograms; any
+materially different rule requires a separately identified successor study
+or new preregistration. Section 12 cross-references this terminal rule.
+
+**MEDIUM_2**: added `structural_profile_hash_verified` as an always-present
+boolean alongside `structural_profile_sha256`, and froze the exact three
+reachable states for that pair in new section 2.1: (a) before a hash is
+successfully computed, `sha256=null`/`hash_verified=false`; (b) a computed
+hash that mismatches the frozen expected value, `sha256=<actual hash>`/
+`hash_verified=false`/`status=IMPLEMENTATION_FAILURE`/`date_year_value_
+read=false`; (c) the computed hash matches, `hash_verified=true`, and only
+then may the `DATE`-value stage become reachable. No `DATE` value may ever
+be read while `hash_verified=false`. A failure before hash computation
+never fabricates the expected hash or a placeholder.
+
+Section 10 (safe evidence schema) is rewritten in full (10.1 always-present
+keys, 10.2 `year_histograms` conditional presence including the edge case
+where both histograms were already built before a later failure, 10.3
+status-specific keys) so every key's presence/value rule is mechanically
+unambiguous at every reachable status, per both findings together.
+
+### Bounded closure sweep (this remediation)
+
+```text
+CLOSURE_SWEEP_EXTRA_FIXES=Clarified in section 5.1 the specific edge case where date_year_value_read remains accurately false at an IMPLEMENTATION_FAILURE reached via the per-column DATE-count cross-validation: only when the failing column is the first one processed and its own encountered DATE count is zero, since in every other reachable case at least one cell_value call has already occurred by the time that check runs. Clarified in section 10.2 that year_histograms may exceptionally be present alongside IMPLEMENTATION_FAILURE only in the case where both complete histograms and the comparison had already finished before a separately-occurring later failure (defense-in-depth around section 8's derivation step), rather than leaving that combination unaddressed. Cross-referenced the new section 7.1 stopping rule from section 12 and added a corresponding operational bullet to section 14's implementation-review scope, so the prohibition on a rerun/reselect/refetch mode after AMBIGUOUS is stated as a concrete implementation requirement, not only prose in section 7. No coverage/date/year methodology, source/CHILD identity, structural profile expected hash, date columns [4,6], xlrd==2.0.2/xldate_as_tuple conversion, required years 2017-2025, the two-histogram exact-equality rule, coverage derivation, Phase A/B rules, network/refetch/gate rules, source/provider, or any threshold/study-sample rule was changed.
+```
+
+No other remaining mechanical ambiguity requiring a methodological choice
+was found in this sweep; nothing else triggered `CHATGPT_DECISION_REQUIRED`.
+
+```text
+V9_006_F6_DATE_YEAR_DESIGN_AMBIGUOUS_POST_EXPOSURE_GOVERNANCE_AND_COVERAGE_PROVENANCE_INCORRECT=REMEDIATED_AWAITING_GPT_REVIEW
+V9_006_F6_DATE_YEAR_DESIGN_SAFE_OUTPUT_NOT_PHASE_TOTAL_BEFORE_STRUCTURAL_HASH_EXISTS=REMEDIATED_AWAITING_GPT_REVIEW
+V9_006_STAGE_A_F6_DATE_YEAR_COVERAGE_PARSER_DESIGN=BLOCK
+```
+
+No production CHILD/path/raw state was accessed, no Python was executed,
+no DATE/year value was read, no coverage was executed or evaluated, no
+human gate was consumed, and no network request was made beyond `git
+fetch`/`push`. The prior OLE/BIFF structural-parser implementation remains
+`PASS`; the prior structural execution remains `COMPLETE`/
+`STRUCTURAL_FORMAT_CAPTURED`, unaffected by this remediation. This
+remediation is not self-called `PASS`, and neither `MEDIUM_1` nor
+`MEDIUM_2` is self-called `RESOLVED`. GPT-5.6 Sol remains the final
+methodology/review authority.
