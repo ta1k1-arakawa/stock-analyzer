@@ -105,3 +105,22 @@ environment, immediately before the single invocation of the reviewed CLI,
 always clearing it in `finally`. This entrypoint performs zero JPX/Yahoo
 requests itself, creates no OutputRoot or receipt, and contains no retry
 path; it awaits GPT exact-SHA review.
+
+GPT-5.6 Sol exact-SHA review of `556897adbd90cb820f84aacad3da51e09e04d19b`
+(parent `6f26a834d64925e73743d7ead8d0ff33f7c56c35`) is `CRITICAL=0`, `HIGH=0`,
+`MEDIUM=1`, `LOW=0`, `RESULT=BLOCK`:
+`MEDIUM_1=POST_CONFIRMATION_AUTHORITATIVE_BRANCH_BINDING_NOT_REVERIFIED` --
+the post-confirmation/pre-consumption block rechecked working tree, local and
+remote HEAD, OutputRoot freshness, the canonical interpreter, environment
+readiness, and receipt absence, but never rechecked the authoritative branch
+itself. MEDIUM_1 is remediated: the post-confirmation block now also
+rereads `git branch --show-current`, requires it to equal exactly
+`v9-cross-sectional-close-auction-design`, and mechanically reuses the
+existing required-reviewed-file presence loop -- both strictly before the
+confirmation environment variable is set and before the Python CLI is
+invoked. A mismatch or uncertainty stops as `PRE_GATE`, without setting the
+confirmation environment variable and without invoking Python acquisition.
+No confirmation contract, receipt semantics, OutputRoot semantics, expected-
+SHA semantics, environment-readiness semantics, retry behavior, Python
+invocation, Python source/CLI, or methodology changed. This remediation
+awaits GPT exact-SHA review.

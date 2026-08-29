@@ -42,8 +42,9 @@
 # Python reader (read_phase1_schema_discovery_gate_consumed_state) -- never a
 # PowerShell reimplementation of that schema/parsing logic. Only when every
 # one of these PASSES does this script request confirmation; after
-# confirmation it reruns every applicable non-destructive binding once more,
-# and only then briefly sets the confirmation environment variable
+# confirmation it reruns every applicable non-destructive binding once more
+# -- including required-reviewed-file presence and the authoritative branch
+# -- and only then briefly sets the confirmation environment variable
 # immediately before invoking the single reviewed Python one-shot boundary
 # (scripts\run_v9_006_stage_a_schema_discovery.py), which alone is
 # responsible for OutputRoot creation and canonical receipt publication.
@@ -236,11 +237,29 @@ print(repr(read_phase1_schema_discovery_gate_consumed_state()))
 
     # ------------------------------------------------------------------
     # 11. Post-confirmation, pre-consumption: rerun every applicable
-    #     non-destructive provenance/readiness/durable-state binding
-    #     before any gate consumption. Any change or uncertainty stops
-    #     without consuming the gate.
+    #     non-destructive provenance/readiness/durable-state binding --
+    #     required reviewed files, the authoritative branch, working-tree
+    #     cleanliness, local/remote HEAD, OutputRoot freshness, the
+    #     canonical interpreter, environment readiness, and the receipt
+    #     absence check -- before any gate consumption. Any change or
+    #     uncertainty stops without consuming the gate, without setting the
+    #     confirmation environment variable, and without invoking Python
+    #     acquisition.
     # ------------------------------------------------------------------
     Write-Host "Re-running non-destructive bindings after confirmation, before gate consumption ..."
+
+    foreach ($reviewedFile in $requiredReviewedFiles) {
+        $reviewedFilePath = Join-Path (Get-Location) $reviewedFile
+        if (-not (Test-Path -LiteralPath $reviewedFilePath -PathType Leaf)) {
+            $typedConfirmationToken = $null
+            throw "PRE_GATE_BLOCK: required reviewed file went missing between confirmation and consumption ($reviewedFile). Aborting without gate consumption."
+        }
+    }
+    $postConfirmationBranch = (git branch --show-current).Trim()
+    if ($postConfirmationBranch -ne $authoritativeBranch) {
+        $typedConfirmationToken = $null
+        throw "PRE_GATE_BLOCK: current branch changed between confirmation and consumption ('$postConfirmationBranch' != '$authoritativeBranch'). Aborting without gate consumption, without setting the confirmation environment variable, and without invoking Python acquisition."
+    }
 
     $postConfirmationWorkingTreeStatus = (git status --porcelain)
     if (-not [string]::IsNullOrEmpty($postConfirmationWorkingTreeStatus)) {
