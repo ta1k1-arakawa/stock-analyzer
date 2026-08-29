@@ -11,7 +11,7 @@ from src.v9_005_stage_a_jpx_probe import (
     CHATGPT_DECISION_REQUIRED, SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE as F3,
     SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE as F4, SOURCE_FAMILY_JPX_CALENDAR as F7,
     SOURCE_FAMILY_LISTED_ISSUES_MONTH_END as F1, SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT as F2,
-    V9005StageABlocked, source_object_slot_id,
+    TERMINAL_PERIOD, V9005StageABlocked, source_object_slot_id,
 )
 
 
@@ -56,9 +56,9 @@ def periods(selected, family): return [item["applicable_period"] for item in sel
 
 
 def test_f1_terminal_and_all_f3_years_are_representatives():
-    records = [profile(F1, "terminal", schema.ObjectDomain.TERMINAL)] + [profile(F3, str(year), schema.ObjectDomain.YEAR) for year in range(2017, 2026)]
+    records = [profile(F1, TERMINAL_PERIOD, schema.ObjectDomain.TERMINAL)] + [profile(F3, str(year), schema.ObjectDomain.YEAR) for year in range(2017, 2026)]
     selected = schema.select_representatives(records)
-    assert periods(selected, F1) == ["terminal"]
+    assert periods(selected, F1) == [TERMINAL_PERIOD]
     assert periods(selected, F3) == [str(year) for year in range(2017, 2026)]
 
 
@@ -75,7 +75,7 @@ def test_profile_different_middle_selected_but_identical_middle_is_not():
 
 def test_all_f2_bridges_and_f7_yearly_extremes_are_representatives():
     records = [profile(F2, "2026-01", schema.ObjectDomain.BRIDGE), profile(F2, "2026-02", schema.ObjectDomain.BRIDGE)]
-    records += [profile(F7, "2020-01", schema.ObjectDomain.BASE), profile(F7, "2020-02", schema.ObjectDomain.ENVELOPE_EXTRA), profile(F7, "2021-01", schema.ObjectDomain.ENVELOPE_EXTRA), profile(F7, "2021-02", schema.ObjectDomain.BASE)]
+    records += [profile(F7, "2020-01", schema.ObjectDomain.BASE), profile(F7, "2020-02", schema.ObjectDomain.BASE), profile(F7, "2021-01", schema.ObjectDomain.BASE), profile(F7, "2021-02", schema.ObjectDomain.BASE)]
     selected = schema.select_representatives(records)
     assert periods(selected, F2) == ["2026-01", "2026-02"]
     assert periods(selected, F7) == ["2020-01", "2020-02", "2021-01", "2021-02"]
@@ -105,3 +105,35 @@ def test_runner_has_no_argv_confirmation_and_entrypoint_is_decision_required():
     assert "--confirmation" not in runner and "argparse" not in runner and "os.environ" not in runner and "input(" not in runner
     with pytest.raises(V9005StageABlocked) as exc: schema.prepare_future_acquisition()
     assert exc.value.reason == CHATGPT_DECISION_REQUIRED
+
+
+@pytest.mark.parametrize("family,period,domain", [
+    (F1, TERMINAL_PERIOD, schema.ObjectDomain.TERMINAL),
+    (F2, "2017-01", schema.ObjectDomain.BASE), (F2, "2025-12", schema.ObjectDomain.BASE),
+    (F4, "2017-01", schema.ObjectDomain.BASE),
+    (F7, "2017-01", schema.ObjectDomain.BASE), (F7, "2025-12", schema.ObjectDomain.BASE),
+    (F7, "2016-09", schema.ObjectDomain.ENVELOPE_EXTRA), (F7, "2016-12", schema.ObjectDomain.ENVELOPE_EXTRA),
+    (F7, "2026-01", schema.ObjectDomain.ENVELOPE_EXTRA), (F7, "2026-03", schema.ObjectDomain.ENVELOPE_EXTRA),
+    (F3, "2017", schema.ObjectDomain.YEAR), (F3, "2025", schema.ObjectDomain.YEAR),
+    (F2, "2026-01", schema.ObjectDomain.BRIDGE),
+])
+def test_domain_period_contract_accepts_exact_reviewed_domains(family, period, domain):
+    assert schema._validate_domain_period(family, domain, period) is domain
+    assert schema.profile_verified_lock(lock(family=family, period=period, domain=domain))["applicable_period"] == period
+
+
+@pytest.mark.parametrize("family,period,domain", [
+    (F1, "terminal", schema.ObjectDomain.TERMINAL), (F1, "2020-01", schema.ObjectDomain.TERMINAL),
+    (F2, "2016-12", schema.ObjectDomain.BASE), (F2, "2026-01", schema.ObjectDomain.BASE),
+    (F4, "2016-12", schema.ObjectDomain.BASE),
+    (F7, "2016-12", schema.ObjectDomain.BASE), (F7, "2026-01", schema.ObjectDomain.BASE),
+    (F7, "2020-02", schema.ObjectDomain.ENVELOPE_EXTRA), (F7, "2016-08", schema.ObjectDomain.ENVELOPE_EXTRA),
+    (F7, "2026-04", schema.ObjectDomain.ENVELOPE_EXTRA),
+    (F3, "2016", schema.ObjectDomain.YEAR), (F3, "2026", schema.ObjectDomain.YEAR),
+    (F2, "2025-12", schema.ObjectDomain.BRIDGE),
+])
+def test_domain_period_contract_rejects_all_out_of_domain_values(family, period, domain):
+    with pytest.raises(V9005StageABlocked) as exc: schema._validate_domain_period(family, domain, period)
+    assert exc.value.reason == "IMPLEMENTATION_FAILURE"
+    assert_blocked(lock(family=family, period=period, domain=domain))
+    with pytest.raises(V9005StageABlocked): schema.select_representatives([profile(family, period, domain)])

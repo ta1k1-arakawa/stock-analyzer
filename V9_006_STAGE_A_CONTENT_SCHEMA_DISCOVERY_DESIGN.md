@@ -34,8 +34,15 @@ as `IMPLEMENTATION_FAILURE`; the dataclass does not itself establish trust.
 The explicit domains are `TERMINAL`, `BASE`, `BRIDGE`, `ENVELOPE_EXTRA`, and
 `YEAR`. Valid pairs are F1/TERMINAL, F2/BASE or BRIDGE, F3/YEAR, F4/BASE, and
 F7/BASE or ENVELOPE_EXTRA; every other pair fails closed. MONTHLY domains use
-canonical `YYYY-MM`; F3/YEAR is exactly one of 2017..2025. Content never
-determines a domain or a representative.
+canonical `YYYY-MM`; F3/YEAR is exactly one of 2017..2025. A single shared
+domain-period validator is used for both verified locks and representative
+profiles: F1/TERMINAL is exactly V9_005 `TERMINAL_PERIOD`; F2/F4/F7 BASE is
+exactly V9_005 `inventory_months()` (2017-01..2025-12); F7/ENVELOPE_EXTRA is
+exactly `calendar_envelope_extra_months()` (2016-09..2016-12 and
+2026-01..2026-03); and F2/BRIDGE is canonical monthly and strictly after the
+existing inventory upper bound (2025-12). The bridge's future terminal-derived
+upper bound remains the aggregate executor's `f2_bridge_months(T)` concern,
+not this validator. Content never determines a domain or a representative.
 
 F1 terminal and every F3 YEAR object are selected. F2 BRIDGE objects are all
 selected. For F2/F4 BASE, per family/calendar year select earliest, latest,

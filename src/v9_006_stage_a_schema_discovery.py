@@ -13,7 +13,9 @@ from src.v9_005_stage_a_jpx_probe import (
     SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE, SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE,
     SOURCE_FAMILY_JPX_CALENDAR, SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
     SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, V9005StageABlocked,
-    _is_canonical_raw_lock_timestamp, source_object_slot_id, validate_jpx_url,
+    INVENTORY_LAST_YEAR_MONTH, TERMINAL_PERIOD, _is_canonical_raw_lock_timestamp,
+    _parse_year_month, calendar_envelope_extra_months, inventory_months,
+    source_object_slot_id, validate_jpx_url,
 )
 
 SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION = "V9_006_STAGE_A_SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_ONE_SHOT"
@@ -55,6 +57,31 @@ class VerifiedLockedObject:
 def _fail() -> None:
     raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
 
+def _validate_domain_period(family: Any, domain: Any, period: Any) -> ObjectDomain:
+    """Validate the one closed family/domain/period contract in both seams."""
+    try:
+        if family not in _ALLOWED_FAMILIES or type(domain) is not ObjectDomain or type(period) is not str:
+            _fail()
+        if domain not in _DOMAINS_BY_FAMILY[family]:
+            _fail()
+        if family == SOURCE_FAMILY_LISTED_ISSUES_MONTH_END:
+            if period != TERMINAL_PERIOD: _fail()
+        elif family in {SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE} and domain is ObjectDomain.BASE:
+            if period not in inventory_months(): _fail()
+        elif family == SOURCE_FAMILY_JPX_CALENDAR and domain is ObjectDomain.BASE:
+            if period not in inventory_months(): _fail()
+        elif family == SOURCE_FAMILY_JPX_CALENDAR and domain is ObjectDomain.ENVELOPE_EXTRA:
+            if period not in calendar_envelope_extra_months(): _fail()
+        elif family == SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE:
+            if period not in {month[:4] for month in inventory_months()}: _fail()
+        elif family == SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT and domain is ObjectDomain.BRIDGE:
+            if _parse_year_month(period) <= INVENTORY_LAST_YEAR_MONTH: _fail()
+        else:
+            _fail()
+        return domain
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -80,7 +107,6 @@ def _validate(lock: Any) -> VerifiedLockedObject:
             or lock.source_family not in _ALLOWED_FAMILIES
             or type(lock.applicable_period) is not str or not lock.applicable_period
             or type(lock.object_domain) is not ObjectDomain
-            or lock.object_domain not in _DOMAINS_BY_FAMILY[lock.source_family]
             or type(lock.requested_url) is not str or type(lock.resolved_url) is not str
             or not _is_canonical_raw_lock_timestamp(lock.retrieval_timestamp_utc)
             or type(lock.http_status) is not int or not 100 <= lock.http_status <= 599
@@ -90,6 +116,7 @@ def _validate(lock: Any) -> VerifiedLockedObject:
             or type(lock.source_object_slot_id) is not str or len(lock.source_object_slot_id) != 64
         ):
             _fail()
+        _validate_domain_period(lock.source_family, lock.object_domain, lock.applicable_period)
         validate_jpx_url(lock.requested_url)
         validate_jpx_url(lock.resolved_url)
         if any(c not in "0123456789abcdef" for c in lock.sha256 + lock.source_object_slot_id):
@@ -171,12 +198,6 @@ def profile_verified_lock(lock: Any) -> dict[str, Any]:
     fingerprint=sha256(_canonical_json(structure).encode()).hexdigest()
     return {"status":status,"source_family":item.source_family,"object_domain":item.object_domain.value,"applicable_period":item.applicable_period,"source_object_slot_id":item.source_object_slot_id,"sha256":item.sha256,"byte_length":len(item.raw_bytes),"container_format":fmt,"structural_profile_sha256":fingerprint,"structural_evidence":evidence}
 
-def _monthly_period(value: Any) -> tuple[int, int]:
-    if type(value) is not str or len(value) != 7 or value[4] != "-" or not value[:4].isdigit() or not value[5:].isdigit(): _fail()
-    year, month = int(value[:4]), int(value[5:])
-    if not 1 <= month <= 12: _fail()
-    return year, month
-
 def _validated_profile(profile: Any) -> dict[str, Any]:
     try:
         if type(profile) is not dict: _fail()
@@ -184,14 +205,10 @@ def _validated_profile(profile: Any) -> dict[str, Any]:
         slot, structural = profile.get("source_object_slot_id"), profile.get("structural_profile_sha256")
         if family not in _ALLOWED_FAMILIES or type(domain) is not str or type(period) is not str or type(slot) is not str or type(structural) is not str:
             _fail()
-        domain_value = ObjectDomain(domain)
-        if domain_value not in _DOMAINS_BY_FAMILY[family] or len(slot) != 64 or len(structural) != 64:
+        domain_value = _validate_domain_period(family, ObjectDomain(domain), period)
+        if len(slot) != 64 or len(structural) != 64:
             _fail()
         if any(c not in "0123456789abcdef" for c in slot + structural): _fail()
-        if domain_value in {ObjectDomain.BASE, ObjectDomain.BRIDGE, ObjectDomain.ENVELOPE_EXTRA}:
-            _monthly_period(period)
-        elif domain_value is ObjectDomain.YEAR:
-            if len(period) != 4 or not period.isdigit() or not 2017 <= int(period) <= 2025: _fail()
         return profile
     except V9005StageABlocked:
         raise
@@ -214,7 +231,7 @@ def select_representatives(profiles: Sequence[dict[str, Any]]) -> list[dict[str,
             groups: dict[int, list[dict[str, Any]]] = {}
             for record in records:
                 if record["source_family"] == family and ObjectDomain(record["object_domain"]) in domains:
-                    groups.setdefault(_monthly_period(record["applicable_period"])[0], []).append(record)
+                    groups.setdefault(_parse_year_month(record["applicable_period"])[0], []).append(record)
             for group in groups.values():
                 ordered = sorted(group, key=lambda item: item["applicable_period"])
                 earliest, latest = ordered[0], ordered[-1]
