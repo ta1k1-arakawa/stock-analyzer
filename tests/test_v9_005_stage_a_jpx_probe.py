@@ -1642,6 +1642,115 @@ def test_extract_data_j_xls_url_uses_locked_discovery_final_url_as_relative_base
         m.extract_data_j_xls_url(b'<a href="data_j.xls">Excel</a>', "https://evil.example/index.html")
 
 
+# --- Phase-1 F1 terminal and exact raw-lock reader seams -------------------
+
+def test_acquire_f1_terminal_evidence_locks_reviewed_sequence_and_returns_slot(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    discovery_final = "https://www.jpx.co.jp/english/markets/statistics-equities/misc/redirected/index.html"
+    terminal_url = "https://www.jpx.co.jp/english/markets/statistics-equities/misc/redirected/data_j.xls"
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        if url == m.LISTED_ISSUES_PAGE_URL:
+            return m.FetchResult(b'<a href="data_j.xls">Excel</a>', discovery_final, 200)
+        if url == terminal_url:
+            return m.FetchResult(b"terminal-bytes", terminal_url, 206)
+        raise AssertionError(f"unexpected synthetic URL: {url}")
+
+    slot_id, attempts = m.acquire_f1_terminal_evidence(
+        root, fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert slot_id == m.source_object_slot_id(
+        m.SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, m.TERMINAL_PERIOD, terminal_url,
+    )
+    assert attempts == 2
+    assert calls == [m.LISTED_ISSUES_PAGE_URL, terminal_url]
+    locked = m.read_locked_payload_by_slot_id(root, slot_id)
+    assert locked["raw"] == b"terminal-bytes"
+    assert locked["requested_url"] == terminal_url
+
+
+def test_acquire_f1_terminal_evidence_reuses_locks_and_never_parses_terminal_month(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    terminal_url = "https://www.jpx.co.jp/english/markets/statistics-equities/misc/data_j.xls"
+    responses = {
+        m.LISTED_ISSUES_PAGE_URL: m.FetchResult(b'<a href="data_j.xls">Excel</a>', m.LISTED_ISSUES_PAGE_URL, 200),
+        terminal_url: m.FetchResult(b"terminal-bytes", terminal_url, 200),
+    }
+    calls: list[str] = []
+
+    def fetcher(url: str) -> m.FetchResult:
+        calls.append(url)
+        return responses[url]
+
+    first_slot, first_attempts = m.acquire_f1_terminal_evidence(
+        root, fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    second_slot, second_attempts = m.acquire_f1_terminal_evidence(
+        root, fetcher=fetcher, sleep=_no_sleep, clock=_clock,
+    )
+    assert first_attempts == 2
+    assert second_attempts == 0
+    assert first_slot == second_slot
+    assert calls == [m.LISTED_ISSUES_PAGE_URL, terminal_url]
+    source = inspect.getsource(m.acquire_f1_terminal_evidence)
+    assert "terminal_month" not in source
+    assert "f2_bridge_months" not in source
+
+
+def test_read_locked_payload_by_slot_id_requires_valid_complete_pair(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    slot_id = _lock_coverage_object(root, m.SOURCE_FAMILY_JPX_CALENDAR, "CURRENT", "slot-reader")
+    locked = m.read_locked_payload_by_slot_id(root, slot_id)
+    assert locked["raw"] == b"coverage-bytes"
+    raw_path, meta_path = m._raw_paths(root, slot_id)
+    meta_path.unlink()
+    with pytest.raises(m.V9005StageABlocked) as excinfo:
+        m.read_locked_payload_by_slot_id(root, slot_id)
+    assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    assert raw_path.is_file()
+
+
+def test_read_locked_payload_by_slot_id_rejects_missing_malformed_and_corrupt_pairs(tmp_path: Path) -> None:
+    root = m.initialize_output_root(tmp_path / "out")
+    for invalid in (None, True, "A" * 64, "a" * 63, "g" * 64):
+        with pytest.raises(m.V9005StageABlocked) as excinfo:
+            m.read_locked_payload_by_slot_id(root, invalid)  # type: ignore[arg-type]
+        assert excinfo.value.failure_class == m.IMPLEMENTATION_FAILURE
+    missing = "a" * 64
+    with pytest.raises(m.V9005StageABlocked):
+        m.read_locked_payload_by_slot_id(root, missing)
+
+    slot_id = _lock_coverage_object(root, m.SOURCE_FAMILY_JPX_CALENDAR, "CURRENT", "corrupt-reader")
+    raw_path, meta_path = m._raw_paths(root, slot_id)
+    meta_path.write_text("not-json", encoding="utf-8")
+    with pytest.raises(m.V9005StageABlocked):
+        m.read_locked_payload_by_slot_id(root, slot_id)
+    metadata = {
+        "schema_version": "V9_005_STAGE_A_RAW_LOCK_V1",
+        "source_family": m.SOURCE_FAMILY_JPX_CALENDAR,
+        "applicable_period": "CURRENT",
+        "requested_url": "https://www.jpx.co.jp/coverage/corrupt-reader",
+        "resolved_url": "https://www.jpx.co.jp/coverage/corrupt-reader",
+        "http_status": 200,
+        "retrieval_timestamp_utc": "2026-08-24T00:00:00Z",
+        "byte_length": len(b"coverage-bytes"),
+        "sha256": m.sha256_bytes(b"coverage-bytes"),
+    }
+    meta_path.write_bytes(m.canonical_bytes(metadata))
+    raw_path.write_bytes(b"tampered")
+    with pytest.raises(m.V9005StageABlocked):
+        m.read_locked_payload_by_slot_id(root, slot_id)
+
+
+def test_run_stage_a_uses_f1_helper_without_duplicated_acquisition_block() -> None:
+    source = inspect.getsource(m.run_stage_a)
+    assert source.count("acquire_f1_terminal_evidence(") == 1
+    assert "extract_data_j_xls_url(" not in source
+    assert "TERMINAL_DISCOVERY_ROOT" not in source
+
+
 # --- Transport retry classification (per AI_REAL_EXECUTION_RUNBOOK.md) -----
 
 def test_transport_retryable_then_success() -> None:
@@ -1982,6 +2091,7 @@ def test_run_stage_a_offline_reports_fail_with_safe_evidence(
     # this forcing, run_stage_a would now stop at the acquisition gate
     # before ever reaching this test's synthetic fetcher.
     monkeypatch.setattr(m, "ACQUISITION_IMPLEMENTATION_COMPLETE", True)
+    monkeypatch.setattr(m, "OVERALL_STAGE_A_IMPLEMENTATION_READY", True)
     xls_url = "https://www.jpx.co.jp/markets/statistics-equities/misc/data_j.xls"
     discovery_html = _synthetic_listing_page()
     responses = {
@@ -2022,7 +2132,9 @@ def test_run_stage_a_offline_reports_fail_with_safe_evidence(
     # authorized task). So this remains the honest FAIL outcome.
     assert summary["status"] == "FAIL"
     assert summary["failure_class"] == m.SOURCE_OR_DATA_FEASIBILITY_FAILURE
-    assert summary["required_inventory_missing_count"] == 648
+    # The 648-cell F2--F7 matrix includes F5's 108 auxiliary cells, which
+    # are intentionally excluded from the required missing count.
+    assert summary["required_inventory_missing_count"] == 540
     assert summary["terminal_snapshot_pass"] is True
     assert summary["signal_grid_binding_verified_head"] == "d" * 40
     forbidden_keys = {

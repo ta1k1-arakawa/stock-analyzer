@@ -32,3 +32,12 @@ and cell state and rejects invalid profile status/container pairs.
 The safe validator now also closes exact row/header coordinates, structural
 attribute ordering, TEXT-key semantics, table-count lower bounds, and OLE
 sheet-name truncation provenance.
+
+Phase-1 plumbing now exposes only two reviewed V9_005 seams:
+`acquire_f1_terminal_evidence` preserves F1's discovery-root to
+`extract_data_j_xls_url` to TERMINAL raw-lock sequence and returns only the
+TERMINAL slot ID plus attempts; `read_locked_payload_by_slot_id` reads one
+existing exact canonical lock pair and fails closed on absence or malformed
+provenance. Neither seam parses terminal month T, constructs schema profiles,
+or creates Phase-1 execution/gate authority. This narrow implementation is
+awaiting GPT exact-SHA review.

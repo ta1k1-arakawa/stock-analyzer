@@ -878,6 +878,36 @@ def read_locked_payload(
     return {"raw": raw, **meta}
 
 
+def read_locked_payload_by_slot_id(
+    output_root: str | os.PathLike[str],
+    source_object_slot_id_value: str,
+) -> dict[str, Any]:
+    """Read one required canonical raw lock by its exact slot identifier.
+
+    Unlike ``read_locked_payload``, absence is never an optional not-yet-
+    acquired result. This seam performs no discovery, network I/O, directory
+    scan, or mutation.
+    """
+    if (
+        not isinstance(source_object_slot_id_value, str)
+        or re.fullmatch(r"[0-9a-f]{64}", source_object_slot_id_value) is None
+    ):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    try:
+        raw_path, meta_path = _raw_paths(Path(output_root), source_object_slot_id_value)
+        if not raw_path.is_file() or not meta_path.is_file():
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        raw = raw_path.read_bytes()
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if not _lock_meta_matches_raw(meta, raw, expected_key=source_object_slot_id_value):
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    except V9005StageABlocked:
+        raise
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+    return {"raw": raw, **meta}
+
+
 def _atomic_create(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     stage = path.parent / (path.name + ".staging-" + os.urandom(8).hex())
@@ -959,6 +989,46 @@ def ensure_locked_payload(
         retrieval_timestamp_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     return locked, requests_used
+
+
+def acquire_f1_terminal_evidence(
+    output_root: str | os.PathLike[str],
+    *,
+    fetcher: Callable[[str], FetchResult],
+    sleep: Callable[[int], None],
+    clock: Callable[[], datetime],
+) -> tuple[str, int]:
+    """Lock or reuse F1's reviewed discovery-root to TERMINAL sequence.
+
+    The returned identifier is only the exact TERMINAL raw-lock slot. This
+    helper neither parses nor derives the terminal snapshot month.
+    """
+    family = SOURCE_FAMILY_LISTED_ISSUES_MONTH_END
+    locked_discovery, discovery_attempts = ensure_locked_payload(
+        output_root,
+        source_family=family,
+        applicable_period=TERMINAL_DISCOVERY_ROOT,
+        requested_url=LISTED_ISSUES_PAGE_URL,
+        fetcher=fetcher,
+        sleep=sleep,
+        clock=clock,
+    )
+    derived_xls_url = extract_data_j_xls_url(
+        locked_discovery["raw"], locked_discovery["resolved_url"],
+    )
+    _locked_terminal, terminal_attempts = ensure_locked_payload(
+        output_root,
+        source_family=family,
+        applicable_period=TERMINAL_PERIOD,
+        requested_url=derived_xls_url,
+        fetcher=fetcher,
+        sleep=sleep,
+        clock=clock,
+    )
+    return (
+        source_object_slot_id(family, TERMINAL_PERIOD, derived_xls_url),
+        discovery_attempts + terminal_attempts,
+    )
 
 
 def verify_raw_provenance(output_root: str | os.PathLike[str]) -> bool:
@@ -3350,38 +3420,9 @@ def run_stage_a(
     root = initialize_output_root(output_root)
     signal_grid_head = verify_signal_grid_binding(repo_root, git=git)
 
-    requests_used = 0
-    locked_discovery = read_locked_payload(
-        root, SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, TERMINAL_DISCOVERY_ROOT, LISTED_ISSUES_PAGE_URL,
+    _f1_terminal_slot_id, requests_used = acquire_f1_terminal_evidence(
+        root, fetcher=fetcher, sleep=sleep, clock=clock,
     )
-    if locked_discovery is None:
-        discovery_result, used = fetch_once_with_retry(LISTED_ISSUES_PAGE_URL, fetcher, sleep)
-        requests_used += used
-        now = clock()
-        locked_discovery = lock_first_complete_payload(
-            root,
-            source_family=SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
-            applicable_period=TERMINAL_DISCOVERY_ROOT,
-            requested_url=LISTED_ISSUES_PAGE_URL,
-            fetch_result=discovery_result,
-            retrieval_timestamp_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        )
-    derived_xls_url = extract_data_j_xls_url(locked_discovery["raw"], locked_discovery["resolved_url"])
-    locked_terminal = read_locked_payload(
-        root, SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, TERMINAL_PERIOD, derived_xls_url,
-    )
-    if locked_terminal is None:
-        xls_result, used = fetch_once_with_retry(derived_xls_url, fetcher, sleep)
-        requests_used += used
-        now = clock()
-        locked_terminal = lock_first_complete_payload(
-            root,
-            source_family=SOURCE_FAMILY_LISTED_ISSUES_MONTH_END,
-            applicable_period=TERMINAL_PERIOD,
-            requested_url=derived_xls_url,
-            fetch_result=xls_result,
-            retrieval_timestamp_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        )
 
     locked_calendar, used2 = ensure_locked_payload(
         root,
@@ -3507,7 +3548,7 @@ __all__ = [
     "F6_PRODUCTION_ROOT_GLOBAL_RAW_ACQUISITION_GATE_RECEIPT_FILENAME",
     "run_f6_production_root_global_raw_acquisition_network",
     "read_f6_production_acquisition_gate_consumed_state",
-    "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "acquire_f2_f4_required_slots", "acquire_f3_required_slots", "acquire_f7_required_slots", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
+    "V9005StageABlocked", "acquire_f1_terminal_evidence", "acquire_f2_f4_monthly_evidence", "acquire_f2_f4_required_slots", "acquire_f3_required_slots", "acquire_f7_required_slots", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
     "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
     "build_checkpoint_a_monthly_coverage_matrix", "compute_month_end_mismatch_count", "compute_stage_a_evidence", "required_inventory_missing_count",
     "derive_final_signal_d0", "derive_stage_b_global_end_exclusive", "ensure_locked_payload",
@@ -3515,7 +3556,7 @@ __all__ = [
     "initialize_output_root", "inventory_months", "lock_first_complete_payload", "monthly_statistics_discovery_year_period", "nth_trading_day_after",
     "parse_f6_root_structure_probe", "parse_f6_section_neighborhood_probe", "read_f6_root_structure_diagnostic_lock",
     "parse_f6_one_level_expanded_neighborhood_probe",
-    "read_locked_payload", "reconstruct_security_state", "reconstruction_is_deterministic",
+    "read_locked_payload", "read_locked_payload_by_slot_id", "reconstruct_security_state", "reconstruction_is_deterministic",
     "resolve_delisted_company_year_url", "resolve_f7_calendar_url", "resolve_month_locator", "resolve_monthly_statistics_evidence_url",
     "resolve_monthly_statistics_year_page_url", "run_f6_root_structure_probe_offline",
     "run_f6_root_structure_probe_network", "run_f6_section_neighborhood_probe_offline", "run_stage_a",
