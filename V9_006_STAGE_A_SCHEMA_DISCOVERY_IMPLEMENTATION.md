@@ -124,3 +124,39 @@ No confirmation contract, receipt semantics, OutputRoot semantics, expected-
 SHA semantics, environment-readiness semantics, retry behavior, Python
 invocation, Python source/CLI, or methodology changed. This remediation
 awaits GPT exact-SHA review.
+
+GPT-5.6 Sol exact-SHA review of `26d0ecf284e85325f3a9f107356cdce5604294e0`
+(parent `556897adbd90cb820f84aacad3da51e09e04d19b`) is `CRITICAL=0`, `HIGH=1`,
+`MEDIUM=0`, `LOW=0`, `RESULT=BLOCK`; MEDIUM_1 is resolved. `HIGH_1=PRE_GATE_
+REAL_EXECUTION_ENVIRONMENT_FREEZE_NOT_ENFORCED`: `scripts/check_real_
+execution_env.py` computes `REAL_EXECUTION_ENVIRONMENT_READY` and
+`REAL_EXECUTION_ENVIRONMENT_FROZEN` separately, and its process exit code
+depends only on `READY`; the entrypoint checked only that exit code, so a
+`READY=true`/`FROZEN=false` environment could pass the PowerShell
+pre-authorization check and reach human authorization.
+
+HIGH_1 is remediated: a single new helper, `Assert-RealExecutionEnvironmentFrozen`,
+invokes the exact existing `scripts\check_real_execution_env.py` via the
+canonical `.venv-real-execution\Scripts\python.exe`, captures its JSON output
+only into a local variable (never printing the full JSON, which can carry
+local paths in nested detail fields), and fails closed unless the checker's
+process exit code is `0` AND its JSON parses AND
+`REAL_EXECUTION_ENVIRONMENT_READY` is exactly boolean `true` AND
+`REAL_EXECUTION_ENVIRONMENT_FROZEN` is exactly boolean `true` AND
+`ENVIRONMENT_FREEZE_CHECK` is exactly the string `"PASS"` AND
+`ENVIRONMENT_LOCK_FINGERPRINT_STATUS` is exactly the string `"FROZEN"`; on
+success it prints only those four safe status fields. Both the
+pre-authorization environment check and the post-confirmation/pre-consumption
+recheck now call this same helper -- reused rather than duplicated, so the
+predicates cannot drift between the two call sites -- and the post-
+confirmation call is proven, by line order, to occur after human confirmation
+and strictly before the confirmation environment variable is set and before
+the Python CLI is invoked; any failure clears the in-memory confirmation
+token before rethrowing, without setting the confirmation environment
+variable or invoking Python acquisition. The MEDIUM_1 branch recheck remains
+intact and unchanged. `scripts/check_real_execution_env.py`, the Python
+acquisition CLI/source, the confirmation contract, receipt semantics,
+OutputRoot semantics, expected-SHA semantics, retry behavior, and source-
+family/count methodology are unchanged; there is still exactly one
+acquisition-CLI invocation and no retry path. This remediation awaits GPT
+exact-SHA review.

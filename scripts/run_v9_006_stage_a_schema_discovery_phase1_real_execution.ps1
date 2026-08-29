@@ -35,16 +35,22 @@
 # fetched authoritative remote HEAD both equal -ExpectedHead exactly; that
 # -OutputRoot is a fresh, not-yet-existing path; the canonical protected
 # interpreter (.venv-real-execution\Scripts\python.exe, never the general
-# .venv); complete environment/dependency/lock/synthetic-parser readiness via
-# the existing reviewed no-network checker
-# (scripts\check_real_execution_env.py); and that the canonical task-global
-# Phase-1 gate receipt is mechanically proven ABSENT via the exact reviewed
-# Python reader (read_phase1_schema_discovery_gate_consumed_state) -- never a
-# PowerShell reimplementation of that schema/parsing logic. Only when every
-# one of these PASSES does this script request confirmation; after
-# confirmation it reruns every applicable non-destructive binding once more
-# -- including required-reviewed-file presence and the authoritative branch
-# -- and only then briefly sets the confirmation environment variable
+# .venv); and complete environment/dependency/lock/synthetic-parser readiness
+# via the existing reviewed no-network checker
+# (scripts\check_real_execution_env.py) -- proving, not merely trusting its
+# process exit code, that REAL_EXECUTION_ENVIRONMENT_READY,
+# REAL_EXECUTION_ENVIRONMENT_FROZEN, ENVIRONMENT_FREEZE_CHECK, and
+# ENVIRONMENT_LOCK_FINGERPRINT_STATUS are all exactly their required PASS
+# values from its parsed JSON output, so a ready-but-not-yet-frozen
+# environment can never reach human authorization; and that the canonical
+# task-global Phase-1 gate receipt is mechanically proven ABSENT via the
+# exact reviewed Python reader (read_phase1_schema_discovery_gate_consumed_
+# state) -- never a PowerShell reimplementation of that schema/parsing
+# logic. Only when every one of these PASSES does this script request
+# confirmation; after confirmation it reruns every applicable non-destructive
+# binding once more -- including required-reviewed-file presence, the
+# authoritative branch, and the same environment-freeze proof -- and only
+# then briefly sets the confirmation environment variable
 # immediately before invoking the single reviewed Python one-shot boundary
 # (scripts\run_v9_006_stage_a_schema_discovery.py), which alone is
 # responsible for OutputRoot creation and canonical receipt publication.
@@ -114,6 +120,61 @@ print(repr(read_phase1_schema_discovery_gate_consumed_state()))
         if ($receiptState -ne "False") {
             throw "PRE_GATE_BLOCK: canonical Phase-1 global receipt-state reader returned an ambiguous/uncertain state. Failing closed; do not proceed."
         }
+    }
+
+    # ------------------------------------------------------------------
+    # Helper: proves the existing reviewed scripts\check_real_execution_env.py
+    # checker reports a fully ready AND frozen canonical real-execution
+    # environment. Never trusts the checker's process exit code alone --
+    # REAL_EXECUTION_ENVIRONMENT_READY and REAL_EXECUTION_ENVIRONMENT_FROZEN
+    # are computed and reported separately by that checker (exit code
+    # depends only on READY), so a READY=true/FROZEN=false state must still
+    # fail closed here before it can ever reach human authorization. Reused
+    # by both the pre-authorization and post-confirmation checks so the
+    # predicates cannot drift between them. Captures the checker's JSON
+    # output only into a local variable (never Write-Host'd in full, to
+    # avoid exposing local paths in its nested detail fields); on success it
+    # prints only the four safe top-level status fields.
+    # ------------------------------------------------------------------
+    function Assert-RealExecutionEnvironmentFrozen {
+        param(
+            [Parameter(Mandatory = $true)][string]$PythonInterpreter,
+            [Parameter(Mandatory = $true)][string]$CheckerPath
+        )
+        $checkerRawOutput = & $PythonInterpreter $CheckerPath | Out-String
+        $checkerExitCode = $LASTEXITCODE
+        if ($checkerExitCode -ne 0) {
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: scripts\check_real_execution_env.py exited non-zero ($checkerExitCode); REAL_EXECUTION_ENVIRONMENT_READY is not proven true. Failing closed."
+        }
+        try {
+            $checkerResult = $checkerRawOutput | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: scripts\check_real_execution_env.py output could not be parsed as JSON. Failing closed."
+        }
+        if ($null -eq $checkerResult) {
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: scripts\check_real_execution_env.py produced no parsable JSON result. Failing closed."
+        }
+        $environmentReady = $checkerResult.REAL_EXECUTION_ENVIRONMENT_READY
+        $environmentFrozen = $checkerResult.REAL_EXECUTION_ENVIRONMENT_FROZEN
+        $freezeCheckStatus = $checkerResult.ENVIRONMENT_FREEZE_CHECK
+        $lockFingerprintStatus = $checkerResult.ENVIRONMENT_LOCK_FINGERPRINT_STATUS
+        if ($environmentReady -isnot [bool] -or $environmentReady -ne $true) {
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: REAL_EXECUTION_ENVIRONMENT_READY is not exactly boolean true (or missing/ambiguous). Failing closed."
+        }
+        if ($environmentFrozen -isnot [bool] -or $environmentFrozen -ne $true) {
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: REAL_EXECUTION_ENVIRONMENT_FROZEN is not exactly boolean true (or missing/ambiguous). A ready-but-not-frozen environment must never reach human authorization. Failing closed."
+        }
+        if ($freezeCheckStatus -isnot [string] -or $freezeCheckStatus -cne "PASS") {
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: ENVIRONMENT_FREEZE_CHECK is not exactly 'PASS' (or missing/ambiguous). Failing closed."
+        }
+        if ($lockFingerprintStatus -isnot [string] -or $lockFingerprintStatus -cne "FROZEN") {
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: ENVIRONMENT_LOCK_FINGERPRINT_STATUS is not exactly 'FROZEN' (or missing/ambiguous). Failing closed."
+        }
+        Write-Host "REAL_EXECUTION_ENVIRONMENT_READY=true"
+        Write-Host "REAL_EXECUTION_ENVIRONMENT_FROZEN=true"
+        Write-Host "ENVIRONMENT_FREEZE_CHECK=PASS"
+        Write-Host "ENVIRONMENT_LOCK_FINGERPRINT_STATUS=FROZEN"
     }
 
     # ------------------------------------------------------------------
@@ -199,20 +260,21 @@ print(repr(read_phase1_schema_discovery_gate_consumed_state()))
 
     # ------------------------------------------------------------------
     # 8. Complete protected interpreter/dependency/environment-lock/
-    #    synthetic-parser readiness, via the existing reviewed no-network
-    #    checker. Zero real network occurs in this step.
+    #    synthetic-parser readiness AND the exact reviewed environment
+    #    freeze, via the existing reviewed no-network checker. The checker's
+    #    process exit code depends only on REAL_EXECUTION_ENVIRONMENT_READY,
+    #    so this proves READY, FROZEN, ENVIRONMENT_FREEZE_CHECK, and
+    #    ENVIRONMENT_LOCK_FINGERPRINT_STATUS independently from its parsed
+    #    JSON output -- a ready-but-not-frozen environment must never reach
+    #    human authorization. Zero real network occurs in this step.
     # ------------------------------------------------------------------
     $readinessCheckerPath = Join-Path (Get-Location) "scripts\check_real_execution_env.py"
     if (-not (Test-Path -LiteralPath $readinessCheckerPath -PathType Leaf)) {
         throw "PRE_GATE_ENVIRONMENT_BLOCK: readiness checker not found at $readinessCheckerPath."
     }
     Write-Host "Running canonical readiness checker (no network, no private data, no gate consumption) ..."
-    & $canonicalInterpreterPath $readinessCheckerPath | Out-Null
-    $readinessExitCode = $LASTEXITCODE
-    if ($readinessExitCode -ne 0) {
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: scripts\check_real_execution_env.py reported REAL_EXECUTION_ENVIRONMENT_READY=false (exit code $readinessExitCode). Re-run it directly for the full safe JSON detail. No protected boundary was crossed."
-    }
-    Write-Host "Readiness checker PASSED: REAL_EXECUTION_ENVIRONMENT_READY=true."
+    Assert-RealExecutionEnvironmentFrozen -PythonInterpreter $canonicalInterpreterPath -CheckerPath $readinessCheckerPath
+    Write-Host "Readiness checker PASSED: environment is ready AND frozen (see safe status fields above)."
     Write-Host "CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE=YES"
 
     # ------------------------------------------------------------------
@@ -289,10 +351,12 @@ print(repr(read_phase1_schema_discovery_gate_consumed_state()))
         $typedConfirmationToken = $null
         throw "PRE_GATE_ENVIRONMENT_BLOCK: canonical interpreter no longer present at $canonicalInterpreterPath. Aborting without gate consumption."
     }
-    & $canonicalInterpreterPath $readinessCheckerPath | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    try {
+        Assert-RealExecutionEnvironmentFrozen -PythonInterpreter $canonicalInterpreterPath -CheckerPath $readinessCheckerPath
+    }
+    catch {
         $typedConfirmationToken = $null
-        throw "PRE_GATE_ENVIRONMENT_BLOCK: readiness re-check failed post-confirmation (exit code $LASTEXITCODE). Aborting without gate consumption."
+        throw
     }
     Assert-Phase1GlobalReceiptAbsent -PythonInterpreter $canonicalInterpreterPath -RepositoryRootPath $repositoryRoot
 
