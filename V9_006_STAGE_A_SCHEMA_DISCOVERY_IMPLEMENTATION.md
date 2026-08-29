@@ -27,3 +27,5 @@ The final M3 boundary revision removes shadowed legacy profiler definitions,
 tracks all truncation at observation time, treats headings as atomic DOM
 elements, rejects unfinished HTML state, and validates safe provenance and
 sample ordering independently of the producer.
+The final closure additionally fails closed on overlapping/unmatched HTML row
+and cell state and rejects invalid profile status/container pairs.

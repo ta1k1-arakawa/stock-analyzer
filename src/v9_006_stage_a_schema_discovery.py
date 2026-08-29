@@ -157,7 +157,7 @@ def _validate_safe_profile(value: Any) -> dict[str, Any]:
     try:
         top = {"status", "source_family", "object_domain", "applicable_period", "source_object_slot_id", "sha256", "byte_length", "container_format", "structural_profile_sha256", "structural_evidence"}
         if type(value) is not dict or set(value) != top or _contains_unsafe(value): _fail()
-        if value["status"] not in {"PROFILED", FORMAT_REQUIRES_FOLLOWUP} or value["container_format"] not in {FORMAT_OLE_BIFF, FORMAT_HTML, FORMAT_OOXML_ZIP, FORMAT_PDF, FORMAT_UNKNOWN}: _fail()
+        if (value["status"] == "PROFILED" and value["container_format"] not in {FORMAT_OLE_BIFF, FORMAT_HTML}) or (value["status"] == FORMAT_REQUIRES_FOLLOWUP and value["container_format"] not in {FORMAT_OOXML_ZIP, FORMAT_PDF, FORMAT_UNKNOWN}): _fail()
         if type(value["byte_length"]) is not int or value["byte_length"] < 0: _fail()
         for key in ("source_object_slot_id", "sha256", "structural_profile_sha256"):
             if type(value[key]) is not str or not re.fullmatch(r"[0-9a-f]{64}", value[key]): _fail()
@@ -237,8 +237,12 @@ class _SafeHtmlParser(HTMLParser):
                 if key.lower() in {"class", "id", "role"} and value is not None:
                     if len(self.current["attrs"]) < MAX_STRUCTURAL_ATTR_VALUES_PER_TABLE: self.current["attrs"].append((key.lower(), self._capture(value)))
                     else: self.truncated=True
-        if tag == "tr" and self.current is not None: self.row=[]
-        if tag in {"td", "th"} and self.row is not None: self.cell={"tag":tag,"text":"","column_ordinal":len(self.row)+1}
+        if tag == "tr":
+            if self.current is None or self.row is not None: _fail()
+            self.row=[]
+        if tag in {"td", "th"}:
+            if self.row is None or self.cell is not None: _fail()
+            self.cell={"tag":tag,"text":"","column_ordinal":len(self.row)+1}
         if tag == "title" or tag in {"h1","h2","h3","h4","h5","h6"}:
             if self.heading is not None: _fail()
             self.heading={"tag":tag,"text":""}
@@ -247,14 +251,19 @@ class _SafeHtmlParser(HTMLParser):
         if self.heading is not None: self.heading["text"] += data
     def handle_endtag(self, tag):
         tag=tag.lower()
-        if tag in {"td","th"} and self.cell is not None:
+        if tag in {"td","th"}:
+            if self.cell is None or self.cell["tag"] != tag: _fail()
             self.cell["text"]=self._capture(self.cell["text"]); self.row.append(self.cell)
             if tag == "th" and self.current is not None:
                 if len(self.current["headers"]) < MAX_HEADERS_PER_TABLE: self.current["headers"].append({"row_ordinal":len(self.current["rows"])+1,"column_ordinal":self.cell["column_ordinal"],"text":self.cell["text"]})
                 else: self.truncated=True
             self.cell=None
-        if tag == "tr" and self.row is not None and self.current is not None: self.current["rows"].append(self.row); self.row=None
-        if tag == "table": self.current=None
+        if tag == "tr":
+            if self.current is None or self.row is None or self.cell is not None: _fail()
+            self.current["rows"].append(self.row); self.row=None
+        if tag == "table":
+            if self.current is None or self.row is not None or self.cell is not None: _fail()
+            self.current=None
         if self.heading is not None and tag == self.heading["tag"]:
             text=self._capture(self.heading["text"])
             if tag == "title": self.title=text

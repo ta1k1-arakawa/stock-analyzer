@@ -65,6 +65,9 @@ flag at observation time. HTML headings are element-atomic descendant-text
 records; unfinished or nested heading/table/row/cell state fails closed.
 The validator independently enforces per-sheet and per-table ordering,
 cardinality, visibility/reference, column, and domain-period boundaries.
+Active HTML row/cell starts and closes are exact state transitions; unmatched
+or overlapping structural tags fail closed. Validator status/format pairs are
+also exact (`PROFILED` only HTML/OLE; follow-up only unsupported formats).
 
 ## M3 profiler-safe-output implementation
 
