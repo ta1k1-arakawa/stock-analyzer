@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
+import copy
 
 import pytest
 
@@ -137,3 +138,69 @@ def test_domain_period_contract_rejects_all_out_of_domain_values(family, period,
     assert exc.value.reason == "IMPLEMENTATION_FAILURE"
     assert_blocked(lock(family=family, period=period, domain=domain))
     with pytest.raises(V9005StageABlocked): schema.select_representatives([profile(family, period, domain)])
+
+
+class FakeSheet:
+    def __init__(self, name, visibility, rows): self.name, self.visibility, self.rows = name, visibility, rows; self.nrows=len(rows); self.ncols=max(map(len, rows), default=0)
+    def cell_type(self, row, col): return self.rows[row][col][0] if col < len(self.rows[row]) else 0
+    def cell_value(self, row, col): return self.rows[row][col][1] if col < len(self.rows[row]) else ""
+
+
+class FakeBook:
+    def __init__(self, sheets): self.sheets=sheets; self.nsheets=len(sheets)
+    def sheet_by_index(self, index): return self.sheets[index]
+
+
+def ole_profile(monkeypatch, sheets):
+    import xlrd
+    monkeypatch.setattr(xlrd, "open_workbook", lambda **_: FakeBook(sheets))
+    return schema.profile_verified_lock(lock(raw=b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"))
+
+
+def test_ole_safe_schema_visibility_taxonomy_sampling_and_fingerprint(monkeypatch):
+    import xlrd
+    rows=[[(xlrd.XL_CELL_TEXT, "x" * 200), (xlrd.XL_CELL_NUMBER, 123), (xlrd.XL_CELL_DATE, 4), (xlrd.XL_CELL_BOOLEAN, 1), (xlrd.XL_CELL_ERROR, 7), (xlrd.XL_CELL_BLANK, "")] for _ in range(17)]
+    result=ole_profile(monkeypatch, [FakeSheet("name", 0, rows), FakeSheet("hidden", 1, rows), FakeSheet("very", 2, rows)])
+    evidence=result["structural_evidence"]
+    assert [sheet["visibility"] for sheet in evidence["sheets"]] == ["VISIBLE", "HIDDEN", "VERY_HIDDEN"]
+    assert set(evidence["sheets"][0]["column_cell_type_counts"][0]) == set(schema._CELL_TYPES)
+    assert len([row for row in evidence["schema_neighborhood"] if row["sheet_ordinal"] == 1]) == 16
+    assert not [row for row in evidence["schema_neighborhood"] if row["sheet_ordinal"] != 1]
+    assert evidence["SCHEMA_NEIGHBORHOOD_REQUIRES_NARROWER_PROBE"] is True
+    assert all(set(cell) <= {"row_ordinal", "column_ordinal", "cell_type", "text"} and (cell["cell_type"] == "TEXT" or "text" not in cell) for row in evidence["schema_neighborhood"] for cell in row["cells"])
+    assert len(evidence["schema_neighborhood"][0]["cells"][0]["text"]) == 160
+    changed=ole_profile(monkeypatch, [FakeSheet("renamed", 0, rows), FakeSheet("hidden", 1, rows), FakeSheet("very", 2, rows)])
+    assert changed["structural_profile_sha256"] == result["structural_profile_sha256"]
+    dimensions=ole_profile(monkeypatch, [FakeSheet("name", 0, rows[:-1])])
+    visibility=ole_profile(monkeypatch, [FakeSheet("name", 1, rows)])
+    assert dimensions["structural_profile_sha256"] != result["structural_profile_sha256"] != visibility["structural_profile_sha256"]
+
+
+def test_html_bounds_attributes_and_text_independent_fingerprint():
+    html=("<html><title>" + "t" * 200 + "</title>" + "".join("<h1>h</h1>" for _ in range(34)) + "<table class='grid' id='x' role='table' href='https://bad'><tr><th>header</th><td>business</td></tr>" + "".join("<tr><td>x</td></tr>" for _ in range(17)) + "</table></html>").encode()
+    result=schema.profile_verified_lock(lock(html)); evidence=result["structural_evidence"]
+    assert len(evidence["title"]) == 160 and len(evidence["headings"]) == 32 and evidence["SCHEMA_NEIGHBORHOOD_REQUIRES_NARROWER_PROBE"]
+    assert evidence["tables"][0]["structural_attributes"] == [{"name":"class","value":"grid"},{"name":"id","value":"x"},{"name":"role","value":"table"}]
+    assert "href" not in repr(evidence) and "https://" not in repr(evidence)
+    changed=schema.profile_verified_lock(lock(html.replace(b"business", b"changed!")))
+    assert changed["structural_profile_sha256"] == result["structural_profile_sha256"]
+    topology=schema.profile_verified_lock(lock(html.replace(b"<td>business</td>", b"<td>business</td><td>new</td>")))
+    attrs=schema.profile_verified_lock(lock(html.replace(b"class='grid'", b"class='other'")))
+    assert topology["structural_profile_sha256"] != result["structural_profile_sha256"] != attrs["structural_profile_sha256"]
+
+
+def test_safe_output_validator_is_closed_and_total(monkeypatch):
+    valid=ole_profile(monkeypatch, [FakeSheet("ok", 0, [])])
+    assert schema._validate_safe_profile(valid) == valid
+    for mutate in (
+        lambda item: item.update(extra=1),
+        lambda item: item["structural_evidence"]["sheets"][0].update(extra=1),
+        lambda item: item.update(raw=b"x"),
+        lambda item: item["structural_evidence"].update(path="C:/x"),
+        lambda item: item.update(structural_profile_sha256="bad"),
+    ):
+        bad=copy.deepcopy(valid); mutate(bad)
+        with pytest.raises(V9005StageABlocked) as exc: schema._validate_safe_profile(bad)
+        assert exc.value.reason == "IMPLEMENTATION_FAILURE"
+    for malformed in ({"x": []}, {"x": {"y": []}}, ["bad"], {"x": b"bytes"}):
+        with pytest.raises(V9005StageABlocked): schema._validate_safe_profile(malformed)

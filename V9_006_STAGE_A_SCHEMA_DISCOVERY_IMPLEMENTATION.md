@@ -17,3 +17,8 @@ the fail-closed preparatory status entrypoint, which reports
 `CHATGPT_DECISION_REQUIRED`. No authority is consumed. MEDIUM_3's full
 OLE/HTML profiler and safe-output work remains deferred and this foundation
 is overall BLOCK pending its separate remediation and review.
+
+M3 now provides bounded OLE and HTML evidence plus `_validate_safe_profile`,
+called by `profile_verified_lock` before output. The implementation is
+offline-only and uses synthetic fake `xlrd` Book/Sheet tests; no dependency,
+acquisition, raw production read, or semantic mapping was added.

@@ -56,7 +56,27 @@ model information affects selection.
 
 ## Deferred boundary
 
-`MEDIUM_3=DEFERRED_TO_NEXT_SUBSTANTIVE_REMEDIATION`: OLE/HTML full profiler,
-closed safe-output validator, and comprehensive profiler tests remain
-unresolved. Overall Stage A remains BLOCK until that distinct implementation
-and GPT exact-SHA review complete.
+M3's OLE/HTML full profiler, closed safe-output validator, and comprehensive
+profiler tests are implemented below but remain awaiting GPT exact-SHA review.
+Overall Stage A remains BLOCK until that review completes.
+
+## M3 profiler-safe-output implementation
+
+The offline profiler now emits a closed, bounded safe schema and validates it
+before returning. OLE uses the reviewed `xlrd==2.0.2` taxonomy exactly:
+`EMPTY`, `BLANK`, `TEXT`, `NUMBER`, `DATE`, `BOOLEAN`, and `ERROR`, with actual
+`VISIBLE`, `HIDDEN`, or `VERY_HIDDEN` visibility. Every worksheet records
+bounded public name, dimensions, visibility, worksheet type, and per-column
+closed counts. Only visible sheets may contribute the first 16 nonempty rows;
+each sampled row has at most 64 cells and only TEXT cells carry bounded text.
+No numeric, date, boolean, or error value is emitted.
+
+HTML is bounded to 32 headings and detailed tables, 256 headers/table, 16
+nonempty rows/table, 64 cells/row, 256 normalized `class`/`id`/`role` values,
+and 160 code points of text. URL-bearing attributes are excluded. Any sampled
+or detailed truncation sets `SCHEMA_NEIGHBORHOOD_REQUIRES_NARROWER_PROBE`.
+Fingerprints are value/text/name independent, while dimensions, visibility,
+cell taxonomy, topology, and safe structural attributes remain structural.
+The validator rejects unexpected keys/enums/bounds, duplicate or malformed
+records, bytes, URL/path/exception material, and arbitrary malformed input as
+`IMPLEMENTATION_FAILURE`. M3 is implemented but remains awaiting GPT review.

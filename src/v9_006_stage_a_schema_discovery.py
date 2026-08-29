@@ -6,6 +6,7 @@ from enum import Enum
 from hashlib import sha256
 from html.parser import HTMLParser
 import json
+import re
 from typing import Any, Sequence
 
 from src.v9_005_stage_a_jpx_probe import (
@@ -197,6 +198,169 @@ def profile_verified_lock(lock: Any) -> dict[str, Any]:
     else: structure={"format":fmt}; evidence={}; status=FORMAT_REQUIRES_FOLLOWUP
     fingerprint=sha256(_canonical_json(structure).encode()).hexdigest()
     return {"status":status,"source_family":item.source_family,"object_domain":item.object_domain.value,"applicable_period":item.applicable_period,"source_object_slot_id":item.source_object_slot_id,"sha256":item.sha256,"byte_length":len(item.raw_bytes),"container_format":fmt,"structural_profile_sha256":fingerprint,"structural_evidence":evidence}
+
+MAX_HEADINGS = 32
+MAX_DETAILED_TABLES = 32
+MAX_HEADERS_PER_TABLE = 256
+MAX_SAMPLE_ROWS_PER_TABLE = 16
+MAX_SAMPLE_CELLS_PER_ROW = 64
+MAX_STRUCTURAL_ATTR_VALUES_PER_TABLE = 256
+MAX_TEXT_CODEPOINTS = 160
+_CELL_TYPES = ("EMPTY", "BLANK", "TEXT", "NUMBER", "DATE", "BOOLEAN", "ERROR")
+_VISIBILITIES = ("VISIBLE", "HIDDEN", "VERY_HIDDEN")
+
+def _bounded_text(value: Any) -> str:
+    if not isinstance(value, str): _fail()
+    return value.strip()[:MAX_TEXT_CODEPOINTS]
+
+def _contains_unsafe(value: Any) -> bool:
+    if isinstance(value, bytes): return True
+    if isinstance(value, str): return bool(re.search(r"(?:https?://|file:|[A-Za-z]:[\\/])", value))
+    if isinstance(value, list): return any(_contains_unsafe(item) for item in value)
+    if isinstance(value, dict):
+        return any((not isinstance(key, str) or key in {"requested_url", "resolved_url", "href", "src", "action", "path"} or "exception" in key.lower() or _contains_unsafe(item)) for key, item in value.items())
+    return not (value is None or type(value) in {bool, int})
+
+def _validate_safe_profile(value: Any) -> dict[str, Any]:
+    """Closed, total safe-output boundary for schema-discovery evidence."""
+    try:
+        top = {"status", "source_family", "object_domain", "applicable_period", "source_object_slot_id", "sha256", "byte_length", "container_format", "structural_profile_sha256", "structural_evidence"}
+        if type(value) is not dict or set(value) != top or _contains_unsafe(value): _fail()
+        if value["status"] not in {"PROFILED", FORMAT_REQUIRES_FOLLOWUP} or value["container_format"] not in {FORMAT_OLE_BIFF, FORMAT_HTML, FORMAT_OOXML_ZIP, FORMAT_PDF, FORMAT_UNKNOWN}: _fail()
+        if type(value["byte_length"]) is not int or value["byte_length"] < 0: _fail()
+        for key in ("source_object_slot_id", "sha256", "structural_profile_sha256"):
+            if type(value[key]) is not str or not re.fullmatch(r"[0-9a-f]{64}", value[key]): _fail()
+        evidence = value["structural_evidence"]
+        if value["status"] == FORMAT_REQUIRES_FOLLOWUP:
+            if evidence != {}: _fail()
+            return value
+        if type(evidence) is not dict or evidence.get("format") != value["container_format"] or type(evidence.get("SCHEMA_NEIGHBORHOOD_REQUIRES_NARROWER_PROBE")) is not bool: _fail()
+        if value["container_format"] == FORMAT_OLE_BIFF:
+            if set(evidence) != {"format", "sheet_count", "sheets", "schema_neighborhood", "SCHEMA_NEIGHBORHOOD_REQUIRES_NARROWER_PROBE"}: _fail()
+            if type(evidence["sheet_count"]) is not int or evidence["sheet_count"] < 0 or type(evidence["sheets"]) is not list or len(evidence["sheets"]) != evidence["sheet_count"]: _fail()
+            for expected, sheet in enumerate(evidence["sheets"], 1):
+                if type(sheet) is not dict or set(sheet) != {"sheet_ordinal", "sheet_name", "row_count", "column_count", "visibility", "object_type", "column_cell_type_counts"}: _fail()
+                if sheet["sheet_ordinal"] != expected or sheet["visibility"] not in _VISIBILITIES or sheet["object_type"] != "WORKSHEET" or type(sheet["sheet_name"]) is not str or len(sheet["sheet_name"]) > MAX_TEXT_CODEPOINTS: _fail()
+                if type(sheet["row_count"]) is not int or type(sheet["column_count"]) is not int or sheet["row_count"] < 0 or sheet["column_count"] < 0 or type(sheet["column_cell_type_counts"]) is not list or len(sheet["column_cell_type_counts"]) != sheet["column_count"]: _fail()
+                for counts in sheet["column_cell_type_counts"]:
+                    if type(counts) is not dict or set(counts) != set(_CELL_TYPES) or any(type(n) is not int or n < 0 for n in counts.values()) or sum(counts.values()) != sheet["row_count"]: _fail()
+            visible = {sheet["sheet_ordinal"] for sheet in evidence["sheets"] if sheet["visibility"] == "VISIBLE"}
+            if type(evidence["schema_neighborhood"]) is not list: _fail()
+            for row in evidence["schema_neighborhood"]:
+                if type(row) is not dict or set(row) != {"sheet_ordinal", "row_ordinal", "cells"} or row["sheet_ordinal"] not in visible or type(row["row_ordinal"]) is not int or row["row_ordinal"] < 1 or type(row["cells"]) is not list or len(row["cells"]) > MAX_SAMPLE_CELLS_PER_ROW: _fail()
+                for cell in row["cells"]:
+                    if type(cell) is not dict or not set(cell) in ({"row_ordinal", "column_ordinal", "cell_type"}, {"row_ordinal", "column_ordinal", "cell_type", "text"}) or cell.get("cell_type") not in _CELL_TYPES or type(cell.get("row_ordinal")) is not int or type(cell.get("column_ordinal")) is not int or ("text" in cell and (cell["cell_type"] != "TEXT" or type(cell["text"]) is not str or len(cell["text"]) > MAX_TEXT_CODEPOINTS)): _fail()
+        elif value["container_format"] == FORMAT_HTML:
+            if set(evidence) != {"format", "title", "headings", "table_count", "tables", "schema_neighborhood", "SCHEMA_NEIGHBORHOOD_REQUIRES_NARROWER_PROBE"}: _fail()
+            if type(evidence["title"]) is not str or len(evidence["title"]) > MAX_TEXT_CODEPOINTS or type(evidence["headings"]) is not list or len(evidence["headings"]) > MAX_HEADINGS or type(evidence["table_count"]) is not int or evidence["table_count"] < 0 or type(evidence["tables"]) is not list or len(evidence["tables"]) > MAX_DETAILED_TABLES: _fail()
+            for heading in evidence["headings"]:
+                if type(heading) is not dict or set(heading) != {"tag", "text"} or heading["tag"] not in {"h1", "h2", "h3", "h4", "h5", "h6"} or type(heading["text"]) is not str or len(heading["text"]) > MAX_TEXT_CODEPOINTS: _fail()
+            for table in evidence["tables"]:
+                if type(table) is not dict or set(table) != {"table_ordinal", "row_count", "column_count", "headers", "structural_attributes"} or type(table["table_ordinal"]) is not int or type(table["row_count"]) is not int or type(table["column_count"]) is not int or table["row_count"] < 0 or table["column_count"] < 0 or type(table["headers"]) is not list or len(table["headers"]) > MAX_HEADERS_PER_TABLE or type(table["structural_attributes"]) is not list or len(table["structural_attributes"]) > MAX_STRUCTURAL_ATTR_VALUES_PER_TABLE: _fail()
+                for header in table["headers"]:
+                    if type(header) is not dict or set(header) != {"row_ordinal", "column_ordinal", "text"} or type(header["text"]) is not str or len(header["text"]) > MAX_TEXT_CODEPOINTS: _fail()
+                for attribute in table["structural_attributes"]:
+                    if type(attribute) is not dict or set(attribute) != {"name", "value"} or attribute["name"] not in {"class", "id", "role"} or type(attribute["value"]) is not str or len(attribute["value"]) > MAX_TEXT_CODEPOINTS: _fail()
+            if type(evidence["schema_neighborhood"]) is not list: _fail()
+            for row in evidence["schema_neighborhood"]:
+                if type(row) is not dict or set(row) != {"table_ordinal", "row_ordinal", "cells"} or type(row["cells"]) is not list or len(row["cells"]) > MAX_SAMPLE_CELLS_PER_ROW: _fail()
+                for cell in row["cells"]:
+                    if type(cell) is not dict or set(cell) != {"column_ordinal", "cell_type", "text"} or cell["cell_type"] != "TEXT" or type(cell["text"]) is not str or len(cell["text"]) > MAX_TEXT_CODEPOINTS: _fail()
+        else: _fail()
+        return value
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+class _SafeHtmlParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True); self.title=""; self.headings=[]; self.tables=[]; self.current=None; self.row=None; self.cell=None; self.heading=None; self.truncated=False
+    def handle_starttag(self, tag, attrs):
+        tag=tag.lower()
+        if tag == "table":
+            if self.current is not None: _fail()
+            self.current={"rows":[], "headers":[], "attrs":[], "tags":[]}; self.tables.append(self.current)
+        if self.current is not None:
+            self.current["tags"].append(tag)
+            for key, value in attrs:
+                if key.lower() in {"class", "id", "role"} and value is not None:
+                    if len(self.current["attrs"]) < MAX_STRUCTURAL_ATTR_VALUES_PER_TABLE: self.current["attrs"].append((key.lower(), _bounded_text(value)))
+                    else: self.truncated=True
+        if tag == "tr" and self.current is not None: self.row=[]
+        if tag in {"td", "th"} and self.row is not None: self.cell={"tag":tag,"text":"","column_ordinal":len(self.row)+1}
+        if tag == "title" or tag in {"h1","h2","h3","h4","h5","h6"}: self.heading=tag
+    def handle_data(self, data):
+        if self.cell is not None: self.cell["text"] += data
+        if self.heading == "title": self.title += data
+        elif self.heading and len(self.headings) < MAX_HEADINGS: self.headings.append({"tag":self.heading,"text":_bounded_text(data)})
+        elif self.heading: self.truncated=True
+    def handle_endtag(self, tag):
+        tag=tag.lower()
+        if tag in {"td","th"} and self.cell is not None:
+            self.cell["text"]=_bounded_text(self.cell["text"]); self.row.append(self.cell)
+            if tag == "th" and self.current is not None:
+                if len(self.current["headers"]) < MAX_HEADERS_PER_TABLE: self.current["headers"].append({"row_ordinal":len(self.current["rows"])+1,"column_ordinal":self.cell["column_ordinal"],"text":self.cell["text"]})
+                else: self.truncated=True
+            self.cell=None
+        if tag == "tr" and self.row is not None and self.current is not None: self.current["rows"].append(self.row); self.row=None
+        if tag == "table": self.current=None
+        if tag == self.heading: self.heading=None
+
+def _html_structure(raw: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
+    try: parser=_SafeHtmlParser(); parser.feed(raw.decode("utf-8", "replace")); parser.close()
+    except Exception: _fail()
+    tables=[]; samples=[]; truncated=parser.truncated or len(parser.tables)>MAX_DETAILED_TABLES
+    for ordinal, table in enumerate(parser.tables[:MAX_DETAILED_TABLES], 1):
+        rows=table["rows"]; cols=max((len(row) for row in rows), default=0); attrs=sorted(set(table["attrs"]));
+        tables.append({"table_ordinal":ordinal,"row_count":len(rows),"column_count":cols,"headers":table["headers"],"structural_attributes":[{"name":k,"value":v} for k,v in attrs]})
+        nonempty=[row for row in rows if any(cell["text"] for cell in row)]
+        if len(nonempty)>MAX_SAMPLE_ROWS_PER_TABLE: truncated=True
+        for row_ordinal, row in [(index+1,row) for index,row in enumerate(rows) if any(cell["text"] for cell in row)][:MAX_SAMPLE_ROWS_PER_TABLE]:
+            if len(row)>MAX_SAMPLE_CELLS_PER_ROW: truncated=True
+            samples.append({"table_ordinal":ordinal,"row_ordinal":row_ordinal,"cells":[{"column_ordinal":cell["column_ordinal"],"cell_type":"TEXT","text":cell["text"]} for cell in row[:MAX_SAMPLE_CELLS_PER_ROW]]})
+    structure={"format":FORMAT_HTML,"table_count":len(parser.tables),"tables":[{"ordinal":index+1,"rows":len(table["rows"]),"columns":max((len(row) for row in table["rows"]),default=0),"tags":table["tags"],"attrs":sorted(set(table["attrs"]))} for index,table in enumerate(parser.tables)]}
+    return structure,{"format":FORMAT_HTML,"title":_bounded_text(parser.title),"headings":parser.headings,"table_count":len(parser.tables),"tables":tables,"schema_neighborhood":samples,"SCHEMA_NEIGHBORHOOD_REQUIRES_NARROWER_PROBE":truncated}
+
+def _ole_structure(raw: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        import xlrd; book=xlrd.open_workbook(file_contents=raw, formatting_info=True, on_demand=False, ragged_rows=False)
+        types={xlrd.XL_CELL_EMPTY:"EMPTY",xlrd.XL_CELL_BLANK:"BLANK",xlrd.XL_CELL_TEXT:"TEXT",xlrd.XL_CELL_NUMBER:"NUMBER",xlrd.XL_CELL_DATE:"DATE",xlrd.XL_CELL_BOOLEAN:"BOOLEAN",xlrd.XL_CELL_ERROR:"ERROR"}; vis={0:"VISIBLE",1:"HIDDEN",2:"VERY_HIDDEN"}; sheets=[]; samples=[]; narrow=False; fingerprint=[]
+        for index in range(book.nsheets):
+            sheet=book.sheet_by_index(index); visibility=vis.get(sheet.visibility)
+            if visibility is None: _fail()
+            columns=[]
+            for col in range(sheet.ncols):
+                counts={key:0 for key in _CELL_TYPES}
+                for row in range(sheet.nrows):
+                    category=types.get(sheet.cell_type(row,col))
+                    if category is None: _fail()
+                    counts[category]+=1
+                columns.append(counts)
+            sheets.append({"sheet_ordinal":index+1,"sheet_name":_bounded_text(sheet.name),"row_count":sheet.nrows,"column_count":sheet.ncols,"visibility":visibility,"object_type":"WORKSHEET","column_cell_type_counts":columns})
+            fingerprint.append({"ordinal":index+1,"rows":sheet.nrows,"columns":sheet.ncols,"visibility":visibility,"profiles":columns})
+            if sheet.ncols>MAX_SAMPLE_CELLS_PER_ROW: narrow=True
+            if visibility == "VISIBLE":
+                count=0
+                for row in range(sheet.nrows):
+                    cells=[]
+                    for col in range(min(sheet.ncols,MAX_SAMPLE_CELLS_PER_ROW)):
+                        category=types.get(sheet.cell_type(row,col)); cell={"row_ordinal":row+1,"column_ordinal":col+1,"cell_type":category}
+                        if category == "TEXT": cell["text"]=_bounded_text(str(sheet.cell_value(row,col)))
+                        cells.append(cell)
+                    if any(cell["cell_type"] != "EMPTY" for cell in cells):
+                        if count < MAX_SAMPLE_ROWS_PER_TABLE: samples.append({"sheet_ordinal":index+1,"row_ordinal":row+1,"cells":cells})
+                        else: narrow=True
+                        count+=1
+        return {"format":FORMAT_OLE_BIFF,"sheets":fingerprint},{"format":FORMAT_OLE_BIFF,"sheet_count":book.nsheets,"sheets":sheets,"schema_neighborhood":samples,"SCHEMA_NEIGHBORHOOD_REQUIRES_NARROWER_PROBE":narrow}
+    except V9005StageABlocked: raise
+    except Exception: _fail()
+
+def profile_verified_lock(lock: Any) -> dict[str, Any]:
+    item=_validate(lock); fmt=detect_container_format(item.raw_bytes)
+    if fmt == FORMAT_HTML: structure,evidence=_html_structure(item.raw_bytes); status="PROFILED"
+    elif fmt == FORMAT_OLE_BIFF: structure,evidence=_ole_structure(item.raw_bytes); status="PROFILED"
+    else: structure={"format":fmt}; evidence={}; status=FORMAT_REQUIRES_FOLLOWUP
+    result={"status":status,"source_family":item.source_family,"object_domain":item.object_domain.value,"applicable_period":item.applicable_period,"source_object_slot_id":item.source_object_slot_id,"sha256":item.sha256,"byte_length":len(item.raw_bytes),"container_format":fmt,"structural_profile_sha256":sha256(_canonical_json(structure).encode()).hexdigest(),"structural_evidence":evidence}
+    return _validate_safe_profile(result)
 
 def _validated_profile(profile: Any) -> dict[str, Any]:
     try:
