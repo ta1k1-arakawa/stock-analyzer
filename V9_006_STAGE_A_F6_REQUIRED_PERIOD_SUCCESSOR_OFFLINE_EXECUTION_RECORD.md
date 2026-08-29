@@ -1,0 +1,29 @@
+# V9_006 F6 required-period successor offline execution record
+
+```text
+REVIEWED_EXECUTION_CHECKPOINT_SHA=923bb4e7f79156aea59d3e6b294ebc0e108357b5
+REVIEWED_IMPLEMENTATION_SHA=d065cefc45ac3330ccba99da2b88665767ea0351
+EXECUTION_RESULT=COMPLETE
+EXECUTION_EXIT_CODE=0
+STATUS=SUCCESSOR_REQUIRED_PERIOD_COVERAGE_CAPTURED
+NETWORK_REQUEST_COUNT=0
+RAW_BYTES_READ_FOR_INTEGRITY=true
+CHILD_CONTENT_INSPECTED=true
+STRUCTURAL_PROFILE_HASH_VERIFIED=true
+DATE_YEAR_VALUE_READ=true
+COVERAGE_EVALUATED=true
+COVERAGE_RESULT_ACCEPTED=true
+COVERED_REQUIRED_YEARS=[2017,2018,2019,2020,2021,2022,2023,2024,2025]
+MISSING_REQUIRED_YEARS=[]
+ALL_REQUIRED_YEARS_COVERED=true
+OUT_OF_SCOPE_DISAGREEMENT=true
+CURRENT_EVIDENCE_CLASS=DEVELOPMENT_EVIDENCE
+CONFIRMATION_DEBT=true
+NEW_HUMAN_GATES_CONSUMED=0
+```
+
+The execution is PASS and is not to be rerun. The historical old-rule
+`F6_YEAR_COVERAGE_AMBIGUOUS` result remains immutable. This successor result
+does not retroactively preregister the amended rule; confirmation debt remains
+true. It creates no model-fit, backtest, private-access, live-trading, or
+profitability authority. The out-of-scope disagreement is diagnostic only.
