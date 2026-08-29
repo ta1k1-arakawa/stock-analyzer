@@ -29,7 +29,7 @@ adapter, H production integration, I tests, J methodology.
 | F2 MONTHLY | C | C | C | C | R | I | R | I | C | N | `acquire_f2_f4_monthly_evidence`/`acquire_f2_f4_required_slots`, required and bridge enumeration; consume existing results |
 | F3 YEAR | C | C | C | C | R | I | R | I | C | N | `acquire_f3_required_slots`; nine YEAR objects and exact 108-cell fanout already implemented, matrix consumption remains |
 | F4 MONTHLY | C | C | C | C | R | I | R | I | C | N | shared reviewed F2/F4 acquisition/enumeration; matrix consumption remains |
-| F5 auxiliary | C | R | R | R | R | R | R | I | R | N | no equivalent reviewed acquisition implementation in current code |
+| F5 auxiliary | C | N | N | N | N | I | N | I | N | N | optional crosscheck evidence; unavailable base cells remain truthful MISSING diagnostics |
 | F6 GLOBAL | C | C | C | C | C | I | N | I | C | N | completed locked acquisition/successor result; no reacquisition or refetch |
 | F7 MONTHLY | C | C | C | C | R | I | R | I | C | N | `acquire_f7_required_slots`; base/envelope enumeration/acquisition/raw-key verification already implemented |
 
@@ -40,9 +40,9 @@ production semantic integration PASS.
 
 ## Cross-family gaps and dependency order
 
-1. **R/I — remaining acquisition/matrix wiring.** Preserve and consume the
-   reviewed F1, F2/F4, F3, F6, and F7 helpers; implement only missing F5
-   acquisition/comparability and wire all existing helper outputs to exact
+1. **I — remaining matrix wiring.** Preserve and consume the reviewed F1,
+   F2/F4, F3, F6, and F7 helpers; F5 is optional auxiliary evidence and wire
+   all existing helper outputs to exact
    `MONTHLY_COVERAGE_MATRIX` mutation (including F6 required-year fanout).
    Tests: synthetic helper-result consumption, F5 locks, and exact matrix
    coverage. No reviewed acquisition/enumeration/fanout helper is reimplemented.
@@ -59,7 +59,7 @@ production semantic integration PASS.
    Depends on gaps 1 and 2.
 
 No `METHODOLOGY_DECISION_REQUIRED` gap was found. The minimum sensible plan is
-three substantive checkpoints: A remaining F5 plus matrix wiring, B
+three substantive checkpoints: A matrix wiring, B
 content/semantic/calendar integration, C final production integration.
 
 ## Readiness gate
@@ -81,7 +81,8 @@ side effect. It creates no human authorization and changes no methodology.
 ## GPT BLOCK remediation record
 
 MEDIUM_1 is remediated by preserving the reviewed F1, F2/F4, F3, F6, and F7
-acquisition/enumeration responsibilities above and limiting future work to
-wiring or genuinely absent F5 implementation. MEDIUM_2 is remediated by
+acquisition/enumeration responsibilities above; the F5 amendment makes F5
+optional auxiliary crosscheck evidence rather than a mandatory acquisition gap.
+MEDIUM_2 is remediated by
 keeping acquisition readiness distinct from the required overall Stage-A
 readiness control. No F6 reacquisition/refetch or authority change occurs.
