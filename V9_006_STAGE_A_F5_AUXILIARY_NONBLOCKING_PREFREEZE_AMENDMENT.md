@@ -35,3 +35,12 @@ This is a transparent prefreeze amendment: public F5 structure was inspected,
 but no model fit, backtest, outcome, private/sealed evidence, promotion, or F5
 count result informed the family-attribute rule. Future profitability remains
 unestablished.
+
+`ACQUISITION_IMPLEMENTATION_COMPLETE` means all mandatory source-object
+acquisition responsibilities are implemented and independently reviewed. For
+base matrix families this is determined generically by `LocatorStrategy`
+`auxiliary`: false is mandatory; true is not a prerequisite. Non-base F1,
+F2 bridge, F3 YEAR, F6 locked GLOBAL, and F7 envelope responsibilities remain
+mandatory. The next Checkpoint A atomically adds the false overall Stage-A
+readiness guard, matrix wiring, auxiliary-aware missing count, and acquisition
+flag transition to true; overall readiness remains false until B/C.

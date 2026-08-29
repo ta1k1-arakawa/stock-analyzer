@@ -53,8 +53,9 @@ production semantic integration PASS.
    end inputs. Depends on gap 1's locked-object interface.
 3. **I — final production integration/readiness.** Wire all family results to
    `run_stage_a`, derive `FREE_JPX_METADATA_PROBE_PASS`, preserve safe output,
-   and permit `ACQUISITION_IMPLEMENTATION_COMPLETE=true` only after gaps 1--2
-   pass their targeted offline tests. Tests: synthetic full Stage-A success,
+   and permit overall Stage-A readiness=true only after gaps 1--2
+   pass their targeted offline tests. Checkpoint A may set acquisition=true
+   while overall readiness remains false. Tests: synthetic full Stage-A success,
    each fail-closed boundary, zero-network preflight, and safe-output checks.
    Depends on gaps 1 and 2.
 
@@ -65,9 +66,11 @@ content/semantic/calendar integration, C final production integration.
 ## Readiness gate
 
 `ACQUISITION_IMPLEMENTATION_COMPLETE` retains its reviewed scope: it may be
-true iff the complete required F1--F7 source-object acquisition pipeline
+true iff all mandatory source-object acquisition responsibilities
 (including base/bridge/envelope and applicable existing F6 locked-object
-handling) is implemented and reviewed. It does not mean semantic
+handling) are implemented and reviewed. For base families, mandatory is the
+generic reviewed `auxiliary=false` attribute; `auxiliary=true` is not an
+acquisition prerequisite. It does not mean semantic
 transformation, calendar interpretation, `FREE_JPX_METADATA_PROBE_PASS`, or
 full `run_stage_a` integration is complete.
 
