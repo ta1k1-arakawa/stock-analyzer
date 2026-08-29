@@ -22,3 +22,8 @@ M3 now provides bounded OLE and HTML evidence plus `_validate_safe_profile`,
 called by `profile_verified_lock` before output. The implementation is
 offline-only and uses synthetic fake `xlrd` Book/Sheet tests; no dependency,
 acquisition, raw production read, or semantic mapping was added.
+
+The final M3 boundary revision removes shadowed legacy profiler definitions,
+tracks all truncation at observation time, treats headings as atomic DOM
+elements, rejects unfinished HTML state, and validates safe provenance and
+sample ordering independently of the producer.

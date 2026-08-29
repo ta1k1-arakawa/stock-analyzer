@@ -60,6 +60,12 @@ M3's OLE/HTML full profiler, closed safe-output validator, and comprehensive
 profiler tests are implemented below but remain awaiting GPT exact-SHA review.
 Overall Stage A remains BLOCK until that review completes.
 
+Every producer-side text or cardinality truncation sets the narrower-probe
+flag at observation time. HTML headings are element-atomic descendant-text
+records; unfinished or nested heading/table/row/cell state fails closed.
+The validator independently enforces per-sheet and per-table ordering,
+cardinality, visibility/reference, column, and domain-period boundaries.
+
 ## M3 profiler-safe-output implementation
 
 The offline profiler now emits a closed, bounded safe schema and validates it

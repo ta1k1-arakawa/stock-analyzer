@@ -204,3 +204,25 @@ def test_safe_output_validator_is_closed_and_total(monkeypatch):
         assert exc.value.reason == "IMPLEMENTATION_FAILURE"
     for malformed in ({"x": []}, {"x": {"y": []}}, ["bad"], {"x": b"bytes"}):
         with pytest.raises(V9005StageABlocked): schema._validate_safe_profile(malformed)
+
+
+@pytest.mark.parametrize("html", [b"<title>" + b"x" * 161 + b"</title>", b"<h1>" + b"x" * 161 + b"</h1>", b"<table><tr><th>" + b"x" * 161 + b"</th></tr></table>", b"<table class='" + b"x" * 161 + b"'><tr><td>x</td></tr></table>"])
+def test_all_html_text_truncation_has_narrower_provenance(html):
+    assert schema.profile_verified_lock(lock(b"<html>" + html + b"</html>"))["structural_evidence"]["SCHEMA_NEIGHBORHOOD_REQUIRES_NARROWER_PROBE"]
+
+
+def test_heading_is_element_atomic_and_malformed_html_fails_closed():
+    result=schema.profile_verified_lock(lock(b"<html><h1>Foo <span>Bar</span></h1></html>"))
+    assert result["structural_evidence"]["headings"] == [{"tag":"h1","text":"Foo Bar"}]
+    for raw in (b"<h1><h2>x</h2></h1>", b"<table><tr><td>x", b"<h1>x"):
+        with pytest.raises(V9005StageABlocked): schema.profile_verified_lock(lock(b"<html>" + raw))
+
+
+def test_final_validator_bounds_and_single_profiler_definitions(monkeypatch):
+    import xlrd
+    valid=ole_profile(monkeypatch, [FakeSheet("ok", 0, [[(xlrd.XL_CELL_TEXT, "x")]])])
+    bad=copy.deepcopy(valid); row=bad["structural_evidence"]["schema_neighborhood"]
+    row.extend(copy.deepcopy(row) for _ in range(16))
+    with pytest.raises(V9005StageABlocked): schema._validate_safe_profile(bad)
+    source=Path("src/v9_006_stage_a_schema_discovery.py").read_text(encoding="utf-8")
+    assert source.count("def _html_structure(") == source.count("def _ole_structure(") == source.count("def profile_verified_lock(") == 1
