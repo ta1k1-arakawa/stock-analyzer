@@ -86,3 +86,19 @@ def test_validator_rejection_preserves_runtime_provenance(monkeypatch):
     result=exc.value.evidence
     assert result["structural_profile_sha256"] == digest(evidence) and result["structural_profile_hash_verified"] is True
     assert result["date_year_value_read"] is True and result["coverage_evaluated"] is True
+
+@pytest.mark.parametrize("key,bad", [("raw_bytes_read_for_integrity",1),("raw_bytes_read_for_integrity",0),("network_request_count",False),("network_request_count",0.0),("date_column_ordinals",[4.0,6.0])])
+def test_exact_safe_schema_types_reject_equality_lookalikes(monkeypatch,key,bad):
+    evidence=structural(); monkeypatch.setattr(coverage,"EXPECTED_STRUCTURAL_PROFILE_SHA256",digest(evidence)); value=captured(evidence); value[key]=bad
+    with pytest.raises(coverage.CoverageBlocked): coverage.safe_coverage_evidence(value,evidence)
+
+def test_validator_fallback_does_not_copy_untrusted_candidate(monkeypatch):
+    evidence=structural(); monkeypatch.setattr(coverage,"EXPECTED_STRUCTURAL_PROFILE_SHA256",digest(evidence)); value=captured(evidence); value["leak"]="private-path"; value["year_histograms"]=[{}]
+    with pytest.raises(coverage.CoverageBlocked) as exc: coverage.safe_coverage_evidence(value,evidence,failure_provenance=value)
+    assert "leak" not in exc.value.evidence and "year_histograms" not in exc.value.evidence
+
+def test_post_comparison_generic_failure_preserves_evaluated(monkeypatch):
+    types=[[0,0,0,coverage.xlrd.XL_CELL_DATE,0,coverage.xlrd.XL_CELL_DATE],[0]*6]; evidence=structural(); monkeypatch.setattr(coverage,"EXPECTED_STRUCTURAL_PROFILE_SHA256",digest(evidence)); monkeypatch.setattr(coverage,"_structural_gate",lambda *_:(evidence,digest(evidence))); monkeypatch.setattr(coverage.xlrd,"open_workbook",lambda **_:Book(Sheet(types,[[None,None,None,1,None,1],[None]*6]))); monkeypatch.setattr(coverage.xlrd,"xldate_as_tuple",lambda *_:(2018,1,1,0,0,0)); monkeypatch.setattr(coverage,"safe_coverage_evidence",lambda *_args,**_kwargs: (_ for _ in ()).throw(RuntimeError()))
+    with pytest.raises(coverage.CoverageBlocked) as exc: coverage._run_verified_bytes(b"x",inspector=lambda _:evidence)
+    result=exc.value.evidence
+    assert result["structural_profile_hash_verified"] and result["date_year_value_read"] and result["coverage_evaluated"] and not result["coverage_result_accepted"]

@@ -73,14 +73,35 @@ def _date_count(structural: object, ordinal: int) -> int | None:
     return count if _is_int(count) else None
 
 
+def _trusted_failure(provenance: object, structural_evidence: object) -> dict[str, Any]:
+    """Copy only independently trustworthy phase facts into safe failure."""
+    if not isinstance(provenance, dict):
+        return _failure(sha=None, verified=False, raw=True, inspected=True, date_read=False)
+    sha = provenance.get("structural_profile_sha256")
+    verified = provenance.get("structural_profile_hash_verified")
+    raw = provenance.get("raw_bytes_read_for_integrity")
+    inspected = provenance.get("child_content_inspected")
+    date_read = provenance.get("date_year_value_read")
+    evaluated = provenance.get("coverage_evaluated")
+    if (sha is not None and (not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{64}", sha) is None)) or type(verified) is not bool or (type(raw) is not bool and raw != "unknown") or type(inspected) is not bool or type(date_read) is not bool or type(evaluated) is not bool:
+        return _failure(sha=None, verified=False, raw=True, inspected=True, date_read=False)
+    if verified != (sha == EXPECTED_STRUCTURAL_PROFILE_SHA256):
+        return _failure(sha=None, verified=False, raw=raw, inspected=inspected, date_read=False)
+    histograms = provenance.get("year_histograms")
+    safe_histograms = None
+    if evaluated and isinstance(histograms, dict) and set(histograms) == {"4", "6"} and _histogram_is_valid(histograms.get("4")) and _histogram_is_valid(histograms.get("6")) and sum(item["count"] for item in histograms["4"]) == _date_count(structural_evidence, 4) and sum(item["count"] for item in histograms["6"]) == _date_count(structural_evidence, 6):
+        safe_histograms = histograms
+    return _failure(sha=sha, verified=verified, raw=raw, inspected=inspected, date_read=date_read, evaluated=evaluated and safe_histograms is not None, histograms=safe_histograms)
+
+
 def safe_coverage_evidence(value: object, structural_evidence: object, *, failure_provenance: dict[str, Any] | None = None) -> dict[str, Any]:
     """Closed-schema validator. Raises CoverageBlocked, never TypeError."""
     try:
         if not isinstance(value, dict) or set(value) - (_COMMON | _DERIVED | {"year_histograms"}):
             raise ValueError
-        if set(_COMMON) - set(value) or value.get("status") not in _STATUSES or value.get("date_column_ordinals") != [4, 6] or value.get("network_request_count") != 0:
+        if set(_COMMON) - set(value) or value.get("status") not in _STATUSES or type(value.get("date_column_ordinals")) is not list or value.get("date_column_ordinals") != [4, 6] or any(not _is_int(x) for x in value["date_column_ordinals"]) or type(value.get("network_request_count")) is not int or value.get("network_request_count") != 0:
             raise ValueError
-        if value.get("raw_bytes_read_for_integrity") not in (True, False, "unknown") or not isinstance(value.get("child_content_inspected"), bool) or not isinstance(value.get("date_year_value_read"), bool) or not isinstance(value.get("coverage_evaluated"), bool) or not isinstance(value.get("coverage_result_accepted"), bool) or not isinstance(value.get("structural_profile_hash_verified"), bool):
+        if (type(value.get("raw_bytes_read_for_integrity")) is not bool and value.get("raw_bytes_read_for_integrity") != "unknown") or type(value.get("child_content_inspected")) is not bool or type(value.get("date_year_value_read")) is not bool or type(value.get("coverage_evaluated")) is not bool or type(value.get("coverage_result_accepted")) is not bool or type(value.get("structural_profile_hash_verified")) is not bool:
             raise ValueError
         digest = value.get("structural_profile_sha256")
         if digest is not None and (not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
@@ -126,12 +147,7 @@ def safe_coverage_evidence(value: object, structural_evidence: object, *, failur
         raise
     except Exception:
         if failure_provenance is not None:
-            preserved = dict(failure_provenance)
-            preserved["status"] = "IMPLEMENTATION_FAILURE"
-            preserved["coverage_result_accepted"] = False
-            preserved.pop("covered_years", None); preserved.pop("covered_required_years", None)
-            preserved.pop("missing_required_years", None); preserved.pop("all_required_years_covered", None)
-            raise CoverageBlocked(preserved) from None
+            raise CoverageBlocked(_trusted_failure(failure_provenance, structural_evidence)) from None
         raise CoverageBlocked(_failure(sha=None, verified=False, raw=True, inspected=True, date_read=False)) from None
 
 
@@ -143,6 +159,8 @@ def _structural_gate(raw: bytes, inspector: Callable[[bytes], dict[str, Any]]) -
 
 def _run_verified_bytes(raw: bytes, *, inspector: Callable[[bytes], dict[str, Any]] = _default_structural_inspector) -> dict[str, Any]:
     date_read = False
+    comparison_complete = False
+    histograms: dict[str, list[dict[str, int]]] | None = None
     try:
         structural, digest = _structural_gate(raw, inspector)
     except Exception:
@@ -152,7 +170,7 @@ def _run_verified_bytes(raw: bytes, *, inspector: Callable[[bytes], dict[str, An
     try:
         book = xlrd.open_workbook(file_contents=raw, formatting_info=True, on_demand=False, ragged_rows=False)
         sheet = book.sheet_by_index(0)
-        histograms: dict[str, list[dict[str, int]]] = {}
+        histograms = {}
         for ordinal in DATE_COLUMN_ORDINALS:
             years: Counter[int] = Counter()
             for rowx in range(sheet.nrows):
@@ -165,6 +183,7 @@ def _run_verified_bytes(raw: bytes, *, inspector: Callable[[bytes], dict[str, An
                 raise CoverageBlocked(_failure(sha=digest, verified=True, raw=True, inspected=True, date_read=date_read))
             histograms[str(ordinal)] = [{"year": year, "count": years[year]} for year in sorted(years)]
         equal = histograms["4"] == histograms["6"]
+        comparison_complete = True
         base: dict[str, Any] = {"status": "F6_YEAR_COVERAGE_CAPTURED" if equal else "F6_YEAR_COVERAGE_AMBIGUOUS", "structural_profile_sha256": digest, "structural_profile_hash_verified": True, "date_column_ordinals": [4, 6], "raw_bytes_read_for_integrity": True, "child_content_inspected": True, "date_year_value_read": date_read, "coverage_evaluated": True, "coverage_result_accepted": equal, "network_request_count": 0, "year_histograms": histograms}
         if equal:
             years = [item["year"] for item in histograms["4"]]
@@ -174,7 +193,7 @@ def _run_verified_bytes(raw: bytes, *, inspector: Callable[[bytes], dict[str, An
     except CoverageBlocked:
         raise
     except Exception:
-        raise CoverageBlocked(_failure(sha=digest, verified=True, raw=True, inspected=True, date_read=date_read)) from None
+        raise CoverageBlocked(_failure(sha=digest, verified=True, raw=True, inspected=True, date_read=date_read, evaluated=comparison_complete, histograms=histograms if comparison_complete else None)) from None
 
 
 def run_date_year_coverage_parser(*, production_state_parent: str | Path, output_root: str | Path) -> dict[str, Any]:

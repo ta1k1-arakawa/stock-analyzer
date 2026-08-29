@@ -37,3 +37,26 @@ comparison, and raw/content boundaries are never reset to a false pre-hash
 state. The validator now rejects expected-SHA plus unverified status, closing
 the structural-hash three-state invariant. This remains
 `BLOCK`/`REMEDIATED_AWAITING_GPT_REVIEW`, not self-called PASS.
+
+## Final fail-closed provenance remediation
+
+```text
+REVIEWED_SHA=25fd5cfdf9b318b47df8a6282c58671a3f59a6cc
+PARENT_SHA=8dc08d2d989b01e522d976bc5acc5ee9ef4917c0
+CRITICAL=0
+HIGH=0
+MEDIUM=2
+LOW=0
+RESULT=BLOCK
+PREVIOUS_MEDIUM_1=RESOLVED
+PREVIOUS_MEDIUM_2=RESOLVED
+MEDIUM_3=V9_006_F6_DATE_YEAR_IMPL_POST_COMPARISON_GENERIC_FAILURE_EVALUATED_PROVENANCE_FALSE_NEGATIVE
+MEDIUM_4=V9_006_F6_DATE_YEAR_IMPL_SAFE_VALIDATOR_FALLBACK_AND_EXACT_TYPE_FAIL_CLOSED_INCOMPLETE
+```
+
+The implementation now records comparison completion immediately after the
+two complete histograms have been compared, preserving evaluated=true for any
+later generic failure. Validator failure conversion whitelists only trusted
+phase provenance and independently safe histogram evidence; it never copies
+the rejected candidate. Exact schema types reject bool/int/float lookalikes.
+This remains BLOCK awaiting GPT review.
