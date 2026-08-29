@@ -4,16 +4,19 @@
 audit_basis=ACTUAL_CURRENT_CODE_AND_TARGETED_TEST_SURFACES
 reviewed_execution_checkpoint_sha=923bb4e7f79156aea59d3e6b294ebc0e108357b5
 stage_a_executed=false
-acquisition_implementation_complete=false
+acquisition_implementation_complete=true
+overall_stage_a_implementation_ready=false
 ```
 
 ## Mechanical finding
 
 `src/v9_005_stage_a_jpx_probe.py` has reviewed locator/inventory contracts,
 raw-lock helpers, evidence construction, and `run_stage_a()`, but its
-`verify_acquisition_implementation_ready()` deliberately blocks before any
-fetch or output creation while `ACQUISITION_IMPLEMENTATION_COMPLETE=false`.
-Accordingly, reviewed family seams are not production Stage-A integration.
+Checkpoint A now sets `ACQUISITION_IMPLEMENTATION_COMPLETE=true` after
+integrating the reviewed mandatory acquisition outputs into the deterministic
+base matrix; F5 is reviewed auxiliary/nonblocking evidence. This is not
+production Stage-A integration: a separate overall readiness guard remains
+false before any output creation, git command, or fetch.
 
 ## Family audit
 

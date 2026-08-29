@@ -270,6 +270,7 @@ STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE = "STAGE_A_SOURCE_LOCATOR_CONTRACT_IN
 # FEASIBILITY_FAILURE, which remains reserved for a genuine result after a
 # complete acquisition pipeline actually ran.
 STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE = "STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE"
+STAGE_A_OVERALL_IMPLEMENTATION_INCOMPLETE = "STAGE_A_OVERALL_IMPLEMENTATION_INCOMPLETE"
 
 PUBLIC_FAILURE_CLASSES = frozenset({
     PLUMBING_FAILURE_RETRIABLE,
@@ -301,12 +302,15 @@ _INTERNAL_REASON_TO_PUBLIC_FAILURE_CLASS: dict[str, str] = {
     "ONE_LEVEL_PARENT_NOT_DIRECT_CHILD": CHATGPT_DECISION_REQUIRED,
     STAGE_A_SOURCE_LOCATOR_CONTRACT_INCOMPLETE: CHATGPT_DECISION_REQUIRED,
     STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE: CHATGPT_DECISION_REQUIRED,
+    STAGE_A_OVERALL_IMPLEMENTATION_INCOMPLETE: CHATGPT_DECISION_REQUIRED,
 }
 
-# Flips to True only when a future, separately reviewed task implements the
-# complete acquisition pipeline for every F1-F7 source-object slot
-# (base/bridge/envelope), not merely the locator-strategy registry.
-ACQUISITION_IMPLEMENTATION_COMPLETE = False
+# Acquisition completeness is deliberately narrower than executable Stage-A
+# readiness: the reviewed F1/F2/F3/F4/F6/F7 seams now cover every mandatory
+# acquisition responsibility, while F5 is auxiliary.  Parsing, semantic and
+# final orchestration work remain separately guarded below.
+ACQUISITION_IMPLEMENTATION_COMPLETE = True
+OVERALL_STAGE_A_IMPLEMENTATION_READY = False
 
 MAX_ATTEMPTS = 3
 MAX_RETRIES = 2
@@ -716,6 +720,16 @@ class F7RequiredSlotAcquisition:
     base_coverage_references: Mapping[tuple[str, str], tuple[str, ...]]
     envelope_extra_references: Mapping[str, tuple[str, ...]]
     network_attempt_count: int
+
+
+@dataclass(frozen=True)
+class F6RequiredPeriodCoverage:
+    """Reviewed successor coverage only; this contains no raw bytes or fetcher."""
+
+    global_source_object_slot_id: str
+    covered_required_years: tuple[int, ...]
+    missing_required_years: tuple[int, ...]
+    coverage_result_accepted: bool
 
 def fetch_once_with_retry(
     url: str,
@@ -1519,6 +1533,12 @@ def verify_acquisition_implementation_ready() -> None:
         raise V9005StageABlocked(STAGE_A_ACQUISITION_IMPLEMENTATION_INCOMPLETE)
 
 
+def verify_overall_stage_a_implementation_ready() -> None:
+    """Independent final readiness stop; human confirmation cannot bypass it."""
+    if not OVERALL_STAGE_A_IMPLEMENTATION_READY:
+        raise V9005StageABlocked(STAGE_A_OVERALL_IMPLEMENTATION_INCOMPLETE)
+
+
 def _normalized_coverage_references(
     coverage_references: Mapping[tuple[str, str], Sequence[str]] | None,
 ) -> dict[tuple[str, str], list[str]]:
@@ -1603,6 +1623,107 @@ def build_source_inventory(
     return records
 
 
+def _require_exact_slot_reference(
+    verified_locks: Mapping[str, Mapping[str, Any]], slot_ids: Any, family: str, applicable_period: str,
+) -> tuple[str, ...]:
+    """Accept one independently valid coverage object, never a support root."""
+    if not isinstance(slot_ids, tuple) or len(slot_ids) != 1:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    slot_id = slot_ids[0]
+    if not isinstance(slot_id, str) or re.fullmatch(r"[0-9a-f]{64}", slot_id) is None:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    metadata = verified_locks.get(slot_id)
+    if not isinstance(metadata, Mapping) or metadata.get("source_family") != family or metadata.get("applicable_period") != applicable_period:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    return (slot_id,)
+
+
+def _validate_monthly_coverage_matrix(inventory: Sequence[Mapping[str, Any]]) -> None:
+    """Fail closed on malformed, duplicate, extra, or missing base cells."""
+    if isinstance(inventory, (str, bytes)) or not isinstance(inventory, Sequence):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    expected = [(family, month) for month in inventory_months() for family in MONTHLY_COVERAGE_FAMILIES]
+    seen: list[tuple[str, str]] = []
+    for record in inventory:
+        if not isinstance(record, Mapping) or set(record) != {"source_family", "month", "status", "source_object_slot_ids"}:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        family, month, status, slot_ids = (record["source_family"], record["month"], record["status"], record["source_object_slot_ids"])
+        if family not in MONTHLY_COVERAGE_FAMILIES or month not in inventory_months() or status not in _VALID_INVENTORY_STATUSES:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        if not isinstance(slot_ids, list) or any(not isinstance(value, str) for value in slot_ids):
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        if (status == INVENTORY_AVAILABLE) != bool(slot_ids):
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        seen.append((family, month))
+    if seen != expected:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+
+
+def build_checkpoint_a_monthly_coverage_matrix(
+    *,
+    f2_f4: F2F4RequiredSlotAcquisition,
+    f3: F3RequiredSlotAcquisition,
+    f6: F6RequiredPeriodCoverage,
+    f7: F7RequiredSlotAcquisition,
+    output_root: str | os.PathLike[str],
+    f5_coverage_references: Mapping[tuple[str, str], tuple[str, ...]] | None = None,
+) -> list[dict[str, Any]]:
+    """Integrate reviewed acquisition outputs into the exact 648-cell base matrix.
+
+    This is an offline consumer only: it invokes neither acquisition helper nor
+    fetcher, and deliberately ignores F2 bridge and F7 envelope-extra domains.
+    """
+    if not isinstance(f2_f4, F2F4RequiredSlotAcquisition) or not isinstance(f3, F3RequiredSlotAcquisition) or not isinstance(f6, F6RequiredPeriodCoverage) or not isinstance(f7, F7RequiredSlotAcquisition):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    verified_locks = _verified_raw_lock_index(output_root)
+    months = inventory_months()
+    f2 = SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT
+    f3_family = SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE
+    f4 = SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE
+    f5_family = SOURCE_FAMILY_MONTHLY_AGGREGATE_LISTED_ISSUE_COUNTS
+    f6_family = SOURCE_FAMILY_TOPIX_HISTORICAL_INDEX_VALUE
+    f7_family = SOURCE_FAMILY_JPX_CALENDAR
+    expected_f2f4 = {(family, month) for month in months for family in (f2, f4)}
+    if set(f2_f4.base_coverage_references) != expected_f2f4:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    if not isinstance(f2_f4.f2_bridge_references, Mapping):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    if set(f3.base_coverage_references) != {(f3_family, month) for month in months}:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    if set(f7.base_coverage_references) != {(f7_family, month) for month in months} or not isinstance(f7.envelope_extra_references, Mapping):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    if f5_coverage_references is not None and not isinstance(f5_coverage_references, Mapping):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    f5_coverage_references = f5_coverage_references or {}
+    if set(f5_coverage_references) - {(f5_family, month) for month in months}:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    required_years = set(range(2017, 2026))
+    covered, missing = set(f6.covered_required_years), set(f6.missing_required_years)
+    if (not f6.coverage_result_accepted or not isinstance(f6.coverage_result_accepted, bool)
+            or covered & missing or covered | missing != required_years
+            or any(isinstance(year, bool) or not isinstance(year, int) for year in covered | missing)):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    f6_slot = _require_exact_slot_reference(verified_locks, (f6.global_source_object_slot_id,), f6_family, TOPIX_GLOBAL_2017_2025)
+    records: list[dict[str, Any]] = []
+    for month in months:
+        year = int(month[:4])
+        for family in MONTHLY_COVERAGE_FAMILIES:
+            if family in (f2, f4):
+                slot_ids = _require_exact_slot_reference(verified_locks, f2_f4.base_coverage_references[(family, month)], family, month)
+            elif family == f3_family:
+                slot_ids = _require_exact_slot_reference(verified_locks, f3.base_coverage_references[(family, month)], family, str(year))
+            elif family == f6_family:
+                slot_ids = f6_slot if year in covered else ()
+            elif family == f7_family:
+                slot_ids = _require_exact_slot_reference(verified_locks, f7.base_coverage_references[(family, month)], family, month)
+            else:  # F5 stays truthful MISSING unless independently supplied.
+                supplied = f5_coverage_references.get((family, month))
+                slot_ids = _require_exact_slot_reference(verified_locks, supplied, family, month) if supplied is not None else ()
+            records.append({"source_family": family, "month": month, "status": INVENTORY_AVAILABLE if slot_ids else INVENTORY_MISSING, "source_object_slot_ids": list(slot_ids)})
+    _validate_monthly_coverage_matrix(records)
+    return records
+
+
 def _family_fully_covered(inventory: Sequence[Mapping[str, Any]], family: str) -> bool:
     covered = False
     for record in inventory:
@@ -1614,6 +1735,23 @@ def _family_fully_covered(inventory: Sequence[Mapping[str, Any]], family: str) -
         if record["status"] == INVENTORY_MISSING:
             return False
     return covered
+
+
+def required_inventory_missing_count(inventory: Sequence[Mapping[str, Any]]) -> int:
+    """Count only MISSING cells whose reviewed strategy is non-auxiliary."""
+    total = 0
+    for record in inventory:
+        if not isinstance(record, Mapping):
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        family, status = record.get("source_family"), record.get("status")
+        if not isinstance(family, str) or status not in _VALID_INVENTORY_STATUSES:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        strategy = LOCATOR_STRATEGIES.get(family)
+        if strategy is None or type(strategy.auxiliary) is not bool:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        if status == INVENTORY_MISSING and not strategy.auxiliary:
+            total += 1
+    return total
 
 
 # --- Semantic reconstruction (evidence items 2-8; V9_006_HIGH_2_SEMANTIC_
@@ -1695,7 +1833,7 @@ def compute_stage_a_evidence(
     `trading_calendar_pass` remains based on F7 calendar-family coverage
     plus successful trading-calendar derivation -- neither of those two is
     a semantic-evidence item and neither is changed by this task."""
-    required_inventory_missing_count = sum(1 for record in inventory if record["status"] == INVENTORY_MISSING)
+    missing_count = required_inventory_missing_count(inventory)
     calendar_family_covered = _family_fully_covered(inventory, SOURCE_FAMILY_JPX_CALENDAR)
     trading_calendar_pass = bool(calendar_family_covered and trading_calendar_derived)
     two_run_determinism_pass = reconstruction_is_deterministic(
@@ -1703,7 +1841,7 @@ def compute_stage_a_evidence(
     )
 
     evidence: dict[str, Any] = {
-        "required_inventory_missing_count": required_inventory_missing_count,
+        "required_inventory_missing_count": missing_count,
         "terminal_snapshot_pass": bool(terminal_snapshot_locked),
         "listing_transition_pass": bool(semantic_result["listing_transition_pass"]),
         "delisting_transition_pass": bool(semantic_result["delisting_transition_pass"]),
@@ -3176,15 +3314,13 @@ def run_stage_a(
     Per V9_006_HIGH_1, this stops before touching the filesystem, git, or
     the network at all if the deterministic Stage-A locator contract is not
     yet mechanically complete (see `verify_locator_contract_complete`).
-    Per V9_006_LOCATOR_IMPL_HIGH_1, it then also stops -- still before any
-    filesystem, git, or network access -- if the actual acquisition
-    implementation for every required F1-F7 slot is not yet complete (see
-    `verify_acquisition_implementation_ready`), even once the locator
-    contract itself is fully bound."""
+    Acquisition readiness and the separate overall implementation guard both
+    run before filesystem, git, clock, or network effects."""
     if confirmation != CONFIRMATION:
         raise V9005StageABlocked(GOVERNANCE_FAILURE)
     verify_locator_contract_complete()
     verify_acquisition_implementation_ready()
+    verify_overall_stage_a_implementation_ready()
     root = initialize_output_root(output_root)
     signal_grid_head = verify_signal_grid_binding(repo_root, git=git)
 
@@ -3306,6 +3442,7 @@ def run_stage_a(
 
 __all__ = [
     "ACQUISITION_IMPLEMENTATION_COMPLETE",
+    "OVERALL_STAGE_A_IMPLEMENTATION_READY", "STAGE_A_OVERALL_IMPLEMENTATION_INCOMPLETE",
     "ALLOWED_HOST_SUFFIX", "BOUND_SIGNAL_GRID_BLOB_SHA", "BOUND_SIGNAL_GRID_PATH",
     "CALENDAR_ENVELOPE_FIRST_YEAR_MONTH", "CALENDAR_ENVELOPE_LAST_YEAR_MONTH",
     "CALENDAR_MONTHLY_LOCATOR_TEMPLATE", "CALENDAR_PAGE_URL", "CHATGPT_DECISION_REQUIRED", "CONFIRMATION",
@@ -3327,7 +3464,7 @@ __all__ = [
     "F6_GLOBAL_CHILD_LOCATOR_DIAGNOSTIC_NAME", "GLOBAL_CHILD_LOCATOR_RESOLVED",
     "GOVERNANCE_FAILURE", "IMPLEMENTATION_FAILURE", "INVENTORY_AVAILABLE", "INVENTORY_MISSING",
     "INVENTORY_NOT_APPLICABLE", "LISTED_ISSUES_PAGE_URL", "LISTING_CO_ROOT_URL", "LOCATOR_STRATEGIES",
-    "F2F4RequiredSlotAcquisition", "F3RequiredSlotAcquisition", "F7RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
+    "F2F4RequiredSlotAcquisition", "F3RequiredSlotAcquisition", "F6RequiredPeriodCoverage", "F7RequiredSlotAcquisition", "FetchResult", "LocatorStrategy", "MONTHLY_COVERAGE_FAMILIES", "MONTHLY_STATISTICS_DISCOVERY_ROOT",
     "MONTHLY_STATISTICS_ROOT_URL", "PLUMBING_FAILURE_RETRIABLE",
     "PROBE_SIGNAL_GRID_CONTRACT_MISMATCH", "SLOT_KIND_GLOBAL", "SLOT_KIND_MONTHLY", "SLOT_KIND_TERMINAL",
     "SLOT_KIND_YEAR", "SOURCE_FAMILIES", "SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE",
@@ -3346,7 +3483,7 @@ __all__ = [
     "read_f6_production_acquisition_gate_consumed_state",
     "V9005StageABlocked", "acquire_f2_f4_monthly_evidence", "acquire_f2_f4_required_slots", "acquire_f3_required_slots", "acquire_f7_required_slots", "build_safe_summary", "build_source_inventory", "build_trading_day_set",
     "calendar_envelope_extra_months", "calendar_envelope_months", "canonical_bytes",
-    "compute_month_end_mismatch_count", "compute_stage_a_evidence",
+    "build_checkpoint_a_monthly_coverage_matrix", "compute_month_end_mismatch_count", "compute_stage_a_evidence", "required_inventory_missing_count",
     "derive_final_signal_d0", "derive_stage_b_global_end_exclusive", "ensure_locked_payload",
     "extract_data_j_xls_url", "f2_bridge_months", "fetch_once_with_retry",
     "initialize_output_root", "inventory_months", "lock_first_complete_payload", "monthly_statistics_discovery_year_period", "nth_trading_day_after",
@@ -3358,7 +3495,7 @@ __all__ = [
     "run_f6_root_structure_probe_network", "run_f6_section_neighborhood_probe_offline", "run_stage_a",
     "run_f6_one_level_expanded_neighborhood_probe_offline",
     "parse_f6_global_child_locator", "run_f6_global_child_locator_offline",
-    "sha256_bytes", "source_object_slot_id", "validate_jpx_url", "verify_acquisition_implementation_ready",
+    "sha256_bytes", "source_object_slot_id", "validate_jpx_url", "verify_acquisition_implementation_ready", "verify_overall_stage_a_implementation_ready",
     "verify_locator_contract_complete", "verify_raw_provenance",
     "verify_signal_grid_binding", "write_f6_root_structure_probe_artifact",
     "write_f6_section_neighborhood_probe_artifact",
