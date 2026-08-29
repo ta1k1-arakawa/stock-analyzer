@@ -86,3 +86,22 @@ slot-ID digest. Dependency seams keep its tests synthetic, including a real
 one-shot/closure success path. Production real execution and its PowerShell
 entrypoint remain unauthorized and unimplemented; this CLI layer awaits GPT
 exact-SHA review.
+
+The reviewed atomic Windows PowerShell Phase-1 real-execution entrypoint
+(`scripts/run_v9_006_stage_a_schema_discovery_phase1_real_execution.ps1`) now
+wraps that reviewed CLI. It derives the repository root mechanically from its
+own script location, verifies the authoritative branch, an exact
+40-lowercase-hex reviewed execution SHA, clean working tree, local/remote HEAD
+equality, and required reviewed file presence; verifies a fresh OutputRoot,
+the canonical `.venv-real-execution` interpreter, and complete no-network
+readiness through the existing `scripts/check_real_execution_env.py` checker;
+and verifies the canonical task-global receipt is mechanically proven absent
+solely through the exact reviewed Python reader, never a PowerShell
+reimplementation of that authority. Only after every pre-authorization check
+passes does it request a fresh point-of-use human confirmation that is never
+a script parameter; after confirmation it reruns every applicable
+non-destructive binding before setting the confirmation only in the process
+environment, immediately before the single invocation of the reviewed CLI,
+always clearing it in `finally`. This entrypoint performs zero JPX/Yahoo
+requests itself, creates no OutputRoot or receipt, and contains no retry
+path; it awaits GPT exact-SHA review.
