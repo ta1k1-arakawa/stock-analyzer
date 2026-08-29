@@ -157,7 +157,7 @@ def _validate_safe_profile(value: Any) -> dict[str, Any]:
     try:
         top = {"status", "source_family", "object_domain", "applicable_period", "source_object_slot_id", "sha256", "byte_length", "container_format", "structural_profile_sha256", "structural_evidence"}
         if type(value) is not dict or set(value) != top or _contains_unsafe(value): _fail()
-        if (value["status"] == "PROFILED" and value["container_format"] not in {FORMAT_OLE_BIFF, FORMAT_HTML}) or (value["status"] == FORMAT_REQUIRES_FOLLOWUP and value["container_format"] not in {FORMAT_OOXML_ZIP, FORMAT_PDF, FORMAT_UNKNOWN}): _fail()
+        if value["status"] not in {"PROFILED", FORMAT_REQUIRES_FOLLOWUP} or (value["status"] == "PROFILED" and value["container_format"] not in {FORMAT_OLE_BIFF, FORMAT_HTML}) or (value["status"] == FORMAT_REQUIRES_FOLLOWUP and value["container_format"] not in {FORMAT_OOXML_ZIP, FORMAT_PDF, FORMAT_UNKNOWN}): _fail()
         if type(value["byte_length"]) is not int or value["byte_length"] < 0: _fail()
         for key in ("source_object_slot_id", "sha256", "structural_profile_sha256"):
             if type(value[key]) is not str or not re.fullmatch(r"[0-9a-f]{64}", value[key]): _fail()
@@ -186,8 +186,9 @@ def _validate_safe_profile(value: Any) -> dict[str, Any]:
                 rows_by_sheet.setdefault(row["sheet_ordinal"], []).append(row["row_ordinal"])
                 sheet=evidence["sheets"][row["sheet_ordinal"]-1]
                 columns=[]
+                if row["row_ordinal"] > sheet["row_count"]: _fail()
                 for cell in row["cells"]:
-                    if type(cell) is not dict or not set(cell) in ({"row_ordinal", "column_ordinal", "cell_type"}, {"row_ordinal", "column_ordinal", "cell_type", "text"}) or cell.get("cell_type") not in _CELL_TYPES or cell.get("row_ordinal") != row["row_ordinal"] or type(cell.get("column_ordinal")) is not int or not 1 <= cell["column_ordinal"] <= min(sheet["column_count"], MAX_SAMPLE_CELLS_PER_ROW) or ("text" in cell and (cell["cell_type"] != "TEXT" or type(cell["text"]) is not str or len(cell["text"]) > MAX_TEXT_CODEPOINTS)): _fail()
+                    if type(cell) is not dict or not set(cell) in ({"row_ordinal", "column_ordinal", "cell_type"}, {"row_ordinal", "column_ordinal", "cell_type", "text"}) or cell.get("cell_type") not in _CELL_TYPES or cell.get("row_ordinal") != row["row_ordinal"] or type(cell.get("column_ordinal")) is not int or not 1 <= cell["column_ordinal"] <= min(sheet["column_count"], MAX_SAMPLE_CELLS_PER_ROW) or (cell["cell_type"] == "TEXT" and ("text" not in cell or type(cell["text"]) is not str or len(cell["text"]) > MAX_TEXT_CODEPOINTS)) or (cell["cell_type"] != "TEXT" and "text" in cell): _fail()
                     columns.append(cell["column_ordinal"])
                 if columns != sorted(set(columns)): _fail()
             if any(len(rows)>MAX_SAMPLE_ROWS_PER_TABLE or rows != sorted(set(rows)) for rows in rows_by_sheet.values()): _fail()
@@ -199,18 +200,25 @@ def _validate_safe_profile(value: Any) -> dict[str, Any]:
                 if type(heading) is not dict or set(heading) != {"tag", "text"} or heading["tag"] not in {"h1", "h2", "h3", "h4", "h5", "h6"} or type(heading["text"]) is not str or len(heading["text"]) > MAX_TEXT_CODEPOINTS: _fail()
             for table in evidence["tables"]:
                 if type(table) is not dict or set(table) != {"table_ordinal", "row_count", "column_count", "headers", "structural_attributes"} or type(table["table_ordinal"]) is not int or type(table["row_count"]) is not int or type(table["column_count"]) is not int or table["row_count"] < 0 or table["column_count"] < 0 or type(table["headers"]) is not list or len(table["headers"]) > MAX_HEADERS_PER_TABLE or type(table["structural_attributes"]) is not list or len(table["structural_attributes"]) > MAX_STRUCTURAL_ATTR_VALUES_PER_TABLE: _fail()
+                headers=[]
                 for header in table["headers"]:
-                    if type(header) is not dict or set(header) != {"row_ordinal", "column_ordinal", "text"} or type(header["text"]) is not str or len(header["text"]) > MAX_TEXT_CODEPOINTS: _fail()
+                    if type(header) is not dict or set(header) != {"row_ordinal", "column_ordinal", "text"} or type(header["row_ordinal"]) is not int or type(header["column_ordinal"]) is not int or not 1 <= header["row_ordinal"] <= table["row_count"] or not 1 <= header["column_ordinal"] <= table["column_count"] or type(header["text"]) is not str or len(header["text"]) > MAX_TEXT_CODEPOINTS: _fail()
+                    headers.append((header["row_ordinal"],header["column_ordinal"]))
+                if headers != sorted(set(headers)): _fail()
+                attributes=[]
                 for attribute in table["structural_attributes"]:
                     if type(attribute) is not dict or set(attribute) != {"name", "value"} or attribute["name"] not in {"class", "id", "role"} or type(attribute["value"]) is not str or len(attribute["value"]) > MAX_TEXT_CODEPOINTS: _fail()
-            if [table["table_ordinal"] for table in evidence["tables"]] != list(range(1, len(evidence["tables"])+1)) or (evidence["table_count"] > len(evidence["tables"]) and not evidence["SCHEMA_NEIGHBORHOOD_REQUIRES_NARROWER_PROBE"]): _fail()
+                    attributes.append((attribute["name"],attribute["value"]))
+                if attributes != sorted(set(attributes)): _fail()
+            if evidence["table_count"] < len(evidence["tables"]) or [table["table_ordinal"] for table in evidence["tables"]] != list(range(1, len(evidence["tables"])+1)) or (evidence["table_count"] > len(evidence["tables"]) and not evidence["SCHEMA_NEIGHBORHOOD_REQUIRES_NARROWER_PROBE"]): _fail()
             if type(evidence["schema_neighborhood"]) is not list: _fail()
             tables_by_ordinal={table["table_ordinal"]:table for table in evidence["tables"]}; rows_by_table={}
             for row in evidence["schema_neighborhood"]:
                 if type(row) is not dict or set(row) != {"table_ordinal", "row_ordinal", "cells"} or row.get("table_ordinal") not in tables_by_ordinal or type(row.get("row_ordinal")) is not int or row["row_ordinal"] < 1 or type(row["cells"]) is not list or len(row["cells"]) > MAX_SAMPLE_CELLS_PER_ROW: _fail()
+                if row["row_ordinal"] > tables_by_ordinal[row["table_ordinal"]]["row_count"]: _fail()
                 rows_by_table.setdefault(row["table_ordinal"], []).append(row["row_ordinal"]); columns=[]
                 for cell in row["cells"]:
-                    if type(cell) is not dict or set(cell) != {"column_ordinal", "cell_type", "text"} or cell["cell_type"] != "TEXT" or type(cell["column_ordinal"]) is not int or cell["column_ordinal"] < 1 or (tables_by_ordinal[row["table_ordinal"]]["column_count"] > 0 and cell["column_ordinal"] > tables_by_ordinal[row["table_ordinal"]]["column_count"]) or type(cell["text"]) is not str or len(cell["text"]) > MAX_TEXT_CODEPOINTS: _fail()
+                    if type(cell) is not dict or set(cell) != {"column_ordinal", "cell_type", "text"} or cell["cell_type"] != "TEXT" or type(cell["column_ordinal"]) is not int or cell["column_ordinal"] < 1 or cell["column_ordinal"] > min(tables_by_ordinal[row["table_ordinal"]]["column_count"], MAX_SAMPLE_CELLS_PER_ROW) or type(cell["text"]) is not str or len(cell["text"]) > MAX_TEXT_CODEPOINTS: _fail()
                     columns.append(cell["column_ordinal"])
                 if columns != sorted(set(columns)): _fail()
             if any(len(rows)>MAX_SAMPLE_ROWS_PER_TABLE or rows != sorted(set(rows)) for rows in rows_by_table.values()): _fail()
@@ -304,6 +312,7 @@ def _ole_structure(raw: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
                     if category is None: _fail()
                     counts[category]+=1
                 columns.append(counts)
+            if len(sheet.name.strip()) > MAX_TEXT_CODEPOINTS: narrow=True
             sheets.append({"sheet_ordinal":index+1,"sheet_name":_bounded_text(sheet.name),"row_count":sheet.nrows,"column_count":sheet.ncols,"visibility":visibility,"object_type":"WORKSHEET","column_cell_type_counts":columns})
             fingerprint.append({"ordinal":index+1,"rows":sheet.nrows,"columns":sheet.ncols,"visibility":visibility,"profiles":columns})
             if sheet.ncols>MAX_SAMPLE_CELLS_PER_ROW: narrow=True

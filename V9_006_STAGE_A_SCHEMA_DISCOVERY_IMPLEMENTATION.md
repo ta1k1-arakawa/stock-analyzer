@@ -29,3 +29,6 @@ elements, rejects unfinished HTML state, and validates safe provenance and
 sample ordering independently of the producer.
 The final closure additionally fails closed on overlapping/unmatched HTML row
 and cell state and rejects invalid profile status/container pairs.
+The safe validator now also closes exact row/header coordinates, structural
+attribute ordering, TEXT-key semantics, table-count lower bounds, and OLE
+sheet-name truncation provenance.

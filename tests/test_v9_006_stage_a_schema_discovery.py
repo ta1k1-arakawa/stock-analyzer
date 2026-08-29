@@ -226,3 +226,12 @@ def test_final_validator_bounds_and_single_profiler_definitions(monkeypatch):
     with pytest.raises(V9005StageABlocked): schema._validate_safe_profile(bad)
     source=Path("src/v9_006_stage_a_schema_discovery.py").read_text(encoding="utf-8")
     assert source.count("def _html_structure(") == source.count("def _ole_structure(") == source.count("def profile_verified_lock(") == 1
+
+
+def test_validator_final_status_and_html_state_regressions(monkeypatch):
+    valid=ole_profile(monkeypatch, [FakeSheet("x", 0, [])])
+    for status, fmt in (("BAD", schema.FORMAT_HTML), ("PROFILED", schema.FORMAT_PDF), (schema.FORMAT_REQUIRES_FOLLOWUP, schema.FORMAT_HTML)):
+        bad=copy.deepcopy(valid); bad["status"], bad["container_format"] = status, fmt
+        with pytest.raises(V9005StageABlocked): schema._validate_safe_profile(bad)
+    for raw in (b"<table><tr><td>A</td><tr><td>B</td></tr></table>", b"<table><tr><td>A<td>B</td></tr></table>", b"<td>x</td>", b"<tr><td>x</td></tr>", b"</td>", b"</tr>", b"</table>"):
+        with pytest.raises(V9005StageABlocked): schema.profile_verified_lock(lock(b"<html>" + raw + b"</html>"))
