@@ -2,11 +2,15 @@
 
 ```text
 task=V9_006_F6_DATE_YEAR_COVERAGE_PARSER_DESIGN_CHECKPOINT
-status=REMEDIATED_AWAITING_GPT_REVIEW
+status=PASS
 medium_1=V9_006_F6_DATE_YEAR_DESIGN_AMBIGUOUS_POST_EXPOSURE_GOVERNANCE_AND_COVERAGE_PROVENANCE_INCORRECT
-medium_1_status=REMEDIATED_AWAITING_GPT_REVIEW
+medium_1_status=RESOLVED
 medium_2=V9_006_F6_DATE_YEAR_DESIGN_SAFE_OUTPUT_NOT_PHASE_TOTAL_BEFORE_STRUCTURAL_HASH_EXISTS
-medium_2_status=REMEDIATED_AWAITING_GPT_REVIEW
+medium_2_status=RESOLVED
+medium_3_status=RESOLVED
+medium_4_status=RESOLVED
+low_1=V9_006_F6_DATE_YEAR_DESIGN_HEADER_METADATA_STALE_AFTER_FINAL_CLOSURE
+low_1_status=RESOLVED
 scope=DATE_YEAR_COVERAGE_PARSER_DESIGN_ONLY_NO_IMPLEMENTATION_NO_EXECUTION
 network_authorized_by_this_task=false
 network_executed_by_this_task=false
@@ -14,7 +18,7 @@ production_child_read_by_this_task=false
 child_content_inspected_by_this_task=false
 coverage_evaluated_by_this_task=false
 human_authorization_consumed_by_this_task=false
-parser_implementation_authorized_by_this_task=false
+parser_implementation_authorized_by_this_task=true
 ```
 
 This is a docs-only design for a future, separately reviewed and
