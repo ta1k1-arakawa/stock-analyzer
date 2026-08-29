@@ -39,8 +39,8 @@ def _is_int(value: object, *, positive: bool = False) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and (value >= 1 if positive else True)
 
 
-def _failure(*, sha: str | None, verified: bool, raw: bool | str, inspected: bool, date_read: bool, evaluated: bool = False, histograms: dict[str, Any] | None = None) -> dict[str, Any]:
-    value: dict[str, Any] = {"status": "IMPLEMENTATION_FAILURE", "structural_profile_sha256": sha, "structural_profile_hash_verified": verified, "date_column_ordinals": [4, 6], "raw_bytes_read_for_integrity": raw, "child_content_inspected": inspected, "date_year_value_read": date_read, "coverage_evaluated": evaluated, "coverage_result_accepted": False, "network_request_count": 0}
+def _failure(*, sha: str | None, verified: bool, raw: bool | str, inspected: bool, date_read: bool, evaluated: bool = False, histograms: dict[str, Any] | None = None, status: str = "IMPLEMENTATION_FAILURE") -> dict[str, Any]:
+    value: dict[str, Any] = {"status": status, "structural_profile_sha256": sha, "structural_profile_hash_verified": verified, "date_column_ordinals": [4, 6], "raw_bytes_read_for_integrity": raw, "child_content_inspected": inspected, "date_year_value_read": date_read, "coverage_evaluated": evaluated, "coverage_result_accepted": False, "network_request_count": 0}
     if histograms is not None:
         value["year_histograms"] = histograms
     return value
@@ -73,7 +73,7 @@ def _date_count(structural: object, ordinal: int) -> int | None:
     return count if _is_int(count) else None
 
 
-def safe_coverage_evidence(value: object, structural_evidence: object) -> dict[str, Any]:
+def safe_coverage_evidence(value: object, structural_evidence: object, *, failure_provenance: dict[str, Any] | None = None) -> dict[str, Any]:
     """Closed-schema validator. Raises CoverageBlocked, never TypeError."""
     try:
         if not isinstance(value, dict) or set(value) - (_COMMON | _DERIVED | {"year_histograms"}):
@@ -84,6 +84,8 @@ def safe_coverage_evidence(value: object, structural_evidence: object) -> dict[s
             raise ValueError
         digest = value.get("structural_profile_sha256")
         if digest is not None and (not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+            raise ValueError
+        if digest == EXPECTED_STRUCTURAL_PROFILE_SHA256 and not value["structural_profile_hash_verified"]:
             raise ValueError
         status = value["status"]
         if status == "IMPLEMENTATION_FAILURE":
@@ -123,6 +125,13 @@ def safe_coverage_evidence(value: object, structural_evidence: object) -> dict[s
     except CoverageBlocked:
         raise
     except Exception:
+        if failure_provenance is not None:
+            preserved = dict(failure_provenance)
+            preserved["status"] = "IMPLEMENTATION_FAILURE"
+            preserved["coverage_result_accepted"] = False
+            preserved.pop("covered_years", None); preserved.pop("covered_required_years", None)
+            preserved.pop("missing_required_years", None); preserved.pop("all_required_years_covered", None)
+            raise CoverageBlocked(preserved) from None
         raise CoverageBlocked(_failure(sha=None, verified=False, raw=True, inspected=True, date_read=False)) from None
 
 
@@ -161,7 +170,7 @@ def _run_verified_bytes(raw: bytes, *, inspector: Callable[[bytes], dict[str, An
             years = [item["year"] for item in histograms["4"]]
             missing = [year for year in REQUIRED_YEARS if year not in years]
             base.update({"covered_years": years, "covered_required_years": [year for year in years if year in REQUIRED_YEARS], "missing_required_years": missing, "all_required_years_covered": missing == []})
-        return safe_coverage_evidence(base, structural)
+        return safe_coverage_evidence(base, structural, failure_provenance=base)
     except CoverageBlocked:
         raise
     except Exception:
@@ -174,5 +183,7 @@ def run_date_year_coverage_parser(*, production_state_parent: str | Path, output
         _meta_path, meta, raw_path = locate_metadata_only(production_state_parent=production_state_parent, output_root=output_root, bindings=FROZEN_BINDINGS)
         raw = content_blind_integrity_read(raw_path, meta, bindings=FROZEN_BINDINGS)
     except ProbeBlocked as exc:
-        raise CoverageBlocked(_failure(sha=None, verified=False, raw=exc.raw_bytes_read_for_integrity, inspected=exc.child_content_inspected, date_read=False)) from None
+        # Phase A/B owns its outcome classification.  Coverage parsing starts
+        # only after these inherited checks return successfully.
+        raise CoverageBlocked(_failure(sha=None, verified=False, raw=exc.raw_bytes_read_for_integrity, inspected=exc.child_content_inspected, date_read=False, status=exc.outcome)) from None
     return _run_verified_bytes(raw)

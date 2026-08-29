@@ -61,3 +61,28 @@ def test_first_column_zero_date_failure_keeps_false(monkeypatch):
     evidence=structural(c4=1,c6=1); monkeypatch.setattr(coverage,"EXPECTED_STRUCTURAL_PROFILE_SHA256",digest(evidence)); monkeypatch.setattr(coverage,"_structural_gate",lambda *_:(evidence,digest(evidence))); monkeypatch.setattr(coverage.xlrd,"open_workbook",lambda **_:Book(Sheet([[0]*6,[0]*6],[[None]*6,[None]*6])))
     with pytest.raises(coverage.CoverageBlocked) as exc: coverage._run_verified_bytes(b"x",inspector=lambda _:evidence)
     assert not exc.value.evidence["date_year_value_read"]
+
+@pytest.mark.parametrize("outcome,raw,inspected", [("CHATGPT_DECISION_REQUIRED",False,False),("IMPLEMENTATION_FAILURE",True,False)])
+def test_inherited_probeblocked_outcome_and_provenance_are_preserved(monkeypatch, outcome, raw, inspected):
+    def blocked(**_): raise coverage.ProbeBlocked(outcome,raw_bytes_read_for_integrity=raw,child_content_inspected=inspected)
+    monkeypatch.setattr(coverage,"locate_metadata_only",blocked)
+    with pytest.raises(coverage.CoverageBlocked) as exc: coverage.run_date_year_coverage_parser(production_state_parent="x",output_root="y")
+    assert exc.value.evidence["status"] == outcome
+    assert exc.value.evidence["raw_bytes_read_for_integrity"] == raw
+    assert exc.value.evidence["child_content_inspected"] is inspected
+
+def test_expected_sha_with_unverified_flag_is_rejected(monkeypatch):
+    evidence=structural(); monkeypatch.setattr(coverage,"EXPECTED_STRUCTURAL_PROFILE_SHA256",digest(evidence)); value=captured(evidence); value["structural_profile_hash_verified"]=False
+    with pytest.raises(coverage.CoverageBlocked): coverage.safe_coverage_evidence(value,evidence)
+
+def test_validator_rejection_preserves_runtime_provenance(monkeypatch):
+    types=[[0,0,0,coverage.xlrd.XL_CELL_DATE,0,coverage.xlrd.XL_CELL_DATE],[0]*6]; sheet=Sheet(types,[[None,None,None,1,None,1],[None]*6]); evidence=structural(); monkeypatch.setattr(coverage,"EXPECTED_STRUCTURAL_PROFILE_SHA256",digest(evidence)); monkeypatch.setattr(coverage,"_structural_gate",lambda *_:(evidence,digest(evidence))); monkeypatch.setattr(coverage.xlrd,"open_workbook",lambda **_:Book(sheet)); monkeypatch.setattr(coverage.xlrd,"xldate_as_tuple",lambda *_:(2018,1,1,0,0,0))
+    original=coverage.safe_coverage_evidence
+    def reject_after_read(value, structural_evidence, **kwargs):
+        forged=dict(value); forged["covered_years"]=[]
+        return original(forged, structural_evidence, **kwargs)
+    monkeypatch.setattr(coverage,"safe_coverage_evidence",reject_after_read)
+    with pytest.raises(coverage.CoverageBlocked) as exc: coverage._run_verified_bytes(b"x",inspector=lambda _:evidence)
+    result=exc.value.evidence
+    assert result["structural_profile_sha256"] == digest(evidence) and result["structural_profile_hash_verified"] is True
+    assert result["date_year_value_read"] is True and result["coverage_evaluated"] is True
