@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 import copy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -329,6 +331,82 @@ def test_phase1_core_source_excludes_bridge_seam_and_runner_stays_closed():
     assert "acquire_f2_f4_required_slots" not in source
     with pytest.raises(V9005StageABlocked) as exc: schema.prepare_future_acquisition()
     assert exc.value.reason == CHATGPT_DECISION_REQUIRED
+
+
+def one_shot_harness(monkeypatch, tmp_path):
+    local_app_data = tmp_path / "local-app-data"; local_app_data.mkdir(exist_ok=True)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    calls = []
+    slots = tuple(sha256(f"slot-{index}".encode()).hexdigest() for index in range(341))
+    profiles = tuple({"source_object_slot_id": slot} for slot in slots)
+    result = schema.Phase1SchemaDiscoveryResult(slots, profiles, (), 9)
+    def core(root, **kwargs):
+        calls.append((Path(root), schema.read_phase1_schema_discovery_gate_consumed_state()))
+        return result
+    monkeypatch.setattr(schema, "run_phase1_schema_discovery_core", core)
+    monkeypatch.setattr(schema, "_phase1_verify_success_closure", lambda root, value: None)
+    return calls, result
+
+
+@pytest.mark.parametrize("confirmation,execution_sha", [
+    ("wrong", "a" * 40), (None, "a" * 40),
+    (schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, "A" * 40),
+    (schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, "bad"),
+])
+def test_one_shot_pre_gate_invalid_confirmation_or_sha_has_no_mutation(monkeypatch, tmp_path, confirmation, execution_sha):
+    calls, _result = one_shot_harness(monkeypatch, tmp_path)
+    output = tmp_path / "output"
+    with pytest.raises(V9005StageABlocked):
+        schema.run_phase1_schema_discovery_one_shot(output, confirmation=confirmation, execution_sha=execution_sha, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    assert not output.exists() and calls == []
+    assert schema.read_phase1_schema_discovery_gate_consumed_state() is False
+
+
+def test_one_shot_global_gate_is_independent_and_success_is_safe(monkeypatch, tmp_path):
+    calls, result = one_shot_harness(monkeypatch, tmp_path)
+    output = tmp_path / "output"
+    returned = schema.run_phase1_schema_discovery_one_shot(output, confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    receipt = schema._phase1_global_receipt_path()
+    payload = json.loads((output / "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_RESULT.json").read_text(encoding="utf-8"))
+    assert returned is result and calls == [(output, True)] and receipt.exists()
+    assert receipt.parent != output and schema.read_phase1_schema_discovery_gate_consumed_state() is True
+    assert set(payload) == {"schema_version", "task", "execution_sha", "execution_result", "gate_consumed", "evidence_count", "support_raw_lock_count", "total_raw_lock_pair_count", "network_attempt_count", "evidence_slot_ids", "safe_profiles", "representative_safe_profiles"}
+    assert (payload["evidence_count"], payload["support_raw_lock_count"], payload["total_raw_lock_pair_count"]) == (341, 12, 353)
+    second = tmp_path / "different-output"
+    with pytest.raises(V9005StageABlocked):
+        schema.run_phase1_schema_discovery_one_shot(second, confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="b" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    assert not second.exists() and len(calls) == 1
+
+
+def test_one_shot_malformed_global_receipt_and_existing_output_fail_closed(monkeypatch, tmp_path):
+    calls, _result = one_shot_harness(monkeypatch, tmp_path)
+    receipt = schema._phase1_global_receipt_path(); receipt.parent.mkdir(parents=True); receipt.write_text("{}", encoding="utf-8")
+    assert schema.read_phase1_schema_discovery_gate_consumed_state() is None
+    with pytest.raises(V9005StageABlocked):
+        schema.run_phase1_schema_discovery_one_shot(tmp_path / "output", confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    assert calls == []
+    receipt.unlink(); existing = tmp_path / "existing"; existing.mkdir()
+    with pytest.raises(V9005StageABlocked):
+        schema.run_phase1_schema_discovery_one_shot(existing, confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    assert schema.read_phase1_schema_discovery_gate_consumed_state() is False and calls == []
+    receipt.parent.mkdir(parents=True, exist_ok=True); receipt.mkdir()
+    assert schema.read_phase1_schema_discovery_gate_consumed_state() is None
+
+
+def test_one_shot_missing_localappdata_receipt_race_and_post_gate_failure(monkeypatch, tmp_path):
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    with pytest.raises(V9005StageABlocked): schema.run_phase1_schema_discovery_one_shot(tmp_path / "out", confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    invalid = tmp_path / "not-a-directory"; invalid.write_text("x", encoding="utf-8"); monkeypatch.setenv("LOCALAPPDATA", str(invalid))
+    with pytest.raises(V9005StageABlocked): schema.run_phase1_schema_discovery_one_shot(tmp_path / "invalid", confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    calls, _result = one_shot_harness(monkeypatch, tmp_path)
+    monkeypatch.setattr(schema, "_atomic_create", lambda *_args: (_ for _ in ()).throw(FileExistsError()))
+    with pytest.raises(V9005StageABlocked): schema.run_phase1_schema_discovery_one_shot(tmp_path / "race", confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    assert calls == []
+    monkeypatch.undo(); calls, _result = one_shot_harness(monkeypatch, tmp_path)
+    monkeypatch.setattr(schema, "run_phase1_schema_discovery_core", lambda *_args, **_kwargs: (_ for _ in ()).throw(V9005StageABlocked("IMPLEMENTATION_FAILURE")))
+    output = tmp_path / "post-gate"
+    with pytest.raises(V9005StageABlocked): schema.run_phase1_schema_discovery_one_shot(output, confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
+    assert schema.read_phase1_schema_discovery_gate_consumed_state() is True and not (output / "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_RESULT.json").exists()
 
 
 def test_validator_final_status_and_html_state_regressions(monkeypatch):

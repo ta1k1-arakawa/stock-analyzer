@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from hashlib import sha256
 from html.parser import HTMLParser
 import json
+import os
 import re
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from src.v9_005_stage_a_jpx_probe import (
@@ -18,11 +21,19 @@ from src.v9_005_stage_a_jpx_probe import (
     _parse_year_month, acquire_f1_terminal_evidence,
     acquire_f2_f4_monthly_evidence, acquire_f3_required_slots,
     acquire_f7_required_slots, calendar_envelope_extra_months, inventory_months,
+    DELISTED_COMPANY_DISCOVERY_ROOT, TERMINAL_DISCOVERY_ROOT,
+    MONTHLY_STATISTICS_DISCOVERY_ROOT, _atomic_create, initialize_output_root,
     read_locked_payload_by_slot_id,
-    source_object_slot_id, validate_jpx_url,
+    source_object_slot_id, validate_jpx_url, verify_raw_provenance,
 )
 
 SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION = "V9_006_STAGE_A_SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_ONE_SHOT"
+_PHASE1_TASK = "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_REAL_EXECUTION"
+_PHASE1_RECEIPT = "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_GATE_RECEIPT.json"
+_PHASE1_RESULT = "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_RESULT.json"
+_PHASE1_RECEIPT_SCHEMA = "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_GATE_RECEIPT_V1"
+_PHASE1_RESULT_SCHEMA = "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_RESULT_V1"
+_PHASE1_GLOBAL_COMPONENTS = ("stock-analyzer", "real-execution", "V9_CROSS_SECTIONAL_CLOSE_AUCTION", _PHASE1_TASK)
 SCHEMA_EVIDENCE_CLASS = "DEVELOPMENT_PUBLIC_SOURCE_STRUCTURE"
 FORMAT_OLE_BIFF, FORMAT_OOXML_ZIP, FORMAT_HTML, FORMAT_PDF, FORMAT_UNKNOWN = "OLE_BIFF", "OOXML_ZIP", "HTML", "PDF", "UNKNOWN"
 FORMAT_REQUIRES_FOLLOWUP = "FORMAT_REQUIRES_FOLLOWUP"
@@ -526,6 +537,122 @@ def run_phase1_schema_discovery_core(output_root: Any, *, fetcher: Any, sleep: A
             tuple(item.slot_id for item in expected), profiles,
             tuple(select_representatives(profiles)), attempts,
         )
+    except V9005StageABlocked:
+        raise
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+
+def _phase1_global_receipt_path() -> Path:
+    try:
+        local = os.environ.get("LOCALAPPDATA")
+        if not isinstance(local, str) or not local:
+            _fail()
+        root = Path(local)
+        if not root.is_absolute() or not root.is_dir():
+            _fail()
+        return root.joinpath(*_PHASE1_GLOBAL_COMPONENTS, _PHASE1_RECEIPT)
+    except V9005StageABlocked:
+        raise
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+
+def read_phase1_schema_discovery_gate_consumed_state() -> bool | None:
+    """Read only the fixed global receipt: False absent, True valid, None uncertain."""
+    try:
+        receipt = _phase1_global_receipt_path()
+        parent = receipt.parent
+        if parent.exists() and not parent.is_dir():
+            return None
+        if not receipt.exists():
+            return False
+        if receipt.is_symlink() or not receipt.is_file():
+            return None
+        data = json.loads(receipt.read_text(encoding="utf-8"))
+        required = {"schema_version", "task", "confirmation_contract", "execution_sha", "gate_consumed", "consumption_timestamp_utc"}
+        if (
+            not isinstance(data, dict) or set(data) != required
+            or data["schema_version"] != _PHASE1_RECEIPT_SCHEMA or data["task"] != _PHASE1_TASK
+            or data["confirmation_contract"] != SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION
+            or data["gate_consumed"] is not True
+            or re.fullmatch(r"[0-9a-f]{40}", data["execution_sha"]) is None
+            or not _is_canonical_raw_lock_timestamp(data["consumption_timestamp_utc"])
+        ):
+            return None
+        return True
+    except Exception:
+        return None
+
+
+def _phase1_publish_receipt(execution_sha: str, clock: Any) -> None:
+    receipt = _phase1_global_receipt_path()
+    try:
+        receipt.parent.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        pass
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+    if read_phase1_schema_discovery_gate_consumed_state() is not False:
+        _fail()
+    try:
+        now = clock()
+        if not isinstance(now, datetime):
+            _fail()
+        payload = _canonical_json({"schema_version": _PHASE1_RECEIPT_SCHEMA, "task": _PHASE1_TASK, "confirmation_contract": SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, "execution_sha": execution_sha, "gate_consumed": True, "consumption_timestamp_utc": now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}).encode("utf-8")
+        _atomic_create(receipt, payload)
+    except V9005StageABlocked:
+        raise
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+
+def _phase1_verify_success_closure(output_root: Any, result: Any) -> None:
+    try:
+        if type(result) is not Phase1SchemaDiscoveryResult or len(result.evidence_slot_ids) != 341 or len(set(result.evidence_slot_ids)) != 341 or len(result.safe_profiles) != 341:
+            _fail()
+        counts = {(SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, ObjectDomain.TERMINAL.value): 1, (SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, ObjectDomain.BASE.value): 108, (SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE, ObjectDomain.YEAR.value): 9, (SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE, ObjectDomain.BASE.value): 108, (SOURCE_FAMILY_JPX_CALENDAR, ObjectDomain.BASE.value): 108, (SOURCE_FAMILY_JPX_CALENDAR, ObjectDomain.ENVELOPE_EXTRA.value): 7}
+        observed = {(family, domain): sum(item.get("source_family") == family and item.get("object_domain") == domain for item in result.safe_profiles) for family, domain in counts}
+        if observed != counts or not verify_raw_provenance(output_root):
+            _fail()
+        raw_dir = Path(output_root) / "raw"
+        names = {path.name for path in raw_dir.iterdir()}
+        ids = {name[:-4] for name in names if re.fullmatch(r"[0-9a-f]{64}\.(bin|json)", name)}
+        if len(names) != 706 or len(ids) != 353 or ids != {item[:64] for item in result.evidence_slot_ids} | (ids - set(result.evidence_slot_ids)):
+            _fail()
+        support = ids - set(result.evidence_slot_ids)
+        if len(support) != 12:
+            _fail()
+        expected_support = {(SOURCE_FAMILY_LISTED_ISSUES_MONTH_END, TERMINAL_DISCOVERY_ROOT), (SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, MONTHLY_STATISTICS_DISCOVERY_ROOT), (SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE, DELISTED_COMPANY_DISCOVERY_ROOT)} | {(SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, f"MONTHLY_STATISTICS_DISCOVERY_YEAR_{year}") for year in range(2017, 2026)}
+        actual_support = set()
+        for slot in support:
+            locked = read_locked_payload_by_slot_id(output_root, slot)
+            actual_support.add((locked["source_family"], locked["applicable_period"]))
+        if actual_support != expected_support:
+            _fail()
+    except V9005StageABlocked:
+        raise
+    except Exception as exc:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
+
+
+def run_phase1_schema_discovery_one_shot(output_root: Any, *, confirmation: Any, execution_sha: Any, fetcher: Any, sleep: Any, clock: Any) -> Phase1SchemaDiscoveryResult:
+    """The reviewed global one-shot boundary; injected dependencies enable synthetic tests."""
+    try:
+        if confirmation != SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION or not isinstance(execution_sha, str) or re.fullmatch(r"[0-9a-f]{40}", execution_sha) is None:
+            _fail()
+        _phase1_global_receipt_path()
+        if read_phase1_schema_discovery_gate_consumed_state() is not False:
+            _fail()
+        initialize_output_root(output_root)
+        if read_phase1_schema_discovery_gate_consumed_state() is not False:
+            _fail()
+        _phase1_publish_receipt(execution_sha, clock)
+        result = run_phase1_schema_discovery_core(output_root, fetcher=fetcher, sleep=sleep, clock=clock)
+        _phase1_verify_success_closure(output_root, result)
+        payload = {"schema_version": _PHASE1_RESULT_SCHEMA, "task": _PHASE1_TASK, "execution_sha": execution_sha, "execution_result": "COMPLETE", "gate_consumed": True, "evidence_count": 341, "support_raw_lock_count": 12, "total_raw_lock_pair_count": 353, "network_attempt_count": result.network_attempt_count, "evidence_slot_ids": list(result.evidence_slot_ids), "safe_profiles": list(result.safe_profiles), "representative_safe_profiles": list(result.representative_safe_profiles)}
+        _atomic_create(Path(output_root) / _PHASE1_RESULT, _canonical_json(payload).encode("utf-8"))
+        return result
     except V9005StageABlocked:
         raise
     except Exception as exc:

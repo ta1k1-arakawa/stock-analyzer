@@ -50,3 +50,10 @@ profiles exactly 341 evidence locks (F1 1, F2 BASE 108, F3 YEAR 9, F4 BASE
 profiles, representative profiles, evidence IDs, and aggregate attempts only.
 It creates no receipt, runner, PowerShell entrypoint, gate, or real network
 execution and awaits GPT exact-SHA review.
+
+The reviewed Python one-shot boundary now wraps that core with a fixed,
+task-global `%LOCALAPPDATA%` receipt reader, exclusive OutputRoot creation,
+atomic no-overwrite receipt publication before the core call, and a canonical
+safe no-overwrite result. It is synthetic-testable only through injected
+dependencies; it adds no CLI/PowerShell wrapper or production fetcher wiring
+and awaits GPT exact-SHA review.
