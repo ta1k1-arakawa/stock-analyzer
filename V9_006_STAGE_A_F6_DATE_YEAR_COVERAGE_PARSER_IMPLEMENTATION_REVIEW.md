@@ -60,3 +60,28 @@ later generic failure. Validator failure conversion whitelists only trusted
 phase provenance and independently safe histogram evidence; it never copies
 the rejected candidate. Exact schema types reject bool/int/float lookalikes.
 This remains BLOCK awaiting GPT review.
+
+## GPT final implementation review and production execution record
+
+```text
+REVIEWED_SHA=89e7fbbea7c24a7cc4749da97fa9b8c1bb5f19c5
+PARENT_SHA=25fd5cfdf9b318b47df8a6282c58671a3f59a6cc
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+LOW=1
+RESULT=PASS
+MEDIUM_1=RESOLVED
+MEDIUM_2=RESOLVED
+MEDIUM_3=RESOLVED
+MEDIUM_4=RESOLVED
+V9_006_STAGE_A_F6_DATE_YEAR_COVERAGE_PARSER_IMPLEMENTATION=PASS
+LOW_1=V9_006_F6_DATE_YEAR_IMPLEMENTATION_REVIEW_AND_PROJECT_STATE_STALE_AFTER_FINAL_PASS
+LOW_1_STATUS=RESOLVED
+```
+
+The exact safe production execution is recorded in
+`V9_006_STAGE_A_F6_DATE_YEAR_COVERAGE_EXECUTION_RECORD.md`. Its two complete
+19-count histograms differ, so the valid result is terminal
+`F6_YEAR_COVERAGE_AMBIGUOUS`, evaluated true and accepted false. No covered
+year fields were emitted, and no rerun/refetch/reselection is authorized.
