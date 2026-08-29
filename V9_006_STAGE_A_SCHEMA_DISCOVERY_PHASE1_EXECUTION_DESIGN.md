@@ -7,9 +7,19 @@ entrypoint, acquisition, or human authorization is created by this document.
 
 Phase 1 is the prefreeze public-source structure-acquisition phase whose
 object identities are fully deterministic without parsing the F1 TERMINAL
-content.  It acquires and profiles only the evidence objects below.  It does
-not derive the F1 terminal month `T`, call `f2_bridge_months`, enumerate or
-pre-create F2 BRIDGE slots, or make any network request.
+content. Its future real execution acquires and profiles only the evidence
+objects below. It does not derive the F1 terminal month `T`, call
+`f2_bridge_months`, enumerate or pre-create F2 BRIDGE slots.
+
+This design-remediation task performs zero network requests and creates no
+authority. The future Phase-1 executor implementation and its synthetic tests
+also do not authorize or perform real acquisition. Only after that
+implementation and wrapper receive exact-SHA GPT review PASS and a human
+supplies fresh explicit authorization under the dedicated Phase-1 one-shot
+contract may the real Phase-1 execution make the public JPX network requests
+required by the already-bound helpers. That run remains governed by
+`AI_REAL_EXECUTION_RUNBOOK.md`; no documentation, implementation, test, or
+prior confirmation alone is authorization to acquire.
 
 The later Phase 2 may derive `T` only from the exact locked F1 TERMINAL
 payload using a separately reviewed parser and boundary.  It alone may then
@@ -99,8 +109,10 @@ selection.
 This binding creates no consumable authority.  The existing identity
 `V9_006_STAGE_A_SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_ONE_SHOT` is merely
 documented here; receipt, PowerShell, and human-gate mechanics are deferred
-to a later wrapper task.  No prior confirmation identity can authorize a
-Phase-2 bridge run.
+to a later wrapper task. Once independently implemented, reviewed, and
+freshly authorized, that dedicated Phase-1 contract governs the real public
+JPX acquisition described above. No prior confirmation identity can authorize
+a Phase-2 bridge run, and Phase-1 authority cannot be reused for Phase 2.
 
 `V9_design_frozen=false`; historical evaluation, private/sealed access, live
 or order execution remain unauthorized; future profitability is unestablished;
