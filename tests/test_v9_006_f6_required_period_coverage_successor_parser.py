@@ -177,6 +177,30 @@ def test_validator_rejects_forged_failure_provenance_and_boolean_year_lookalike(
     with pytest.raises(successor.CoverageBlocked): successor.safe_successor_coverage_evidence(value, evidence)
 
 
+@pytest.mark.parametrize("histograms", [{"4": [{"year": 2017, "count": 2}], "6": [{"year": 2017, "count": 1}]}, {"4": [], "6": object()}])
+def test_trusted_failure_does_not_preserve_unverified_evaluated_claim(monkeypatch, histograms):
+    evidence = structural(1, 1)
+    monkeypatch.setattr(successor, "EXPECTED_STRUCTURAL_PROFILE_SHA256", digest(evidence))
+    provenance = {"structural_profile_sha256": digest(evidence), "structural_profile_hash_verified": True, "raw_bytes_read_for_integrity": True, "child_content_inspected": True, "date_year_value_read": True, "coverage_evaluated": True, "year_histograms": histograms}
+    result = successor._trusted_failure(provenance, evidence)
+    assert result["status"] == successor.FAILURE
+    assert result["coverage_result_accepted"] is False
+    assert result["coverage_evaluated"] is False
+    assert "year_histograms" not in result
+    assert result["structural_profile_hash_verified"] is True
+    assert result["date_year_value_read"] is True
+
+
+def test_trusted_failure_preserves_valid_late_histogram_provenance(monkeypatch):
+    evidence = structural(1, 1)
+    monkeypatch.setattr(successor, "EXPECTED_STRUCTURAL_PROFILE_SHA256", digest(evidence))
+    histograms = {"4": [{"year": 2017, "count": 1}], "6": [{"year": 2017, "count": 1}]}
+    provenance = {"structural_profile_sha256": digest(evidence), "structural_profile_hash_verified": True, "raw_bytes_read_for_integrity": True, "child_content_inspected": True, "date_year_value_read": True, "coverage_evaluated": True, "year_histograms": histograms}
+    result = successor._trusted_failure(provenance, evidence)
+    assert result["coverage_evaluated"] is True
+    assert result["year_histograms"] == histograms
+
+
 def test_hash_mismatch_prevents_date_reads(monkeypatch):
     evidence = structural(1, 1)
     monkeypatch.setattr(successor, "_structural_gate", lambda *_: (evidence, digest(evidence)))

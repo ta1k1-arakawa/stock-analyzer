@@ -136,9 +136,10 @@ def _trusted_failure(provenance: object, structural: object) -> dict[str, Any]:
         return _failure(digest=None, verified=False, raw=raw, inspected=inspected, date_read=False)
     histograms = provenance.get("year_histograms")
     safe_histograms = histograms if evaluated and _histograms_valid(histograms, structural) else None
+    safe_evaluated = evaluated and safe_histograms is not None
     return _failure(
         digest=digest, verified=verified, raw=raw, inspected=inspected,
-        date_read=date_read, evaluated=evaluated, histograms=safe_histograms,
+        date_read=date_read, evaluated=safe_evaluated, histograms=safe_histograms,
     )
 
 
