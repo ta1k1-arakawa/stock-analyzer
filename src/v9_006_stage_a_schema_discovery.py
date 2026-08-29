@@ -636,8 +636,12 @@ def _phase1_verify_success_closure(output_root: Any, result: Any) -> None:
             _fail()
         raw_dir = Path(output_root) / "raw"
         names = {path.name for path in raw_dir.iterdir()}
-        ids = {name[:-4] for name in names if re.fullmatch(r"[0-9a-f]{64}\.(bin|json)", name)}
-        if len(names) != 706 or len(ids) != 353 or ids != {item[:64] for item in result.evidence_slot_ids} | (ids - set(result.evidence_slot_ids)):
+        bin_ids = {match.group(1) for name in names if (match := re.fullmatch(r"([0-9a-f]{64})\.bin", name)) is not None}
+        json_ids = {match.group(1) for name in names if (match := re.fullmatch(r"([0-9a-f]{64})\.json", name)) is not None}
+        if len(names) != 706 or len(bin_ids) != 353 or len(json_ids) != 353 or bin_ids != json_ids:
+            _fail()
+        ids = bin_ids
+        if not set(result.evidence_slot_ids) <= ids:
             _fail()
         support = ids - set(result.evidence_slot_ids)
         if len(support) != 12:

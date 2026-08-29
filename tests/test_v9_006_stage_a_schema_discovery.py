@@ -16,7 +16,7 @@ from src.v9_005_stage_a_jpx_probe import (
     CHATGPT_DECISION_REQUIRED, SOURCE_FAMILY_DELISTED_COMPANY_ARCHIVE as F3,
     SOURCE_FAMILY_EX_RIGHTS_SPLIT_RATIO_ARCHIVE as F4, SOURCE_FAMILY_JPX_CALENDAR as F7,
     SOURCE_FAMILY_LISTED_ISSUES_MONTH_END as F1, SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT as F2,
-    TERMINAL_PERIOD, V9005StageABlocked, source_object_slot_id,
+    TERMINAL_PERIOD, TERMINAL_DISCOVERY_ROOT, MONTHLY_STATISTICS_DISCOVERY_ROOT, DELISTED_COMPANY_DISCOVERY_ROOT, FetchResult, V9005StageABlocked, lock_first_complete_payload, source_object_slot_id,
 )
 
 
@@ -427,6 +427,46 @@ def test_one_shot_missing_localappdata_receipt_race_and_post_gate_failure(monkey
     output = tmp_path / "post-gate"
     with pytest.raises(V9005StageABlocked): schema.run_phase1_schema_discovery_one_shot(output, confirmation=schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION, execution_sha="a" * 40, fetcher=object(), sleep=object(), clock=lambda: datetime.now(timezone.utc))
     assert schema.read_phase1_schema_discovery_gate_consumed_state() is True and not (output / "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_RESULT.json").exists()
+
+
+def exact_closure_fixture(output):
+    output = Path(output); schema.initialize_output_root(output); counter, evidence, support, profiles = [0], [], [], []
+    raw = b"<html><table></table></html>"
+    def add(family, period, domain=None):
+        counter[0] += 1; url = f"https://www.jpx.co.jp/synthetic/closure-{counter[0]}.html"
+        locked = lock_first_complete_payload(output, source_family=family, applicable_period=period, requested_url=url, fetch_result=FetchResult(raw, url, 200), retrieval_timestamp_utc="2026-01-01T00:00:00Z")
+        slot = source_object_slot_id(family, period, url)
+        if domain is None: support.append(slot)
+        else:
+            profiles.append(schema.profile_verified_lock(schema.VerifiedLockedObject(locked["schema_version"], family, period, url, url, 200, locked["retrieval_timestamp_utc"], len(raw), slot, locked["sha256"], raw, domain))); evidence.append(slot)
+    add(F1, TERMINAL_PERIOD, schema.ObjectDomain.TERMINAL)
+    for month in schema.inventory_months(): add(F2, month, schema.ObjectDomain.BASE); add(F4, month, schema.ObjectDomain.BASE)
+    for year in range(2017, 2026): add(F3, str(year), schema.ObjectDomain.YEAR)
+    for month in schema.inventory_months(): add(F7, month, schema.ObjectDomain.BASE)
+    for month in schema.calendar_envelope_extra_months(): add(F7, month, schema.ObjectDomain.ENVELOPE_EXTRA)
+    add(F1, TERMINAL_DISCOVERY_ROOT); add(F2, MONTHLY_STATISTICS_DISCOVERY_ROOT)
+    for year in range(2017, 2026): add(F2, f"MONTHLY_STATISTICS_DISCOVERY_YEAR_{year}")
+    add(F3, DELISTED_COMPANY_DISCOVERY_ROOT)
+    return schema.Phase1SchemaDiscoveryResult(tuple(evidence), tuple(profiles), tuple(schema.select_representatives(profiles)), 353), tuple(support)
+
+
+def test_real_success_closure_accepts_exact_suffix_aware_353_fixture(tmp_path):
+    output = tmp_path / "closure"; result, support = exact_closure_fixture(output)
+    schema._phase1_verify_success_closure(output, result)
+    assert len(list((output / "raw").iterdir())) == 706
+    assert len(result.evidence_slot_ids) == len(result.safe_profiles) == 341 and len(support) == 12
+    assert not set(support) & {item["source_object_slot_id"] for item in result.safe_profiles}
+
+
+@pytest.mark.parametrize("fault", ["mismatched", "malformed"])
+def test_success_closure_filename_pairs_fail_closed(tmp_path, fault):
+    output = tmp_path / fault; result, _support = exact_closure_fixture(output); raw = output / "raw"
+    if fault == "mismatched":
+        (raw / f"{result.evidence_slot_ids[0]}.json").rename(raw / ("a" * 64 + ".json"))
+    else:
+        (raw / "unexpected.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(V9005StageABlocked) as exc: schema._phase1_verify_success_closure(output, result)
+    assert exc.value.reason == "IMPLEMENTATION_FAILURE"
 
 
 def test_validator_final_status_and_html_state_regressions(monkeypatch):

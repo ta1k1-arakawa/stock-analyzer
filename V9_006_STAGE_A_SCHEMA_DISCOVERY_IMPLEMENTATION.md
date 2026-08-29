@@ -62,3 +62,7 @@ Its global receipt reader now uses fail-closed `lstat` inspection before and
 after a regular-file read: every symlink (including dangling), stat/read/type/
 schema uncertainty, or entry change is unknown and blocks before OutputRoot
 creation.
+
+The success closure derives raw-lock IDs with exact suffix-aware `.bin` and
+`.json` matching, requires equal 353-ID sets and exactly 706 entries, and
+rejects malformed or extra filenames.
