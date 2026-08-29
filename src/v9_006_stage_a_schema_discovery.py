@@ -682,5 +682,5 @@ def run_phase1_schema_discovery_one_shot(output_root: Any, *, confirmation: Any,
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE) from exc
 
 def prepare_future_acquisition() -> None:
-    """Gate only: aggregate acquisition remains deliberately unimplemented."""
+    """Fail closed: reviewed Phase-1 core/one-shot boundary exist; CLI/PowerShell wiring is unauthorized."""
     raise V9005StageABlocked(CHATGPT_DECISION_REQUIRED)

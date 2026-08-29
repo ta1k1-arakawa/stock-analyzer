@@ -73,4 +73,8 @@ directly and through the real one-shot boundary using one exact canonical
 for a missing member, wrong support identity, unrepresented evidence ID, and
 corrupt provenance; all acquisition inputs remain synthetic and no production
 source, network, receipt, or human gate is used. This MEDIUM_2 remediation
-awaits GPT exact-SHA review; the deferred gate-docstring LOW_1 is unchanged.
+is PASS following exact-SHA review. The Phase-1 core and Python one-shot
+boundary are reviewed; production CLI/PowerShell real-execution wiring remains
+intentionally unavailable. `prepare_future_acquisition()` remains a runtime
+fail-closed placeholder for unauthorized or unreviewed future execution wiring;
+its documentation-only LOW_1 remediation awaits GPT exact-SHA review.
