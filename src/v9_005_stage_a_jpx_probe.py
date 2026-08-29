@@ -1648,15 +1648,46 @@ def _validate_monthly_coverage_matrix(inventory: Sequence[Mapping[str, Any]]) ->
         if not isinstance(record, Mapping) or set(record) != {"source_family", "month", "status", "source_object_slot_ids"}:
             raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
         family, month, status, slot_ids = (record["source_family"], record["month"], record["status"], record["source_object_slot_ids"])
-        if family not in MONTHLY_COVERAGE_FAMILIES or month not in inventory_months() or status not in _VALID_INVENTORY_STATUSES:
+        if (type(family) is not str or type(month) is not str or type(status) is not str
+                or family not in MONTHLY_COVERAGE_FAMILIES or month not in inventory_months()
+                or status not in _VALID_INVENTORY_STATUSES):
             raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
-        if not isinstance(slot_ids, list) or any(not isinstance(value, str) for value in slot_ids):
+        if (type(slot_ids) is not list
+                or any(type(value) is not str or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in slot_ids)
+                or len(slot_ids) != len(set(slot_ids)) or slot_ids != sorted(slot_ids)):
             raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
         if (status == INVENTORY_AVAILABLE) != bool(slot_ids):
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        if status in {INVENTORY_MISSING, INVENTORY_NOT_APPLICABLE} and slot_ids:
             raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
         seen.append((family, month))
     if seen != expected:
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+
+
+def _validate_f6_required_year_partition(f6: F6RequiredPeriodCoverage) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Validate the successor result before any normalization or lookup."""
+    def validate_sequence(value: Any) -> tuple[int, ...]:
+        if type(value) is not tuple:
+            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+        previous: int | None = None
+        for year in value:
+            if type(year) is not int or year not in range(2017, 2026):
+                raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+            if previous is not None and year <= previous:
+                raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+            previous = year
+        return value
+
+    covered = validate_sequence(f6.covered_required_years)
+    missing = validate_sequence(f6.missing_required_years)
+    if type(f6.coverage_result_accepted) is not bool or f6.coverage_result_accepted is not True:
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    if any(year in missing for year in covered):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    if len(covered) + len(missing) != 9 or tuple(sorted(covered + missing)) != tuple(range(2017, 2026)):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    return covered, missing
 
 
 def build_checkpoint_a_monthly_coverage_matrix(
@@ -1697,12 +1728,7 @@ def build_checkpoint_a_monthly_coverage_matrix(
     f5_coverage_references = f5_coverage_references or {}
     if set(f5_coverage_references) - {(f5_family, month) for month in months}:
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
-    required_years = set(range(2017, 2026))
-    covered, missing = set(f6.covered_required_years), set(f6.missing_required_years)
-    if (not f6.coverage_result_accepted or not isinstance(f6.coverage_result_accepted, bool)
-            or covered & missing or covered | missing != required_years
-            or any(isinstance(year, bool) or not isinstance(year, int) for year in covered | missing)):
-        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    covered, _missing = _validate_f6_required_year_partition(f6)
     f6_slot = _require_exact_slot_reference(verified_locks, (f6.global_source_object_slot_id,), f6_family, TOPIX_GLOBAL_2017_2025)
     records: list[dict[str, Any]] = []
     for month in months:
@@ -1739,13 +1765,10 @@ def _family_fully_covered(inventory: Sequence[Mapping[str, Any]], family: str) -
 
 def required_inventory_missing_count(inventory: Sequence[Mapping[str, Any]]) -> int:
     """Count only MISSING cells whose reviewed strategy is non-auxiliary."""
+    _validate_monthly_coverage_matrix(inventory)
     total = 0
     for record in inventory:
-        if not isinstance(record, Mapping):
-            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
         family, status = record.get("source_family"), record.get("status")
-        if not isinstance(family, str) or status not in _VALID_INVENTORY_STATUSES:
-            raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
         strategy = LOCATOR_STRATEGIES.get(family)
         if strategy is None or type(strategy.auxiliary) is not bool:
             raise V9005StageABlocked(IMPLEMENTATION_FAILURE)

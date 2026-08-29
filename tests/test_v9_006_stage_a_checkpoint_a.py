@@ -65,6 +65,28 @@ def test_f6_missing_year_and_invalid_partitions_fail_closed(monkeypatch):
     assert exc.value.reason == probe.IMPLEMENTATION_FAILURE
 
 
+@pytest.mark.parametrize("covered,missing,accepted", [
+    ((2017, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025), (), True),
+    ((2018, 2017, 2019, 2020, 2021, 2022, 2023, 2024, 2025), (), True),
+    ([2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025], (), True),
+    ((True, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025), (), True),
+    (("2017", 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025), (), True),
+    (([2017], 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025), (), True),
+    ((2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025), (2020,), True),
+    ((2017, 2018, 2019, 2021, 2022, 2023, 2024, 2025), (), True),
+    ((2016, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025), (), True),
+    ((2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025), (), False),
+    ((2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025), (), 1),
+])
+def test_f6_malformed_partitions_are_total_and_fail_closed(monkeypatch, covered, missing, accepted):
+    f2f4, f3, f6, f7, locks = _inputs()
+    monkeypatch.setattr(probe, "_verified_raw_lock_index", lambda _root: locks)
+    bad = probe.F6RequiredPeriodCoverage(f6.global_source_object_slot_id, covered, missing, accepted)
+    with pytest.raises(probe.V9005StageABlocked) as exc:
+        probe.build_checkpoint_a_monthly_coverage_matrix(f2_f4=f2f4, f3=f3, f6=bad, f7=f7, output_root="synthetic")
+    assert exc.value.reason == probe.IMPLEMENTATION_FAILURE
+
+
 @pytest.mark.parametrize("mutator", [
     lambda locks, f2f4, f3, f6, f7: locks.__setitem__(f2f4.base_coverage_references[(probe.SOURCE_FAMILY_MONTHLY_STATISTICS_CHANGES_REPORT, "2017-01")][0], {"source_family": "wrong", "applicable_period": "2017-01"}),
     lambda locks, f2f4, f3, f6, f7: locks.__setitem__(f7.base_coverage_references[(probe.SOURCE_FAMILY_JPX_CALENDAR, "2017-01")][0], {"source_family": probe.SOURCE_FAMILY_JPX_CALENDAR, "applicable_period": "ROOT"}),
@@ -90,14 +112,14 @@ def test_required_missing_count_is_generic_and_fail_closed(monkeypatch):
     original = probe.LOCATOR_STRATEGIES.pop(probe.SOURCE_FAMILY_JPX_CALENDAR)
     try:
         with pytest.raises(probe.V9005StageABlocked):
-            probe.required_inventory_missing_count([{"source_family": probe.SOURCE_FAMILY_JPX_CALENDAR, "status": probe.INVENTORY_MISSING}])
+            probe.required_inventory_missing_count(matrix)
     finally:
         probe.LOCATOR_STRATEGIES[probe.SOURCE_FAMILY_JPX_CALENDAR] = original
     original = probe.LOCATOR_STRATEGIES[probe.SOURCE_FAMILY_JPX_CALENDAR]
     probe.LOCATOR_STRATEGIES[probe.SOURCE_FAMILY_JPX_CALENDAR] = replace(original, auxiliary="not-a-bool")
     try:
         with pytest.raises(probe.V9005StageABlocked):
-            probe.required_inventory_missing_count([{"source_family": probe.SOURCE_FAMILY_JPX_CALENDAR, "status": probe.INVENTORY_MISSING}])
+            probe.required_inventory_missing_count(matrix)
     finally:
         probe.LOCATOR_STRATEGIES[probe.SOURCE_FAMILY_JPX_CALENDAR] = original
 
@@ -107,6 +129,37 @@ def test_matrix_validator_rejects_duplicate_extra_and_missing_keys(monkeypatch):
     for bad in (matrix[:-1], matrix + [dict(matrix[0])], matrix[1:] + [dict(matrix[0])]):
         with pytest.raises(probe.V9005StageABlocked):
             probe._validate_monthly_coverage_matrix(bad)
+
+
+def test_evidence_boundary_requires_complete_closed_matrix(monkeypatch):
+    matrix = _matrix(monkeypatch)
+    assert probe.required_inventory_missing_count(matrix) == 0
+    one_non_auxiliary_missing = [dict(record) for record in matrix]
+    one_non_auxiliary_missing[0]["status"] = probe.INVENTORY_MISSING
+    one_non_auxiliary_missing[0]["source_object_slot_ids"] = []
+    assert probe.required_inventory_missing_count(one_non_auxiliary_missing) == 1
+    malformed_cases = [
+        matrix[:-1],
+        matrix + [dict(matrix[0])],
+        matrix[1:] + [dict(matrix[0])],
+        [{"source_family": probe.SOURCE_FAMILY_JPX_CALENDAR, "month": "2017-01", "status": probe.INVENTORY_MISSING}],
+    ]
+    bad_slot = [dict(record) for record in matrix]
+    bad_slot[0]["source_object_slot_ids"] = ["not-a-slot"]
+    malformed_cases.append(bad_slot)
+    duplicate_slots = [dict(record) for record in matrix]
+    duplicate_slots[0]["source_object_slot_ids"] = ["0" * 64, "0" * 64]
+    malformed_cases.append(duplicate_slots)
+    unsorted_slots = [dict(record) for record in matrix]
+    unsorted_slots[0]["source_object_slot_ids"] = ["f" * 64, "0" * 64]
+    malformed_cases.append(unsorted_slots)
+    for bad in malformed_cases:
+        with pytest.raises(probe.V9005StageABlocked) as exc:
+            probe.required_inventory_missing_count(bad)
+        assert exc.value.reason == probe.IMPLEMENTATION_FAILURE
+    with pytest.raises(probe.V9005StageABlocked) as exc:
+        probe.compute_stage_a_evidence(inventory=matrix[:-1], terminal_snapshot_locked=True, trading_calendar_derived=True, semantic_result={}, terminal_identities={}, events=(), comparable_month_end_mismatch_count=0, raw_provenance_pass=True)
+    assert exc.value.reason == probe.IMPLEMENTATION_FAILURE
 
 
 def test_readiness_order_is_pre_side_effect_and_confirmation_cannot_bypass(tmp_path):

@@ -1,9 +1,32 @@
 # V9 Stage A — Checkpoint A implementation
 
 ```text
-status=IMPLEMENTED_AWAITING_GPT_REVIEW
-reviewed_parent_sha=94af3c50bf40857b8445c06098fa2b70c55e365a
+status=REMEDIATION_IMPLEMENTED_AWAITING_GPT_REVIEW
+reviewed_parent_sha=07fdbc4c4cdb0f3872d80d791c0a73980222ab51
 F5_auxiliary_nonblocking_amendment=PASS
+```
+
+## Integration-boundary remediation
+
+GPT review of `07fdbc4c4cdb0f3872d80d791c0a73980222ab51` returned BLOCK with
+`CHECKPOINT_A_INTEGRATION_INPUT_BOUNDARIES_NOT_TOTAL_FAIL_CLOSED`. This
+remediation makes both boundaries closed and total: F6 covered/missing years
+must be exact strictly ascending unique integer tuples that partition only
+2017--2025 before any normalization occurs, and `coverage_result_accepted`
+must be exact `bool` true. Malformed, unhashable, overlapping, gapped, or
+out-of-range values fail closed as `IMPLEMENTATION_FAILURE`.
+
+The auxiliary-aware missing count now first validates the complete ordered
+648-cell matrix. Every record has the exact closed schema, valid 64-hex
+sorted unique slot IDs, and status/list consistency. Thus incomplete or
+malformed inventory cannot reach the evidence conjunction as zero required
+missing cells. F5 remains exactly 108 truthful auxiliary `MISSING` cells.
+
+Clean targeted rerun:
+
+```text
+.venv\Scripts\python.exe -m pytest -q --basetemp=.pytest_cache/v9_checkpoint_a_tmp tests/test_v9_006_stage_a_checkpoint_a.py
+20 passed
 ```
 
 Checkpoint A adds a deterministic, offline-only 648-cell integration seam.
