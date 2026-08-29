@@ -43,7 +43,13 @@ production semantic integration PASS.
 
 ## Cross-family gaps and dependency order
 
-1. **I — remaining matrix wiring.** Preserve and consume the reviewed F1,
+1. **C — Checkpoint A complete.** The reviewed base matrix seam and its
+   fail-closed integration boundary are complete and pending no further
+   implementation work.
+2. **B — schema discovery before semantic mapping.** Exact raw-content
+   headers/columns remain intentionally unbound; the offline discovery
+   foundation is implemented awaiting review.
+3. **I — remaining matrix wiring.** Preserve and consume the reviewed F1,
    F2/F4, F3, F6, and F7 helpers; F5 is optional auxiliary evidence and wire
    all existing helper outputs to exact
    `MONTHLY_COVERAGE_MATRIX` mutation (including F6 required-year fanout).

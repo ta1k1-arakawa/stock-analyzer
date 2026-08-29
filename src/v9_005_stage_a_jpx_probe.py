@@ -48,8 +48,11 @@ still has no reviewed strategy at all. `SOURCE_OR_DATA_FEASIBILITY_
 FAILURE` remains reserved for a genuine result produced only after real
 Stage-A execution actually attempts (and fails) the reviewed traversal.
 
-V9_006_LOCATOR_IMPL_HIGH_1: a complete locator-*strategy* registry is not
-the same thing as a complete acquisition *implementation*. No code in this
+V9_006_LOCATOR_IMPL_HIGH_1 historical note: a complete locator-*strategy*
+registry was not the same thing as a complete acquisition *implementation*.
+The reviewed acquisition seams are now complete (`ACQUISITION_IMPLEMENTATION_
+COMPLETE=true`), while overall Stage-A implementation remains independently
+false (`OVERALL_STAGE_A_IMPLEMENTATION_READY=false`). No code in this
 module walks locked official F2-F5/F7 root responses to find each required
 child object for every base/bridge/envelope slot, and the F6 code added
 later in this module only resolves one child URL from an existing lock; it
