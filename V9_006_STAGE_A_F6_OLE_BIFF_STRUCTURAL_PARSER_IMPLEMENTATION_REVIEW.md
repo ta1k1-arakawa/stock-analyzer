@@ -187,3 +187,131 @@ fetch`/`push`, human-gate consumption/reuse, coverage evaluation, or F6
 coverage-methodology/design/source-identity change occurred in this
 implementation task. This implementation is not self-called `PASS`. The
 next action is GPT exact-SHA independent implementation review.
+
+## GPT-5.6 Sol exact-SHA review: MEDIUM-1 finding (undeclared xlwt test dependency)
+
+```text
+REVIEWED_SHA=0143ea9b6bcf401dfd470f62dec4096b33051ca7
+PARENT_SHA=cc9efde8fa1531eae2f7544e7326d767cd5a4562
+CRITICAL=0
+HIGH=0
+MEDIUM=1
+LOW=0
+RESULT=BLOCK
+MEDIUM_1=V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_IMPL_MEDIUM_1_UNDECLARED_XLWT_TEST_DEPENDENCY_BREAKS_REPRODUCIBILITY
+```
+
+Finding: the implementation logic itself is design-conformant, but
+`tests/test_v9_006_f6_offline_child_structural_probe.py` imported `xlwt` at
+module import time to build synthetic legacy `.xls` bytes for real-xlrd
+integration coverage. `xlwt` is not a declared normal/test dependency in
+`requirement.txt`; repository governance already treats `xlwt==1.3.0` as a
+manually installed fixture-generator-only tool (see
+`scripts/generate_synthetic_jpx_xls_fixture.py`). The previously reported
+110/110 targeted-test run therefore depended on a transient in-session
+`pip install` and was not reproducible from the repository-declared test
+environment.
+
+### MEDIUM-1 remediation
+
+`tests/test_v9_006_f6_offline_child_structural_probe.py` no longer imports
+`xlwt`, `io`, or `datetime` (all were only needed to build `xlwt`
+workbooks in memory). Real end-to-end OLE/BIFF `xlrd` integration coverage
+now uses the already-committed synthetic fixture
+`tests/fixtures/synthetic_jpx_source_snapshot.xls` instead of a
+freshly-built-in-test workbook:
+`test_default_inspector_genuine_ole_biff_fixture_is_captured_and_deterministic`
+reads the committed bytes, verifies their identity against
+`scripts.generate_synthetic_jpx_xls_fixture.EXPECTED_FIXTURE_SHA256` (that
+module's own `import xlwt` is local to its `build_workbook_bytes()`
+function body, not module-level, so importing the module for this constant
+does not itself require `xlwt`), then proves
+`_default_structural_inspector` reports `STRUCTURAL_FORMAT_CAPTURED` /
+`OLE_COMPOUND_FILE` / `OPEN_PARSE_OK` and produces byte-identical safe
+evidence across two calls on the same bytes -- cross-validated by the real
+`_safe_structural_evidence` validator, not merely shaped like a valid
+payload.
+
+Every other real-`xlrd`-API test that previously built an `xlwt` workbook
+now uses the existing `_FakeSheet`/`_FakeBook` classes instead (extended to
+accept an optional full `cell_type_grid` matrix, in addition to the single
+`cell_type_code` already used by the two fail-closed-only tests), with
+`xlrd.open_workbook` monkeypatched to return the fake `Book`:
+`test_default_inspector_covers_all_seven_cell_type_buckets` supplies all
+seven of `xlrd`'s own documented type-code constants across one row;
+`test_default_inspector_nrows_ncols_exact_with_blanks` supplies a
+`row x column` matrix distinguishing `EMPTY`/`BLANK`/`NUMBER`/`TEXT` purely
+by `cell_type()` code, proving `row_count`/`column_count` equal the fake
+sheet's own `nrows`/`ncols` exactly; and
+`test_default_inspector_visibility_zero_one_two_round_trip` supplies three
+fake sheets with `visibility=0/1/2`, proving the exact
+`VISIBLE`/`HIDDEN`/`VERY_HIDDEN` mapping. Every one of these fakes exposes
+only `nrows`/`ncols`/`visibility`/`cell_type(row, col)` -- the exact `xlrd`
+`Sheet` surface the reviewed parser touches -- never `cell_value`,
+matching design section 5.10 unchanged. The existing
+`test_default_inspector_calls_xlrd_open_workbook_with_frozen_arguments`,
+`test_default_inspector_invalid_visibility_is_implementation_failure`, and
+`test_default_inspector_unknown_cell_type_is_implementation_failure` tests
+were already fake/monkeypatch-based and needed no change beyond the
+`_FakeSheet` constructor extension (fully backward compatible with their
+existing `cell_type_code=` usage).
+
+No change was made to `src/v9_006_f6_offline_child_structural_probe.py`,
+the frozen parser design/methodology, coverage/date/year logic, any
+dependency file, production CHILD/path/raw state, or network/gate/authority
+rules. `xlwt` was not added to `requirement.txt`,
+`requirements-real-execution.txt`, or
+`requirements-real-execution.lock.txt` -- it remains, as before, a manually
+installed fixture-generator-only tool, now used by no committed test.
+
+```text
+TARGETED_TEST_COMMAND=PYTHONPATH=. python3 -m pytest tests/test_v9_006_f6_offline_child_structural_probe.py -q
+TESTS_RUN=110
+TESTS_PASSED=110
+TESTS_FAILED=0
+XLWT_GREP_MATCHES=0
+SOURCE_CODE_CHANGED=false
+XLRD_REAL_FIXTURE_TEST=true
+XLWT_TEST_DEPENDENCY_REMOVED=true
+PRODUCTION_CHILD_READS=0
+CHILD_CONTENT_INSPECTED=false
+COVERAGE_EVALUATED=false
+SOURCE_DATA_NETWORK_REQUESTS=0
+HUMAN_GATES_CONSUMED=0
+DEPENDENCIES_CHANGED=false
+GIT_DIFF_CHECK=PASS
+```
+
+All 110 targeted tests were run and passed twice: once with `xlwt==1.3.0`
+still installed from the prior task's transient in-session `pip install`
+(unchanged, since nothing in the remediated suite requires or forbids its
+mere presence), and a second time after `pip3 uninstall -y xlwt` removed it
+entirely from this Claude Code Cloud environment -- proving the remediated
+suite genuinely no longer depends on it, not merely that its source no
+longer names it. `git grep -n "import xlwt|xlwt." --
+tests/test_v9_006_f6_offline_child_structural_probe.py` returns zero
+matches (grep exit `1`, the expected success result for this absence
+check). `git diff --check` passes.
+
+The prior 110/110 evidence recorded in this document's "Test coverage"
+section above was a genuine, valid result for the transient Claude Code
+Cloud environment it ran in at the time; it is not retracted or
+invalidated as a test outcome, only superseded as reproducibility evidence
+by this remediation, since it depended on an undeclared dependency this
+remediation now removes. The remediated targeted suite no longer requires
+`xlwt` to run, in this or any other environment matching the repository's
+declared test dependencies.
+
+```text
+V9_006_F6_OLE_BIFF_STRUCTURAL_PARSER_IMPL_MEDIUM_1_UNDECLARED_XLWT_TEST_DEPENDENCY_BREAKS_REPRODUCIBILITY=REMEDIATED_AWAITING_GPT_REVIEW
+V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_IMPLEMENTATION=BLOCK
+V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN=PASS
+```
+
+No production CHILD/path/raw state access, network request beyond `git
+fetch`/`push`, human-gate consumption/reuse, coverage evaluation, or
+dependency-file change occurred in this remediation task. This remediation
+is not self-called `PASS`, and `MEDIUM_1` is not self-called `RESOLVED`.
+`V9_006_STAGE_A_F6_OLE_BIFF_STRUCTURAL_PARSER_DESIGN` remains `PASS`,
+unaffected by this implementation-level finding. GPT-5.6 Sol remains the
+final independent review authority.
