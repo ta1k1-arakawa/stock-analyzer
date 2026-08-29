@@ -29,23 +29,35 @@ Before asking for human authorization, a future entrypoint must prove:
 
 1. correct repository/authoritative branch, exact local HEAD, exact
    authoritative remote HEAD, clean tree, and reviewed implementation binding;
-2. fresh, nonexistent OutputRoot and no conflicting receipt, result, or
-   durable state;
+2. fresh, nonexistent OutputRoot, no conflicting OutputRoot-local result or
+   durable state, and an absent canonical task-global receipt as specified
+   below;
 3. `.venv-real-execution\Scripts\python.exe` exists, every exact protected
    interpreter/readiness/dependency/environment-lock check in
    `AI_REAL_EXECUTION_RUNBOOK.md` passes, and synthetic operational readiness
    is PASS;
 4. `CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE=YES`.
 
-After confirmation, but before consumption, every applicable non-destructive
-provenance/readiness/durable-state binding is rerun. A failure before receipt
-is `PRE_GATE`, has `gate_consumed=false` and zero network requests wherever
-mechanically provable, and creates no execution authority.
+Before human authorization, the canonical task-global receipt state must be
+read mechanically. Only a proven absence may proceed: a valid receipt stops
+as already consumed, while a malformed receipt, non-regular file, read/stat
+uncertainty, or any ambiguous state stops fail-closed. This check is repeated
+after confirmation with every other applicable non-destructive
+provenance/readiness/durable-state binding and before consumption. A failure
+before receipt is `PRE_GATE`, has `gate_consumed=false` and zero network
+requests wherever mechanically provable, and creates no execution authority.
 
 ## Gate boundary and receipt
 
-The dedicated receipt is
-`V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_GATE_RECEIPT.json`, schema
+The authoritative receipt is task-global, not OutputRoot-local. A future
+Windows implementation derives its directory only from `%LOCALAPPDATA%` plus
+the fixed public components
+`stock-analyzer/real-execution/V9_CROSS_SECTIONAL_CLOSE_AUCTION/V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_REAL_EXECUTION`.
+Its filename is
+`V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_GATE_RECEIPT.json`. The location must
+not depend on OutputRoot, execution SHA, date/time, branch, nonce, or an
+operator-supplied alternate path, and safe reports never print the resolved
+local path. The receipt schema is
 `V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_GATE_RECEIPT_V1`, with exactly:
 
 - `schema_version`
@@ -60,13 +72,22 @@ The dedicated receipt is
 by the real invocation. The receipt contains no raw confirmation, path, URL,
 payload, ticker identity, or private value.
 
-The fresh OutputRoot is created and the receipt atomically/durably published
-without overwrite strictly before the first JPX request. Publication is the
-one-shot consumption boundary. Existing OutputRoot, receipt, or result stops:
-never delete, reset, overwrite, or automatically reuse state. After receipt,
-any failure is `POST_GATE`; receipt remains durable; no second execution,
-reset, deletion, or authority reuse is allowed. Unknown partial-core request
-counts must be reported as `unknown`, never fabricated.
+The future implementation exposes a fail-closed tri-state canonical
+gate-state reader: `True` only for an exact valid consumed receipt, `False`
+only for mechanically proven absence, and `None`/`UNKNOWN` for every
+malformed/read/stat/type/schema uncertainty. Only `False` proceeds pre-gate.
+Changing OutputRoot cannot bypass this reader.
+
+The fresh OutputRoot is created first; failure there remains `PRE_GATE`. The
+canonical global receipt is then atomically/durably published without
+overwrite strictly before the first JPX request. Publication is the one-shot
+consumption boundary. Once it exists, no different OutputRoot, implementation
+SHA, fresh confirmation, process restart, or later invocation permits a
+second Phase-1 execution for this study/task identity. The receipt is never
+deleted, reset, overwritten, or replaced to obtain another attempt; only a
+separately GPT-reviewed methodology/study identity could define different
+future authority. After receipt, any failure is `POST_GATE`; unknown
+partial-core request counts must be reported as `unknown`, never fabricated.
 
 ## Successful durable result
 
