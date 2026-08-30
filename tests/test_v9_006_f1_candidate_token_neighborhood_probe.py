@@ -94,7 +94,7 @@ def test_prior_binding_success_reaches_evidence_captured_with_exact_ordinal_boun
     assert [item["anchor_ordinal"] for item in ctx52["previous_anchor_summaries"]] == [51, 50, 49]
     assert [item["anchor_ordinal"] for item in ctx52["next_anchor_summaries"]] == [53, 54, 55]
     assert [item["anchor_ordinal"] for item in ctx55["previous_anchor_summaries"]] == [54, 53, 52]
-    probe.validate_safe_result(result)
+    probe.validate_safe_result(result, prior_result=diag.run_diagnostic(root))
 
 
 def test_binding_failure_when_prior_diagnostic_not_evidence_captured(tmp_path):
@@ -325,16 +325,12 @@ def test_no_candidate_selection_fixed_fields(monkeypatch, tmp_path):
 
 def evidence_result(monkeypatch, tmp_path):
     root, _raw = build_bound(monkeypatch, tmp_path, mid52="", mid55="")
-    return probe.run_probe(root)
+    return probe.run_probe(root), diag.run_diagnostic(root), root
 
 
-def evidence_result_with_neighbors(monkeypatch, tmp_path):
-    root, _raw = build_bound(monkeypatch, tmp_path, mid52="", mid55="")
-    result = probe.run_probe(root)
-    prior_result = diag.run_diagnostic(root)
-    prior_by_ordinal = {item["anchor_ordinal"]: item for item in prior_result["anchors"]}
-    expected_neighbors = probe._build_expected_neighbors(prior_by_ordinal)
-    return json.loads(probe.canonical_json(result)), expected_neighbors
+def mutable_evidence_result(monkeypatch, tmp_path):
+    result, prior_result, root = evidence_result(monkeypatch, tmp_path)
+    return json.loads(probe.canonical_json(result)), prior_result, root
 
 
 def rehash(value: dict[str, object]) -> dict[str, object]:
@@ -343,132 +339,167 @@ def rehash(value: dict[str, object]) -> dict[str, object]:
 
 
 # ---------------------------------------------------------------------------
-# MEDIUM_1: adjacent-anchor safe summaries must be exactly bound to the same
-# recomputed prior diagnostic, not merely schema/ordering plausible.
+# MEDIUM_1 / MEDIUM_1A: EVIDENCE_CAPTURED validation must fail closed without
+# the exact, independently re-validated and re-bound prior diagnostic result
+# -- an arbitrary caller-supplied expected-neighbors mapping is never trusted.
 # ---------------------------------------------------------------------------
 
 def test_validator_accepts_the_real_exact_neighbor_binding(monkeypatch, tmp_path):
-    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
-    probe.validate_safe_result(result, expected_neighbors=expected)
-    assert [item["anchor_ordinal"] for item in expected[52]["previous"]] == [51, 50, 49]
-    assert [item["anchor_ordinal"] for item in expected[52]["next"]] == [53, 54, 55]
-    assert [item["anchor_ordinal"] for item in expected[55]["previous"]] == [54, 53, 52]
-    assert [item["anchor_ordinal"] for item in expected[55]["next"]] == [56, 57, 58]
+    result, prior_result, _root = evidence_result(monkeypatch, tmp_path)
+    probe.validate_safe_result(result, prior_result=prior_result)
+    ctx52, ctx55 = result["candidate_contexts"]
+    assert [item["anchor_ordinal"] for item in ctx52["previous_anchor_summaries"]] == [51, 50, 49]
+    assert [item["anchor_ordinal"] for item in ctx52["next_anchor_summaries"]] == [53, 54, 55]
+    assert [item["anchor_ordinal"] for item in ctx55["previous_anchor_summaries"]] == [54, 53, 52]
+    assert [item["anchor_ordinal"] for item in ctx55["next_anchor_summaries"]] == [56, 57, 58]
+
+
+def test_validator_rejects_valid_evidence_captured_without_prior_result(monkeypatch, tmp_path):
+    result, _prior_result, _root = evidence_result(monkeypatch, tmp_path)
+    with pytest.raises(ValueError):
+        probe.validate_safe_result(result)
 
 
 def test_validator_rejects_candidate_52_previous_summaries_emptied(monkeypatch, tmp_path):
-    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
+    result, prior_result, _root = mutable_evidence_result(monkeypatch, tmp_path)
     result["candidate_contexts"][0]["previous_anchor_summaries"] = []
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result, expected_neighbors=expected)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 def test_validator_rejects_candidate_52_previous_summaries_shifted_by_one(monkeypatch, tmp_path):
-    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
+    result, prior_result, _root = mutable_evidence_result(monkeypatch, tmp_path)
     for item in result["candidate_contexts"][0]["previous_anchor_summaries"]:
         item["anchor_ordinal"] -= 1
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result, expected_neighbors=expected)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 def test_validator_rejects_candidate_52_next_summary_with_one_field_altered(monkeypatch, tmp_path):
-    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
+    result, prior_result, _root = mutable_evidence_result(monkeypatch, tmp_path)
     next_summaries = result["candidate_contexts"][0]["next_anchor_summaries"]
     assert next_summaries[0]["anchor_ordinal"] == 53
     next_summaries[0]["normalized_visible_text"] = "tampered"
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result, expected_neighbors=expected)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 def test_validator_rejects_candidate_55_previous_list_missing_ordinal_52(monkeypatch, tmp_path):
-    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
+    result, prior_result, _root = mutable_evidence_result(monkeypatch, tmp_path)
     result["candidate_contexts"][1]["previous_anchor_summaries"] = result["candidate_contexts"][1]["previous_anchor_summaries"][:2]
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result, expected_neighbors=expected)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 def test_validator_rejects_candidate_55_next_list_replaced_wholesale(monkeypatch, tmp_path):
-    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
+    result, prior_result, _root = mutable_evidence_result(monkeypatch, tmp_path)
     substitute = [dummy_summary(ordinal) for ordinal in (56, 57, 58)]
     result["candidate_contexts"][1]["next_anchor_summaries"] = substitute
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result, expected_neighbors=expected)
+        probe.validate_safe_result(result, prior_result=prior_result)
+
+
+def test_validator_rejects_fabricated_prior_result(monkeypatch, tmp_path):
+    result, prior_result, _root = evidence_result(monkeypatch, tmp_path)
+    fabricated = json.loads(probe.canonical_json(prior_result))
+    fabricated["structural_evidence_sha256"] = "0" * 64
+    with pytest.raises(ValueError):
+        probe.validate_safe_result(result, prior_result=fabricated)
+
+
+def test_validator_rejects_schema_valid_but_unbound_prior_result(monkeypatch, tmp_path):
+    result, _real_prior_result, _root = evidence_result(monkeypatch, tmp_path)
+    other_raw = b"<h1>Other</h1><a href='x.xls'>x</a>"
+    monkeypatch.setattr(diag, "EXPECTED_LENGTH", len(other_raw))
+    monkeypatch.setattr(diag, "EXPECTED_SHA256", sha256(other_raw).hexdigest())
+    monkeypatch.setattr(diag, "verify_raw_provenance", lambda _root: True)
+    other_root = output_root(tmp_path, other_raw, subdir="unbound-other")
+    other_prior_result = diag.run_diagnostic(other_root)
+    assert other_prior_result["diagnostic_result"] == "EVIDENCE_CAPTURED"
+    with pytest.raises(ValueError):
+        probe.validate_safe_result(result, prior_result=other_prior_result)
+
+
+def test_validator_accepts_valid_failure_result_without_prior_result():
+    value = probe._finalize(probe._empty("PRIOR_DIAGNOSTIC_BINDING_FAILURE", False))
+    probe.validate_safe_result(value)
 
 
 def test_validator_accepts_valid_result_and_rejects_extra_key(monkeypatch, tmp_path):
-    result = evidence_result(monkeypatch, tmp_path)
-    probe.validate_safe_result(result)
+    result, prior_result, _root = evidence_result(monkeypatch, tmp_path)
+    probe.validate_safe_result(result, prior_result=prior_result)
     mutated = dict(result); mutated["extra"] = 1
     with pytest.raises(ValueError):
-        probe.validate_safe_result(mutated)
+        probe.validate_safe_result(mutated, prior_result=prior_result)
 
 
 def test_validator_rejects_network_requests_bool_vs_int(monkeypatch, tmp_path):
-    result = json.loads(probe.canonical_json(evidence_result(monkeypatch, tmp_path)))
+    result, prior_result, _root = mutable_evidence_result(monkeypatch, tmp_path)
     result["network_requests"] = False
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 def test_validator_rejects_wrong_candidate_order(monkeypatch, tmp_path):
-    result = json.loads(probe.canonical_json(evidence_result(monkeypatch, tmp_path)))
+    result, prior_result, _root = mutable_evidence_result(monkeypatch, tmp_path)
     result["candidate_contexts"] = list(reversed(result["candidate_contexts"]))
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 def test_validator_rejects_tampered_candidate_binding(monkeypatch, tmp_path):
-    result = json.loads(probe.canonical_json(evidence_result(monkeypatch, tmp_path)))
+    result, prior_result, _root = mutable_evidence_result(monkeypatch, tmp_path)
     result["candidate_contexts"][0]["candidate_binding"]["target_extension_class"] = "OTHER"
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 def test_validator_rejects_out_of_order_tokens(monkeypatch, tmp_path):
-    result = json.loads(probe.canonical_json(evidence_result(monkeypatch, tmp_path)))
+    result, prior_result, _root = mutable_evidence_result(monkeypatch, tmp_path)
     tokens = result["candidate_contexts"][0]["preceding_data_tokens"]
     if len(tokens) < 2:
         pytest.skip("need at least two preceding tokens")
     tokens[0], tokens[1] = tokens[1], tokens[0]
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 def test_validator_rejects_out_of_order_summaries(monkeypatch, tmp_path):
-    result = json.loads(probe.canonical_json(evidence_result(monkeypatch, tmp_path)))
+    result, prior_result, _root = mutable_evidence_result(monkeypatch, tmp_path)
     summaries = result["candidate_contexts"][0]["next_anchor_summaries"]
     if len(summaries) < 2:
         pytest.skip("need at least two summaries")
     summaries[0], summaries[1] = summaries[1], summaries[0]
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 def test_validator_rejects_image_count_length_mismatch(monkeypatch, tmp_path):
-    result = json.loads(probe.canonical_json(evidence_result(monkeypatch, tmp_path)))
+    result, prior_result, _root = mutable_evidence_result(monkeypatch, tmp_path)
     result["candidate_contexts"][0]["total_image_count"] = 5
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 def test_validator_rejects_wrong_image_ordinal(monkeypatch, tmp_path):
     root, _raw = build_bound(monkeypatch, tmp_path, mid52="<img src='a.png'><img src='b.png'>")
+    prior_result = diag.run_diagnostic(root)
     result = json.loads(probe.canonical_json(probe.run_probe(root)))
     result["candidate_contexts"][0]["images"][0]["image_ordinal_within_candidate"] = 2
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 @pytest.mark.parametrize("mutate", [
@@ -478,16 +509,18 @@ def test_validator_rejects_wrong_image_ordinal(monkeypatch, tmp_path):
 ])
 def test_validator_rejects_present_normalized_state_matrix_violations(monkeypatch, tmp_path, mutate):
     root, _raw = build_bound(monkeypatch, tmp_path, mid52="", mid55="")
+    prior_result = diag.run_diagnostic(root)
     result = json.loads(probe.canonical_json(probe.run_probe(root)))
     result["candidate_contexts"][0]["normalized_title"] = "still-set"
     mutate(result)
     rehash(result)
     with pytest.raises(ValueError):
-        probe.validate_safe_result(result)
+        probe.validate_safe_result(result, prior_result=prior_result)
 
 
 def test_validator_rejects_tampered_hash(monkeypatch, tmp_path):
-    result = dict(evidence_result(monkeypatch, tmp_path))
+    result, _prior_result, _root = evidence_result(monkeypatch, tmp_path)
+    result = dict(result)
     result["structural_evidence_sha256"] = "0" * 64
     with pytest.raises(ValueError):
         probe.validate_safe_result(result)
@@ -509,7 +542,7 @@ def test_validator_rejects_binding_failure_with_verified_true():
 
 
 def test_structural_hash_recomputation_matches(monkeypatch, tmp_path):
-    result = evidence_result(monkeypatch, tmp_path)
+    result, _prior_result, _root = evidence_result(monkeypatch, tmp_path)
     digestless = dict(result)
     digest = digestless.pop("structural_evidence_sha256")
     assert digest == sha256(probe.canonical_json(digestless).encode()).hexdigest()

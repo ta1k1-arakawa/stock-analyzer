@@ -330,10 +330,10 @@ def _build_expected_neighbors(prior_by_ordinal: dict[int, dict[str, object]]) ->
     }
 
 
-def _finalize(value: dict[str, object], *, expected_neighbors: dict[int, dict[str, list[dict[str, object]]]] | None = None) -> dict[str, object]:
+def _finalize(value: dict[str, object], *, prior_result: object = None) -> dict[str, object]:
     result = dict(value)
     result["structural_evidence_sha256"] = sha256(canonical_json(result).encode("utf-8")).hexdigest()
-    validate_safe_result(result, expected_neighbors=expected_neighbors)
+    validate_safe_result(result, prior_result=prior_result)
     return result
 
 
@@ -352,8 +352,6 @@ def run_probe(output_root: object) -> dict[str, object]:
         return _finalize(_empty("HTML_STRUCTURE_UNSUPPORTED", True))
     except _UnsafeText:
         return _finalize(_empty("SAFE_OUTPUT_VALIDATION_FAILURE", True))
-    prior_by_ordinal = {item["anchor_ordinal"]: item for item in prior_result["anchors"]}
-    expected_neighbors = _build_expected_neighbors(prior_by_ordinal)
     return _finalize({
         "schema_version": SCHEMA_VERSION, "task": TASK,
         "input_payload_sha256": PAYLOAD_HASH,
@@ -362,7 +360,7 @@ def run_probe(output_root: object) -> dict[str, object]:
         "diagnostic_result": "EVIDENCE_CAPTURED",
         "candidate_contexts": contexts,
         "locator_decision": "NOT_MADE", "replacement_locator_authorized": False, "network_requests": 0,
-    }, expected_neighbors=expected_neighbors)
+    }, prior_result=prior_result)
 
 
 def _valid_text(value: object) -> bool:
@@ -408,12 +406,11 @@ def _validate_tokens(tokens: object, ascending: bool) -> None:
         previous_ordinal = ordinal
 
 
-def _validate_summaries(summaries: object, ordinal: int, step: int, expected: list[dict[str, object]] | None) -> None:
+def _validate_summaries(summaries: object, ordinal: int, step: int, expected: list[dict[str, object]]) -> None:
     if type(summaries) is not list or len(summaries) > 3:
         raise ValueError("summaries")
-    if expected is not None:
-        if len(summaries) != len(expected) or any(not _type_strict_equal(item, other) for item, other in zip(summaries, expected)):
-            raise ValueError("summary not exactly bound to prior diagnostic")
+    if len(summaries) != len(expected) or any(not _type_strict_equal(item, other) for item, other in zip(summaries, expected)):
+        raise ValueError("summary not exactly bound to prior diagnostic")
     for index, item in enumerate(summaries, start=1):
         if not isinstance(item, dict) or set(item) != set(_SUMMARY_KEYS):
             raise ValueError("summary")
@@ -449,7 +446,7 @@ def _validate_image(image: object, expected_ordinal: int) -> None:
         raise ValueError("image src")
 
 
-def _validate_context(context: object, expected_ordinal: int, neighbor_binding: dict[str, list[dict[str, object]]] | None) -> None:
+def _validate_context(context: object, expected_ordinal: int, neighbor_binding: dict[str, list[dict[str, object]]]) -> None:
     if not isinstance(context, dict) or set(context) != _CONTEXT_KEYS:
         raise ValueError("context")
     if type(context["candidate_anchor_ordinal"]) is not int or context["candidate_anchor_ordinal"] != expected_ordinal:
@@ -459,8 +456,8 @@ def _validate_context(context: object, expected_ordinal: int, neighbor_binding: 
         raise ValueError("context binding")
     _validate_tokens(context["preceding_data_tokens"], ascending=False)
     _validate_tokens(context["following_data_tokens"], ascending=True)
-    _validate_summaries(context["previous_anchor_summaries"], expected_ordinal, -1, neighbor_binding["previous"] if neighbor_binding is not None else None)
-    _validate_summaries(context["next_anchor_summaries"], expected_ordinal, 1, neighbor_binding["next"] if neighbor_binding is not None else None)
+    _validate_summaries(context["previous_anchor_summaries"], expected_ordinal, -1, neighbor_binding["previous"])
+    _validate_summaries(context["next_anchor_summaries"], expected_ordinal, 1, neighbor_binding["next"])
     if not _valid_present_text(context["title_present"], context["normalized_title"]):
         raise ValueError("title")
     if not _valid_present_text(context["aria_label_present"], context["normalized_aria_label"]):
@@ -477,7 +474,7 @@ def _validate_context(context: object, expected_ordinal: int, neighbor_binding: 
         _validate_image(image, index)
 
 
-def validate_safe_result(value: object, *, expected_neighbors: dict[int, dict[str, list[dict[str, object]]]] | None = None) -> None:
+def validate_safe_result(value: object, *, prior_result: object = None) -> None:
     if not isinstance(value, dict) or set(value) != _TOP_KEYS:
         raise ValueError("invalid safe result")
     if value["schema_version"] != SCHEMA_VERSION or value["task"] != TASK:
@@ -510,7 +507,16 @@ def validate_safe_result(value: object, *, expected_neighbors: dict[int, dict[st
         if contexts != []:
             raise ValueError("failure contexts")
         return
+    if prior_result is None:
+        raise ValueError("prior_result is required to validate an EVIDENCE_CAPTURED result")
+    try:
+        _prior.validate_safe_result(prior_result)
+        _assert_binding(prior_result)
+    except (ValueError, _BindingMismatch) as exc:
+        raise ValueError("prior_result is not valid or not exactly bound") from exc
+    prior_by_ordinal = {item["anchor_ordinal"]: item for item in prior_result["anchors"]}
+    expected_neighbors = _build_expected_neighbors(prior_by_ordinal)
     if len(contexts) != len(CANDIDATE_ORDINALS):
         raise ValueError("contexts count")
     for ordinal, context in zip(CANDIDATE_ORDINALS, contexts):
-        _validate_context(context, ordinal, expected_neighbors.get(ordinal) if expected_neighbors is not None else None)
+        _validate_context(context, ordinal, expected_neighbors[ordinal])
