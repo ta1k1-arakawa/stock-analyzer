@@ -108,7 +108,12 @@ def main(
             clock=bound_clock,
         )
     except V9005StageABlocked as exc:
-        _print(_safe_failure(exc.failure_class, exc.network_request_count, _safe_gate_consumed_state()))
+        gate_consumed = _safe_gate_consumed_state()
+        # After receipt publication, an exception-local count cannot establish
+        # the cumulative Phase-1 request total.  Preserve exact pre-gate zero
+        # reporting, but fail safely when the canonical gate is consumed.
+        network_attempt_count: object = "unknown" if gate_consumed is True else exc.network_request_count
+        _print(_safe_failure(exc.failure_class, network_attempt_count, gate_consumed))
         return 2
     except Exception:
         _print(_safe_failure("IMPLEMENTATION_FAILURE", "unknown", _safe_gate_consumed_state()))

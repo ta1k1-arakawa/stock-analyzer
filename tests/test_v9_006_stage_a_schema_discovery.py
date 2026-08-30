@@ -592,6 +592,36 @@ def test_phase1_cli_missing_or_wrong_confirmation_stops_before_one_shot(monkeypa
     assert all(json.loads(line)["gate_consumed"] is False for line in capsys.readouterr().out.splitlines())
 
 
+def test_phase1_cli_post_gate_f1_missing_locator_reports_unknown_attempts(monkeypatch, tmp_path, capsys):
+    cli = load_phase1_cli()
+    local = tmp_path / "localappdata"; local.mkdir()
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv(cli.CONFIRMATION_ENV, schema.SCHEMA_DISCOVERY_PUBLIC_ACQUISITION_CONFIRMATION)
+    calls = []
+
+    def synthetic_fetcher(url):
+        calls.append(url)
+        return FetchResult(b"<html><body>no terminal xls locator</body></html>", url, 200)
+
+    output = tmp_path / "output"
+    assert cli.main(
+        ["--output-root", str(output), "--execution-sha", "a" * 40],
+        fetcher=synthetic_fetcher,
+        sleep=lambda _seconds: None,
+        clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+    ) == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "schema_version": cli.FAILURE_SCHEMA_VERSION,
+        "execution_result": "BLOCKED",
+        "failure_class": "SOURCE_OR_DATA_FEASIBILITY_FAILURE",
+        "gate_consumed": True,
+        "network_attempt_count": "unknown",
+    }
+    assert len(calls) == 1
+    assert schema.read_phase1_schema_discovery_gate_consumed_state() is True
+
+
 @pytest.mark.parametrize("blocked_state", ["consumed", "ambiguous", "output_conflict"])
 def test_phase1_cli_pre_gate_state_failures_do_not_fetch(monkeypatch, tmp_path, capsys, blocked_state):
     cli = load_phase1_cli(); local = tmp_path / "localappdata"; local.mkdir(); monkeypatch.setenv("LOCALAPPDATA", str(local))

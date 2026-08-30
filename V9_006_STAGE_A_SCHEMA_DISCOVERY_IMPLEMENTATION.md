@@ -160,3 +160,16 @@ OutputRoot semantics, expected-SHA semantics, retry behavior, and source-
 family/count methodology are unchanged; there is still exactly one
 acquisition-CLI invocation and no retry path. This remediation awaits GPT
 exact-SHA review.
+
+The Phase-1 CLI failure report now treats the canonical gate reader as the
+authority for post-gate reporting: when a `V9005StageABlocked` failure occurs
+and that reader mechanically returns `true`, it reports
+`gate_consumed=true` and `network_attempt_count="unknown"`, never the
+exception-local count. Mechanically proven pre-gate failures retain their
+exact zero count. A synthetic CLI regression runs the real one-shot/core
+path with an isolated temporary receipt root and one injected F1 HTTP-200
+payload that lacks the frozen `data_j.xls` locator; it proves the terminal
+source/data feasibility failure, one synthetic fetch, and unknown post-gate
+attempt count without real network. Success reporting and every acquisition,
+locator, retry, receipt, confirmation, OutputRoot, and gate semantic remain
+unchanged. This bounded reporting remediation awaits GPT exact-SHA review.
