@@ -6,6 +6,8 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -187,13 +189,30 @@ def load_cli():
 
 def test_cli_exit_codes_and_safe_failure_marker(monkeypatch, tmp_path):
     root, _ = bound_root(monkeypatch, tmp_path); cli = load_cli()
-    monkeypatch.setattr(cli, "run_locator", lambda _root: locator.run_locator(root))
+    monkeypatch.setattr(cli, "_load_locator", lambda: (locator.canonical_json, lambda _root: locator.run_locator(root)))
     out = io.StringIO()
     with contextlib.redirect_stdout(out): assert cli.main(["--output-root", str(root)]) == 0
     assert out.getvalue().count("\n") == 1 and "https://" not in out.getvalue()
-    monkeypatch.setattr(cli, "run_locator", lambda _root: locator._finalize(locator._empty("HTML_STRUCTURE_UNSUPPORTED", locator.EXPECTED_PAYLOAD_SHA256)))
+    monkeypatch.setattr(cli, "_load_locator", lambda: (locator.canonical_json, lambda _root: locator._finalize(locator._empty("HTML_STRUCTURE_UNSUPPORTED", locator.EXPECTED_PAYLOAD_SHA256))))
     assert cli.main(["--output-root", "x"]) == 2
-    monkeypatch.setattr(cli, "run_locator", lambda _root: (_ for _ in ()).throw(RuntimeError("https://secret")))
+    monkeypatch.setattr(cli, "_load_locator", lambda: (_ for _ in ()).throw(RuntimeError("https://secret")))
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr): assert cli.main(["--output-root", "x"]) == 3
+    assert stdout.getvalue() == "" and stderr.getvalue() == "V9_006_F1_SEMANTIC_SUCCESSOR_LOCATOR_IMPLEMENTATION_FAILURE\n"
+
+
+def test_committed_script_bootstraps_from_file_and_reaches_safe_application_failure(tmp_path):
+    script = Path("scripts/run_v9_006_f1_semantic_successor_locator.py").resolve()
+    missing_root = (tmp_path / "nonexistent-output-root").resolve()
+    completed = subprocess.run([sys.executable, str(script), "--output-root", str(missing_root)], cwd=tmp_path, capture_output=True, text=True, check=False)
+    assert completed.returncode == 2 and completed.stderr == "" and "Traceback" not in completed.stdout
+    assert completed.stdout.count("\n") == 1 and str(missing_root) not in completed.stdout and "https://" not in completed.stdout
+    assert json.loads(completed.stdout)["result"] == "INPUT_BINDING_FAILURE"
+
+
+def test_locator_loader_failure_uses_fixed_marker_without_leakage(monkeypatch):
+    cli = load_cli()
+    monkeypatch.setattr(cli, "_load_locator", lambda: (_ for _ in ()).throw(RuntimeError("C:\\private\\secret https://x")))
     stdout, stderr = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr): assert cli.main(["--output-root", "x"]) == 3
     assert stdout.getvalue() == "" and stderr.getvalue() == "V9_006_F1_SEMANTIC_SUCCESSOR_LOCATOR_IMPLEMENTATION_FAILURE\n"
