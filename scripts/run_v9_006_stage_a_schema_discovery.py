@@ -112,7 +112,7 @@ def main(
         # After receipt publication, an exception-local count cannot establish
         # the cumulative Phase-1 request total.  Preserve exact pre-gate zero
         # reporting, but fail safely when the canonical gate is consumed.
-        network_attempt_count: object = "unknown" if gate_consumed is True else exc.network_request_count
+        network_attempt_count: object = exc.network_request_count if gate_consumed is False else "unknown"
         _print(_safe_failure(exc.failure_class, network_attempt_count, gate_consumed))
         return 2
     except Exception:

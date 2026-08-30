@@ -589,7 +589,8 @@ def test_phase1_cli_missing_or_wrong_confirmation_stops_before_one_shot(monkeypa
     monkeypatch.setenv(cli.CONFIRMATION_ENV, "wrong")
     assert cli.main(arguments, fetcher=lambda _url: (_ for _ in ()).throw(AssertionError("network"))) == 2
     assert calls == [] and not (tmp_path / "output").exists()
-    assert all(json.loads(line)["gate_consumed"] is False for line in capsys.readouterr().out.splitlines())
+    reports = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert all(report["gate_consumed"] is False and report["network_attempt_count"] == 0 for report in reports)
 
 
 def test_phase1_cli_post_gate_f1_missing_locator_reports_unknown_attempts(monkeypatch, tmp_path, capsys):
@@ -635,9 +636,17 @@ def test_phase1_cli_pre_gate_state_failures_do_not_fetch(monkeypatch, tmp_path, 
             receipt.write_text("{}", encoding="utf-8")
     else:
         output.mkdir()
-    assert cli.main(["--output-root", str(output), "--execution-sha", "a" * 40], fetcher=lambda _url: (_ for _ in ()).throw(AssertionError("network")), sleep=lambda _seconds: None, clock=lambda: datetime.now(timezone.utc)) == 2
+    fetches = []
+    def synthetic_fetcher(_url):
+        fetches.append(_url)
+        raise AssertionError("network")
+    assert cli.main(["--output-root", str(output), "--execution-sha", "a" * 40], fetcher=synthetic_fetcher, sleep=lambda _seconds: None, clock=lambda: datetime.now(timezone.utc)) == 2
     assert not (output / "V9_006_STAGE_A_SCHEMA_DISCOVERY_PHASE1_RESULT.json").exists()
-    assert json.loads(capsys.readouterr().out)["execution_result"] == "BLOCKED"
+    report = json.loads(capsys.readouterr().out)
+    assert report["execution_result"] == "BLOCKED" and fetches == []
+    if blocked_state == "ambiguous":
+        assert report["gate_consumed"] == "unknown"
+        assert report["network_attempt_count"] == "unknown"
 
 
 def test_phase1_cli_real_one_shot_closure_success_and_post_gate_failure(monkeypatch, tmp_path, capsys):

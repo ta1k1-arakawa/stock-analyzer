@@ -173,3 +173,14 @@ source/data feasibility failure, one synthetic fetch, and unknown post-gate
 attempt count without real network. Success reporting and every acquisition,
 locator, retry, receipt, confirmation, OutputRoot, and gate semantic remain
 unchanged. This bounded reporting remediation awaits GPT exact-SHA review.
+
+The safe failure-report predicate is fail-closed for ambiguous receipt state:
+an exception-local attempt count is emitted only when the canonical gate
+reader mechanically returns `false`; both `true` and `"unknown"` instead
+emit `network_attempt_count="unknown"`. The safe gate-state field itself is
+unchanged. Targeted offline coverage now proves a malformed receipt blocks
+before fetching and emits unknown gate/count values, while retaining both the
+invalid-confirmation pre-gate zero and one-fetch consumed-gate unknown cases.
+No acquisition, locator, retry, receipt, confirmation, OutputRoot, success,
+or gate behavior changed. This MEDIUM_1 remediation awaits GPT exact-SHA
+review.
