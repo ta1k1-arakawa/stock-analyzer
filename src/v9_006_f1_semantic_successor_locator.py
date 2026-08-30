@@ -48,6 +48,17 @@ def _extension(url: str) -> str:
     return "OTHER"
 
 
+def _is_mechanical_candidate(base_url: str, has_href: bool, href: object) -> bool:
+    if not has_href or type(href) is not str:
+        return False
+    try:
+        resolved = urllib.parse.urljoin(base_url, href)
+        _prior.validate_jpx_url(resolved)
+        return _extension(resolved) in _EXTENSIONS
+    except Exception:
+        return False
+
+
 class _Parser(HTMLParser):
     def __init__(self, base_url: str) -> None:
         super().__init__(convert_charrefs=True)
@@ -79,7 +90,7 @@ class _Parser(HTMLParser):
         if self.active is not None: raise _Unsupported()
         hrefs = [value for name, value in attrs if name.lower() == "href"]
         if len(hrefs) > 1: raise _Unsupported()
-        self.active = {"ordinal": len(self.anchors) + 1, "href": hrefs[0] if hrefs else None, "has_href": bool(hrefs), "before": list(self.tokens), "after_index": None}
+        self.active = {"ordinal": len(self.anchors) + 1, "href": hrefs[0] if hrefs else None, "has_href": bool(hrefs), "before": list(self.tokens), "internal_tokens": []}
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -92,8 +103,10 @@ class _Parser(HTMLParser):
         if re.fullmatch(r"h[1-6]", tag): return
         if tag == "a":
             if self.active is None: raise _Unsupported()
-            self.active["after_index"] = len(self.tokens)
-            self.anchors.append(self.active); self.active = None
+            anchor = self.active; self.active = None
+            if not _is_mechanical_candidate(self.base_url, anchor["has_href"], anchor["href"]):
+                self.tokens.extend(anchor["internal_tokens"])
+            self.anchors.append(anchor)
 
     def handle_data(self, data: str) -> None:
         if self.title is not None: self.title.append(data)
@@ -101,7 +114,10 @@ class _Parser(HTMLParser):
             token = _text(data)
             if token:
                 if _prior._UNSAFE_TEXT.search(token): raise _Unsafe()
-                self.tokens.append(token)
+                if self.active is None:
+                    self.tokens.append(token)
+                else:
+                    self.active["internal_tokens"].append(token)
 
     def checked_close(self) -> None:
         self.close()

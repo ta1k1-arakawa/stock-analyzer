@@ -56,6 +56,25 @@ def test_no_preference_and_multiple_qualifiers_are_exposed_for_failure():
     assert len(mechanical) == len(qualified) == 2
 
 
+def test_mechanical_candidate_internal_semantic_tokens_do_not_qualify_later_candidate():
+    raw = b"<a href='a.xls'>" + P1.encode() + b"<p>List of TSE-listed Issues (Jan. 2026)</p></a><a href='b.xlsx'>b</a>"
+    mechanical, qualified = select(raw)
+    assert len(mechanical) == 2 and qualified == []
+
+
+def test_mechanical_candidate_internal_text_does_not_displace_later_external_tokens():
+    raw = b"<a href='a.csv'>arbitrary visible text</a>" + P1.encode() + b"<p>List of TSE-listed Issues (Feb. 2026)</p><a href='b.zip'>b</a>"
+    mechanical, qualified = select(raw)
+    assert len(mechanical) == 2 and len(qualified) == 1
+    assert qualified[0]["raw_href_sha256"] == sha256(b"b.zip").hexdigest()
+
+
+def test_internal_candidate_text_cannot_displace_either_external_semantic_token():
+    raw = b"<a href='a.xls'>" + P1.encode() + b"<p>List of TSE-listed Issues (Jan. 2026)</p></a>" + P1.encode() + b"<p>List of TSE-listed Issues (Mar. 2026)</p><a href='b.xls'>b</a>"
+    _mechanical, qualified = select(raw)
+    assert len(qualified) == 1 and qualified[0]["raw_href_sha256"] == sha256(b"b.xls").hexdigest()
+
+
 @pytest.mark.parametrize("bad", [b"<a href='a.xls' href='b.xls'>x</a>", b"<a><a>x</a></a>", b"<a/>", b"<a>x", b"</a>"])
 def test_inherited_anchor_failures(bad):
     with pytest.raises(locator._Unsupported):
