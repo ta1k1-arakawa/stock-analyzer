@@ -59,28 +59,65 @@ identity, or arbitrary exception text.
 
 ## Deterministic parsing contract
 
-After the binding preconditions PASS, parse only the exact locked HTML bytes.
-Deterministically enumerate HTML anchors and headings in document order.
-Whitespace normalization replaces every maximal Unicode whitespace run with
-one ASCII space and trims leading/trailing whitespace. Title, heading, and
-visible anchor text are normalized then truncated to at most 160 Unicode code
-points; no other text is emitted.
+After the binding preconditions PASS, decode only the exact locked payload
+with UTF-8 `errors="replace"` and parse it with Python stdlib
+`HTMLParser(convert_charrefs=True)`. Anchors are enumerated by `<a>` start-tag
+order; headings are `h1`--`h6` start-tag order. A nested `<a>`, nested tracked
+heading, duplicate `href` attributes, unmatched tracked closing tag, tracked
+self-closing tag, or unclosed tracked state at EOF is
+`HTML_STRUCTURE_UNSUPPORTED`. The tracked title follows the same discipline;
+more than one title element is `HTML_STRUCTURE_UNSUPPORTED`.
 
-For every anchor, determine its ordinal, normalized visible text, nearest
-preceding heading ordinal (or `null`), href presence, and, when a href is
-present and deterministic URL resolution can be performed from the locked
-document context alone, whether resolution remains on the JPX domain. A
-failure to make that determination is `"unknown"`, not a guess. Classify a
-present target only into this closed enum:
+Anchor visible text is the concatenation of `handle_data` events while that
+anchor is active, including text in ordinary nested elements. Heading and
+title text use the same rule. Normalize every such text with Unicode regex
+`\s+` to one ASCII space, strip, then take `[:160]` Unicode code points.
+Before safe emission, the safe-output validator rejects any normalized title,
+heading, or anchor visible text containing case-insensitive `http://`,
+`https://`, or `file:`, or a Windows drive path matching
+`[A-Za-z]:[\\/]`; this is `SAFE_OUTPUT_VALIDATION_FAILURE`, with no redaction
+or substitute-and-continue behavior.
+
+For every anchor, emit its ordinal, normalized visible text, and the nearest
+preceding heading ordinal (or `null`). The latter is the most recent heading
+start-tag ordinal observed before the anchor start-tag, including a heading
+currently containing that anchor. Determine href semantics exactly as follows:
+
+- No href attribute: `href_present=false`,
+  `same_jpx_domain_after_resolution="unknown"`, extension `NONE`, and both
+  URL hashes `null`.
+- Exactly one href attribute: `href_present=true`. If its value is `None`,
+  set same-domain to `"unknown"`, extension to `OTHER`, and both hashes to
+  `null`.
+- A string href, including the empty string: `raw_href_sha256` is SHA-256 of
+  the exact HTMLParser-decoded href UTF-8 bytes.
+
+The only resolution base is canonical raw-lock metadata `resolved_url`;
+`requested_url` must never be used. During input binding, that metadata
+`resolved_url` must itself pass the existing `validate_jpx_url` contract.
+Resolve a string href only with `urllib.parse.urljoin(locked_resolved_url,
+raw_href)` and SHA-256 the exact result's UTF-8 bytes as
+`resolved_url_sha256`. `same_jpx_domain_after_resolution=true` only when that
+result passes the existing `validate_jpx_url` contract; a deterministic
+resolution whose JPX validation fails is `false`. Any URL-resolution or URL-
+parsing exception gives `"unknown"` and a `null` resolved hash.
+
+For `href_present=true`, if no resolved URL exists the extension is `OTHER`.
+Otherwise inspect only `urllib.parse.urlsplit(resolved_url).path`, percent-
+decode exactly once with `urllib.parse.unquote`, lowercase, and map its final
+suffix exactly as follows; query and fragment text never affect the class:
 
 ```text
 XLS | XLSX | CSV | ZIP | PDF | HTML | OTHER | NONE
 ```
 
-`NONE` applies only when no href is present. For present hrefs, emit the
-SHA-256 of the raw href and the SHA-256 of the resolved URL when resolution
-succeeds; otherwise the relevant value is `null`. These hashes are evidence
-identities only and must never be reverse-used to guess URLs.
+```text
+.xls -> XLS     .xlsx -> XLSX     .csv -> CSV     .zip -> ZIP
+.pdf -> PDF     .html/.htm -> HTML     otherwise -> OTHER
+```
+
+These hashes are evidence identities only and must never be reverse-used to
+guess URLs.
 
 The deterministic candidate subset contains exactly anchors where
 `href_present=true`, `same_jpx_domain_after_resolution=true`, and
@@ -139,12 +176,28 @@ increasing, unique, and references only matching entries in `anchors`.
 `structural_evidence_sha256` is SHA-256 of the canonical JSON UTF-8 encoding
 of all safe result fields except `structural_evidence_sha256` itself.
 
-For failure results, no field may invent a parse observation: binding failure
-uses `NOT_PARSED`, zero counts, and empty arrays; HTML-structure or safe-output
-validation failure retains only observations mechanically validated for safe
-emission. `locator_decision`, `replacement_locator_authorized`, and
-`network_requests` remain exactly `"NOT_MADE"`, `false`, and `0` in every
-result class.
+Failure output is mechanically closed. For `INPUT_BINDING_FAILURE`, use
+`NOT_PARSED`, `title=null`, zero counts, empty arrays, and candidate count
+zero; `metadata_identity_verified` is true only if that exact check passed,
+`payload_binding_verified` is true only if metadata passed and byte/hash
+passed, and `raw_provenance_verified` is true only if prior bindings passed
+and provenance passed (otherwise each respective boolean is false). Emit no
+partial parse observations.
+
+For `HTML_STRUCTURE_UNSUPPORTED`, all three input-verification booleans are
+true, `document_parse_status=UNSUPPORTED`, `title=null`, all counts are zero,
+all arrays empty, and candidate count zero; discard every partial parser
+observation. For `SAFE_OUTPUT_VALIDATION_FAILURE`, all three input-
+verification booleans are true, `document_parse_status=PARSED`, `title=null`,
+all counts zero, all arrays empty, and candidate count zero; discard every
+otherwise parsed observation. Only `EVIDENCE_CAPTURED` has all three
+verification booleans true, `document_parse_status=PARSED`, and complete
+validated evidence.
+
+For every result class, `locator_decision`, `replacement_locator_authorized`,
+and `network_requests` remain exactly `"NOT_MADE"`, `false`, and `0`.
+`structural_evidence_sha256` is computed over the complete closed safe object,
+excluding only `structural_evidence_sha256` itself.
 
 ## Decision separation and topology
 
