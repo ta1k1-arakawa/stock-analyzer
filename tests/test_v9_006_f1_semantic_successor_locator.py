@@ -125,6 +125,46 @@ def test_offline_runner_success_and_ambiguity_are_safe(monkeypatch, tmp_path):
     assert result["result"] == "SOURCE_OR_DATA_FEASIBILITY_FAILURE" and result["mechanical_candidate_count"] == result["qualifying_candidate_count"] == 0 and result["input_payload_sha256"] == digest
 
 
+def test_post_uniqueness_revalidation_passes_and_safe_result_has_no_raw_values(monkeypatch, tmp_path):
+    root, _digest = bound_root(monkeypatch, tmp_path)
+    result = locator.run_locator(root)
+    assert result["result"] == "SUCCESSOR_LOCATOR_MATCHED"
+    rendered = locator.canonical_json(result)
+    assert '"raw_href":' not in rendered and "a.xls" not in rendered and "https://" not in rendered
+
+
+def test_post_uniqueness_validation_failure_is_post_binding_input_failure(monkeypatch, tmp_path):
+    root, digest = bound_root(monkeypatch, tmp_path)
+    monkeypatch.setattr(locator, "_post_uniqueness_revalidate", lambda _base, _candidate: False)
+    result = locator.run_locator(root)
+    assert result["result"] == "INPUT_BINDING_FAILURE" and result["input_payload_sha256"] == digest
+    assert result["mechanical_candidate_count"] == result["qualifying_candidate_count"] == 0
+    assert result["selected_raw_href_sha256"] is result["selected_resolved_url_sha256"] is None
+
+
+def test_post_uniqueness_detects_recomputed_url_and_hash_mismatch():
+    _mechanical, qualified = locator._locate_private(html(), BASE)
+    selected = qualified[0]
+    altered_url = dict(selected); altered_url["resolved_url"] = BASE
+    assert locator._post_uniqueness_revalidate(BASE, altered_url) is False
+    altered_hash = dict(selected); altered_hash["resolved_url_sha256"] = "0" * 64
+    assert locator._post_uniqueness_revalidate(BASE, altered_hash) is False
+
+
+def test_second_validate_failure_is_confined_to_post_uniqueness_step(monkeypatch):
+    _mechanical, qualified = locator._locate_private(html(), BASE)
+    monkeypatch.setattr(locator._prior, "validate_jpx_url", lambda _url: (_ for _ in ()).throw(ValueError("second only")))
+    assert locator._post_uniqueness_revalidate(BASE, qualified[0]) is False
+
+
+def test_zero_or_multiple_matches_skip_post_uniqueness_revalidation(monkeypatch, tmp_path):
+    monkeypatch.setattr(locator, "_post_uniqueness_revalidate", lambda _base, _candidate: (_ for _ in ()).throw(AssertionError("unexpected")))
+    root, _ = bound_root(monkeypatch, tmp_path, html(p1="wrong"))
+    assert locator.run_locator(root)["result"] == "SOURCE_OR_DATA_FEASIBILITY_FAILURE"
+    root, _ = bound_root(monkeypatch, tmp_path / "multiple", html() + html("b.xlsx", "List of TSE-listed Issues (Feb. 2026)"))
+    assert locator.run_locator(root)["result"] == "SOURCE_OR_DATA_FEASIBILITY_FAILURE"
+
+
 def rehash(value):
     value["structural_evidence_sha256"] = sha256(locator.canonical_json({k: v for k, v in value.items() if k != "structural_evidence_sha256"}).encode()).hexdigest(); return value
 

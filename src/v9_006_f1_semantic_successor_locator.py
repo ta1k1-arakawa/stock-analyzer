@@ -124,8 +124,12 @@ class _Parser(HTMLParser):
         if self.active is not None or self.title is not None or any(self.depth.values()): raise _Unsupported()
 
 
-def locate_html(raw: bytes, resolved_root_url: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """Return mechanical and semantically qualifying candidates; never emits URLs."""
+def _safe_candidate(candidate: dict[str, str]) -> dict[str, str]:
+    return {key: candidate[key] for key in ("raw_href_sha256", "resolved_url_sha256")}
+
+
+def _locate_private(raw: bytes, resolved_root_url: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Return private candidates; callers must never serialize raw hrefs or URLs."""
     parser = _Parser(resolved_root_url)
     try:
         parser.feed(raw.decode("utf-8", errors="replace")); parser.checked_close()
@@ -142,12 +146,28 @@ def locate_html(raw: bytes, resolved_root_url: str) -> tuple[list[dict[str, str]
         except Exception:
             continue
         if _extension(resolved) not in _EXTENSIONS: continue
-        item = {"raw_href_sha256": sha256(href.encode("utf-8")).hexdigest(), "resolved_url_sha256": sha256(resolved.encode("utf-8")).hexdigest()}
+        item = {"raw_href": href, "resolved_url": resolved, "raw_href_sha256": sha256(href.encode("utf-8")).hexdigest(), "resolved_url_sha256": sha256(resolved.encode("utf-8")).hexdigest()}
         mechanical.append(item)
         before = anchor["before"]
         if len(before) >= 2 and _YEAR.fullmatch(before[-1]) and before[-2] == _P1:
             qualified.append(item)
     return mechanical, qualified
+
+
+def locate_html(raw: bytes, resolved_root_url: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Return hash-only mechanical and semantically qualifying candidates."""
+    mechanical, qualified = _locate_private(raw, resolved_root_url)
+    return [_safe_candidate(item) for item in mechanical], [_safe_candidate(item) for item in qualified]
+
+
+def _post_uniqueness_revalidate(bound_resolved_root_url: str, selected: dict[str, str]) -> bool:
+    """Re-resolve/re-validate the private selected href and require exact identity."""
+    try:
+        recomputed = urllib.parse.urljoin(bound_resolved_root_url, selected["raw_href"])
+        _prior.validate_jpx_url(recomputed)
+        return recomputed == selected["resolved_url"] and sha256(recomputed.encode("utf-8")).hexdigest() == selected["resolved_url_sha256"]
+    except Exception:
+        return False
 
 
 def _empty(result: str, payload: str | None = None) -> dict[str, object]:
@@ -203,7 +223,7 @@ def run_locator(output_root: object) -> dict[str, object]:
     except Exception:
         return _finalize(_empty("INPUT_BINDING_FAILURE"))
     try:
-        mechanical, qualifying = locate_html(raw, base)
+        mechanical, qualifying = _locate_private(raw, base)
     except _Unsupported:
         return _finalize(_empty("HTML_STRUCTURE_UNSUPPORTED", EXPECTED_PAYLOAD_SHA256))
     except _Unsafe:
@@ -211,4 +231,6 @@ def run_locator(output_root: object) -> dict[str, object]:
     if len(qualifying) != 1:
         return _finalize(_empty("SOURCE_OR_DATA_FEASIBILITY_FAILURE", EXPECTED_PAYLOAD_SHA256))
     selected = qualifying[0]
+    if not _post_uniqueness_revalidate(base, selected):
+        return _finalize(_empty("INPUT_BINDING_FAILURE", EXPECTED_PAYLOAD_SHA256))
     return _finalize({"schema_version": SCHEMA_VERSION, "task": TASK, "input_payload_sha256": EXPECTED_PAYLOAD_SHA256, "result": "SUCCESSOR_LOCATOR_MATCHED", "mechanical_candidate_count": len(mechanical), "qualifying_candidate_count": 1, "selected_raw_href_sha256": selected["raw_href_sha256"], "selected_resolved_url_sha256": selected["resolved_url_sha256"], "network_requests": 0, "replacement_locator_authorized": False})
