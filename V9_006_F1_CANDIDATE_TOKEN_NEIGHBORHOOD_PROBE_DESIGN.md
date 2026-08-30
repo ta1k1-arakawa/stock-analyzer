@@ -83,6 +83,48 @@ anchor/title/heading structural failures remain failures. Track nesting depth
 for `script`, `style`, `noscript`, and `template`; a `handle_data` event is
 eligible only when every depth is zero.
 
+### Closed tracked parser state
+
+Every tracked tag comparison uses `tag.lower()`, including anchors, title,
+headings, the four suppression tags, and `img`. Every duplicate-attribute
+comparison for candidate-anchor `title`, `aria-label`, and `download`, and
+for image `alt`, `title`, and `src`, uses `name.lower()`, even if the current
+`HTMLParser` happens to normalize attribute names.
+
+The suppression-tag set is exactly `script`, `style`, `noscript`, and
+`template`. Maintain one independent nonnegative depth integer for each tag.
+For a `handle_starttag` of one of those tags, increment only that tag's depth
+by exactly one. For its `handle_endtag`, depth zero is
+`HTML_STRUCTURE_UNSUPPORTED`; otherwise decrement only that tag's depth by
+exactly one. A `handle_startendtag` for one of those tags is an atomic
+open-and-close: it leaves all depths unchanged and creates no persistent
+suppression state. At EOF, any nonzero suppression depth is
+`HTML_STRUCTURE_UNSUPPORTED`. Nested same-tag and cross-tag occurrences are
+allowed. An event is eligible for the token stream if and only if all four
+depths are exactly zero at that `handle_data` event.
+
+The candidate identity is the global `<a>` `handle_starttag` ordinal used by
+the reviewed prior diagnostic. Its ordinal counting and candidate start/end
+processing are independent of all suppression depths. At a candidate start
+tag, capture `title`, `aria-label`, and `download` exactly from that event.
+Nested anchors, a tracked candidate self-closing anchor, an unmatched tracked
+candidate closing anchor, or a candidate still active at EOF are
+`HTML_STRUCTURE_UNSUPPORTED`. The inherited prior-diagnostic tracked-anchor
+self-closing rule remains in force for every `<a/>`; no self-closing anchor
+can create a successful probe result.
+
+While candidate 52 or 55 is active, both `handle_starttag("img")` and
+`handle_startendtag("img")` count exactly one image; an explicit
+`handle_endtag("img")` has no count or state effect. Every counted event
+increments `total_image_count` once and receives
+`image_ordinal_within_candidate` starting at exactly 1 in image-event
+document order. Emit only the first eight counted images, while every counted
+image contributes to `total_image_count`. Image counting is independent of
+all four suppression depths, preserving the literal descendant-image
+contract. Capture image attributes from that exact start/startend event;
+duplicate `alt`, `title`, or `src` on any counted image is
+`HTML_STRUCTURE_UNSUPPORTED`.
+
 For each eligible event, apply the existing `_text` rule: Unicode-regex
 whitespace to one ASCII space, strip, then at most 160 Unicode code points.
 Empty normalized values are not tokens. Non-empty values receive
@@ -103,12 +145,26 @@ For each candidate independently:
 - Each token has exactly `data_token_ordinal` (positive exact integer) and
   `normalized_text` (canonical safe text). Duplicate text stays distinct.
 
+Candidate-internal eligible data may receive global token ordinals but is
+excluded from both neighborhoods. The candidate start-tag boundary precedes
+any candidate-internal data; the matching candidate end-tag boundary precedes
+every subsequently eligible following-data event. Thus preceding remains
+nearest-first/descending global token ordinal and following remains
+nearest-first/ascending global token ordinal.
+
 Candidate anchors may not nest. A duplicate `title`, `aria-label`, or
 `download` attribute on a candidate anchor is `HTML_STRUCTURE_UNSUPPORTED`.
 Nested `<img>` is allowed while a candidate is active, but duplicate `alt`,
 `title`, or `src` on an image is unsupported. Unclosed tracked candidate
 state at EOF or unmatched tracked closes are unsupported. Ordinary nested
 elements contribute eligible data normally.
+
+Any malformed suppression, candidate, or counted-image tracked state defined
+above is `HTML_STRUCTURE_UNSUPPORTED` and uses the already-frozen mechanically
+empty failure output. No partial candidate context may be emitted. A
+noncandidate image, and a noncandidate explicit `</img>`, has no probe-image
+state or output effect; this is the necessary start/end/state closure for the
+literal descendant-image contract and does not alter evidence methodology.
 
 ## Candidate context contract
 
