@@ -138,6 +138,41 @@ def test_validator_rejects_input_binding_failure_with_all_true_flags(monkeypatch
     with pytest.raises(ValueError): diag.validate_safe_result(value)
 
 
+@pytest.mark.parametrize("field, replacement", [
+    ("total_anchor_count", False),
+    ("candidate_count", 0.0),
+])
+def test_validator_rejects_noncanonical_failure_counts(monkeypatch, field, replacement):
+    configure_synthetic(monkeypatch)
+    value = diag._empty("INPUT_BINDING_FAILURE", (False, False, False), "NOT_PARSED")
+    value[field] = replacement; rehash(value)
+    with pytest.raises(ValueError): diag.validate_safe_result(value)
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda value: value["anchors"][0].update(same_jpx_domain_after_resolution=1),
+    lambda value: value["anchors"][0].update(same_jpx_domain_after_resolution=0),
+    lambda value: value.update(title="  Title  "),
+    lambda value: value["headings"][0].update(normalized_text="Head\t  text"),
+    lambda value: value["anchors"][0].update(normalized_visible_text="Visible  text"),
+])
+def test_validator_rejects_noncanonical_safe_primitives(monkeypatch, tmp_path, mutate):
+    raw = configure_synthetic(monkeypatch, b"<title>Title</title><h1>Head text</h1><a href='x.xls'>Visible text</a>")
+    value = json.loads(diag.canonical_json(diag.run_diagnostic(output_root(tmp_path, raw))))
+    mutate(value); rehash(value)
+    with pytest.raises(ValueError): diag.validate_safe_result(value)
+
+
+def test_validator_rejects_decreasing_nearest_heading_ordinals(monkeypatch, tmp_path):
+    raw = configure_synthetic(monkeypatch, b"<h1>one</h1><a href='one.xls'>one</a><h2>two</h2><a href='two.xls'>two</a>")
+    value = json.loads(diag.canonical_json(diag.run_diagnostic(output_root(tmp_path, raw))))
+    assert [item["nearest_preceding_heading_ordinal"] for item in value["anchors"]] == [1, 2]
+    value["anchors"][0]["nearest_preceding_heading_ordinal"] = 2
+    value["anchors"][1]["nearest_preceding_heading_ordinal"] = 1
+    rehash(value)
+    with pytest.raises(ValueError): diag.validate_safe_result(value)
+
+
 def load_cli():
     path = Path("scripts/run_v9_006_f1_locked_root_locator_successor_diagnostic.py")
     spec = importlib.util.spec_from_file_location("f1_successor_cli", path); assert spec and spec.loader

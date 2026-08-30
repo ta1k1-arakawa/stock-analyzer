@@ -248,24 +248,32 @@ def validate_safe_result(value: object) -> None:
     elif result == "HTML_STRUCTURE_UNSUPPORTED": expected = "UNSUPPORTED"
     else: expected = "PARSED"
     if status != expected: raise ValueError("invalid status")
+    counts = ("total_anchor_count", "total_heading_count", "candidate_count")
+    if any(type(value[key]) is not int or value[key] < 0 for key in counts): raise ValueError("invalid counts")
+    if any(type(value[key]) is not list for key in ("headings", "anchors", "candidate_anchor_ordinals")): raise ValueError("invalid arrays")
     empty = value["title"] is None and value["total_anchor_count"] == 0 and value["total_heading_count"] == 0 and value["headings"] == [] and value["anchors"] == [] and value["candidate_anchor_ordinals"] == [] and value["candidate_count"] == 0
     if result != "EVIDENCE_CAPTURED":
         if not empty or (result != "INPUT_BINDING_FAILURE" and flags != (True, True, True)): raise ValueError("invalid failure")
         if result == "INPUT_BINDING_FAILURE" and flags not in {(False, False, False), (True, False, False), (True, True, False)}: raise ValueError("invalid sequential flags")
         return
-    if flags != (True, True, True) or not isinstance(value["title"], (str, type(None))) or (isinstance(value["title"], str) and (len(value["title"]) > 160 or _UNSAFE_TEXT.search(value["title"]))) or any(type(value[key]) is not int or value[key] < 0 for key in ("total_anchor_count", "total_heading_count", "candidate_count")): raise ValueError("invalid captured")
+    if flags != (True, True, True) or (value["title"] is not None and type(value["title"]) is not str) or (type(value["title"]) is str and (len(value["title"]) > 160 or _UNSAFE_TEXT.search(value["title"]) or _text(value["title"]) != value["title"])): raise ValueError("invalid captured")
     headings, anchors, candidates = value["headings"], value["anchors"], value["candidate_anchor_ordinals"]
-    if not isinstance(headings, list) or not isinstance(anchors, list) or not isinstance(candidates, list) or len(headings) != value["total_heading_count"] or len(anchors) != value["total_anchor_count"] or len(candidates) != value["candidate_count"]: raise ValueError("invalid counts")
+    if len(headings) != value["total_heading_count"] or len(anchors) != value["total_anchor_count"] or len(candidates) != value["candidate_count"]: raise ValueError("invalid counts")
     if any(not isinstance(item, dict) or type(item.get("ordinal")) is not int for item in headings) or [item["ordinal"] for item in headings] != list(range(1, len(headings) + 1)): raise ValueError("heading order")
     for item in headings:
-        if set(item) != {"ordinal", "level", "normalized_text"} or type(item["level"]) is not int or not 1 <= item["level"] <= 6 or not isinstance(item["normalized_text"], str) or len(item["normalized_text"]) > 160 or _UNSAFE_TEXT.search(item["normalized_text"]): raise ValueError("heading")
+        if set(item) != {"ordinal", "level", "normalized_text"} or type(item["level"]) is not int or not 1 <= item["level"] <= 6 or type(item["normalized_text"]) is not str or len(item["normalized_text"]) > 160 or _UNSAFE_TEXT.search(item["normalized_text"]) or _text(item["normalized_text"]) != item["normalized_text"]: raise ValueError("heading")
     if any(not isinstance(item, dict) or type(item.get("anchor_ordinal")) is not int for item in anchors) or [item["anchor_ordinal"] for item in anchors] != list(range(1, len(anchors) + 1)): raise ValueError("anchor order")
     expected_candidates: list[int] = []
+    prior_nearest = 0
     for item in anchors:
         if not isinstance(item, dict) or set(item) != {"anchor_ordinal", "normalized_visible_text", "nearest_preceding_heading_ordinal", "href_present", "same_jpx_domain_after_resolution", "target_extension_class", "raw_href_sha256", "resolved_url_sha256"}: raise ValueError("anchor")
-        if not isinstance(item["normalized_visible_text"], str) or len(item["normalized_visible_text"]) > 160 or _UNSAFE_TEXT.search(item["normalized_visible_text"]) or type(item["href_present"]) is not bool or item["same_jpx_domain_after_resolution"] not in (True, False, "unknown") or item["target_extension_class"] not in EXTENSIONS: raise ValueError("anchor")
+        same = item["same_jpx_domain_after_resolution"]
+        if type(item["normalized_visible_text"]) is not str or len(item["normalized_visible_text"]) > 160 or _UNSAFE_TEXT.search(item["normalized_visible_text"]) or _text(item["normalized_visible_text"]) != item["normalized_visible_text"] or type(item["href_present"]) is not bool or not (type(same) is bool or (type(same) is str and same == "unknown")) or item["target_extension_class"] not in EXTENSIONS: raise ValueError("anchor")
         nearest = item["nearest_preceding_heading_ordinal"]
         if nearest is not None and (type(nearest) is not int or not 1 <= nearest <= len(headings)): raise ValueError("nearest")
+        mapped_nearest = 0 if nearest is None else nearest
+        if mapped_nearest < prior_nearest: raise ValueError("nearest order")
+        prior_nearest = mapped_nearest
         for key in ("raw_href_sha256", "resolved_url_sha256"):
             if item[key] is not None and (not isinstance(item[key], str) or _HEX.fullmatch(item[key]) is None): raise ValueError("url hash")
         if not item["href_present"] and (item["same_jpx_domain_after_resolution"] != "unknown" or item["target_extension_class"] != "NONE" or item["raw_href_sha256"] is not None or item["resolved_url_sha256"] is not None): raise ValueError("no href")
