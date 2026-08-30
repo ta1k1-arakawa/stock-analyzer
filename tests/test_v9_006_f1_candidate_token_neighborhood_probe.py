@@ -328,9 +328,76 @@ def evidence_result(monkeypatch, tmp_path):
     return probe.run_probe(root)
 
 
+def evidence_result_with_neighbors(monkeypatch, tmp_path):
+    root, _raw = build_bound(monkeypatch, tmp_path, mid52="", mid55="")
+    result = probe.run_probe(root)
+    prior_result = diag.run_diagnostic(root)
+    prior_by_ordinal = {item["anchor_ordinal"]: item for item in prior_result["anchors"]}
+    expected_neighbors = probe._build_expected_neighbors(prior_by_ordinal)
+    return json.loads(probe.canonical_json(result)), expected_neighbors
+
+
 def rehash(value: dict[str, object]) -> dict[str, object]:
     value["structural_evidence_sha256"] = sha256(probe.canonical_json({k: v for k, v in value.items() if k != "structural_evidence_sha256"}).encode()).hexdigest()
     return value
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM_1: adjacent-anchor safe summaries must be exactly bound to the same
+# recomputed prior diagnostic, not merely schema/ordering plausible.
+# ---------------------------------------------------------------------------
+
+def test_validator_accepts_the_real_exact_neighbor_binding(monkeypatch, tmp_path):
+    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
+    probe.validate_safe_result(result, expected_neighbors=expected)
+    assert [item["anchor_ordinal"] for item in expected[52]["previous"]] == [51, 50, 49]
+    assert [item["anchor_ordinal"] for item in expected[52]["next"]] == [53, 54, 55]
+    assert [item["anchor_ordinal"] for item in expected[55]["previous"]] == [54, 53, 52]
+    assert [item["anchor_ordinal"] for item in expected[55]["next"]] == [56, 57, 58]
+
+
+def test_validator_rejects_candidate_52_previous_summaries_emptied(monkeypatch, tmp_path):
+    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
+    result["candidate_contexts"][0]["previous_anchor_summaries"] = []
+    rehash(result)
+    with pytest.raises(ValueError):
+        probe.validate_safe_result(result, expected_neighbors=expected)
+
+
+def test_validator_rejects_candidate_52_previous_summaries_shifted_by_one(monkeypatch, tmp_path):
+    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
+    for item in result["candidate_contexts"][0]["previous_anchor_summaries"]:
+        item["anchor_ordinal"] -= 1
+    rehash(result)
+    with pytest.raises(ValueError):
+        probe.validate_safe_result(result, expected_neighbors=expected)
+
+
+def test_validator_rejects_candidate_52_next_summary_with_one_field_altered(monkeypatch, tmp_path):
+    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
+    next_summaries = result["candidate_contexts"][0]["next_anchor_summaries"]
+    assert next_summaries[0]["anchor_ordinal"] == 53
+    next_summaries[0]["normalized_visible_text"] = "tampered"
+    rehash(result)
+    with pytest.raises(ValueError):
+        probe.validate_safe_result(result, expected_neighbors=expected)
+
+
+def test_validator_rejects_candidate_55_previous_list_missing_ordinal_52(monkeypatch, tmp_path):
+    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
+    result["candidate_contexts"][1]["previous_anchor_summaries"] = result["candidate_contexts"][1]["previous_anchor_summaries"][:2]
+    rehash(result)
+    with pytest.raises(ValueError):
+        probe.validate_safe_result(result, expected_neighbors=expected)
+
+
+def test_validator_rejects_candidate_55_next_list_replaced_wholesale(monkeypatch, tmp_path):
+    result, expected = evidence_result_with_neighbors(monkeypatch, tmp_path)
+    substitute = [dummy_summary(ordinal) for ordinal in (56, 57, 58)]
+    result["candidate_contexts"][1]["next_anchor_summaries"] = substitute
+    rehash(result)
+    with pytest.raises(ValueError):
+        probe.validate_safe_result(result, expected_neighbors=expected)
 
 
 def test_validator_accepts_valid_result_and_rejects_extra_key(monkeypatch, tmp_path):
