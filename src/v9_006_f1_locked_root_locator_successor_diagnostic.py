@@ -251,15 +251,15 @@ def validate_safe_result(value: object) -> None:
     empty = value["title"] is None and value["total_anchor_count"] == 0 and value["total_heading_count"] == 0 and value["headings"] == [] and value["anchors"] == [] and value["candidate_anchor_ordinals"] == [] and value["candidate_count"] == 0
     if result != "EVIDENCE_CAPTURED":
         if not empty or (result != "INPUT_BINDING_FAILURE" and flags != (True, True, True)): raise ValueError("invalid failure")
-        if result == "INPUT_BINDING_FAILURE" and (flags[1] and not flags[0] or flags[2] and not flags[1]): raise ValueError("invalid sequential flags")
+        if result == "INPUT_BINDING_FAILURE" and flags not in {(False, False, False), (True, False, False), (True, True, False)}: raise ValueError("invalid sequential flags")
         return
     if flags != (True, True, True) or not isinstance(value["title"], (str, type(None))) or (isinstance(value["title"], str) and (len(value["title"]) > 160 or _UNSAFE_TEXT.search(value["title"]))) or any(type(value[key]) is not int or value[key] < 0 for key in ("total_anchor_count", "total_heading_count", "candidate_count")): raise ValueError("invalid captured")
     headings, anchors, candidates = value["headings"], value["anchors"], value["candidate_anchor_ordinals"]
     if not isinstance(headings, list) or not isinstance(anchors, list) or not isinstance(candidates, list) or len(headings) != value["total_heading_count"] or len(anchors) != value["total_anchor_count"] or len(candidates) != value["candidate_count"]: raise ValueError("invalid counts")
-    if [item.get("ordinal") for item in headings if isinstance(item, dict)] != list(range(1, len(headings) + 1)): raise ValueError("heading order")
+    if any(not isinstance(item, dict) or type(item.get("ordinal")) is not int for item in headings) or [item["ordinal"] for item in headings] != list(range(1, len(headings) + 1)): raise ValueError("heading order")
     for item in headings:
         if set(item) != {"ordinal", "level", "normalized_text"} or type(item["level"]) is not int or not 1 <= item["level"] <= 6 or not isinstance(item["normalized_text"], str) or len(item["normalized_text"]) > 160 or _UNSAFE_TEXT.search(item["normalized_text"]): raise ValueError("heading")
-    if [item.get("anchor_ordinal") for item in anchors if isinstance(item, dict)] != list(range(1, len(anchors) + 1)): raise ValueError("anchor order")
+    if any(not isinstance(item, dict) or type(item.get("anchor_ordinal")) is not int for item in anchors) or [item["anchor_ordinal"] for item in anchors] != list(range(1, len(anchors) + 1)): raise ValueError("anchor order")
     expected_candidates: list[int] = []
     for item in anchors:
         if not isinstance(item, dict) or set(item) != {"anchor_ordinal", "normalized_visible_text", "nearest_preceding_heading_ordinal", "href_present", "same_jpx_domain_after_resolution", "target_extension_class", "raw_href_sha256", "resolved_url_sha256"}: raise ValueError("anchor")
@@ -269,5 +269,12 @@ def validate_safe_result(value: object) -> None:
         for key in ("raw_href_sha256", "resolved_url_sha256"):
             if item[key] is not None and (not isinstance(item[key], str) or _HEX.fullmatch(item[key]) is None): raise ValueError("url hash")
         if not item["href_present"] and (item["same_jpx_domain_after_resolution"] != "unknown" or item["target_extension_class"] != "NONE" or item["raw_href_sha256"] is not None or item["resolved_url_sha256"] is not None): raise ValueError("no href")
+        if item["href_present"]:
+            if item["raw_href_sha256"] is None:
+                if item["same_jpx_domain_after_resolution"] != "unknown" or item["target_extension_class"] != "OTHER" or item["resolved_url_sha256"] is not None: raise ValueError("none href")
+            elif item["target_extension_class"] == "NONE": raise ValueError("string href")
+            elif item["same_jpx_domain_after_resolution"] == "unknown":
+                if item["resolved_url_sha256"] is not None or item["target_extension_class"] != "OTHER": raise ValueError("unknown href")
+            elif item["resolved_url_sha256"] is None: raise ValueError("resolved href")
         if item["href_present"] and item["same_jpx_domain_after_resolution"] is True and item["target_extension_class"] in {"XLS", "XLSX", "CSV", "ZIP"}: expected_candidates.append(item["anchor_ordinal"])
-    if candidates != expected_candidates: raise ValueError("candidates")
+    if any(type(item) is not int for item in candidates) or candidates != expected_candidates: raise ValueError("candidates")

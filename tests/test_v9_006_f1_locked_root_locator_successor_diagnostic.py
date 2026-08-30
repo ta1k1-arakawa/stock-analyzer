@@ -109,6 +109,35 @@ def test_closed_validator_hash_and_negative_schema_cases(monkeypatch, tmp_path):
     assert digest == sha256(diag.canonical_json(digestless).encode()).hexdigest()
 
 
+def rehash(value):
+    value["structural_evidence_sha256"] = sha256(diag.canonical_json({key: item for key, item in value.items() if key != "structural_evidence_sha256"}).encode()).hexdigest()
+    return value
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda value: value["headings"][0].__setitem__("ordinal", True),
+    lambda value: value["anchors"][0].__setitem__("anchor_ordinal", True),
+    lambda value: value.__setitem__("candidate_anchor_ordinals", [True]),
+    lambda value: value["anchors"][0].update(raw_href_sha256=None, resolved_url_sha256=None),
+    lambda value: value["anchors"][0].update(raw_href_sha256=None, same_jpx_domain_after_resolution=False),
+    lambda value: value["anchors"][0].update(same_jpx_domain_after_resolution="unknown"),
+    lambda value: value["anchors"][0].update(href_present=False, target_extension_class="XLS"),
+    lambda value: value["anchors"][0].update(target_extension_class="NONE"),
+])
+def test_validator_rejects_closed_ordinal_and_href_matrix_violations(monkeypatch, tmp_path, mutate):
+    raw = configure_synthetic(monkeypatch, b"<h1>head</h1><a href='x.xls'>x</a>")
+    value = json.loads(diag.canonical_json(diag.run_diagnostic(output_root(tmp_path, raw))))
+    mutate(value); rehash(value)
+    with pytest.raises(ValueError): diag.validate_safe_result(value)
+
+
+def test_validator_rejects_input_binding_failure_with_all_true_flags(monkeypatch):
+    configure_synthetic(monkeypatch)
+    value = diag._empty("INPUT_BINDING_FAILURE", (True, True, False), "NOT_PARSED")
+    value["input"]["raw_provenance_verified"] = True; rehash(value)
+    with pytest.raises(ValueError): diag.validate_safe_result(value)
+
+
 def load_cli():
     path = Path("scripts/run_v9_006_f1_locked_root_locator_successor_diagnostic.py")
     spec = importlib.util.spec_from_file_location("f1_successor_cli", path); assert spec and spec.loader
