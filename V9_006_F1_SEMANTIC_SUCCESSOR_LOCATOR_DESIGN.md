@@ -105,13 +105,14 @@ An anchor is a mechanical candidate if and only if all three hold:
    =true`);
 3. the resolved URL's path-only extension, classified by the same one-pass
    suffix mapping already frozen for the successor diagnostic, is in the
-   spreadsheet class `{XLS, XLSX}` -- the same class the completed successor
-   diagnostic and candidate-neighborhood probe already used to admit
-   candidates 52 and 55.
+   spreadsheet class `{XLS, XLSX, CSV, ZIP}` -- exactly the reviewed
+   successor-diagnostic mechanical candidate subset.
 
-This mechanical population step never inspects, ranks, or prefers one
-extension in `{XLS, XLSX}` over the other; both are equally eligible
+This mechanical population step never inspects, ranks, prefers, or excludes
+any extension in `{XLS, XLSX, CSV, ZIP}`; all four are equally eligible
 candidates, and extension is never a selection signal at any later step.
+Inclusion in this mechanical population is not proof that an object is F1;
+only the exact Section 3 semantic rule performs that qualification.
 
 ## 3. Semantic qualification
 
@@ -144,7 +145,7 @@ hold:
   pattern against the canonical `_text`-normalized token:
 
   ```text
-  ^List of TSE-listed Issues \((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\. \d{4}\)$
+  ^List of TSE-listed Issues \((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\. [0-9]{4}\)$
   ```
 
 - `P[1]` equals, exactly and in its entirety, this literal string:
