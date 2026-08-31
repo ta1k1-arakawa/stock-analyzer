@@ -250,23 +250,26 @@ def test_fresh_root_input_and_post_revalidation_failures(monkeypatch):
     assert result["result"] == "INPUT_BINDING_FAILURE"
 
 
-def test_fresh_root_rejects_non_bytes_before_selector_even_with_zero_binding(monkeypatch):
-    calls = []
-    monkeypatch.setattr(locator, "_locate_private", lambda *_: calls.append(True))
-    result, private_url = locator.run_fresh_root_locator(bytearray(html()), BASE, "0" * 64, 0)
-    assert result["result"] == "INPUT_BINDING_FAILURE" and private_url is None
-    assert result["mechanical_candidate_count"] == result["qualifying_candidate_count"] == 0
-    assert result["selected_raw_href_sha256"] is result["selected_resolved_url_sha256"] is None
-    assert calls == []
+def test_fresh_root_non_bytes_has_no_safe_projection_or_core_call(monkeypatch):
+    core_calls, finalizations = [], []
+    monkeypatch.setattr(locator, "_run_selection_core", lambda *_: core_calls.append(True))
+    monkeypatch.setattr(locator, "_fresh_finalize", lambda value: finalizations.append(value) or value)
+    with pytest.raises(locator._FreshInputContractViolation) as excinfo:
+        locator.run_fresh_root_locator(bytearray(html()), BASE, "0" * 64, 0)
+    assert core_calls == [] and finalizations == []
+    assert "0" * 64 not in str(excinfo.value)
 
 
-def test_fresh_root_binding_failure_does_not_invoke_selector(monkeypatch):
+def test_fresh_root_wrong_sha_and_length_are_safe_and_skip_core(monkeypatch):
     raw = html()
-    calls = []
-    monkeypatch.setattr(locator, "_locate_private", lambda *_: calls.append(True))
-    result, private_url = locator.run_fresh_root_locator(raw, BASE, "0" * 64, len(raw))
-    assert result["result"] == "INPUT_BINDING_FAILURE" and private_url is None
-    assert calls == []
+    core_calls = []
+    monkeypatch.setattr(locator, "_run_selection_core", lambda *_: core_calls.append(True))
+    for payload_sha256, payload_byte_length in (("0" * 64, len(raw)), (sha256(raw).hexdigest(), len(raw) + 1)):
+        result, private_url = locator.run_fresh_root_locator(raw, BASE, payload_sha256, payload_byte_length)
+        assert result["result"] == "INPUT_BINDING_FAILURE" and private_url is None
+        assert result["input_payload_sha256"] == sha256(raw).hexdigest()
+        assert result["input_payload_byte_length"] == len(raw)
+    assert core_calls == []
 
 
 def test_fresh_root_success_hashes_and_parses_the_same_bytes(monkeypatch):

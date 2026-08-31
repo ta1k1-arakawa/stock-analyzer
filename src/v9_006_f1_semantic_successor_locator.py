@@ -34,6 +34,10 @@ class _Unsafe(Exception):
     pass
 
 
+class _FreshInputContractViolation(TypeError):
+    """Raised before safe projection when fresh input has no verified byte identity."""
+
+
 def canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -291,11 +295,10 @@ def run_fresh_root_locator(raw: bytes, resolved_root_url: str, payload_sha256: s
     The second tuple member is private runtime state for a future executor and
     must never be serialized.
     """
-    # The selector accepts only the exact immutable bytes object whose binding
-    # is recorded below.  In particular, never parse a bytes-like object after
-    # substituting a sentinel digest/length for it.
+    # This valid-domain selector accepts only the exact immutable bytes object
+    # whose verified identity is recorded below.
     if type(raw) is not bytes:
-        return _fresh_finalize(_fresh_empty("INPUT_BINDING_FAILURE", "0" * 64, 0)), None
+        raise _FreshInputContractViolation("fresh selector raw must be exact built-in bytes")
     digest = sha256(raw).hexdigest()
     length = len(raw)
     if type(payload_sha256) is not str or _HEX.fullmatch(payload_sha256) is None or type(payload_byte_length) is not int or payload_byte_length < 0 or payload_sha256 != digest or payload_byte_length != length:
