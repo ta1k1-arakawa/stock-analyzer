@@ -23,6 +23,37 @@ def _ps_quote(path: Path) -> str:
     return str(path).replace("'", "''")
 
 
+def _environment_predicate(value: dict) -> bool:
+    path = _ps_quote(SCRIPT)
+    payload = json.dumps(value, separators=(",", ":")).replace("'", "''")
+    command = (
+        f"$text=Get-Content -Raw -LiteralPath '{path}'; $tokens=$null; $errors=$null; "
+        "$ast=[System.Management.Automation.Language.Parser]::ParseInput($text,[ref]$tokens,[ref]$errors); "
+        "if($errors.Count -ne 0){exit 2}; $fn=$ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-CanonicalEnvironmentPredicate'},$true); "
+        "if($null -eq $fn){exit 2}; Invoke-Expression $fn.Extent.Text; "
+        f"$r=ConvertFrom-Json '{payload}'; if(Test-CanonicalEnvironmentPredicate $r){{exit 0}} else {{exit 1}}"
+    )
+    return _pwsh(command).returncode == 0
+
+
+def _readiness(**overrides: object) -> dict:
+    value = {
+        "REAL_EXECUTION_ENVIRONMENT_READY": True,
+        "REAL_EXECUTION_ENVIRONMENT_FROZEN": True,
+        "INTERPRETER_MATCH": True,
+        "GENERAL_PROJECT_VENV_REJECTED": False,
+        "DEPENDENCY_READINESS": "PASS",
+        "ENVIRONMENT_LOCK_CHECK": "PASS",
+        "ENVIRONMENT_FREEZE_CHECK": "PASS",
+        "ENVIRONMENT_FREEZE_EVIDENCE_GIT_SHA256_MATCH": True,
+        "REAL_NETWORK_REQUESTS": 0,
+        "PRIVATE_READS": 0,
+        "GATES_CONSUMED": 0,
+    }
+    value.update(overrides)
+    return value
+
+
 def test_powershell_ast_parse_succeeds_and_parser_errors_are_checked():
     path = _ps_quote(SCRIPT)
     command = (
@@ -83,6 +114,15 @@ def test_canonical_path_helper_accepts_slash_variation_and_rejects_different_pat
     )
     completed = _pwsh(command)
     assert completed.returncode == 0, completed.stderr
+
+
+def test_canonical_environment_predicate_accepts_only_frozen_contract():
+    assert _environment_predicate(_readiness())
+    assert not _environment_predicate(_readiness(INTERPRETER_MATCH=False))
+    assert not _environment_predicate(_readiness(GENERAL_PROJECT_VENV_REJECTED=True))
+    assert not _environment_predicate(_readiness(REAL_EXECUTION_ENVIRONMENT_FROZEN=False))
+    for field in ("REAL_NETWORK_REQUESTS", "PRIVATE_READS", "GATES_CONSUMED"):
+        assert not _environment_predicate(_readiness(**{field: 1}))
 
 
 def test_child_output_uses_existing_python_validator_and_canonical_json_without_leaks():

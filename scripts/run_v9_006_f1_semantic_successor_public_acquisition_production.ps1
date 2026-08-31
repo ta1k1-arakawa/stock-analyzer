@@ -59,6 +59,20 @@ param(
         return $result
     }
 
+    function Test-CanonicalEnvironmentPredicate($readiness) {
+        return ($readiness.REAL_EXECUTION_ENVIRONMENT_READY -eq $true -and
+            $readiness.REAL_EXECUTION_ENVIRONMENT_FROZEN -eq $true -and
+            $readiness.INTERPRETER_MATCH -eq $true -and
+            $readiness.GENERAL_PROJECT_VENV_REJECTED -eq $false -and
+            $readiness.DEPENDENCY_READINESS -eq "PASS" -and
+            $readiness.ENVIRONMENT_LOCK_CHECK -eq "PASS" -and
+            $readiness.ENVIRONMENT_FREEZE_CHECK -eq "PASS" -and
+            $readiness.ENVIRONMENT_FREEZE_EVIDENCE_GIT_SHA256_MATCH -eq $true -and
+            $readiness.REAL_NETWORK_REQUESTS -eq 0 -and
+            $readiness.PRIVATE_READS -eq 0 -and
+            $readiness.GATES_CONSUMED -eq 0)
+    }
+
     try {
         if (Test-Path -LiteralPath $stateRoot) { throw "existing successor state" }
         $canonicalRepoRoot = Convert-CanonicalWindowsPath $repoRoot
@@ -79,7 +93,7 @@ param(
         $readinessResult = Invoke-CanonicalPython $canonicalInterpreter @($readinessChecker) $null
         if ($readinessResult.ExitCode -ne 0) { throw "environment readiness" }
         $readiness = $readinessResult.Stdout | ConvertFrom-Json
-        if ($readiness.REAL_EXECUTION_ENVIRONMENT_READY -ne $true -or $readiness.REAL_EXECUTION_ENVIRONMENT_FROZEN -ne $true -or $readiness.INTERPRETER_MATCH -ne $true -or $readiness.GENERAL_PROJECT_VENV_REJECTED -ne $true -or $readiness.DEPENDENCY_READINESS -ne "PASS" -or $readiness.ENVIRONMENT_LOCK_CHECK -ne "PASS" -or $readiness.ENVIRONMENT_FREEZE_CHECK -ne "PASS" -or $readiness.ENVIRONMENT_FREEZE_EVIDENCE_GIT_SHA256_MATCH -ne $true -or $readiness.REAL_NETWORK_REQUESTS -ne 0 -or $readiness.PRIVATE_READS -ne 0 -or $readiness.GATES_CONSUMED -ne 0) { throw "environment predicate" }
+        if (-not (Test-CanonicalEnvironmentPredicate $readiness)) { throw "environment predicate" }
         if (Test-Path -LiteralPath $stateRoot) { throw "existing successor state" }
         if (-not $Authorize.IsPresent) {
             Write-Output $authMarker
