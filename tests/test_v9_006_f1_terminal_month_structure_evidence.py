@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -67,6 +68,66 @@ def test_allowlisted_sheet_name_and_text_are_retained(monkeypatch):
     result = diagnostic.run_terminal_structure_diagnostic(raw, IMPL, profiler=lambda _raw: profile)
     assert result["sheets"][0]["sheet_name_date_text"] == "January 2026"
     assert result["text_neighborhood"][1]["cells"][0]["text"] == "January 2026"
+
+
+def _valid_result(monkeypatch):
+    raw = _raw(monkeypatch)
+    return diagnostic.run_terminal_structure_diagnostic(raw, IMPL, profiler=lambda _raw: _profile())
+
+
+def _assert_invalid_neighborhood(result):
+    result["structural_evidence_sha256"] = diagnostic.structural_evidence_sha256(result)
+    with pytest.raises(diagnostic.DiagnosticContractError):
+        diagnostic.validate_safe_result(result)
+
+
+def test_neighborhood_rows_and_cells_bind_to_visible_sheet_geometry(monkeypatch):
+    base = _valid_result(monkeypatch)
+
+    for sheet_ordinal in (0, 2):
+        candidate = copy.deepcopy(base)
+        candidate["text_neighborhood"][0]["sheet_ordinal"] = sheet_ordinal
+        _assert_invalid_neighborhood(candidate)
+
+    candidate = copy.deepcopy(base)
+    candidate["text_neighborhood"][0]["row_ordinal"] = 3
+    _assert_invalid_neighborhood(candidate)
+
+    candidate = copy.deepcopy(base)
+    candidate["text_neighborhood"] = list(reversed(candidate["text_neighborhood"]))
+    _assert_invalid_neighborhood(candidate)
+
+    candidate = copy.deepcopy(base)
+    candidate["text_neighborhood"].append(copy.deepcopy(candidate["text_neighborhood"][0]))
+    _assert_invalid_neighborhood(candidate)
+
+    candidate = copy.deepcopy(base)
+    candidate["sheets"][0]["visibility"] = "HIDDEN"
+    _assert_invalid_neighborhood(candidate)
+
+    candidate = copy.deepcopy(base)
+    candidate["text_neighborhood"][0]["cells"][0]["column_ordinal"] = 2
+    _assert_invalid_neighborhood(candidate)
+
+    candidate = copy.deepcopy(base)
+    candidate["sheets"][0]["column_count"] = 2
+    counts = candidate["sheets"][0]["column_cell_type_counts"][0]
+    candidate["sheets"][0]["column_cell_type_counts"] = [copy.deepcopy(counts), copy.deepcopy(counts)]
+    candidate["text_neighborhood"][0]["cells"] = [
+        {"column_ordinal": 2, "cell_type": "TEXT"},
+        {"column_ordinal": 1, "cell_type": "TEXT"},
+    ]
+    _assert_invalid_neighborhood(candidate)
+
+    candidate = copy.deepcopy(base)
+    candidate["sheets"][0]["column_count"] = 2
+    counts = candidate["sheets"][0]["column_cell_type_counts"][0]
+    candidate["sheets"][0]["column_cell_type_counts"] = [copy.deepcopy(counts), copy.deepcopy(counts)]
+    candidate["text_neighborhood"][0]["cells"] = [
+        {"column_ordinal": 1, "cell_type": "TEXT"},
+        {"column_ordinal": 1, "cell_type": "TEXT"},
+    ]
+    _assert_invalid_neighborhood(candidate)
 
 
 @pytest.mark.parametrize("text", ["Acme Security Holdings", "1320", "2026", "Price", "ticker ABC"])

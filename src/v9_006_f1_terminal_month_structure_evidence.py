@@ -122,7 +122,7 @@ def _validate_sheet(sheet: Any) -> None:
         raise DiagnosticContractError("sheet redaction")
 
 
-def _validate_neighborhood(rows: Any) -> None:
+def _validate_neighborhood(rows: Any, sheets: list[dict[str, Any]], sheet_count: int) -> None:
     if type(rows) is not list:
         raise DiagnosticContractError("neighborhood")
     previous = None
@@ -132,6 +132,13 @@ def _validate_neighborhood(rows: Any) -> None:
         key = (row["sheet_ordinal"], row["row_ordinal"])
         if type(row["sheet_ordinal"]) is not int or type(row["row_ordinal"]) is not int or row["sheet_ordinal"] < 1 or row["row_ordinal"] < 1 or (previous is not None and key <= previous):
             raise DiagnosticContractError("row order")
+        if row["sheet_ordinal"] > sheet_count:
+            raise DiagnosticContractError("row sheet range")
+        referenced_sheet = sheets[row["sheet_ordinal"] - 1]
+        if referenced_sheet["sheet_ordinal"] != row["sheet_ordinal"] or referenced_sheet["visibility"] != "VISIBLE":
+            raise DiagnosticContractError("row sheet visibility")
+        if row["row_ordinal"] > referenced_sheet["row_count"]:
+            raise DiagnosticContractError("row range")
         previous = key
         if type(row["cells"]) is not list or len(row["cells"]) > schema.MAX_SAMPLE_CELLS_PER_ROW:
             raise DiagnosticContractError("cells")
@@ -139,7 +146,7 @@ def _validate_neighborhood(rows: Any) -> None:
         for cell in row["cells"]:
             if type(cell) is not dict or set(cell) not in ({"column_ordinal", "cell_type"}, {"column_ordinal", "cell_type", "text"}):
                 raise DiagnosticContractError("cell")
-            if type(cell["column_ordinal"]) is not int or cell["column_ordinal"] < 1 or cell["column_ordinal"] in columns or cell["cell_type"] not in schema._CELL_TYPES:
+            if type(cell["column_ordinal"]) is not int or cell["column_ordinal"] < 1 or cell["column_ordinal"] > referenced_sheet["column_count"] or cell["column_ordinal"] in columns or cell["cell_type"] not in schema._CELL_TYPES:
                 raise DiagnosticContractError("cell metadata")
             columns.append(cell["column_ordinal"])
             if cell["cell_type"] == "TEXT":
@@ -173,7 +180,7 @@ def validate_safe_result(value: Any) -> None:
             _validate_sheet(sheet)
             if sheet["sheet_ordinal"] != ordinal:
                 raise DiagnosticContractError("sheet order")
-        _validate_neighborhood(value["text_neighborhood"])
+        _validate_neighborhood(value["text_neighborhood"], value["sheets"], value["sheet_count"])
         if value["structural_evidence_sha256"] != structural_evidence_sha256(value):
             raise DiagnosticContractError("digest")
     else:
