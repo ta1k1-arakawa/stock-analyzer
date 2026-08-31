@@ -330,6 +330,69 @@ Statuses are exact nonnegative integers or `null`. The final
 `structural_evidence_sha256` is SHA-256 over the complete canonical safe object
 excluding only itself.
 
+### Raw-lock-set derivation
+
+For `raw_lock_count=0`, `raw_lock_set_sha256=null`. For count `1` or `2`, it
+is SHA-256 of UTF-8 canonical JSON for a fixed-order array: discovery ROOT if
+locked, then TERMINAL if locked. Each record has exactly:
+
+```text
+{
+  "source_family":"LISTED_ISSUES_MONTH_END",
+  "applicable_period":"TERMINAL_DISCOVERY_ROOT" | "TERMINAL",
+  "http_status":200,
+  "byte_length":<exact nonnegative integer>,
+  "payload_sha256":"<lowercase 64hex>"
+}
+```
+
+The ROOT record has `applicable_period=TERMINAL_DISCOVERY_ROOT`; the TERMINAL
+record has `applicable_period=TERMINAL`. Canonical JSON is exactly
+`ensure_ascii=false`, `sort_keys=true`, `separators=(",",":")`, and
+`allow_nan=false`. No URL, path, timestamp, or operator identity participates.
+`raw_lock_count` equals the array length, and the validator recomputes and
+requires exact digest equality.
+
+### HTTP-status field semantics
+
+For each object, a complete authoritative HTTP-200 payload requires status
+`200`. Otherwise, status is the most recent safely completed HTTP response in
+that object's current bounded transport loop, or `null` when none completed.
+Payload SHA-256 and byte length are null unless a durable lock exists, except
+the persistence-exhausted rows: status is `200`, but lock and payload fields
+remain null by safe-evidence policy. No other attempt/status rule is allowed.
+
+### Fresh-root selector safe projection
+
+The fresh-root selector emits exactly:
+
+```text
+{
+  "schema_version":"V9_006_F1_SEMANTIC_SUCCESSOR_LOCATOR_FRESH_ROOT_V1",
+  "task":"V9_006_F1_SEMANTIC_SUCCESSOR_LOCATOR",
+  "input_payload_sha256":"<lowercase 64hex>",
+  "input_payload_byte_length":<nonnegative int>,
+  "result":<frozen locator result enum>,
+  "mechanical_candidate_count":<nonnegative int>,
+  "qualifying_candidate_count":<nonnegative int>,
+  "selected_raw_href_sha256":"<lowercase 64hex or null>",
+  "selected_resolved_url_sha256":"<lowercase 64hex or null>",
+  "network_requests":0,
+  "replacement_locator_authorized":false,
+  "structural_evidence_sha256":"<lowercase 64hex>"
+}
+```
+
+Its structural hash is SHA-256 of UTF-8 canonical JSON over every field except
+itself, with `ensure_ascii=false`, `sort_keys=true`, `separators=(",",":")`,
+and `allow_nan=false`. Input SHA/length exactly equal the newly verified ROOT
+lock. On `SUCCESSOR_LOCATOR_MATCHED`, mechanical count is at least one,
+qualifying count is one, and both selected hashes are non-null. On every
+non-success, input SHA/length remain exact, both counts are zero, selected
+hashes are null, and no partial candidate evidence is emitted. Private raw
+href/resolved URL exist only as internal success runtime state and are never
+serialized, logged, or emitted.
+
 The result enum is closed:
 
 ```text
@@ -377,7 +440,7 @@ raw_lock_set_sha256 is null iff raw_lock_count=0; otherwise it is lowercase 64he
 semantic_locator_structural_evidence_sha256 is non-null iff locator was run
 semantic_locator_result is null iff locator was not run; otherwise it is one of the frozen semantic-locator result enums
 semantic_locator_succeeded=true iff semantic_locator_result=SUCCESSOR_LOCATOR_MATCHED
-safe_provenance_verified=true only if every claimed lock verifies
+safe_provenance_verified equals the exact matrix value; it is not caller-selectable
 ```
 
 The matrix below is exhaustive for this acquisition result. An HTTP status of
@@ -386,22 +449,22 @@ incomplete HTTP-200 response has null hash and byte-length fields and no lock.
 
 | Result / `failure_stage` | ROOT state | Locator state | TERMINAL state | Provenance |
 | --- | --- | --- | --- | --- |
-| `SUCCESS` / `NONE` | locked; attempts 1..3 | run and succeeded | locked; attempts 1..3 | true; `raw_lock_count=2` |
+| `SUCCESS` / `NONE` | locked; attempts 1..3 | run; result `SUCCESSOR_LOCATOR_MATCHED`; structural hash 64hex | locked; attempts 1..3 | true; `raw_lock_count=2` |
 | `PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED` / `ROOT_TRANSPORT` | unlocked; attempts exactly 3; payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
-| `PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED` / `TERMINAL_TRANSPORT` | locked; attempts 1..3 | run and succeeded | unlocked; attempts exactly 3; payload fields null | true for the one ROOT lock; count 1 |
-| `DATA_QUALITY_FAILURE` / `ROOT_LOCATOR` | locked; attempts 1..3 | run and not succeeded | attempts 0; unlocked | true for the one ROOT lock; count 1 |
-| `INPUT_BINDING_FAILURE` / `ROOT_LOCATOR_INPUT_BINDING` | locked; attempts 1..3 | run; result `INPUT_BINDING_FAILURE`; not succeeded | attempts 0; unlocked | true for the one ROOT lock; count 1 |
+| `PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED` / `TERMINAL_TRANSPORT` | locked; attempts 1..3 | run; result `SUCCESSOR_LOCATOR_MATCHED`; structural hash 64hex | unlocked; attempts exactly 3; payload fields null | true; count 1 |
+| `DATA_QUALITY_FAILURE` / `ROOT_LOCATOR` | locked; attempts 1..3 | run; result exactly `SOURCE_OR_DATA_FEASIBILITY_FAILURE` or `HTML_STRUCTURE_UNSUPPORTED`; structural hash 64hex | attempts 0; unlocked | true; count 1 |
+| `INPUT_BINDING_FAILURE` / `ROOT_LOCATOR_INPUT_BINDING` | locked; attempts 1..3 | run; result `INPUT_BINDING_FAILURE`; structural hash 64hex | attempts 0; unlocked | true; count 1 |
 | `INPUT_BINDING_FAILURE` / `PRE_NETWORK_INPUT_BINDING` | attempts 0; unlocked; status/payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
 | `GOVERNANCE_FAILURE` / `EXECUTION_BINDING_CONFLICT` | attempts 0; unlocked; status/payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
 | `GOVERNANCE_FAILURE` / `ROOT_PERSISTENCE_EXHAUSTED` | attempts 1..3; status 200; unlocked; payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
-| `GOVERNANCE_FAILURE` / `TERMINAL_PERSISTENCE_EXHAUSTED` | locked; attempts 1..3 | run and succeeded | attempts 1..3; status 200; unlocked; payload fields null | true for the one ROOT lock; count 1 |
+| `GOVERNANCE_FAILURE` / `TERMINAL_PERSISTENCE_EXHAUSTED` | locked; attempts 1..3 | run; result `SUCCESSOR_LOCATOR_MATCHED`; structural hash 64hex | attempts 1..3; status 200; unlocked; payload fields null | true; count 1 |
 | `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_PRE_ROOT` | attempts 0; unlocked; status/payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
-| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_ROOT_TRANSPORT` | attempts 1..2; unlocked; payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_ROOT_TRANSPORT` | attempts 1..3; unlocked; payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
 | `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_POST_ROOT_PRE_LOCATOR` | locked; attempts 1..3 | not run; hash null | attempts 0; unlocked | true for the one ROOT lock; count 1 |
-| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_ROOT_LOCATOR` | locked; attempts 1..3 | run; result `SAFE_OUTPUT_VALIDATION_FAILURE`; not succeeded | attempts 0; unlocked | true for the one ROOT lock; count 1 |
-| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_POST_LOCATOR_PRE_TERMINAL` | locked; attempts 1..3 | run and succeeded | attempts 0; unlocked | true for the one ROOT lock; count 1 |
-| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_TERMINAL_TRANSPORT` | locked; attempts 1..3 | run and succeeded | attempts 1..2; unlocked; payload fields null | true for the one ROOT lock; count 1 |
-| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_POST_TERMINAL_PRE_PROVENANCE` | locked; attempts 1..3 | run and succeeded | locked; attempts 1..3 | false; count 2 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_ROOT_LOCATOR` | locked; attempts 1..3 | run; result `SAFE_OUTPUT_VALIDATION_FAILURE`; structural hash 64hex | attempts 0; unlocked | true; count 1 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_POST_LOCATOR_PRE_TERMINAL` | locked; attempts 1..3 | run; result `SUCCESSOR_LOCATOR_MATCHED`; structural hash 64hex | attempts 0; unlocked | true; count 1 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_TERMINAL_TRANSPORT` | locked; attempts 1..3 | run; result `SUCCESSOR_LOCATOR_MATCHED`; structural hash 64hex | attempts 1..3; unlocked; payload fields null | true; count 1 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_POST_TERMINAL_PRE_PROVENANCE` | locked; attempts 1..3 | run; result `SUCCESSOR_LOCATOR_MATCHED`; structural hash 64hex | locked; attempts 1..3 | false; count 2 |
 
 `failure_stage=NONE` is valid only for `SUCCESS`; every other result must use
 exactly the matching row above. This table forbids retaining arbitrary partial
@@ -411,6 +474,16 @@ is not a gracefully reported acquisition result and must not synthesize this
 schema with unknown request counts; it records only the separately frozen
 terminal governance disposition unless durable `SUCCESS` evidence already
 exists.
+
+Rows where the locator did not run require
+`semantic_locator_result=null` and
+`semantic_locator_structural_evidence_sha256=null`. Every row where it ran
+requires the table's explicit result and a non-null lowercase-64hex structural
+hash. Count-zero rows are exactly provenance false; every one-ROOT-lock row
+after verified ROOT is exactly true; `SUCCESS` is exactly true; and
+`IMPLEMENTATION_POST_TERMINAL_PRE_PROVENANCE` is exactly false. The table is
+exhaustive after these corrections and rejects bool-as-int for every count,
+byte length, and HTTP status.
 
 Safe evidence must never emit raw href, raw URL, resolved URL, raw payload,
 local or private path, operator identity, terminal month `T`, ticker identity,
