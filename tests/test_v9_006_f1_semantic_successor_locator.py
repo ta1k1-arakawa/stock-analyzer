@@ -142,6 +142,8 @@ def test_post_uniqueness_validation_failure_is_post_binding_input_failure(monkey
     assert result["result"] == "INPUT_BINDING_FAILURE" and result["input_payload_sha256"] == digest
     assert result["mechanical_candidate_count"] == result["qualifying_candidate_count"] == 0
     assert result["selected_raw_href_sha256"] is result["selected_resolved_url_sha256"] is None
+    fresh_result, _ = fresh(html())
+    assert fresh_result["result"] == "INPUT_BINDING_FAILURE"
 
 
 def test_post_uniqueness_detects_recomputed_url_and_hash_mismatch():
@@ -216,6 +218,22 @@ def test_locator_loader_failure_uses_fixed_marker_without_leakage(monkeypatch):
     stdout, stderr = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr): assert cli.main(["--output-root", "x"]) == 3
     assert stdout.getvalue() == "" and stderr.getvalue() == "V9_006_F1_SEMANTIC_SUCCESSOR_LOCATOR_IMPLEMENTATION_FAILURE\n"
+
+
+def test_committed_cli_converts_unexpected_selector_exception_to_fixed_marker(monkeypatch, tmp_path):
+    root, _ = bound_root(monkeypatch, tmp_path)
+    cli = load_cli()
+
+    def explode(*_args):
+        raise RuntimeError("C:\\private\\selector-implementation-failure")
+
+    monkeypatch.setattr(locator, "_locate_private", explode)
+    monkeypatch.setattr(cli, "_load_locator", lambda: (locator.canonical_json, locator.run_locator))
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        assert cli.main(["--output-root", str(root)]) == 3
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == "V9_006_F1_SEMANTIC_SUCCESSOR_LOCATOR_IMPLEMENTATION_FAILURE\n"
 
 
 def fresh(raw: bytes, base: str = BASE):
@@ -342,6 +360,30 @@ def test_post_uniqueness_revalidation_is_owned_by_shared_core(monkeypatch):
     monkeypatch.setattr(locator, "_post_uniqueness_revalidate", lambda *_: calls.append(True) or True)
     selection = locator._run_selection_core(html(), BASE)
     assert selection.result == "SUCCESSOR_LOCATOR_MATCHED" and calls == [True]
+
+
+@pytest.mark.parametrize("exception, result", [(locator._Unsupported(), "HTML_STRUCTURE_UNSUPPORTED"), (locator._Unsafe(), "SAFE_OUTPUT_VALIDATION_FAILURE")])
+def test_shared_core_preserves_expected_selector_exception_mappings(monkeypatch, exception, result):
+    def raise_expected(*_args):
+        raise exception
+
+    monkeypatch.setattr(locator, "_locate_private", raise_expected)
+    assert locator._run_selection_core(html(), BASE).result == result
+
+
+def test_unexpected_selector_exception_propagates_from_core_and_wrappers(monkeypatch, tmp_path):
+    root, _ = bound_root(monkeypatch, tmp_path)
+
+    def explode(*_args):
+        raise RuntimeError("selector implementation failure")
+
+    monkeypatch.setattr(locator, "_locate_private", explode)
+    with pytest.raises(RuntimeError, match="selector implementation failure"):
+        locator._run_selection_core(html(), BASE)
+    with pytest.raises(RuntimeError, match="selector implementation failure"):
+        fresh(html())
+    with pytest.raises(RuntimeError, match="selector implementation failure"):
+        locator.run_locator(root)
 
 
 def test_fresh_safe_validator_hash_and_bool_closure():

@@ -193,8 +193,6 @@ def _run_selection_core(raw: bytes, resolved_root_url: str) -> _Selection:
         return _Selection("HTML_STRUCTURE_UNSUPPORTED", 0, 0, None)
     except _Unsafe:
         return _Selection("SAFE_OUTPUT_VALIDATION_FAILURE", 0, 0, None)
-    except Exception:
-        return _Selection("INPUT_BINDING_FAILURE", 0, 0, None)
     if len(qualifying) != 1:
         return _Selection("SOURCE_OR_DATA_FEASIBILITY_FAILURE", 0, 0, None)
     selected = qualifying[0]
