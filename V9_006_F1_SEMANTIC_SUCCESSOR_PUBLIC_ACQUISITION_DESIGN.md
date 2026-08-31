@@ -177,16 +177,75 @@ identity. A later read-only adjudication treats the identity as terminal
 otherwise. That adjudication is not a restart and must not claim an unknown
 network-attempt total as zero.
 
-## 7. Discovery-root acquisition and locator boundary
+## 7. Discovery-root acquisition and fresh-locator boundary
 
 The first complete HTTP-200 discovery-root payload is authoritative. The
 implementation immediately locks its exact bytes and provenance before any
 semantic inspection. Once that complete root payload exists in this identity,
 it must never fetch the root again.
 
-The frozen semantic successor locator runs only against that locked root. If
-its result is anything other than `SUCCESSOR_LOCATOR_MATCHED`, record
-`DATA_QUALITY_FAILURE`, stop, and do not refetch the root.
+The successor real acquisition must not use the existing payload-bound
+`run_locator(output_root)` as its fresh-root selector. That runner remains
+only the reviewed historical/offline-proof wrapper: it is intentionally bound
+to the old exact payload/provenance, including `EXPECTED_PAYLOAD_SHA256`,
+`EXPECTED_LENGTH`, and `EXPECTED_PRIOR_STRUCTURAL`.
+
+The future implementation instead exposes one reusable fresh-root pure core
+shared by both the historical wrapper and this successor acquisition. It must
+not duplicate the selector implementation. The historical wrapper retains its
+old binding before calling the shared core; the successor path binds only to
+the new lock before calling the same core.
+
+The successor fresh-root selector may run only after the new discovery root is
+durably raw-locked and provenance-verified. It re-reads exactly those locked
+fresh bytes and uses that lock's validated resolved-root URL. It dynamically
+binds its input to that fresh lock's payload SHA-256 and byte length. It has no
+old `EXPECTED_PAYLOAD_SHA256`, `EXPECTED_LENGTH`, or
+`EXPECTED_PRIOR_STRUCTURAL` requirement.
+
+The shared pure core reuses or refactors, without duplication or redesign, the
+reviewed `_locate_private` and `_post_uniqueness_revalidate` mechanics;
+existing candidate classes; token suppression and candidate-internal-token
+exclusion; ASCII-year `P[0]`; exact `P[1]`; the uniqueness rule; and existing
+JPX URL validation.
+
+Its fresh-root result contract is exactly:
+
+```text
+one qualifying candidate plus post-uniqueness URL revalidation PASS
+  -> SUCCESSOR_LOCATOR_MATCHED
+zero or more than one qualifying candidate
+  -> SOURCE_OR_DATA_FEASIBILITY_FAILURE
+frozen parser structural failure
+  -> HTML_STRUCTURE_UNSUPPORTED
+selector/root-URL binding failure or post-uniqueness revalidation failure
+  -> INPUT_BINDING_FAILURE
+frozen safe-output validation failure
+  -> SAFE_OUTPUT_VALIDATION_FAILURE
+```
+
+The raw href and resolved URL remain private runtime values only. Fresh-root
+semantic evidence is a deterministic canonical safe object whose input payload
+SHA-256 and byte length are those of the new lock, not the historical fixed
+payload. It contains only safe hashes, counts, result, and structural hash;
+it contains no raw URL, href, or path. The implementation task will define,
+code, and test the exact closed schema from this design.
+
+Acquisition maps the selector result without collapse:
+
+```text
+SUCCESSOR_LOCATOR_MATCHED
+  -> continue to the TERMINAL request
+SOURCE_OR_DATA_FEASIBILITY_FAILURE or HTML_STRUCTURE_UNSUPPORTED
+  -> DATA_QUALITY_FAILURE / ROOT_LOCATOR
+INPUT_BINDING_FAILURE
+  -> INPUT_BINDING_FAILURE / ROOT_LOCATOR_INPUT_BINDING
+SAFE_OUTPUT_VALIDATION_FAILURE
+  -> IMPLEMENTATION_FAILURE / IMPLEMENTATION_ROOT_LOCATOR
+```
+
+Every non-success mapping stops with the locked ROOT preserved, terminal
+attempts exactly zero, and no ROOT refetch.
 
 ## 8. TERMINAL object acquisition and persistence boundary
 
@@ -291,11 +350,13 @@ EXECUTION_BINDING_CONFLICT
 ROOT_TRANSPORT
 TERMINAL_TRANSPORT
 ROOT_LOCATOR
+ROOT_LOCATOR_INPUT_BINDING
 ROOT_PERSISTENCE_EXHAUSTED
 TERMINAL_PERSISTENCE_EXHAUSTED
 IMPLEMENTATION_PRE_ROOT
 IMPLEMENTATION_ROOT_TRANSPORT
 IMPLEMENTATION_POST_ROOT_PRE_LOCATOR
+IMPLEMENTATION_ROOT_LOCATOR
 IMPLEMENTATION_POST_LOCATOR_PRE_TERMINAL
 IMPLEMENTATION_TERMINAL_TRANSPORT
 IMPLEMENTATION_POST_TERMINAL_PRE_PROVENANCE
@@ -329,6 +390,7 @@ incomplete HTTP-200 response has null hash and byte-length fields and no lock.
 | `PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED` / `ROOT_TRANSPORT` | unlocked; attempts exactly 3; payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
 | `PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED` / `TERMINAL_TRANSPORT` | locked; attempts 1..3 | run and succeeded | unlocked; attempts exactly 3; payload fields null | true for the one ROOT lock; count 1 |
 | `DATA_QUALITY_FAILURE` / `ROOT_LOCATOR` | locked; attempts 1..3 | run and not succeeded | attempts 0; unlocked | true for the one ROOT lock; count 1 |
+| `INPUT_BINDING_FAILURE` / `ROOT_LOCATOR_INPUT_BINDING` | locked; attempts 1..3 | run; result `INPUT_BINDING_FAILURE`; not succeeded | attempts 0; unlocked | true for the one ROOT lock; count 1 |
 | `INPUT_BINDING_FAILURE` / `PRE_NETWORK_INPUT_BINDING` | attempts 0; unlocked; status/payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
 | `GOVERNANCE_FAILURE` / `EXECUTION_BINDING_CONFLICT` | attempts 0; unlocked; status/payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
 | `GOVERNANCE_FAILURE` / `ROOT_PERSISTENCE_EXHAUSTED` | attempts 1..3; status 200; unlocked; payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
@@ -336,6 +398,7 @@ incomplete HTTP-200 response has null hash and byte-length fields and no lock.
 | `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_PRE_ROOT` | attempts 0; unlocked; status/payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
 | `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_ROOT_TRANSPORT` | attempts 1..2; unlocked; payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
 | `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_POST_ROOT_PRE_LOCATOR` | locked; attempts 1..3 | not run; hash null | attempts 0; unlocked | true for the one ROOT lock; count 1 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_ROOT_LOCATOR` | locked; attempts 1..3 | run; result `SAFE_OUTPUT_VALIDATION_FAILURE`; not succeeded | attempts 0; unlocked | true for the one ROOT lock; count 1 |
 | `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_POST_LOCATOR_PRE_TERMINAL` | locked; attempts 1..3 | run and succeeded | attempts 0; unlocked | true for the one ROOT lock; count 1 |
 | `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_TERMINAL_TRANSPORT` | locked; attempts 1..3 | run and succeeded | attempts 1..2; unlocked; payload fields null | true for the one ROOT lock; count 1 |
 | `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_POST_TERMINAL_PRE_PROVENANCE` | locked; attempts 1..3 | run and succeeded | locked; attempts 1..3 | false; count 2 |
