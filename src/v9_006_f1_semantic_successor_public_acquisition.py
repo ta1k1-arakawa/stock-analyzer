@@ -79,6 +79,12 @@ class VerifiedLock:
     resolved_url: str
 
 
+@dataclass(frozen=True)
+class PersistedObject:
+    lock: VerifiedLock
+    payload: bytes
+
+
 class _LocatorContractViolation(ValueError):
     pass
 
@@ -180,12 +186,15 @@ def _transport(fetch: Callable[[str, int], FetchOutcome], url: str, delay: Calla
     return None, 3, latest, False
 
 
-def _persist(callback: Callable[[str, str, bytes, str, int], VerifiedLock | None], payload: bytes, resolved_url: str, period: str, delay: Callable[[int], None]) -> VerifiedLock | None:
+def _persist(callback: Callable[[str, str, bytes, str, int], VerifiedLock | PersistedObject | None], payload: bytes, resolved_url: str, period: str, delay: Callable[[int], None]) -> PersistedObject | None:
     for attempt, seconds in enumerate((0, 1, 2), 1):
         delay(seconds)
-        try: lock = callback(ROOT_FAMILY, period, payload, resolved_url, attempt)
-        except Exception: lock = None
-        if _lock_ok(lock, payload, ROOT_FAMILY, period, resolved_url): return lock
+        try: candidate = callback(ROOT_FAMILY, period, payload, resolved_url, attempt)
+        except Exception: candidate = None
+        if type(candidate) is PersistedObject:
+            if type(candidate.payload) is bytes and candidate.payload == payload and _lock_ok(candidate.lock, candidate.payload, ROOT_FAMILY, period, resolved_url): return candidate
+        elif _lock_ok(candidate, payload, ROOT_FAMILY, period, resolved_url):
+            return PersistedObject(candidate, payload)
     return None
 
 
@@ -195,7 +204,7 @@ def _base(implementation_git_sha: str, result: str, stage: str, root: VerifiedLo
     return {"schema_version": SCHEMA_VERSION, "task": TASK, "design_git_sha": DESIGN_GIT_SHA, "implementation_git_sha": implementation_git_sha, "operation_class": OPERATION_CLASS, "result": result, "failure_stage": stage, "discovery_root_http_status": root_status, "terminal_http_status": terminal_status, "discovery_root_payload_sha256": root.payload_sha256 if root else None, "terminal_payload_sha256": terminal.payload_sha256 if terminal else None, "discovery_root_byte_length": root.byte_length if root else None, "terminal_byte_length": terminal.byte_length if terminal else None, "discovery_root_attempt_count": root_attempts, "terminal_attempt_count": terminal_attempts, "network_request_count": root_attempts + terminal_attempts, "discovery_root_locked": root is not None, "terminal_locked": terminal is not None, "semantic_locator_succeeded": locator_result == "SUCCESSOR_LOCATOR_MATCHED", "semantic_locator_result": locator_result, "safe_provenance_verified": provenance, "semantic_locator_structural_evidence_sha256": locator_hash, "raw_lock_count": int(root is not None) + int(terminal is not None), "raw_lock_set_sha256": raw_lock_set_sha256(root, terminal)}
 
 
-def run_pure_acquisition(implementation_git_sha: str, root_url: str, root_fetch: Callable[[str, int], FetchOutcome], terminal_fetch: Callable[[str, int], FetchOutcome], persist: Callable[[str, str, bytes, str, int], VerifiedLock | None], delay: Callable[[int], None] = lambda _seconds: None, locator_runner: Callable[[bytes, str, str, int], tuple[dict[str, object], str | None]] = locator.run_fresh_root_locator) -> dict[str, object]:
+def run_pure_acquisition(implementation_git_sha: str, root_url: str, root_fetch: Callable[[str, int], FetchOutcome], terminal_fetch: Callable[[str, int], FetchOutcome], persist: Callable[[str, str, bytes, str, int], VerifiedLock | PersistedObject | None], delay: Callable[[int], None] = lambda _seconds: None, locator_runner: Callable[[bytes, str, str, int], tuple[dict[str, object], str | None]] = locator.run_fresh_root_locator, final_provenance_verifier: Callable[[VerifiedLock, VerifiedLock], bool] = lambda _root, _terminal: True) -> dict[str, object]:
     if not _hex(implementation_git_sha, 40): raise ValueError("implementation_git_sha")
     try:
         if type(root_url) is not str or root_url != LISTED_ISSUES_PAGE_URL: raise ValueError("root endpoint")
@@ -204,9 +213,10 @@ def run_pure_acquisition(implementation_git_sha: str, root_url: str, root_fetch:
     outcome, root_attempts, root_status, impl = _transport(root_fetch, root_url, delay)
     if outcome is None:
         return finalize_safe_result(_base(implementation_git_sha, "IMPLEMENTATION_FAILURE" if impl else "PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED", "IMPLEMENTATION_ROOT_TRANSPORT" if impl else "ROOT_TRANSPORT", root_status=root_status, root_attempts=root_attempts))
-    root = _persist(persist, outcome.payload, outcome.resolved_url, ROOT_PERIOD, delay)
-    if root is None: return finalize_safe_result(_base(implementation_git_sha, "GOVERNANCE_FAILURE", "ROOT_PERSISTENCE_EXHAUSTED", root_status=200, root_attempts=root_attempts))
-    safe_locator, private_url = locator_runner(outcome.payload, root.resolved_url, root.payload_sha256, root.byte_length)
+    persisted_root = _persist(persist, outcome.payload, outcome.resolved_url, ROOT_PERIOD, delay)
+    if persisted_root is None: return finalize_safe_result(_base(implementation_git_sha, "GOVERNANCE_FAILURE", "ROOT_PERSISTENCE_EXHAUSTED", root_status=200, root_attempts=root_attempts))
+    root = persisted_root.lock
+    safe_locator, private_url = locator_runner(persisted_root.payload, root.resolved_url, root.payload_sha256, root.byte_length)
     locator.validate_fresh_safe_result(safe_locator)
     if safe_locator["input_payload_sha256"] != root.payload_sha256 or safe_locator["input_payload_byte_length"] != root.byte_length:
         raise _LocatorContractViolation("locator binding")
@@ -222,6 +232,13 @@ def run_pure_acquisition(implementation_git_sha: str, root_url: str, root_fetch:
     except Exception: return finalize_safe_result(_base(implementation_git_sha, "IMPLEMENTATION_FAILURE", "IMPLEMENTATION_POST_LOCATOR_PRE_TERMINAL", root, root_attempts=root_attempts, locator_result=locator_result, locator_hash=locator_hash))
     outcome, terminal_attempts, terminal_status, impl = _transport(terminal_fetch, private_url, delay)
     if outcome is None: return finalize_safe_result(_base(implementation_git_sha, "IMPLEMENTATION_FAILURE" if impl else "PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED", "IMPLEMENTATION_TERMINAL_TRANSPORT" if impl else "TERMINAL_TRANSPORT", root, root_status=root.http_status, terminal_status=terminal_status, root_attempts=root_attempts, terminal_attempts=terminal_attempts, locator_result=locator_result, locator_hash=locator_hash))
-    terminal = _persist(persist, outcome.payload, outcome.resolved_url, TERMINAL_PERIOD, delay)
-    if terminal is None: return finalize_safe_result(_base(implementation_git_sha, "GOVERNANCE_FAILURE", "TERMINAL_PERSISTENCE_EXHAUSTED", root, terminal_status=200, root_attempts=root_attempts, terminal_attempts=terminal_attempts, locator_result=locator_result, locator_hash=locator_hash))
+    persisted_terminal = _persist(persist, outcome.payload, outcome.resolved_url, TERMINAL_PERIOD, delay)
+    if persisted_terminal is None: return finalize_safe_result(_base(implementation_git_sha, "GOVERNANCE_FAILURE", "TERMINAL_PERSISTENCE_EXHAUSTED", root, terminal_status=200, root_attempts=root_attempts, terminal_attempts=terminal_attempts, locator_result=locator_result, locator_hash=locator_hash))
+    terminal = persisted_terminal.lock
+    try:
+        provenance_ok = final_provenance_verifier(root, terminal)
+    except Exception:
+        provenance_ok = False
+    if provenance_ok is not True:
+        return finalize_safe_result(_base(implementation_git_sha, "IMPLEMENTATION_FAILURE", "IMPLEMENTATION_POST_TERMINAL_PRE_PROVENANCE", root, terminal, root_attempts=root_attempts, terminal_attempts=terminal_attempts, locator_result=locator_result, locator_hash=locator_hash))
     return finalize_safe_result(_base(implementation_git_sha, "SUCCESS", "NONE", root, terminal, root_attempts=root_attempts, terminal_attempts=terminal_attempts, locator_result=locator_result, locator_hash=locator_hash))
