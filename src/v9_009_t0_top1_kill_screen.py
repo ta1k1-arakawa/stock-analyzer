@@ -426,6 +426,16 @@ def _actions_through_day(
     raise T0DataIncompatible("SPLIT_ACTION_SCHEMA_INVALID")
 
 
+def _rank_scoreable_features(population: pd.DataFrame) -> pd.DataFrame:
+    """Apply the frozen independent same-D0 percentile transform."""
+    result = population.copy()
+    for column in FEATURE_COLUMNS:
+        result[column] = result.groupby("d0", sort=False)[column].rank(method="average", pct=True)
+    if not np.isfinite(result.loc[:, list(FEATURE_COLUMNS)].to_numpy(dtype=float)).all():
+        raise T0ImplementationFailure("NONFINITE_FEATURE_PERCENTILE")
+    return result
+
+
 def build_dataset(
     frames: Mapping[object, pd.DataFrame],
     universe: pd.DataFrame,
@@ -519,7 +529,8 @@ def build_scoreable_population(
     result = pd.DataFrame(rows).sort_values(["d0", "canonical_code"], kind="mergesort").reset_index(drop=True)
     if not np.isfinite(result.loc[:, [*FEATURE_COLUMNS]].to_numpy(dtype=float)).all():
         raise T0ImplementationFailure("NONFINITE_DATASET_VALUE")
-    return result.loc[:, ["d0", "canonical_code", *FEATURE_COLUMNS, "year"]]
+    ranked = _rank_scoreable_features(result)
+    return ranked.loc[:, ["d0", "canonical_code", *FEATURE_COLUMNS, "year"]]
 
 
 def attach_historical_targets(

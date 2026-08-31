@@ -291,3 +291,86 @@ def test_d0_scoreability_never_calls_future_target_function(monkeypatch):
     monkeypatch.setattr(t0, "d1_d3_target", forbidden)
     population = t0.build_scoreable_population(frames, universe, calendar)
     assert not population.empty
+
+
+def _raw_feature_population():
+    rows = []
+    for day, values in [
+        (pd.Timestamp("2018-01-02"), (1.0, 3.0, 3.0)),
+        (pd.Timestamp("2018-01-05"), (30.0, 10.0, 20.0)),
+    ]:
+        for code, value in zip(("0001", "0002", "0003"), values):
+            row = {"d0": day, "canonical_code": code, "year": day.year}
+            row.update({column: value for column in t0.FEATURE_COLUMNS})
+            rows.append(row)
+    return pd.DataFrame(rows).sort_values(["d0", "canonical_code"], kind="mergesort").reset_index(drop=True)
+
+
+def test_same_d0_feature_percentiles_rank_all_ten_features_with_average_ties():
+    ranked = t0._rank_scoreable_features(_raw_feature_population())
+    first_day = ranked[ranked.d0 == pd.Timestamp("2018-01-02")]
+    second_day = ranked[ranked.d0 == pd.Timestamp("2018-01-05")]
+    for column in t0.FEATURE_COLUMNS:
+        assert first_day[column].tolist() == pytest.approx([1 / 3, 5 / 6, 5 / 6])
+        assert second_day[column].tolist() == pytest.approx([1.0, 1 / 3, 2 / 3])
+
+
+def test_feature_percentiles_are_d0_local_and_invariant_to_order_preserving_magnitudes():
+    raw = _raw_feature_population()
+    changed = raw.copy()
+    for column in t0.FEATURE_COLUMNS:
+        changed.loc[changed.d0 == pd.Timestamp("2018-01-02"), column] = [10.0, 2000.0, 2000.0]
+    pd.testing.assert_frame_equal(
+        t0._rank_scoreable_features(raw).loc[:, ["d0", "canonical_code", *t0.FEATURE_COLUMNS]],
+        t0._rank_scoreable_features(changed).loc[:, ["d0", "canonical_code", *t0.FEATURE_COLUMNS]],
+    )
+
+
+def test_target_availability_is_not_an_input_to_feature_percentile_transform():
+    raw = _raw_feature_population()
+    with_target_state = raw.copy()
+    with_target_state["target_available"] = [False, True, True, True, True, True]
+    with_target_state["target_percentile"] = np.nan
+    pd.testing.assert_frame_equal(
+        t0._rank_scoreable_features(raw).loc[:, ["d0", "canonical_code", *t0.FEATURE_COLUMNS]],
+        t0._rank_scoreable_features(with_target_state).loc[:, ["d0", "canonical_code", *t0.FEATURE_COLUMNS]],
+    )
+
+
+def test_fixed_models_receive_only_percentile_ranked_feature_columns(monkeypatch):
+    captured = {}
+
+    class CaptureScaler:
+        def fit_transform(self, x):
+            captured["scaler_fit"] = x.copy()
+            return x
+
+    class CaptureRidge:
+        def __init__(self, **params):
+            captured["ridge_params"] = params
+
+        def fit(self, x, y):
+            captured["ridge_fit"] = x.copy()
+            return self
+
+    class CaptureLightGBM:
+        def __init__(self, **params):
+            captured["lightgbm_params"] = params
+
+        def fit(self, x, y):
+            captured["lightgbm_fit"] = x.copy()
+            return self
+
+    monkeypatch.setattr(t0, "StandardScaler", CaptureScaler)
+    monkeypatch.setattr(t0, "Ridge", CaptureRidge)
+    monkeypatch.setattr(t0, "LGBMRegressor", CaptureLightGBM)
+    train = _raw_feature_population().iloc[:3].copy()
+    train.loc[:, t0.FEATURE_COLUMNS] = t0._rank_scoreable_features(train).loc[:, t0.FEATURE_COLUMNS]
+    train["target_percentile"] = [1 / 3, 5 / 6, 5 / 6]
+
+    t0._fit_fixed_models(train)
+    expected = train.loc[:, t0.FEATURE_COLUMNS].to_numpy(dtype=float)
+    assert np.array_equal(captured["scaler_fit"], expected)
+    assert np.array_equal(captured["lightgbm_fit"], expected)
+    assert np.array_equal(captured["ridge_fit"], expected)
+    assert np.isfinite(expected).all() and (expected >= 0).all() and (expected <= 1).all()
