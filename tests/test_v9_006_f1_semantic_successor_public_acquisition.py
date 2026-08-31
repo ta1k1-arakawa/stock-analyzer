@@ -29,6 +29,11 @@ def matrix_value(result: str, stage: str):
     return acq.finalize_safe_result(value)
 
 
+def rehash(value):
+    value["structural_evidence_sha256"] = sha256(acq.canonical_json({key: item for key, item in value.items() if key != "structural_evidence_sha256"}).encode("utf-8")).hexdigest()
+    return value
+
+
 @pytest.mark.parametrize("pair", sorted(acq._ROWS))
 def test_every_matrix_row_has_a_canonical_valid_fixture(pair):
     acq.validate_safe_acquisition_result(matrix_value(*pair))
@@ -39,6 +44,44 @@ def test_validator_rejects_bool_wrong_digest_and_wrong_provenance():
     for key, bad in (("discovery_root_attempt_count", True), ("raw_lock_set_sha256", "0" * 64), ("safe_provenance_verified", False)):
         altered = dict(value); altered[key] = bad
         with pytest.raises(ValueError): acq.validate_safe_acquisition_result(altered)
+
+
+@pytest.mark.parametrize("pair", sorted(acq._ROWS))
+def test_validator_accepts_exactly_each_row_attempt_domain(pair):
+    domains = acq._ATTEMPT_DOMAINS[pair]
+    for field, domain in zip(("discovery_root_attempt_count", "terminal_attempt_count"), domains):
+        for attempts in range(5):
+            value = matrix_value(*pair)
+            value[field] = attempts
+            value["network_request_count"] = value["discovery_root_attempt_count"] + value["terminal_attempt_count"]
+            rehash(value)
+            if domain[0] <= attempts <= domain[1]:
+                acq.validate_safe_acquisition_result(value)
+            else:
+                with pytest.raises(ValueError): acq.validate_safe_acquisition_result(value)
+
+
+@pytest.mark.parametrize("pair", sorted(acq._ROWS))
+def test_validator_rejects_no_attempt_status_and_unlocked_payload_evidence(pair):
+    value = matrix_value(*pair)
+    for field, status in (("discovery_root_attempt_count", "discovery_root_http_status"), ("terminal_attempt_count", "terminal_http_status")):
+        if acq._ATTEMPT_DOMAINS[pair][0 if field.startswith("discovery") else 1] == (0, 0):
+            altered = dict(value); altered[status] = 503; rehash(altered)
+            with pytest.raises(ValueError): acq.validate_safe_acquisition_result(altered)
+    for prefix in ("discovery_root", "terminal"):
+        if not value[f"{prefix}_locked"]:
+            for field, bad in ((f"{prefix}_payload_sha256", "0" * 64), (f"{prefix}_byte_length", 1)):
+                altered = dict(value); altered[field] = bad; rehash(altered)
+                with pytest.raises(ValueError): acq.validate_safe_acquisition_result(altered)
+
+
+def test_persistence_exhaustion_and_success_zero_attempt_mutations_are_rejected():
+    for pair, prefix in ((("GOVERNANCE_FAILURE", "ROOT_PERSISTENCE_EXHAUSTED"), "discovery_root"), (("GOVERNANCE_FAILURE", "TERMINAL_PERSISTENCE_EXHAUSTED"), "terminal")):
+        value = matrix_value(*pair); value[f"{prefix}_payload_sha256"] = "0" * 64; value[f"{prefix}_byte_length"] = 1; rehash(value)
+        with pytest.raises(ValueError): acq.validate_safe_acquisition_result(value)
+    for field in ("discovery_root_attempt_count", "terminal_attempt_count"):
+        value = matrix_value("SUCCESS", "NONE"); value[field] = 0; value["network_request_count"] = value["discovery_root_attempt_count"] + value["terminal_attempt_count"]; rehash(value)
+        with pytest.raises(ValueError): acq.validate_safe_acquisition_result(value)
 
 
 def outcome(status, payload=None, complete=False, url=ROOT_URL): return acq.FetchOutcome(status, payload, complete, url)

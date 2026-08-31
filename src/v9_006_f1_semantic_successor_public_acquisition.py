@@ -37,6 +37,24 @@ _ROWS = {
     ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_TERMINAL_TRANSPORT"): (True, "SUCCESSOR_LOCATOR_MATCHED", False),
     ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_POST_TERMINAL_PRE_PROVENANCE"): (True, "SUCCESSOR_LOCATOR_MATCHED", True),
 }
+_ATTEMPT_DOMAINS = {
+    ("SUCCESS", "NONE"): ((1, 3), (1, 3)),
+    ("PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED", "ROOT_TRANSPORT"): ((3, 3), (0, 0)),
+    ("PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED", "TERMINAL_TRANSPORT"): ((1, 3), (3, 3)),
+    ("DATA_QUALITY_FAILURE", "ROOT_LOCATOR"): ((1, 3), (0, 0)),
+    ("INPUT_BINDING_FAILURE", "ROOT_LOCATOR_INPUT_BINDING"): ((1, 3), (0, 0)),
+    ("INPUT_BINDING_FAILURE", "PRE_NETWORK_INPUT_BINDING"): ((0, 0), (0, 0)),
+    ("GOVERNANCE_FAILURE", "EXECUTION_BINDING_CONFLICT"): ((0, 0), (0, 0)),
+    ("GOVERNANCE_FAILURE", "ROOT_PERSISTENCE_EXHAUSTED"): ((1, 3), (0, 0)),
+    ("GOVERNANCE_FAILURE", "TERMINAL_PERSISTENCE_EXHAUSTED"): ((1, 3), (1, 3)),
+    ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_PRE_ROOT"): ((0, 0), (0, 0)),
+    ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_ROOT_TRANSPORT"): ((1, 3), (0, 0)),
+    ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_POST_ROOT_PRE_LOCATOR"): ((1, 3), (0, 0)),
+    ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_ROOT_LOCATOR"): ((1, 3), (0, 0)),
+    ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_POST_LOCATOR_PRE_TERMINAL"): ((1, 3), (0, 0)),
+    ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_TERMINAL_TRANSPORT"): ((1, 3), (1, 3)),
+    ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_POST_TERMINAL_PRE_PROVENANCE"): ((1, 3), (1, 3)),
+}
 
 
 def canonical_json(value: object) -> str:
@@ -88,10 +106,14 @@ def validate_safe_acquisition_result(value: object) -> None:
     for name in ("discovery_root_attempt_count", "terminal_attempt_count", "network_request_count", "raw_lock_count"):
         if not _is_int(value[name]) or value[name] < 0: raise ValueError("count")
     if value["discovery_root_attempt_count"] > 3 or value["terminal_attempt_count"] > 3 or value["network_request_count"] != value["discovery_root_attempt_count"] + value["terminal_attempt_count"]: raise ValueError("attempts")
+    for attempts, domain in zip((value["discovery_root_attempt_count"], value["terminal_attempt_count"]), _ATTEMPT_DOMAINS[pair]):
+        if not domain[0] <= attempts <= domain[1]: raise ValueError("attempt domain")
     for name in ("discovery_root_locked", "terminal_locked", "semantic_locator_succeeded", "safe_provenance_verified"):
         if type(value[name]) is not bool: raise ValueError("bool")
     for status in (value["discovery_root_http_status"], value["terminal_http_status"]):
         if status is not None and (not _is_int(status) or not 0 <= status <= 599): raise ValueError("status")
+    if value["discovery_root_attempt_count"] == 0 and value["discovery_root_http_status"] is not None: raise ValueError("root no-attempt status")
+    if value["terminal_attempt_count"] == 0 and value["terminal_http_status"] is not None: raise ValueError("terminal no-attempt status")
     for digest in (value["discovery_root_payload_sha256"], value["terminal_payload_sha256"], value["raw_lock_set_sha256"], value["semantic_locator_structural_evidence_sha256"]):
         if digest is not None and not _hex(digest): raise ValueError("digest")
     for length in (value["discovery_root_byte_length"], value["terminal_byte_length"]):
@@ -100,6 +122,7 @@ def validate_safe_acquisition_result(value: object) -> None:
     if value["discovery_root_locked"] is not root_locked or value["terminal_locked"] is not terminal_locked: raise ValueError("locks")
     for locked, status, digest, length in ((root_locked, value["discovery_root_http_status"], value["discovery_root_payload_sha256"], value["discovery_root_byte_length"]), (terminal_locked, value["terminal_http_status"], value["terminal_payload_sha256"], value["terminal_byte_length"])):
         if locked != (status == 200 and digest is not None and length is not None): raise ValueError("lock fields")
+        if not locked and (digest is not None or length is not None): raise ValueError("unlocked payload")
     if pair[1] in {"ROOT_PERSISTENCE_EXHAUSTED", "TERMINAL_PERSISTENCE_EXHAUSTED"}:
         status = value["discovery_root_http_status"] if pair[1] == "ROOT_PERSISTENCE_EXHAUSTED" else value["terminal_http_status"]
         if status != 200: raise ValueError("persistence status")
