@@ -101,9 +101,9 @@ identity fields equal the bindings above, and `network_request_count=0`:
 * `text_neighborhood` contains deterministically ordered visible-sheet rows
   and cells bounded to the reviewed row/cell limits. Each cell has only
   sheet/row/column ordinals, `cell_type`, and (for `TEXT` cells only) bounded
-  normalized text. Numeric, date, boolean, error, formula, ticker, price,
-  outcome, and membership values are represented only by taxonomy, never by
-  their values.
+  normalized text that passes the allowlist below. Numeric, date, boolean,
+  error, formula, ticker, price, outcome, and membership values are represented
+  only by taxonomy, never by their values.
 * `neighborhood_truncated` is an explicit boolean carried from deterministic
   profiler truncation. Truncation means a narrower follow-up design may be
   needed; it is not permission to guess a month.
@@ -131,6 +131,48 @@ All rows retain the five immutable identity fields and
 The projection excludes private paths, resolved URLs, receipt contents, raw
 workbook bytes, arbitrary exception text, and numeric or membership data
 unrelated to locating a future date/month field.
+
+## Frozen text allowlist
+
+The allowlist is applied after the existing bounded normalization (trim,
+character-reference normalization, and the reviewed maximum text length).
+Matching is whole-string, ASCII case-insensitive for English month names, and
+uses ASCII decimal digits only. No substring search, token search, fuzzy match,
+or fallback is permitted. Define:
+
+```text
+MONTH = January|February|March|April|May|June|July|August|September|October|November|December
+DAY = (0?[1-9]|[12][0-9]|3[01])
+YEAR = [0-9]{4}
+NUMERIC = YEAR[-/.](0?[1-9]|1[0-2])(?:[-/.]DAY)?
+JAPANESE = YEAR年(0?[1-9]|1[0-2])月(?:DAY日)?
+ENGLISH = MONTH[ ]+YEAR | MONTH[ ]+DAY[,]?[ ]+YEAR
+DATE = (?:ENGLISH|NUMERIC|JAPANESE)[.]?
+AS_OF = As[ ]+of[ ]+DATE
+HEADING = List[ ]+of[ ]+TSE-listed[ ]+Issues[ ]\([ ]*DATE[ ]*\)
+```
+
+The implementation compiles these productions into anchored regular
+expressions equivalent to `^...$`; `DAY` is expanded in `ENGLISH` and
+`JAPANESE` rather than interpolated as a free substring. Thus accepted examples
+include `January 2026`, `January 31, 2026`, `2026-01`, `2026/01/31`,
+`2026年1月`, `As of January 2026`, and the exact generic heading
+`List of TSE-listed Issues (January 2026)`. A bare four-digit year, bare
+integer, security code, company name, or text containing one of these forms is
+rejected. Punctuation outside the explicitly shown comma, period, separators,
+and heading parentheses is rejected.
+
+For every TEXT cell that fails this whole-string allowlist, the public
+projection emits only its coordinates and `cell_type`; its text is discarded
+before serialization, logging, exception construction, structural hashing, or
+any reversible lookup artifact. The implementation must not retain a hidden
+side channel containing discarded text.
+
+The allowlist is evidence filtering, not a T parser. Zero qualifying date-text
+cells, multiple qualifying cells, or any profiler truncation are reported as
+bounded evidence conditions and never trigger a guessed month, rule broadening,
+or downstream action. GPT will decide later whether the evidence is sufficient
+to freeze a deterministic T rule.
 
 ## No T decision and no downstream authorization
 
