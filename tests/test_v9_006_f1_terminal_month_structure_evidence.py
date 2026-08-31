@@ -130,6 +130,58 @@ def test_neighborhood_rows_and_cells_bind_to_visible_sheet_geometry(monkeypatch)
     _assert_invalid_neighborhood(candidate)
 
 
+def _synthetic_sheet(ordinal: int, row_count: int) -> dict[str, object]:
+    counts = {key: 0 for key in schema._CELL_TYPES}
+    counts["TEXT"] = row_count
+    return {
+        "sheet_ordinal": ordinal,
+        "visibility": "VISIBLE",
+        "row_count": row_count,
+        "column_count": 1,
+        "column_cell_type_counts": [counts],
+        "sheet_name_date_text": None,
+        "sheet_name_was_redacted": True,
+    }
+
+
+def _synthetic_rows(sheet_ordinal: int, row_count: int) -> list[dict[str, object]]:
+    return [{
+        "sheet_ordinal": sheet_ordinal,
+        "row_ordinal": row,
+        "cells": [{"column_ordinal": 1, "cell_type": "TEXT"}],
+    } for row in range(1, row_count + 1)]
+
+
+def test_per_sheet_neighborhood_row_cardinality_is_closed(monkeypatch):
+    base = _valid_result(monkeypatch)
+    limit = schema.MAX_SAMPLE_ROWS_PER_TABLE
+
+    exactly_at_limit = copy.deepcopy(base)
+    exactly_at_limit["sheets"] = [_synthetic_sheet(1, limit)]
+    exactly_at_limit["sheet_count"] = 1
+    exactly_at_limit["text_neighborhood"] = _synthetic_rows(1, limit)
+    exactly_at_limit["structural_evidence_sha256"] = diagnostic.structural_evidence_sha256(exactly_at_limit)
+    diagnostic.validate_safe_result(exactly_at_limit)
+
+    over_limit = copy.deepcopy(base)
+    over_limit["sheets"] = [_synthetic_sheet(1, limit + 1)]
+    over_limit["sheet_count"] = 1
+    over_limit["text_neighborhood"] = _synthetic_rows(1, limit + 1)
+    _assert_invalid_neighborhood(over_limit)
+
+    distributed = copy.deepcopy(base)
+    distributed["sheets"] = [_synthetic_sheet(1, limit), _synthetic_sheet(2, limit)]
+    distributed["sheet_count"] = 2
+    distributed["text_neighborhood"] = _synthetic_rows(1, limit) + _synthetic_rows(2, limit)
+    distributed["structural_evidence_sha256"] = diagnostic.structural_evidence_sha256(distributed)
+    diagnostic.validate_safe_result(distributed)
+
+    one_sheet_over = copy.deepcopy(distributed)
+    one_sheet_over["sheets"][0] = _synthetic_sheet(1, limit + 1)
+    one_sheet_over["text_neighborhood"] = _synthetic_rows(1, limit + 1) + _synthetic_rows(2, limit)
+    _assert_invalid_neighborhood(one_sheet_over)
+
+
 @pytest.mark.parametrize("text", ["Acme Security Holdings", "1320", "2026", "Price", "ticker ABC"])
 def test_non_allowlisted_text_is_not_emittable(monkeypatch, text):
     raw = _raw(monkeypatch)

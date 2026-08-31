@@ -126,6 +126,7 @@ def _validate_neighborhood(rows: Any, sheets: list[dict[str, Any]], sheet_count:
     if type(rows) is not list:
         raise DiagnosticContractError("neighborhood")
     previous = None
+    rows_by_sheet: dict[int, int] = {}
     for row in rows:
         if type(row) is not dict or set(row) != {"sheet_ordinal", "row_ordinal", "cells"}:
             raise DiagnosticContractError("row")
@@ -139,6 +140,9 @@ def _validate_neighborhood(rows: Any, sheets: list[dict[str, Any]], sheet_count:
             raise DiagnosticContractError("row sheet visibility")
         if row["row_ordinal"] > referenced_sheet["row_count"]:
             raise DiagnosticContractError("row range")
+        rows_by_sheet[row["sheet_ordinal"]] = rows_by_sheet.get(row["sheet_ordinal"], 0) + 1
+        if rows_by_sheet[row["sheet_ordinal"]] > schema.MAX_SAMPLE_ROWS_PER_TABLE:
+            raise DiagnosticContractError("row sample bound")
         previous = key
         if type(row["cells"]) is not list or len(row["cells"]) > schema.MAX_SAMPLE_CELLS_PER_ROW:
             raise DiagnosticContractError("cells")
