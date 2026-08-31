@@ -356,11 +356,14 @@ V9_design_frozen=false
 future_profitability_established=false
 ```
 
-The future exact URL manifest, payload selectors, and finite pre-complete
-retry bound remain implementation-time bindings that must be frozen and
-independently reviewed before any network request. No implementation,
-acquisition, calendar artifact, V9_009 modification, F1/T/F2 action, or T0
-execution is authorized by V9_010.
+The future exact endpoint manifest remains to be frozen and hashed before
+Stage-A network begins. The finite pre-complete retry bound is already frozen
+as `MAX_PRE_COMPLETE_ATTEMPTS=3`. Payload-specific selectors, semantic
+anchors, and parser rules are intentionally not frozen before Stage A; they
+remain Stage-B offline bindings after all 109 first-complete payloads are
+locked, and require separate GPT design and implementation review. No
+implementation, acquisition, calendar artifact, V9_009 modification, F1/T/F2
+action, or T0 execution is authorized by V9_010.
 
 ## 10. Required next action
 
