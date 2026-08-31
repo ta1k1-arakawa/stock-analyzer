@@ -77,20 +77,21 @@ source_object_per_slot=1
 fallback_source_objects=0
 ```
 
-The exact historical JPX archive URL strings and payload-specific DOM/table
-selectors are not asserted here because that would invent evidence not
-available without inspecting new official payloads. Before any network
-execution, the later implementation design must freeze the exact 109-entry
-HTTPS JPX URL manifest and the selectors/semantic anchors for the verified
-source representation. It must reject a missing, duplicate, or ambiguous
-slot rather than discover a neighboring page, substitute a different source,
-or infer archive coverage. This is an explicit future implementation binding
+Before any network execution, Stage A of the future implementation must freeze
+either the exact 109-entry HTTPS JPX URL manifest or an exact deterministic
+manifest-generation rule. Its expansion must be mechanically checked to be
+exactly 109 unique HTTPS `www.jpx.co.jp` URLs, one for each required month
+slot. Stage A freezes endpoint identity only; it does not require DOM
+selectors, holiday-table selectors, payload-specific semantic anchors, or
+parser rules before raw acquisition. It must reject a missing, duplicate, or
+ambiguous slot rather than discover a neighboring page, substitute a
+different source, or infer archive coverage. This is a future implementation
 requirement, not permission to acquire pages in V9_010.
 
 No Yahoo, broker, price, outcome, or non-official holiday source may supply or
 repair the calendar.
 
-## 4. Content lock and retry classification
+## 4. Three ordered future stages
 
 Future acquisition is classified as:
 
@@ -98,21 +99,94 @@ Future acquisition is classified as:
 operation_class=RETRIABLE_PUBLIC_PLUMBING
 ```
 
-For each manifest object, the first complete HTTP-200 payload must be locked
-and hashed before semantic parsing. The lock record must bind the source slot,
-HTTP status, byte count, and SHA-256. Semantic parsing and canonical artifact
-generation must consume those locked bytes.
+The future workflow is strictly ordered. A later stage may not run until the
+earlier stage has succeeded.
 
-Retries are bounded and permitted only before a complete payload exists. A
-parser rejection, semantic/data-quality rejection, wrong source identity,
-coverage failure, or canonicalization failure is not permission to refetch.
-The future implementation design must state its finite pre-complete attempt
-bound before execution; it must not retry until a calendar passes.
+### Stage A: raw acquisition
+
+Before the first network request, freeze the exact finite 109-slot endpoint
+manifest or the exact deterministic generation rule described in section 3.
+Compute and persist `source_manifest_sha256` over the exact ordered manifest:
+
+```text
+canonical_json_bytes([
+  {"source_slot": "YYYY-MM", "source_url": "https://...",
+   "source_url_sha256": "..."},
+  ... exactly 109 entries in source_slot order ...
+])
+```
+
+`source_url_sha256` is SHA-256 of the exact UTF-8 URL string. The endpoint
+manifest is an internal acquisition input; raw URLs are not emitted in the
+public canonical calendar artifact. The manifest digest is bound before any
+request and is never changed in response to payload content.
+
+The acquisition retry/stopping contract is fixed as follows:
+
+```text
+operation_class=RETRIABLE_PUBLIC_PLUMBING
+MAX_PRE_COMPLETE_ATTEMPTS=3
+STOP_AFTER_FIRST_COMPLETE_HTTP_200=true
+RETRY_AFTER_COMPLETE_PAYLOAD=false
+RETRY_AFTER_PARSER_OR_SEMANTIC_FAILURE=false
+```
+
+For each manifest object, a transport attempt may continue only until one
+complete HTTP-200 payload is received or the bounded attempt count is
+exhausted. Immediately upon receiving that first complete HTTP-200 payload,
+lock the exact bytes before any semantic inspection. Create one durable
+raw-lock record containing at minimum:
+
+```text
+source_slot
+source_url_sha256
+http_status
+byte_count
+payload_sha256
+```
+
+The record must use the exact payload byte count and SHA-256. A non-200,
+partial, or interrupted response is not a locked payload and cannot enter the
+raw-lock-set digest. Once a complete payload is locked, the slot is closed to
+network access permanently, including after parser, semantic, DQ, or
+canonicalization failure.
+
+After all 109 payloads are locked, compute:
+
+```text
+raw_lock_set_sha256 = SHA256(canonical_json_bytes(
+  [raw_lock_record_1, ..., raw_lock_record_109]
+))
+```
+
+The records are ordered by `source_slot`; all 109 slots must occur exactly
+once. Stage A stops on any manifest, endpoint, transport, lock, byte-count,
+or payload-digest failure. It does not parse holiday semantics.
+
+### Stage B: offline structure and parser freeze
+
+Only after Stage A has successfully locked all 109 payloads may the locked
+bytes be inspected. Structure discovery, selector identification, semantic
+anchors, and parser rules must use exactly those locked bytes and no network.
+The parser must be frozen only after this offline inspection. Parser design
+and parser implementation each require a separate GPT exact-SHA review.
+
+No parser development or parser execution may refetch a source object. If the
+locked payloads cannot support unambiguous official cash-equity closure
+semantics, the result is `SOURCE_OR_DATA_FEASIBILITY`; it is not permission to
+refetch until a parser passes and it is not a V9 STOP/CONTINUE verdict.
+
+### Stage C: canonical calendar generation
+
+Parse only the exact 109-payload locked set using the separately reviewed
+Stage-B parser. Generate and validate the canonical calendar artifact from
+those bytes and the locked provenance records. Stage C performs no network
+request and cannot add, replace, or reorder source objects.
 
 Transport failure, source-identity failure, parser failure, and calendar
 semantic/data-quality failure remain distinct failure classes. A failed or
 partial response never becomes a semantic calendar input, and no partial bytes
-may enter the payload-set digest.
+may enter the payload-set or raw-lock-set digest.
 
 V9_010 itself performs zero network requests. Any future network execution
 requires a separately reviewed implementation and fresh human authorization.
@@ -129,13 +203,23 @@ covered_start
 covered_end
 trading_dates
 source_payload_set_sha256
+source_manifest_sha256
+raw_lock_set_sha256
 canonical_calendar_sha256
 source_object_count
 source_month_count
 source_payload_total_byte_count
+acquisition_design_git_sha
+acquisition_implementation_git_sha
 parser_design_git_sha
 parser_implementation_git_sha
 ```
+
+All four Git provenance fields must be exact lowercase 40-hex Git SHAs. The
+acquisition implementation SHA is the exact independently reviewed
+repository SHA used for Stage-A raw acquisition. The parser implementation
+SHA is the exact independently reviewed repository SHA used on the locked
+payloads. There is no caller-selectable provenance.
 
 `trading_dates` is the sorted exact JPX cash-equity trading-date list in
 `YYYY-MM-DD` form. The public artifact must not contain page HTML, source
@@ -149,14 +233,17 @@ excluding the digest field itself. The payload-set digest input is a canonical
 JSON array ordered by `source_slot`, with each entry containing only
 `source_slot`, `payload_sha256`, and `byte_count`; its SHA-256 is recorded as
 `source_payload_set_sha256`. The exact artifact field ordering is supplied by
-the canonical JSON procedure, not source-page order.
+the canonical JSON procedure, not source-page order. The payload-set digest
+must be derived from the same exact ordered locked payload records and cannot
+be recomputed from a later refetch.
 
 The artifact digest is computed only after all validation succeeds. No
 partially valid artifact is authoritative.
 
-## 6. Parsing and calendar semantics
+## 6. Stage-B parsing and calendar semantics
 
-The parser must read only the official source representation that is
+After Stage A lock success, the parser must read only the official source
+representation that is
 mechanically identified as the JPX/TSE cash-equity market-holiday/calendar
 section for its manifest month. It must distinguish that section from
 derivatives, futures, options, commodities, listings, corporate events,
@@ -187,6 +274,24 @@ closed. No exceptional closure may be inferred from a neighboring month,
 weekday pattern, price absence, or another source.
 
 ## 7. Required fail-closed validation
+
+Before canonical calendar generation, the future implementation must
+mechanically verify all acquisition and parser provenance bindings:
+
+- the manifest digest equals the frozen expected `source_manifest_sha256`;
+- all 109 source slots occur exactly once;
+- every raw-lock endpoint identity matches its manifest slot;
+- `raw_lock_set_sha256` equals the digest of the exact ordered records;
+- every locked payload’s bytes match its recorded SHA-256 and byte count;
+- acquisition design/implementation SHAs are exact reviewed lowercase 40-hex
+  values;
+- parser design/implementation SHAs are exact reviewed lowercase 40-hex
+  values; and
+- the parser consumed exactly the locked payload set and performed no network
+  request.
+
+Any mismatch fails before calendar acceptance and cannot be converted into a
+V9 research verdict.
 
 The future parser/artifact validator must reject all of the following:
 
