@@ -184,9 +184,14 @@ def test_persistence_cannot_legitimize_mismatched_or_off_domain_endpoint(lock_ur
 def test_root_transport_retries_with_frozen_delays(success_attempt, delays):
     seen, clock = [], []
     def rf(url, attempt): seen.append(attempt); return outcome(200, ROOT_BYTES, True, ROOT_URL) if attempt == success_attempt else outcome(503)
-    result = acq.run_pure_acquisition(SHA, ROOT_URL, rf, lambda *_: outcome(503), persist_ok([]), delay=clock.append, locator_runner=lambda *args: ({**locator_success(*args)[0], "result": "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "mechanical_candidate_count": 0, "qualifying_candidate_count": 0, "selected_raw_href_sha256": None, "selected_resolved_url_sha256": None, "structural_evidence_sha256": "0" * 64}, None))
+    def data_quality_locator(*args):
+        safe, _ = locator_success(*args)
+        safe.pop("structural_evidence_sha256")
+        safe.update({"result": "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "mechanical_candidate_count": 0, "qualifying_candidate_count": 0, "selected_raw_href_sha256": None, "selected_resolved_url_sha256": None})
+        return locator._fresh_finalize(safe), None
+    result = acq.run_pure_acquisition(SHA, ROOT_URL, rf, lambda *_: outcome(503), persist_ok([]), delay=clock.append, locator_runner=data_quality_locator)
     assert seen == list(range(1, success_attempt + 1)) and clock[:success_attempt] == delays
-    assert result["failure_stage"] == "IMPLEMENTATION_ROOT_LOCATOR"
+    assert result["failure_stage"] == "ROOT_LOCATOR"
 
 
 def test_transport_failures_and_callback_exceptions_keep_attempt_count():
@@ -229,12 +234,33 @@ def test_locator_result_mapping_stops_before_terminal(locator_result, expected):
     safe = locator._fresh_finalize(safe)
     result = acq.run_pure_acquisition(SHA, ROOT_URL, lambda *_: outcome(200, ROOT_BYTES, True, ROOT_URL), lambda *_: calls.append(True), persist_ok([]), locator_runner=lambda *_: (safe, None))
     assert (result["result"], result["failure_stage"]) == expected and calls == []
+    assert result["semantic_locator_result"] == locator_result
+    assert result["semantic_locator_structural_evidence_sha256"] == safe["structural_evidence_sha256"] != "0" * 64
 
 
-def test_invalid_terminal_url_and_unexpected_locator_are_implementation_failures():
+def test_invalid_terminal_url_is_an_implementation_failure():
     def bad_locator(*args):
         safe, _ = locator_success(*args); return safe, "https://example.invalid/x.xls"
     result = acq.run_pure_acquisition(SHA, ROOT_URL, lambda *_: outcome(200, ROOT_BYTES, True, ROOT_URL), lambda *_: outcome(503), persist_ok([]), locator_runner=bad_locator)
     assert result["failure_stage"] == "IMPLEMENTATION_POST_LOCATOR_PRE_TERMINAL"
-    result = acq.run_pure_acquisition(SHA, ROOT_URL, lambda *_: outcome(200, ROOT_BYTES, True, ROOT_URL), lambda *_: outcome(503), persist_ok([]), locator_runner=lambda *_: (_ for _ in ()).throw(RuntimeError()))
-    assert result["failure_stage"] == "IMPLEMENTATION_ROOT_LOCATOR"
+
+
+@pytest.mark.parametrize("field, bad", [("input_payload_sha256", "0" * 64), ("input_payload_byte_length", 0)])
+def test_invalid_locator_projection_or_root_binding_propagates_without_terminal_fetch(field, bad):
+    terminal_calls = []
+    def invalid_locator(*args):
+        safe, private_url = locator_success(*args)
+        safe.pop("structural_evidence_sha256")
+        safe[field] = bad
+        return locator._fresh_finalize(safe), private_url
+    with pytest.raises(acq._LocatorContractViolation):
+        acq.run_pure_acquisition(SHA, ROOT_URL, lambda *_: outcome(200, ROOT_BYTES, True, ROOT_URL), lambda *_: terminal_calls.append(True), persist_ok([]), locator_runner=invalid_locator)
+    assert terminal_calls == []
+
+
+def test_locator_exception_or_malformed_projection_propagates_without_terminal_fetch():
+    terminal_calls = []
+    for runner, exception in ((lambda *_: (_ for _ in ()).throw(RuntimeError("unexpected")), RuntimeError), (lambda *_: ({}, None), ValueError)):
+        with pytest.raises(exception):
+            acq.run_pure_acquisition(SHA, ROOT_URL, lambda *_: outcome(200, ROOT_BYTES, True, ROOT_URL), lambda *_: terminal_calls.append(True), persist_ok([]), locator_runner=runner)
+    assert terminal_calls == []

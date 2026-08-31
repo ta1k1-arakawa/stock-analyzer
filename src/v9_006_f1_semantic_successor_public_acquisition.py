@@ -79,6 +79,10 @@ class VerifiedLock:
     resolved_url: str
 
 
+class _LocatorContractViolation(ValueError):
+    pass
+
+
 def _is_int(value: object) -> bool: return type(value) is int
 def _hex(value: object, length: int = 64) -> bool: return type(value) is str and re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is not None
 
@@ -202,15 +206,14 @@ def run_pure_acquisition(implementation_git_sha: str, root_url: str, root_fetch:
         return finalize_safe_result(_base(implementation_git_sha, "IMPLEMENTATION_FAILURE" if impl else "PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED", "IMPLEMENTATION_ROOT_TRANSPORT" if impl else "ROOT_TRANSPORT", root_status=root_status, root_attempts=root_attempts))
     root = _persist(persist, outcome.payload, outcome.resolved_url, ROOT_PERIOD, delay)
     if root is None: return finalize_safe_result(_base(implementation_git_sha, "GOVERNANCE_FAILURE", "ROOT_PERSISTENCE_EXHAUSTED", root_status=200, root_attempts=root_attempts))
-    try:
-        safe_locator, private_url = locator_runner(outcome.payload, root.resolved_url, root.payload_sha256, root.byte_length); locator.validate_fresh_safe_result(safe_locator)
-        if safe_locator["input_payload_sha256"] != root.payload_sha256 or safe_locator["input_payload_byte_length"] != root.byte_length: raise ValueError("binding")
-    except Exception:
-        return finalize_safe_result(_base(implementation_git_sha, "IMPLEMENTATION_FAILURE", "IMPLEMENTATION_ROOT_LOCATOR", root, root_attempts=root_attempts, locator_result="SAFE_OUTPUT_VALIDATION_FAILURE", locator_hash="0" * 64))
+    safe_locator, private_url = locator_runner(outcome.payload, root.resolved_url, root.payload_sha256, root.byte_length)
+    locator.validate_fresh_safe_result(safe_locator)
+    if safe_locator["input_payload_sha256"] != root.payload_sha256 or safe_locator["input_payload_byte_length"] != root.byte_length:
+        raise _LocatorContractViolation("locator binding")
     locator_result, locator_hash = safe_locator["result"], safe_locator["structural_evidence_sha256"]
     if locator_result in {"SOURCE_OR_DATA_FEASIBILITY_FAILURE", "HTML_STRUCTURE_UNSUPPORTED"}: return finalize_safe_result(_base(implementation_git_sha, "DATA_QUALITY_FAILURE", "ROOT_LOCATOR", root, root_attempts=root_attempts, locator_result=locator_result, locator_hash=locator_hash))
     if locator_result == "INPUT_BINDING_FAILURE": return finalize_safe_result(_base(implementation_git_sha, "INPUT_BINDING_FAILURE", "ROOT_LOCATOR_INPUT_BINDING", root, root_attempts=root_attempts, locator_result=locator_result, locator_hash=locator_hash))
-    if locator_result != "SUCCESSOR_LOCATOR_MATCHED": return finalize_safe_result(_base(implementation_git_sha, "IMPLEMENTATION_FAILURE", "IMPLEMENTATION_ROOT_LOCATOR", root, root_attempts=root_attempts, locator_result="SAFE_OUTPUT_VALIDATION_FAILURE", locator_hash=locator_hash))
+    if locator_result != "SUCCESSOR_LOCATOR_MATCHED": return finalize_safe_result(_base(implementation_git_sha, "IMPLEMENTATION_FAILURE", "IMPLEMENTATION_ROOT_LOCATOR", root, root_attempts=root_attempts, locator_result=locator_result, locator_hash=locator_hash))
     try:
         if type(private_url) is not str: raise ValueError("private_url")
         validate_jpx_url(private_url)
