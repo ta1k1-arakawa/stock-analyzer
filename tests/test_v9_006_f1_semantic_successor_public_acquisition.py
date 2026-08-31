@@ -6,10 +6,11 @@ import pytest
 
 from src import v9_006_f1_semantic_successor_public_acquisition as acq
 from src import v9_006_f1_semantic_successor_locator as locator
+from src.v9_005_stage_a_jpx_probe import LISTED_ISSUES_PAGE_URL
 
 SHA = "a" * 40
-ROOT_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
-TERM_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/a.xls"
+ROOT_URL = LISTED_ISSUES_PAGE_URL
+TERM_URL = ROOT_URL.rsplit("/", 1)[0] + "/a.xls"
 ROOT_BYTES = b"List of TSE-listed Issues as of previous month-end is available.<p>List of TSE-listed Issues (Jan. 2026)</p><a href='a.xls'>x</a>"
 
 
@@ -59,6 +60,37 @@ def test_root_success_first_attempt_and_terminal_success_have_exact_lock_set():
     result = acq.run_pure_acquisition(SHA, ROOT_URL, rf, tf, persist_ok(persisted), locator_runner=locator_success)
     assert result["result"] == "SUCCESS" and root_calls == [1] and terminal_calls == [1]
     assert result["raw_lock_set_sha256"] == acq.raw_lock_set_sha256(lock(ROOT_BYTES, acq.ROOT_PERIOD, ROOT_URL), lock(b"terminal", acq.TERMINAL_PERIOD, TERM_URL))
+
+
+def test_only_exact_frozen_root_endpoint_can_start_transport():
+    calls = []
+    result = acq.run_pure_acquisition(SHA, ROOT_URL.rsplit("/", 1)[0] + "/02.html", lambda *_: calls.append(True), lambda *_: outcome(503), persist_ok([]))
+    assert (result["result"], result["failure_stage"], result["discovery_root_attempt_count"], result["terminal_attempt_count"]) == ("INPUT_BINDING_FAILURE", "PRE_NETWORK_INPUT_BINDING", 0, 0)
+    assert calls == []
+
+
+@pytest.mark.parametrize("resolved_url", [ROOT_URL.rsplit("/", 1)[0] + "/redirect.html", "https://example.invalid/root.html"])
+def test_root_complete_payload_with_mismatched_endpoint_is_not_persisted_or_located(resolved_url):
+    persisted, located = [], []
+    result = acq.run_pure_acquisition(SHA, ROOT_URL, lambda *_: outcome(200, ROOT_BYTES, True, resolved_url), lambda *_: outcome(503), persist_ok(persisted), locator_runner=lambda *_: located.append(True))
+    assert (result["result"], result["failure_stage"], result["discovery_root_attempt_count"]) == ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_ROOT_TRANSPORT", 1)
+    assert persisted == [] and located == []
+
+
+def test_terminal_complete_payload_with_mismatched_endpoint_is_not_persisted():
+    persisted = []
+    result = acq.run_pure_acquisition(SHA, ROOT_URL, lambda *_: outcome(200, ROOT_BYTES, True, ROOT_URL), lambda *_: outcome(200, b"terminal", True, TERM_URL + "?wrong=1"), persist_ok(persisted), locator_runner=locator_success)
+    assert (result["result"], result["failure_stage"], result["terminal_attempt_count"]) == ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_TERMINAL_TRANSPORT", 1)
+    assert [period for period, _ident, _attempt in persisted] == [acq.ROOT_PERIOD]
+
+
+@pytest.mark.parametrize("lock_url", [ROOT_URL.rsplit("/", 1)[0] + "/wrong.html", "https://example.invalid/lock"])
+def test_persistence_cannot_legitimize_mismatched_or_off_domain_endpoint(lock_url):
+    calls = []
+    def mismatched_lock(family, period, payload, url, attempt):
+        calls.append(attempt); return lock(payload, period, lock_url)
+    result = acq.run_pure_acquisition(SHA, ROOT_URL, lambda *_: outcome(200, ROOT_BYTES, True, ROOT_URL), lambda *_: outcome(503), mismatched_lock)
+    assert result["failure_stage"] == "ROOT_PERSISTENCE_EXHAUSTED" and calls == [1, 2, 3]
 
 
 @pytest.mark.parametrize("success_attempt, delays", [(2, [0, 2]), (3, [0, 2, 5])])

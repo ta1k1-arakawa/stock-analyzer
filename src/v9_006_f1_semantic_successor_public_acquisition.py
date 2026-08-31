@@ -8,7 +8,7 @@ import re
 from typing import Callable
 
 from src import v9_006_f1_semantic_successor_locator as locator
-from src.v9_006_f1_locked_root_locator_successor_diagnostic import validate_jpx_url
+from src.v9_005_stage_a_jpx_probe import LISTED_ISSUES_PAGE_URL, validate_jpx_url
 
 SCHEMA_VERSION = "V9_006_F1_SEMANTIC_SUCCESSOR_PUBLIC_ACQUISITION_V1"
 TASK = "V9_006_F1_SEMANTIC_SUCCESSOR_PUBLIC_ACQUISITION"
@@ -126,7 +126,9 @@ def validate_safe_acquisition_result(value: object) -> None:
 
 
 def _lock_ok(lock: object, payload: bytes, family: str, period: str, resolved_url: str) -> bool:
-    return type(lock) is VerifiedLock and lock.source_family == family and lock.applicable_period == period and lock.http_status == 200 and lock.payload_sha256 == sha256(payload).hexdigest() and lock.byte_length == len(payload) and lock.resolved_url == resolved_url
+    try: validate_jpx_url(resolved_url)
+    except Exception: return False
+    return type(resolved_url) is str and type(lock) is VerifiedLock and lock.source_family == family and lock.applicable_period == period and lock.http_status == 200 and lock.payload_sha256 == sha256(payload).hexdigest() and lock.byte_length == len(payload) and lock.resolved_url == resolved_url
 
 
 def _transport(fetch: Callable[[str, int], FetchOutcome], url: str, delay: Callable[[int], None]) -> tuple[FetchOutcome | None, int, int | None, bool]:
@@ -137,7 +139,11 @@ def _transport(fetch: Callable[[str, int], FetchOutcome], url: str, delay: Calla
         except Exception: return None, attempt, latest, True
         if type(outcome) is not FetchOutcome: return None, attempt, latest, True
         if outcome.http_status is not None and _is_int(outcome.http_status) and 0 <= outcome.http_status <= 599: latest = outcome.http_status
-        if outcome.http_status == 200 and outcome.complete is True and type(outcome.payload) is bytes: return outcome, attempt, latest, False
+        if outcome.http_status == 200 and outcome.complete is True and type(outcome.payload) is bytes:
+            try: validate_jpx_url(outcome.resolved_url)
+            except Exception: return None, attempt, latest, True
+            if type(outcome.resolved_url) is not str or outcome.resolved_url != url: return None, attempt, latest, True
+            return outcome, attempt, latest, False
     return None, 3, latest, False
 
 
@@ -158,7 +164,9 @@ def _base(implementation_git_sha: str, result: str, stage: str, root: VerifiedLo
 
 def run_pure_acquisition(implementation_git_sha: str, root_url: str, root_fetch: Callable[[str, int], FetchOutcome], terminal_fetch: Callable[[str, int], FetchOutcome], persist: Callable[[str, str, bytes, str, int], VerifiedLock | None], delay: Callable[[int], None] = lambda _seconds: None, locator_runner: Callable[[bytes, str, str, int], tuple[dict[str, object], str | None]] = locator.run_fresh_root_locator) -> dict[str, object]:
     if not _hex(implementation_git_sha, 40): raise ValueError("implementation_git_sha")
-    try: validate_jpx_url(root_url)
+    try:
+        if type(root_url) is not str or root_url != LISTED_ISSUES_PAGE_URL: raise ValueError("root endpoint")
+        validate_jpx_url(root_url)
     except Exception: return finalize_safe_result(_base(implementation_git_sha, "INPUT_BINDING_FAILURE", "PRE_NETWORK_INPUT_BINDING"))
     outcome, root_attempts, root_status, impl = _transport(root_fetch, root_url, delay)
     if outcome is None:
