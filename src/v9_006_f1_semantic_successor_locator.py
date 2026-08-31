@@ -22,6 +22,7 @@ _YEAR = re.compile(r"^List of TSE-listed Issues \((?:Jan|Feb|Mar|Apr|May|Jun|Jul
 _P1 = "List of TSE-listed Issues as of previous month-end is available."
 _SUPPRESS = frozenset({"script", "style", "noscript", "template"})
 _EXTENSIONS = frozenset({"XLS", "XLSX", "CSV", "ZIP"})
+FRESH_SCHEMA_VERSION = "V9_006_F1_SEMANTIC_SUCCESSOR_LOCATOR_FRESH_ROOT_V1"
 
 
 class _Unsupported(Exception):
@@ -234,3 +235,56 @@ def run_locator(output_root: object) -> dict[str, object]:
     if not _post_uniqueness_revalidate(base, selected):
         return _finalize(_empty("INPUT_BINDING_FAILURE", EXPECTED_PAYLOAD_SHA256))
     return _finalize({"schema_version": SCHEMA_VERSION, "task": TASK, "input_payload_sha256": EXPECTED_PAYLOAD_SHA256, "result": "SUCCESSOR_LOCATOR_MATCHED", "mechanical_candidate_count": len(mechanical), "qualifying_candidate_count": 1, "selected_raw_href_sha256": selected["raw_href_sha256"], "selected_resolved_url_sha256": selected["resolved_url_sha256"], "network_requests": 0, "replacement_locator_authorized": False})
+
+
+def _fresh_finalize(value: dict[str, object]) -> dict[str, object]:
+    result = dict(value)
+    result["structural_evidence_sha256"] = sha256(canonical_json(result).encode("utf-8")).hexdigest()
+    validate_fresh_safe_result(result)
+    return result
+
+
+def _fresh_empty(result: str, digest: str, length: int) -> dict[str, object]:
+    return {"schema_version": FRESH_SCHEMA_VERSION, "task": TASK, "input_payload_sha256": digest, "input_payload_byte_length": length, "result": result, "mechanical_candidate_count": 0, "qualifying_candidate_count": 0, "selected_raw_href_sha256": None, "selected_resolved_url_sha256": None, "network_requests": 0, "replacement_locator_authorized": False}
+
+
+def validate_fresh_safe_result(value: object) -> None:
+    keys = {"schema_version", "task", "input_payload_sha256", "input_payload_byte_length", "result", "mechanical_candidate_count", "qualifying_candidate_count", "selected_raw_href_sha256", "selected_resolved_url_sha256", "network_requests", "replacement_locator_authorized", "structural_evidence_sha256"}
+    if type(value) is not dict or set(value) != keys or value["schema_version"] != FRESH_SCHEMA_VERSION or value["task"] != TASK or value["result"] not in RESULTS or type(value["network_requests"]) is not int or value["network_requests"] != 0 or value["replacement_locator_authorized"] is not False: raise ValueError("schema")
+    for key in ("input_payload_byte_length", "mechanical_candidate_count", "qualifying_candidate_count"):
+        if type(value[key]) is not int or value[key] < 0: raise ValueError("count")
+    if type(value["input_payload_sha256"]) is not str or _HEX.fullmatch(value["input_payload_sha256"]) is None: raise ValueError("payload")
+    digestless = dict(value); digest = digestless.pop("structural_evidence_sha256")
+    if type(digest) is not str or _HEX.fullmatch(digest) is None or sha256(canonical_json(digestless).encode()).hexdigest() != digest: raise ValueError("hash")
+    selected = (value["selected_raw_href_sha256"], value["selected_resolved_url_sha256"])
+    if any(item is not None and (type(item) is not str or _HEX.fullmatch(item) is None) for item in selected): raise ValueError("selected")
+    if value["result"] == "SUCCESSOR_LOCATOR_MATCHED":
+        if value["mechanical_candidate_count"] < 1 or value["qualifying_candidate_count"] != 1 or any(item is None for item in selected): raise ValueError("success")
+    elif value["mechanical_candidate_count"] != 0 or value["qualifying_candidate_count"] != 0 or any(item is not None for item in selected): raise ValueError("failure")
+
+
+def run_fresh_root_locator(raw: bytes, resolved_root_url: str, payload_sha256: str, payload_byte_length: int) -> tuple[dict[str, object], str | None]:
+    """Run the shared selector on already locked, provenance-verified fresh bytes.
+
+    The second tuple member is private runtime state for a future executor and
+    must never be serialized.
+    """
+    digest = sha256(raw).hexdigest() if type(raw) is bytes else "0" * 64
+    length = len(raw) if type(raw) is bytes else 0
+    if type(payload_sha256) is not str or _HEX.fullmatch(payload_sha256) is None or type(payload_byte_length) is not int or payload_byte_length < 0 or payload_sha256 != digest or payload_byte_length != length:
+        return _fresh_finalize(_fresh_empty("INPUT_BINDING_FAILURE", digest, length)), None
+    try:
+        _prior.validate_jpx_url(resolved_root_url)
+        mechanical, qualifying = _locate_private(raw, resolved_root_url)
+    except _Unsupported:
+        return _fresh_finalize(_fresh_empty("HTML_STRUCTURE_UNSUPPORTED", digest, length)), None
+    except _Unsafe:
+        return _fresh_finalize(_fresh_empty("SAFE_OUTPUT_VALIDATION_FAILURE", digest, length)), None
+    except Exception:
+        return _fresh_finalize(_fresh_empty("INPUT_BINDING_FAILURE", digest, length)), None
+    if len(qualifying) != 1:
+        return _fresh_finalize(_fresh_empty("SOURCE_OR_DATA_FEASIBILITY_FAILURE", digest, length)), None
+    selected = qualifying[0]
+    if not _post_uniqueness_revalidate(resolved_root_url, selected):
+        return _fresh_finalize(_fresh_empty("INPUT_BINDING_FAILURE", digest, length)), None
+    return _fresh_finalize({"schema_version": FRESH_SCHEMA_VERSION, "task": TASK, "input_payload_sha256": digest, "input_payload_byte_length": length, "result": "SUCCESSOR_LOCATOR_MATCHED", "mechanical_candidate_count": len(mechanical), "qualifying_candidate_count": 1, "selected_raw_href_sha256": selected["raw_href_sha256"], "selected_resolved_url_sha256": selected["resolved_url_sha256"], "network_requests": 0, "replacement_locator_authorized": False}), selected["resolved_url"]

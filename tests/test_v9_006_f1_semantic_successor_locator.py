@@ -216,3 +216,43 @@ def test_locator_loader_failure_uses_fixed_marker_without_leakage(monkeypatch):
     stdout, stderr = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr): assert cli.main(["--output-root", "x"]) == 3
     assert stdout.getvalue() == "" and stderr.getvalue() == "V9_006_F1_SEMANTIC_SUCCESSOR_LOCATOR_IMPLEMENTATION_FAILURE\n"
+
+
+def fresh(raw: bytes, base: str = BASE):
+    return locator.run_fresh_root_locator(raw, base, sha256(raw).hexdigest(), len(raw))
+
+
+def test_fresh_root_unique_dynamic_binding_and_private_url_not_safe():
+    raw = html("fresh.csv")
+    result, private_url = fresh(raw)
+    assert result["result"] == "SUCCESSOR_LOCATOR_MATCHED"
+    assert result["input_payload_sha256"] == sha256(raw).hexdigest() != locator.EXPECTED_PAYLOAD_SHA256
+    assert result["input_payload_byte_length"] == len(raw) != locator.EXPECTED_LENGTH
+    assert private_url and "fresh.csv" in private_url and "fresh.csv" not in locator.canonical_json(result)
+
+
+@pytest.mark.parametrize("raw, expected", [(html(p1="wrong"), "SOURCE_OR_DATA_FEASIBILITY_FAILURE"), (html() + html("b.zip", "List of TSE-listed Issues (Feb. 2026)"), "SOURCE_OR_DATA_FEASIBILITY_FAILURE"), (b"<a>", "HTML_STRUCTURE_UNSUPPORTED")])
+def test_fresh_root_failure_projection_is_empty(raw, expected):
+    result, private_url = fresh(raw)
+    assert result["result"] == expected and private_url is None
+    assert result["mechanical_candidate_count"] == result["qualifying_candidate_count"] == 0
+    assert result["selected_raw_href_sha256"] is result["selected_resolved_url_sha256"] is None
+
+
+def test_fresh_root_input_and_post_revalidation_failures(monkeypatch):
+    raw = html()
+    result, _ = locator.run_fresh_root_locator(raw, BASE, "0" * 64, len(raw))
+    assert result["result"] == "INPUT_BINDING_FAILURE"
+    result, _ = fresh(raw, "https://example.invalid/root")
+    assert result["result"] == "INPUT_BINDING_FAILURE"
+    monkeypatch.setattr(locator, "_post_uniqueness_revalidate", lambda *_: False)
+    result, _ = fresh(raw)
+    assert result["result"] == "INPUT_BINDING_FAILURE"
+
+
+def test_fresh_safe_validator_hash_and_bool_closure():
+    result, _ = fresh(html())
+    locator.validate_fresh_safe_result(result)
+    value = dict(result); value["input_payload_byte_length"] = True
+    value["structural_evidence_sha256"] = sha256(locator.canonical_json({k: v for k, v in value.items() if k != "structural_evidence_sha256"}).encode()).hexdigest()
+    with pytest.raises(ValueError): locator.validate_fresh_safe_result(value)
