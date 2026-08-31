@@ -196,3 +196,98 @@ def test_screen_repeatability_and_no_source_network_or_cache_writer():
     source = inspect.getsource(t0)
     assert "urllib" not in source and "requests" not in source and "urlopen" not in source
     assert ".write_text" not in source and ".write_bytes" not in source and "to_csv" not in source
+
+
+def _scoreable_fixture():
+    calendar = pd.bdate_range("2016-09-01", "2020-01-20")
+    frame = _frame(periods=900)
+    universe = pd.DataFrame({"ticker": ["0001", "0002"]})
+    frames = {"0001": frame.copy(), "0002": frame.copy()}
+    return calendar, universe, frames
+
+
+def test_d0_scoreable_population_precedes_target_attachment_and_keeps_missing_d3():
+    calendar, universe, frames = _scoreable_fixture()
+    grid = t0.signal_grid(calendar)
+    d0 = next(day for day in grid if day.year == 2020)
+    d3 = calendar[calendar.get_loc(d0) + 3]
+    frames["0001"] = frames["0001"].drop(index=d3)
+
+    population = t0.build_scoreable_population(frames, universe, calendar)
+    attached = t0.attach_historical_targets(population, frames, calendar)
+    dataset = t0.build_dataset(frames, universe, calendar)
+
+    row = attached[(attached.d0 == d0) & (attached.canonical_code == "0001")].iloc[0]
+    dataset_row = dataset[(dataset.d0 == d0) & (dataset.canonical_code == "0001")].iloc[0]
+    assert bool(row.target_available) is False
+    assert bool(dataset_row.target_available) is False
+    assert ((population.d0 == d0) & (population.canonical_code == "0001")).any()
+
+
+def test_removing_future_d3_does_not_change_d0_scoreability_or_model_inputs():
+    calendar, universe, frames = _scoreable_fixture()
+    grid = t0.signal_grid(calendar)
+    d0 = next(day for day in grid if day.year == 2020)
+    d3 = calendar[calendar.get_loc(d0) + 3]
+    complete = t0.build_scoreable_population(frames, universe, calendar)
+    frames_without_future = {code: frame.copy() for code, frame in frames.items()}
+    frames_without_future["0001"] = frames_without_future["0001"].drop(index=d3)
+    missing = t0.build_scoreable_population(frames_without_future, universe, calendar)
+
+    pd.testing.assert_frame_equal(
+        complete[complete.d0 <= d0].reset_index(drop=True),
+        missing[missing.d0 <= d0].reset_index(drop=True),
+    )
+    frames_with_unusable_future_value = {code: frame.copy() for code, frame in frames.items()}
+    future_day = calendar[calendar.get_loc(d0) + 1]
+    frames_with_unusable_future_value["0001"].loc[future_day, "Close"] = np.inf
+    nonfinite_future = t0.build_scoreable_population(
+        frames_with_unusable_future_value,
+        universe,
+        calendar[calendar <= d0],
+    )
+    pd.testing.assert_frame_equal(
+        complete[complete.d0 <= d0].reset_index(drop=True),
+        nonfinite_future[nonfinite_future.d0 <= d0].reset_index(drop=True),
+    )
+
+
+def test_formal_missing_target_fails_closed_without_rank2_substitution():
+    rows = _screen_rows({year: 0.0 for year in t0.KILL_SCREEN_YEARS})
+    rows["target_available"] = True
+    first = (rows.d0.dt.year == 2020) & (rows.canonical_code == "0001")
+    rows.loc[first, "ridge_score"] = 99.0
+    rows.loc[first, "lightgbm_score"] = 99.0
+    rows.loc[first, "target_available"] = False
+    rows.loc[first, "target_percentile"] = np.nan
+
+    with pytest.raises(t0.T0DataIncompatible, match="FORMAL_TARGET_UNAVAILABLE"):
+        t0.screen_top1(rows)
+
+
+def test_training_label_availability_does_not_change_scoreable_population():
+    calendar, universe, frames = _scoreable_fixture()
+    population = t0.build_scoreable_population(frames, universe, calendar)
+    attached = t0.attach_historical_targets(population, frames, calendar)
+    attached["target_percentile"] = attached.groupby("d0", sort=False)["target_raw_return"].transform(
+        lambda values: values.rank(method="average", pct=True)
+    )
+    missing = attached.copy()
+    missing.loc[missing.index[0], "target_available"] = False
+    missing.loc[missing.index[0], "target_percentile"] = np.nan
+    missing.loc[missing.index[0], "target_exit_date"] = pd.NaT
+
+    assert len(population) == len(missing)
+    training = t0.causal_training_rows(missing, calendar, 2018, 1)
+    assert not ((training.d0 == missing.loc[missing.index[0], "d0"]) & (training.canonical_code == missing.loc[missing.index[0], "canonical_code"])).any()
+
+
+def test_d0_scoreability_never_calls_future_target_function(monkeypatch):
+    calendar, universe, frames = _scoreable_fixture()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("D1/D2/D3 target access during D0 scoreability")
+
+    monkeypatch.setattr(t0, "d1_d3_target", forbidden)
+    population = t0.build_scoreable_population(frames, universe, calendar)
+    assert not population.empty

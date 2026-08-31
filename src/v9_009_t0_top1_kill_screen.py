@@ -392,16 +392,103 @@ def _validate_universe(universe: pd.DataFrame) -> list[str]:
     return codes
 
 
+def _frame_through_day(frame: pd.DataFrame, day: pd.Timestamp) -> pd.DataFrame:
+    """Return only observations known by ``day`` before value validation."""
+    if not isinstance(frame, pd.DataFrame) or not isinstance(frame.index, pd.DatetimeIndex):
+        raise T0DataIncompatible("OHLCV_FRAME_INVALID")
+    index = pd.to_datetime(frame.index, errors="coerce")
+    if getattr(index, "tz", None) is not None:
+        index = index.tz_convert("Asia/Tokyo").tz_localize(None)
+    if index.isna().any():
+        raise T0DataIncompatible("D0_DATE_INVALID")
+    index = index.normalize()
+    observed = frame.loc[index <= day, list(_RAW_COLUMNS) + [column for column in _ADJ_ALIASES if column in frame.columns]].copy()
+    observed.index = index[index <= day]
+    return _normalise_frame(observed)
+
+
+def _actions_through_day(
+    actions: Mapping[object, object] | Sequence[Mapping[str, object]] | None,
+    day: pd.Timestamp,
+) -> Mapping[object, object] | Sequence[Mapping[str, object]] | None:
+    if actions is None:
+        return None
+    if isinstance(actions, Mapping):
+        return {raw_day: ratio for raw_day, ratio in actions.items() if _as_day(raw_day) <= day}
+    if isinstance(actions, Sequence) and not isinstance(actions, (str, bytes, bytearray)):
+        filtered = []
+        for item in actions:
+            if not isinstance(item, Mapping) or set(item) != {"date", "ratio"}:
+                raise T0DataIncompatible("SPLIT_ACTION_SCHEMA_INVALID")
+            if _as_day(item["date"]) <= day:
+                filtered.append(item)
+        return filtered
+    raise T0DataIncompatible("SPLIT_ACTION_SCHEMA_INVALID")
+
+
 def build_dataset(
     frames: Mapping[object, pd.DataFrame],
     universe: pd.DataFrame,
     calendar_dates: Sequence[object],
     actions: Mapping[object, Mapping[object, object] | Sequence[Mapping[str, object]]] | None = None,
 ) -> pd.DataFrame:
-    """Build exact causal V9 rows for training and formal development signals."""
+    """Build exact causal V9 rows with labels attached after scoreability."""
+    scoreable = build_scoreable_population(frames, universe, calendar_dates, actions)
+    result = attach_historical_targets(scoreable, frames, calendar_dates, actions)
+    result["target_percentile"] = result.groupby("d0", sort=False)["target_raw_return"].transform(
+        lambda values: values.rank(method="average", pct=True)
+    )
+    required = [
+        "d0",
+        "canonical_code",
+        *FEATURE_COLUMNS,
+        "target_raw_return",
+        "target_percentile",
+        "target_exit_date",
+        "target_entry_date",
+        "target_available",
+        "year",
+    ]
+    valid_targets = result["target_available"]
+    if not np.isfinite(result.loc[:, [*FEATURE_COLUMNS]].to_numpy(dtype=float)).all():
+        raise T0ImplementationFailure("NONFINITE_DATASET_VALUE")
+    if valid_targets.any() and not np.isfinite(
+        result.loc[valid_targets, ["target_raw_return", "target_percentile"]].to_numpy(dtype=float)
+    ).all():
+        raise T0ImplementationFailure("NONFINITE_DATASET_VALUE")
+    return result.loc[:, required]
+
+
+def build_scoreable_population(
+    frames: Mapping[object, pd.DataFrame],
+    universe: pd.DataFrame,
+    calendar_dates: Sequence[object],
+    actions: Mapping[object, Mapping[object, object] | Sequence[Mapping[str, object]]] | None = None,
+) -> pd.DataFrame:
+    """Build the complete D0-known feature population without reading targets.
+
+    This function is deliberately target-blind.  Its only price observations
+    are at or before each D0, and target attachment is a separate operation.
+    """
     codes = _validate_universe(universe)
-    normalized, normalized_actions = normalize_inputs(frames, actions)
-    unknown = set(normalized) - set(codes)
+    if not isinstance(frames, Mapping) or not frames:
+        raise T0DataIncompatible("PRICE_FRAMES_EMPTY")
+    raw_frames: dict[str, pd.DataFrame] = {}
+    raw_actions: dict[str, Mapping[object, object] | Sequence[Mapping[str, object]] | None] = {}
+    for raw_code, frame in frames.items():
+        code = canonical_code(raw_code)
+        if code in raw_frames:
+            raise T0DataIncompatible("DUPLICATE_CANONICAL_CODE")
+        if not isinstance(frame, pd.DataFrame) or not isinstance(frame.index, pd.DatetimeIndex):
+            raise T0DataIncompatible("OHLCV_FRAME_INVALID")
+        raw_frames[code] = frame
+        source = None
+        if actions is not None and raw_code in actions:
+            source = actions[raw_code]
+        elif actions is not None and code in actions:
+            source = actions[code]
+        raw_actions[code] = source
+    unknown = set(raw_frames) - set(codes)
     if unknown:
         raise T0DataIncompatible("PRICE_CODE_NOT_IN_UNIVERSE")
     calendar = normalize_calendar(calendar_dates)
@@ -409,48 +496,84 @@ def build_dataset(
     rows: list[dict[str, Any]] = []
     for day in grid:
         for code in codes:
-            if code not in normalized or day not in normalized[code].index:
+            if code not in raw_frames:
                 continue
-            frame = normalized[code]
+            frame = _frame_through_day(raw_frames[code], day)
+            if day not in frame.index:
+                continue
             try:
-                feature = feature_values(frame, day, normalized_actions[code])
-                target, d1, d3 = d1_d3_target(frame, day, calendar, normalized_actions[code])
+                feature = feature_values(frame, day, _actions_through_day(raw_actions[code], day))
             except T0DataIncompatible as error:
-                # Missing history, listing, or D1/D3 prices makes this code
-                # ineligible for that D0; it is never imputed or substituted.
-                if error.reason in {
-                    "FEATURE_HISTORY_UNAVAILABLE",
-                    "D0_PRICE_MISSING",
-                    "TARGET_PRICE_MISSING",
-                }:
+                if error.reason in {"FEATURE_HISTORY_UNAVAILABLE", "D0_PRICE_MISSING"}:
                     continue
                 raise
-            row = {"d0": day, "canonical_code": code, **feature}
-            row.update(
-                {
-                    "target_raw_return": target,
-                    "target_exit_date": d3,
-                    "target_entry_date": d1,
-                    "year": int(day.year),
-                }
-            )
             source_rows = frame.loc[
                 (frame.index >= SOURCE_FEATURE_HISTORY_START) & (frame.index <= day)
             ]
             turnover = source_rows["Close"].tail(60) * source_rows["Volume"].tail(60)
             if len(turnover) < 60 or not math.isfinite(float(turnover.median())) or float(turnover.median()) < MIN_MEDIAN_TURNOVER:
                 continue
-            rows.append(row)
+            rows.append({"d0": day, "canonical_code": code, **feature, "year": int(day.year)})
     if not rows:
         raise T0DataIncompatible("NO_EXACT_V9_ROWS")
     result = pd.DataFrame(rows).sort_values(["d0", "canonical_code"], kind="mergesort").reset_index(drop=True)
-    result["target_percentile"] = result.groupby("d0", sort=False)["target_raw_return"].transform(
-        lambda values: values.rank(method="average", pct=True)
-    )
-    required = ["d0", "canonical_code", *FEATURE_COLUMNS, "target_raw_return", "target_percentile", "target_exit_date", "year"]
-    if not np.isfinite(result.loc[:, [*FEATURE_COLUMNS, "target_raw_return", "target_percentile"]].to_numpy(dtype=float)).all():
+    if not np.isfinite(result.loc[:, [*FEATURE_COLUMNS]].to_numpy(dtype=float)).all():
         raise T0ImplementationFailure("NONFINITE_DATASET_VALUE")
-    return result.loc[:, required]
+    return result.loc[:, ["d0", "canonical_code", *FEATURE_COLUMNS, "year"]]
+
+
+def attach_historical_targets(
+    scoreable_population: pd.DataFrame,
+    frames: Mapping[object, pd.DataFrame],
+    calendar_dates: Sequence[object],
+    actions: Mapping[object, Mapping[object, object] | Sequence[Mapping[str, object]]] | None = None,
+) -> pd.DataFrame:
+    """Attach later D1→D3 labels without changing D0 population membership."""
+    required = {"d0", "canonical_code", *FEATURE_COLUMNS, "year"}
+    if not isinstance(scoreable_population, pd.DataFrame) or not required.issubset(scoreable_population.columns):
+        raise T0DataIncompatible("SCOREABLE_POPULATION_SCHEMA_INVALID")
+    population = scoreable_population.copy()
+    normalized, normalized_actions = normalize_inputs(frames, actions)
+    calendar = normalize_calendar(calendar_dates)
+    rows: list[dict[str, Any]] = []
+    for source_row in population.to_dict("records"):
+        code = canonical_code(source_row["canonical_code"])
+        day = _as_day(source_row["d0"])
+        row = dict(source_row)
+        row.update(
+            {
+                "target_raw_return": np.nan,
+                "target_exit_date": pd.NaT,
+                "target_entry_date": pd.NaT,
+                "target_available": False,
+            }
+        )
+        frame = normalized.get(code)
+        if frame is not None:
+            try:
+                target, d1, d3 = d1_d3_target(frame, day, calendar, normalized_actions[code])
+            except T0DataIncompatible as error:
+                if error.reason not in {
+                    "D0_NOT_IN_CALENDAR",
+                    "D1_D3_CALENDAR_TAIL_MISSING",
+                    "TARGET_PRICE_MISSING",
+                    "NONFINITE_TARGET",
+                }:
+                    raise
+            else:
+                row.update(
+                    {
+                        "target_raw_return": target,
+                        "target_exit_date": d3,
+                        "target_entry_date": d1,
+                        "target_available": True,
+                    }
+                )
+        rows.append(row)
+    result = pd.DataFrame(rows)
+    if result.empty:
+        raise T0DataIncompatible("NO_EXACT_V9_ROWS")
+    return result.sort_values(["d0", "canonical_code"], kind="mergesort").reset_index(drop=True)
 
 
 def month_start(calendar_dates: Sequence[object], year: int, month: int) -> pd.Timestamp:
@@ -470,8 +593,10 @@ def causal_training_rows(
     """Return only rows whose realized target closed before prediction month."""
     result = _validate_dataset(dataset)
     cutoff = month_start(calendar_dates, year, month)
+    available = result["target_available"]
     training = result[
         (result["d0"] >= PRE_EVALUATION_TRAINING_START)
+        & available
         & (result["target_exit_date"] < cutoff)
     ].copy()
     if (training["target_exit_date"] >= cutoff).any():
@@ -486,20 +611,30 @@ def _validate_dataset(dataset: pd.DataFrame) -> pd.DataFrame:
     result = dataset.copy()
     result["d0"] = pd.to_datetime(result["d0"], errors="coerce")
     result["target_exit_date"] = pd.to_datetime(result["target_exit_date"], errors="coerce")
-    if result[["d0", "target_exit_date"]].isna().any().any():
+    if result["d0"].isna().any():
+        raise T0DataIncompatible("DATASET_DATE_INVALID")
+    if "target_available" in result.columns:
+        if not result["target_available"].map(lambda value: type(value) is bool).all():
+            raise T0DataIncompatible("TARGET_AVAILABILITY_INVALID")
+    else:
+        result["target_available"] = True
+    available = result["target_available"]
+    if result.loc[available, "target_exit_date"].isna().any():
         raise T0DataIncompatible("DATASET_DATE_INVALID")
     try:
         result["canonical_code"] = result["canonical_code"].map(canonical_code)
     except T0DataIncompatible:
         raise
     numeric = result.loc[:, [*FEATURE_COLUMNS, "target_percentile"]].apply(pd.to_numeric, errors="coerce")
-    if not np.isfinite(numeric.to_numpy(dtype=float)).all():
+    if not np.isfinite(numeric.loc[:, FEATURE_COLUMNS].to_numpy(dtype=float)).all():
+        raise T0DataIncompatible("NONFINITE_DATASET_VALUE")
+    if available.any() and not np.isfinite(numeric.loc[available, "target_percentile"].to_numpy(dtype=float)).all():
         raise T0DataIncompatible("NONFINITE_DATASET_VALUE")
     if result.groupby("d0", sort=False)["canonical_code"].nunique().ne(result.groupby("d0", sort=False).size()).any():
         raise T0DataIncompatible("DUPLICATE_D0_CANONICAL_CODE")
     if (result["d0"] < PRE_EVALUATION_TRAINING_START).any():
         raise T0DataIncompatible("D0_BEFORE_TRAINING_START")
-    if (result["target_exit_date"] <= result["d0"]).any():
+    if (result.loc[available, "target_exit_date"] <= result.loc[available, "d0"]).any():
         raise T0DataIncompatible("TARGET_CHRONOLOGY_INVALID")
     result.loc[:, [*FEATURE_COLUMNS, "target_percentile"]] = numeric
     return result.sort_values(["d0", "canonical_code"], kind="mergesort").reset_index(drop=True)
@@ -553,7 +688,15 @@ def _validate_scored_rows(rows: pd.DataFrame) -> pd.DataFrame:
         raise T0DataIncompatible("SCORED_ROWS_DATE_INVALID")
     result["canonical_code"] = result["canonical_code"].map(canonical_code)
     numeric = result.loc[:, ["target_percentile", "ridge_score", "lightgbm_score"]].apply(pd.to_numeric, errors="coerce")
-    if not np.isfinite(numeric.to_numpy(dtype=float)).all():
+    if not np.isfinite(numeric.loc[:, ["ridge_score", "lightgbm_score"]].to_numpy(dtype=float)).all():
+        raise T0ImplementationFailure("NONFINITE_MODEL_SCORE")
+    if "target_available" in result.columns:
+        if not result["target_available"].map(lambda value: type(value) is bool).all():
+            raise T0DataIncompatible("TARGET_AVAILABILITY_INVALID")
+        available = result["target_available"]
+        if available.any() and not np.isfinite(numeric.loc[available, "target_percentile"].to_numpy(dtype=float)).all():
+            raise T0ImplementationFailure("NONFINITE_TARGET_PERCENTILE")
+    elif not np.isfinite(numeric["target_percentile"].to_numpy(dtype=float)).all():
         raise T0ImplementationFailure("NONFINITE_MODEL_SCORE_OR_TARGET")
     result.loc[:, ["target_percentile", "ridge_score", "lightgbm_score"]] = numeric
     duplicate = result.groupby("d0", sort=False)["canonical_code"].nunique().ne(result.groupby("d0", sort=False).size())
@@ -604,6 +747,14 @@ def select_formal_model(rows: pd.DataFrame) -> str:
 
 def screen_top1(rows: pd.DataFrame) -> str:
     """Return only the V9 binary T0 decision; detailed metrics stay in memory."""
+    validated = _validate_scored_rows(rows)
+    formal = validated[validated["d0"].dt.year.isin(KILL_SCREEN_YEARS)]
+    if "target_available" in validated.columns:
+        required_targets = formal["target_available"]
+        if not required_targets.all():
+            raise T0DataIncompatible("FORMAL_TARGET_UNAVAILABLE")
+    if formal["target_percentile"].isna().any():
+        raise T0DataIncompatible("FORMAL_TARGET_UNAVAILABLE")
     ridge = top1_metrics(rows, "ridge_score", KILL_SCREEN_YEARS)
     lightgbm = top1_metrics(rows, "lightgbm_score", KILL_SCREEN_YEARS)
     ridge_stop = ridge["aggregate"] <= 0 and ridge["positive_years"] <= 3
@@ -947,6 +1098,8 @@ __all__ = [
     "TASK",
     "T0DataIncompatible",
     "T0ImplementationFailure",
+    "attach_historical_targets",
+    "build_scoreable_population",
     "build_dataset",
     "canonical_json_bytes",
     "canonical_code",
