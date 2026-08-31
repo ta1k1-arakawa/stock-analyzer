@@ -269,8 +269,13 @@ def run_fresh_root_locator(raw: bytes, resolved_root_url: str, payload_sha256: s
     The second tuple member is private runtime state for a future executor and
     must never be serialized.
     """
-    digest = sha256(raw).hexdigest() if type(raw) is bytes else "0" * 64
-    length = len(raw) if type(raw) is bytes else 0
+    # The selector accepts only the exact immutable bytes object whose binding
+    # is recorded below.  In particular, never parse a bytes-like object after
+    # substituting a sentinel digest/length for it.
+    if type(raw) is not bytes:
+        return _fresh_finalize(_fresh_empty("INPUT_BINDING_FAILURE", "0" * 64, 0)), None
+    digest = sha256(raw).hexdigest()
+    length = len(raw)
     if type(payload_sha256) is not str or _HEX.fullmatch(payload_sha256) is None or type(payload_byte_length) is not int or payload_byte_length < 0 or payload_sha256 != digest or payload_byte_length != length:
         return _fresh_finalize(_fresh_empty("INPUT_BINDING_FAILURE", digest, length)), None
     try:

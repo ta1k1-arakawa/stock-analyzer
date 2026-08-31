@@ -250,6 +250,42 @@ def test_fresh_root_input_and_post_revalidation_failures(monkeypatch):
     assert result["result"] == "INPUT_BINDING_FAILURE"
 
 
+def test_fresh_root_rejects_non_bytes_before_selector_even_with_zero_binding(monkeypatch):
+    calls = []
+    monkeypatch.setattr(locator, "_locate_private", lambda *_: calls.append(True))
+    result, private_url = locator.run_fresh_root_locator(bytearray(html()), BASE, "0" * 64, 0)
+    assert result["result"] == "INPUT_BINDING_FAILURE" and private_url is None
+    assert result["mechanical_candidate_count"] == result["qualifying_candidate_count"] == 0
+    assert result["selected_raw_href_sha256"] is result["selected_resolved_url_sha256"] is None
+    assert calls == []
+
+
+def test_fresh_root_binding_failure_does_not_invoke_selector(monkeypatch):
+    raw = html()
+    calls = []
+    monkeypatch.setattr(locator, "_locate_private", lambda *_: calls.append(True))
+    result, private_url = locator.run_fresh_root_locator(raw, BASE, "0" * 64, len(raw))
+    assert result["result"] == "INPUT_BINDING_FAILURE" and private_url is None
+    assert calls == []
+
+
+def test_fresh_root_success_hashes_and_parses_the_same_bytes(monkeypatch):
+    raw = html("same-bytes.zip")
+    parsed = []
+    original = locator._locate_private
+
+    def capture(parsed_raw, base):
+        parsed.append(parsed_raw)
+        return original(parsed_raw, base)
+
+    monkeypatch.setattr(locator, "_locate_private", capture)
+    result, private_url = fresh(raw)
+    assert result["result"] == "SUCCESSOR_LOCATOR_MATCHED" and private_url
+    assert parsed == [raw]
+    assert result["input_payload_sha256"] == sha256(parsed[0]).hexdigest()
+    assert result["input_payload_byte_length"] == len(parsed[0])
+
+
 def test_fresh_safe_validator_hash_and_bool_closure():
     result, _ = fresh(html())
     locator.validate_fresh_safe_result(result)
