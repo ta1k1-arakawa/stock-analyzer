@@ -62,10 +62,13 @@ def _acquisition_binding_ok(value: dict[str, Any]) -> bool:
     )
 
 
-def run_from_state(implementation_git_sha: str, repo_root: Path, *, binding_check: Callable[[str, Path], None] = check_bindings) -> dict[str, Any]:
+def run_from_state(implementation_git_sha: str, repo_root: Path, *, binding_check: Callable[[str, Path], None] = check_bindings, profiler: Callable[[bytes], dict[str, Any]] | None = None) -> dict[str, Any]:
     binding_check(implementation_git_sha, repo_root)
     state_root = derive_state_root(repo_root)
-    acquisition_result = _read_json(state_root / "safe-result.json")
+    try:
+        acquisition_result = _read_json(state_root / "safe-result.json")
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return diagnostic._base(implementation_git_sha, "INPUT_BINDING_FAILURE", "PRE_READ_BINDING")
     if not _acquisition_binding_ok(acquisition_result):
         return diagnostic._base(implementation_git_sha, "INPUT_BINDING_FAILURE", "PRE_READ_BINDING")
     state = runtime.DurableState(state_root)
@@ -84,7 +87,9 @@ def run_from_state(implementation_git_sha: str, repo_root: Path, *, binding_chec
         return diagnostic._base(implementation_git_sha, "INPUT_BINDING_FAILURE", "TERMINAL_LOCK_READ")
     if acquisition.raw_lock_set_sha256(root.lock, terminal.lock) != diagnostic.RAW_LOCK_SET_SHA256 or terminal.lock.payload_sha256 != diagnostic.TERMINAL_PAYLOAD_SHA256 or terminal.lock.byte_length != diagnostic.TERMINAL_BYTE_LENGTH:
         return diagnostic._base(implementation_git_sha, "INPUT_BINDING_FAILURE", "TERMINAL_LOCK_READ")
-    return diagnostic.run_terminal_structure_diagnostic(terminal.payload, implementation_git_sha)
+    if profiler is None:
+        return diagnostic.run_terminal_structure_diagnostic(terminal.payload, implementation_git_sha)
+    return diagnostic.run_terminal_structure_diagnostic(terminal.payload, implementation_git_sha, profiler=profiler)
 
 
 def build_parser() -> argparse.ArgumentParser:
