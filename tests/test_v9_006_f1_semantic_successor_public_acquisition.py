@@ -84,6 +84,50 @@ def test_terminal_complete_payload_with_mismatched_endpoint_is_not_persisted():
     assert [period for period, _ident, _attempt in persisted] == [acq.ROOT_PERIOD]
 
 
+def test_locator_private_url_must_match_its_safe_selected_url_hash_before_terminal_fetch():
+    terminal_calls = []
+    def mismatched_private_url(*args):
+        safe, _ = locator_success(*args)
+        return safe, ROOT_URL
+    result = acq.run_pure_acquisition(SHA, ROOT_URL, lambda *_: outcome(200, ROOT_BYTES, True, ROOT_URL), lambda *_: terminal_calls.append(True), persist_ok([]), locator_runner=mismatched_private_url)
+    assert (result["result"], result["failure_stage"], result["terminal_attempt_count"]) == ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_POST_LOCATOR_PRE_TERMINAL", 0)
+    assert terminal_calls == []
+
+
+@pytest.mark.parametrize("resolved_url", [ROOT_URL.rsplit("/", 1)[0] + "/wrong.html", "https://example.invalid/non200"])
+def test_root_noncomplete_off_contract_endpoint_stops_before_status_or_retry(resolved_url):
+    fetches, persisted = [], []
+    result = acq.run_pure_acquisition(SHA, ROOT_URL, lambda _url, attempt: fetches.append(attempt) or outcome(503, url=resolved_url), lambda *_: outcome(503), persist_ok(persisted))
+    assert (result["result"], result["failure_stage"], result["discovery_root_attempt_count"], result["discovery_root_http_status"]) == ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_ROOT_TRANSPORT", 1, None)
+    assert fetches == [1] and persisted == []
+
+
+def test_terminal_noncomplete_off_contract_endpoint_stops_without_retry():
+    calls = []
+    result = acq.run_pure_acquisition(SHA, ROOT_URL, lambda *_: outcome(200, ROOT_BYTES, True, ROOT_URL), lambda _url, attempt: calls.append(attempt) or outcome(503, url=TERM_URL + "?wrong=1"), persist_ok([]), locator_runner=locator_success)
+    assert (result["result"], result["failure_stage"], result["terminal_attempt_count"], result["terminal_http_status"]) == ("IMPLEMENTATION_FAILURE", "IMPLEMENTATION_TERMINAL_TRANSPORT", 1, None)
+    assert calls == [1]
+
+
+def test_earlier_exact_status_is_retained_when_later_endpoint_mismatches():
+    calls = []
+    def root_fetch(_url, attempt):
+        calls.append(attempt)
+        return outcome(503) if attempt == 1 else outcome(200, ROOT_BYTES, True, ROOT_URL + "?wrong=1")
+    result = acq.run_pure_acquisition(SHA, ROOT_URL, root_fetch, lambda *_: outcome(503), persist_ok([]))
+    assert (result["failure_stage"], result["discovery_root_attempt_count"], result["discovery_root_http_status"]) == ("IMPLEMENTATION_ROOT_TRANSPORT", 2, 503)
+    assert calls == [1, 2]
+
+
+def test_lock_ok_rejects_subclass_or_independently_invalid_lock_url():
+    class UrlSubclass(str): pass
+    assert acq._lock_ok(lock(ROOT_BYTES, acq.ROOT_PERIOD, ROOT_URL), ROOT_BYTES, acq.ROOT_FAMILY, acq.ROOT_PERIOD, ROOT_URL)
+    subclass_lock = lock(ROOT_BYTES, acq.ROOT_PERIOD, UrlSubclass(ROOT_URL))
+    invalid_lock = lock(ROOT_BYTES, acq.ROOT_PERIOD, "https://example.invalid/lock")
+    assert not acq._lock_ok(subclass_lock, ROOT_BYTES, acq.ROOT_FAMILY, acq.ROOT_PERIOD, ROOT_URL)
+    assert not acq._lock_ok(invalid_lock, ROOT_BYTES, acq.ROOT_FAMILY, acq.ROOT_PERIOD, ROOT_URL)
+
+
 @pytest.mark.parametrize("lock_url", [ROOT_URL.rsplit("/", 1)[0] + "/wrong.html", "https://example.invalid/lock"])
 def test_persistence_cannot_legitimize_mismatched_or_off_domain_endpoint(lock_url):
     calls = []
@@ -120,7 +164,7 @@ def test_persistence_retries_same_bytes_and_never_refetches():
     def rf(url, attempt): fetches.append(attempt); return outcome(200, ROOT_BYTES, True, ROOT_URL)
     def persist(family, period, payload, url, attempt):
         ids.append(id(payload)); return lock(payload, period, url) if attempt == 3 else None
-    result = acq.run_pure_acquisition(SHA, ROOT_URL, rf, lambda *_: outcome(503), persist, locator_runner=locator_success)
+    result = acq.run_pure_acquisition(SHA, ROOT_URL, rf, lambda *_: outcome(503, url=TERM_URL), persist, locator_runner=locator_success)
     assert fetches == [1] and ids == [id(ROOT_BYTES)] * 3 and result["failure_stage"] == "TERMINAL_TRANSPORT"
 
 

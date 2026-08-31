@@ -126,9 +126,13 @@ def validate_safe_acquisition_result(value: object) -> None:
 
 
 def _lock_ok(lock: object, payload: bytes, family: str, period: str, resolved_url: str) -> bool:
-    try: validate_jpx_url(resolved_url)
+    try:
+        if type(resolved_url) is not str: return False
+        validate_jpx_url(resolved_url)
+        if type(lock) is not VerifiedLock or type(lock.resolved_url) is not str: return False
+        validate_jpx_url(lock.resolved_url)
     except Exception: return False
-    return type(resolved_url) is str and type(lock) is VerifiedLock and lock.source_family == family and lock.applicable_period == period and lock.http_status == 200 and lock.payload_sha256 == sha256(payload).hexdigest() and lock.byte_length == len(payload) and lock.resolved_url == resolved_url
+    return lock.source_family == family and lock.applicable_period == period and lock.http_status == 200 and lock.payload_sha256 == sha256(payload).hexdigest() and lock.byte_length == len(payload) and lock.resolved_url == resolved_url
 
 
 def _transport(fetch: Callable[[str, int], FetchOutcome], url: str, delay: Callable[[int], None]) -> tuple[FetchOutcome | None, int, int | None, bool]:
@@ -138,11 +142,13 @@ def _transport(fetch: Callable[[str, int], FetchOutcome], url: str, delay: Calla
         try: outcome = fetch(url, attempt)
         except Exception: return None, attempt, latest, True
         if type(outcome) is not FetchOutcome: return None, attempt, latest, True
+        try:
+            if type(outcome.resolved_url) is not str: raise ValueError("resolved_url")
+            validate_jpx_url(outcome.resolved_url)
+            if outcome.resolved_url != url: raise ValueError("endpoint")
+        except Exception: return None, attempt, latest, True
         if outcome.http_status is not None and _is_int(outcome.http_status) and 0 <= outcome.http_status <= 599: latest = outcome.http_status
         if outcome.http_status == 200 and outcome.complete is True and type(outcome.payload) is bytes:
-            try: validate_jpx_url(outcome.resolved_url)
-            except Exception: return None, attempt, latest, True
-            if type(outcome.resolved_url) is not str or outcome.resolved_url != url: return None, attempt, latest, True
             return outcome, attempt, latest, False
     return None, 3, latest, False
 
@@ -182,7 +188,11 @@ def run_pure_acquisition(implementation_git_sha: str, root_url: str, root_fetch:
     if locator_result in {"SOURCE_OR_DATA_FEASIBILITY_FAILURE", "HTML_STRUCTURE_UNSUPPORTED"}: return finalize_safe_result(_base(implementation_git_sha, "DATA_QUALITY_FAILURE", "ROOT_LOCATOR", root, root_attempts=root_attempts, locator_result=locator_result, locator_hash=locator_hash))
     if locator_result == "INPUT_BINDING_FAILURE": return finalize_safe_result(_base(implementation_git_sha, "INPUT_BINDING_FAILURE", "ROOT_LOCATOR_INPUT_BINDING", root, root_attempts=root_attempts, locator_result=locator_result, locator_hash=locator_hash))
     if locator_result != "SUCCESSOR_LOCATOR_MATCHED": return finalize_safe_result(_base(implementation_git_sha, "IMPLEMENTATION_FAILURE", "IMPLEMENTATION_ROOT_LOCATOR", root, root_attempts=root_attempts, locator_result="SAFE_OUTPUT_VALIDATION_FAILURE", locator_hash=locator_hash))
-    try: validate_jpx_url(private_url)
+    try:
+        if type(private_url) is not str: raise ValueError("private_url")
+        validate_jpx_url(private_url)
+        selected_url_sha256 = safe_locator["selected_resolved_url_sha256"]
+        if not _hex(selected_url_sha256) or sha256(private_url.encode("utf-8")).hexdigest() != selected_url_sha256: raise ValueError("selected_url_binding")
     except Exception: return finalize_safe_result(_base(implementation_git_sha, "IMPLEMENTATION_FAILURE", "IMPLEMENTATION_POST_LOCATOR_PRE_TERMINAL", root, root_attempts=root_attempts, locator_result=locator_result, locator_hash=locator_hash))
     outcome, terminal_attempts, terminal_status, impl = _transport(terminal_fetch, private_url, delay)
     if outcome is None: return finalize_safe_result(_base(implementation_git_sha, "IMPLEMENTATION_FAILURE" if impl else "PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED", "IMPLEMENTATION_TERMINAL_TRANSPORT" if impl else "TERMINAL_TRANSPORT", root, root_status=root.http_status, terminal_status=terminal_status, root_attempts=root_attempts, terminal_attempts=terminal_attempts, locator_result=locator_result, locator_hash=locator_hash))
