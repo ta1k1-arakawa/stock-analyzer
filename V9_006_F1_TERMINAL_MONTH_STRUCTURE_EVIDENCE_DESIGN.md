@@ -7,9 +7,9 @@ payload access, T parsing, Phase 2, or the F2 bridge.
 ## Authority and immutable input binding
 
 The diagnostic is subordinate to the frozen public-acquisition design
-(`DESIGN_GIT_SHA=0ee4b338110c626fb92267343586fa6936699805`) and to the reviewed
-Stage-2C implementation identity
-(`IMPLEMENTATION_GIT_SHA=4efd6ab8ca951a9bbc67bc0146ecb86a20533a0e`). It may run
+(`acquisition_design_git_sha=0ee4b338110c626fb92267343586fa6936699805`) and to
+the reviewed Stage-2C implementation identity
+(`acquisition_implementation_git_sha=4efd6ab8ca951a9bbc67bc0146ecb86a20533a0e`). It may run
 only against the one already-successful successor acquisition, whose
 machine-private durable state is identified by the same stable sibling-state
 derivation used by Stage 2A/2C, including the fixed state-root basename
@@ -23,8 +23,10 @@ exact bindings, not caller inputs or inferred values:
 | Binding | Required value |
 | --- | --- |
 | acquisition result | `SUCCESS` / `NONE` |
-| implementation SHA | `4efd6ab8ca951a9bbc67bc0146ecb86a20533a0e` |
-| design SHA | `0ee4b338110c626fb92267343586fa6936699805` |
+| acquisition_design_git_sha | `0ee4b338110c626fb92267343586fa6936699805` |
+| acquisition_implementation_git_sha | `4efd6ab8ca951a9bbc67bc0146ecb86a20533a0e` |
+| diagnostic_design_git_sha | exact 40-hex SHA of the later GPT-PASS design commit; not claimed by this candidate |
+| diagnostic_implementation_git_sha | exact 40-hex SHA of the later GPT-reviewed diagnostic implementation |
 | terminal payload SHA-256 | `3119fb5c0854544b0f17b2abda1db836201fac60027695ff95d10bea103df187` |
 | terminal byte length | `851456` |
 | raw-lock-set SHA-256 | `f7d641052f3cb1e1ab33936303e2e504bc480ff9d89cde85ccade5d214f193cf` |
@@ -39,6 +41,16 @@ privately but is never emitted. Any missing, malformed, conflicting,
 substituted, or newly-created state is
 `INPUT_BINDING_FAILURE`; no alternate file, filename, URL, date, current month,
 download, or locator-page label may be consulted.
+
+The four provenance fields above are present, non-null, exact lowercase
+40-hex strings on every result row. `diagnostic_design_git_sha` is supplied only
+after GPT has reviewed the exact design commit used by the implementation; the
+candidate design does not pretend to know or approve that future SHA.
+`diagnostic_implementation_git_sha` is not caller-selectable: before the first
+locked-payload read, the implementation must prove that the same SHA is local
+`HEAD`, the authoritative remote branch `HEAD`, and a clean working tree, and
+that the checked-out design blob is the expected blob for that reviewed design
+SHA. A mismatch is `INPUT_BINDING_FAILURE` with no payload read.
 
 ## Read-only execution seam
 
@@ -62,8 +74,10 @@ The only public evidence is one canonical JSON object with exactly these keys:
 
 ```text
 task
-implementation_git_sha
-design_git_sha
+acquisition_design_git_sha
+acquisition_implementation_git_sha
+diagnostic_design_git_sha
+diagnostic_implementation_git_sha
 terminal_payload_sha256
 terminal_byte_length
 raw_lock_set_sha256
@@ -128,8 +142,9 @@ The closed value matrix is:
 | `SAFE_OUTPUT_VALIDATION_FAILURE` | `SAFE_PROJECTION` | same empty structure | `null` |
 | `IMPLEMENTATION_FAILURE` | `IMPLEMENTATION` | same empty structure | `null` |
 
-All rows retain the five immutable identity fields and
-`network_request_count=0`; only the captured row may set
+All rows retain the seven-field immutable identity set (the four provenance
+fields plus terminal payload SHA-256, terminal byte length, and raw-lock-set
+SHA-256) and `network_request_count=0`; only the captured row may set
 `safe_provenance_verified=true`.
 
 The projection excludes private paths, resolved URLs, receipt contents, raw
