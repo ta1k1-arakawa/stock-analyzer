@@ -6,6 +6,7 @@ status=DESIGN_AWAITING_GPT_EXACT_SHA_REVIEW
 operation_class=RETRIABLE_PUBLIC_PLUMBING
 network_acquisition_authorized=false
 fresh_human_authorization_required=true
+single_execution_invocation=true
 ```
 
 ## 1. New successor identity and purpose
@@ -85,7 +86,48 @@ That standing authority is exclusive to this successor identity. It cannot be
 reused for historical Phase-1, Phase 2, private or sealed data, production,
 another study, or any other acquisition identity.
 
-## 5. Bounded transport policy
+`STANDING_RETRIABLE_PUBLIC_PLUMBING_AUTHORITY` authorizes the bounded ROOT and
+TERMINAL retry loops only inside one fresh, atomic real-execution invocation.
+It does not authorize launching a second invocation of this acquisition
+identity after that invocation crosses the durable execution-start boundary.
+
+## 5. Durable execution identity and start boundary
+
+After every preflight and the fresh human approval have passed, but before the
+first network attempt, the implementation creates an exclusive durable
+successor execution-binding receipt in a new successor-acquisition state root.
+The machine-local state-root path is private and is never committed or emitted.
+It is distinct from the terminated old Phase-1 root and every other
+acquisition or production root.
+
+On a fresh start, that state root must contain no conflicting acquisition
+binding, result, raw lock, attempt state, or receipt. Creation is exclusive
+and no-overwrite. The implementation must never delete, reset, overwrite, or
+otherwise alter conflicting state to continue.
+
+The receipt contains only safe binding values:
+
+```text
+task=V9_006_F1_SEMANTIC_SUCCESSOR_PUBLIC_ACQUISITION
+design_git_sha=exact_GPT_PASS_design_SHA_supplied_to_implementation
+implementation_git_sha=exact_GPT_reviewed_implementation_SHA_at_execution
+operation_class=RETRIABLE_PUBLIC_PLUMBING
+execution_started=true
+```
+
+It contains no raw human-authorization identity, path, or URL. Once this
+execution-start receipt is durably created:
+
+```text
+SECOND_EXECUTION_ALLOWED=false
+```
+
+This remains false for this identity regardless of PASS, BLOCK, software
+failure, transport failure, or crash. Any later invocation discovering the
+receipt must stop with `GOVERNANCE_FAILURE` before network I/O. It may not use
+the receipt as a restart token.
+
+## 6. Bounded transport and complete-payload discipline
 
 The following policy applies independently to the discovery root and, if it is
 reached, the selected TERMINAL object:
@@ -107,7 +149,35 @@ that object. After three unsuccessful attempts for an object, the result is
 there is no additional execution or retry under this identity after that
 budget is exhausted.
 
-## 6. Discovery-root acquisition and locator boundary
+Attempt counters are process-local only within this one authorized invocation,
+but are exact because a second invocation is forbidden after execution start.
+For each object, increment its attempt count exactly when its network-call
+operation is invoked. No retry is permitted after complete HTTP-200 bytes have
+been obtained.
+
+For either ROOT or TERMINAL, the first complete HTTP-200 bytes returned are
+the authoritative first-complete in-memory payload. Immediately persist those
+same bytes into the exclusive no-overwrite raw lock. Local persistence is
+separate from network transport and is frozen as:
+
+```text
+maximum_local_persistence_attempts_per_complete_payload=3
+local_persistence_attempt_delays_seconds=[0,1,2]
+local_persistence_bytes=the_same_first_complete_in_memory_bytes_only
+network_refetch_after_persistence_failure=false
+```
+
+If all three local persistence attempts fail, record `GOVERNANCE_FAILURE` and
+stop. A persistence failure never permits another request for that object.
+
+If the process crashes or terminates after the execution-start receipt exists,
+there is no second invocation and therefore no refetch or retry under this
+identity. A later read-only adjudication treats the identity as terminal
+`GOVERNANCE_FAILURE` unless already-durable `SUCCESS` evidence proves
+otherwise. That adjudication is not a restart and must not claim an unknown
+network-attempt total as zero.
+
+## 7. Discovery-root acquisition and locator boundary
 
 The first complete HTTP-200 discovery-root payload is authoritative. The
 implementation immediately locks its exact bytes and provenance before any
@@ -118,7 +188,7 @@ The frozen semantic successor locator runs only against that locked root. If
 its result is anything other than `SUCCESSOR_LOCATOR_MATCHED`, record
 `DATA_QUALITY_FAILURE`, stop, and do not refetch the root.
 
-## 7. TERMINAL object acquisition and persistence boundary
+## 8. TERMINAL object acquisition and persistence boundary
 
 Only after unique locator success may the implementation use the selected URL
 privately. It must first pass the existing `validate_jpx_url` contract, then
@@ -129,13 +199,10 @@ implementation immediately locks exact bytes and provenance before semantic
 parsing. Once complete terminal bytes exist, it must never refetch the terminal
 object in this identity.
 
-If local persistence fails after complete bytes have been obtained, a local
-persistence retry may use only those same in-memory bytes where mechanically
-safe. It must not issue another network request to replace already-observed
-complete bytes. If a crash or persistence failure prevents proof of the exact
-content identity, record `GOVERNANCE_FAILURE` and stop.
+The local persistence rule in section 6 governs all persistence attempts. A
+crash or persistence failure never permits replacement network bytes.
 
-## 8. Success condition
+## 9. Success condition
 
 `SUCCESS` requires all of the following:
 
@@ -148,7 +215,7 @@ content identity, record `GOVERNANCE_FAILURE` and stop.
 Success does not authorize terminal parsing, F2 bridge acquisition, Phase 2,
 or any later stage.
 
-## 9. Closed safe acquisition evidence
+## 10. Closed safe acquisition evidence and result matrix
 
 The future implementation emits one closed deterministic safe result. Its
 canonical JSON uses the established repository canonical JSON convention. It
@@ -166,6 +233,7 @@ design_git_sha
 implementation_git_sha
 operation_class
 result
+failure_stage
 discovery_root_http_status
 terminal_http_status
 discovery_root_payload_sha256
@@ -178,11 +246,23 @@ network_request_count
 discovery_root_locked
 terminal_locked
 semantic_locator_succeeded
+semantic_locator_result
 safe_provenance_verified
 semantic_locator_structural_evidence_sha256
 raw_lock_count
 raw_lock_set_sha256
 structural_evidence_sha256
+```
+
+The following fixed fields are exact literals or exact reviewed execution
+bindings, never caller-selected values:
+
+```text
+schema_version=V9_006_F1_SEMANTIC_SUCCESSOR_PUBLIC_ACQUISITION_V1
+task=V9_006_F1_SEMANTIC_SUCCESSOR_PUBLIC_ACQUISITION
+operation_class=RETRIABLE_PUBLIC_PLUMBING
+design_git_sha=exact_GPT_PASS_design_SHA_supplied_to_implementation
+implementation_git_sha=exact_GPT_reviewed_implementation_SHA_at_execution
 ```
 
 All hashes are lowercase SHA-256 hex or `null` only where the result-specific
@@ -202,23 +282,79 @@ GOVERNANCE_FAILURE
 IMPLEMENTATION_FAILURE
 ```
 
-The validator must make failure output mechanically closed. `SUCCESS` requires
-two locked HTTP-200 objects, `raw_lock_count=2`, non-null byte/hash fields for
-both objects, locator success, and provenance PASS. Root retry exhaustion has
-no terminal attempt or lock. Terminal retry exhaustion retains the already
-locked discovery-root evidence but has no terminal lock. `DATA_QUALITY_FAILURE`
-retains the locked discovery-root evidence, has no terminal request or lock,
-and records `semantic_locator_succeeded=false`. `INPUT_BINDING_FAILURE`,
-`GOVERNANCE_FAILURE`, and `IMPLEMENTATION_FAILURE` must retain only evidence
-mechanically established before their stop point; they never claim an
-unproven lock, payload identity, locator success, or provenance PASS.
+The exact `failure_stage` enum is closed:
+
+```text
+NONE
+PRE_NETWORK_INPUT_BINDING
+EXECUTION_BINDING_CONFLICT
+ROOT_TRANSPORT
+TERMINAL_TRANSPORT
+ROOT_LOCATOR
+ROOT_PERSISTENCE_EXHAUSTED
+TERMINAL_PERSISTENCE_EXHAUSTED
+IMPLEMENTATION_PRE_ROOT
+IMPLEMENTATION_ROOT_TRANSPORT
+IMPLEMENTATION_POST_ROOT_PRE_LOCATOR
+IMPLEMENTATION_POST_LOCATOR_PRE_TERMINAL
+IMPLEMENTATION_TERMINAL_TRANSPORT
+IMPLEMENTATION_POST_TERMINAL_PRE_PROVENANCE
+```
+
+For every gracefully reported acquisition result, all of these invariants are
+mandatory and reject bool-as-int values:
+
+```text
+0 <= discovery_root_attempt_count <= 3
+0 <= terminal_attempt_count <= 3
+network_request_count = discovery_root_attempt_count + terminal_attempt_count
+terminal_attempt_count > 0 implies semantic_locator_succeeded=true
+discovery_root_locked iff discovery_root_http_status=200 and discovery_root_payload_sha256/non-null byte length exist
+terminal_locked iff terminal_http_status=200 and terminal_payload_sha256/non-null byte length exist
+raw_lock_count = int(discovery_root_locked) + int(terminal_locked)
+raw_lock_set_sha256 is null iff raw_lock_count=0; otherwise it is lowercase 64hex
+semantic_locator_structural_evidence_sha256 is non-null iff locator was run
+semantic_locator_result is null iff locator was not run; otherwise it is one of the frozen semantic-locator result enums
+semantic_locator_succeeded=true iff semantic_locator_result=SUCCESSOR_LOCATOR_MATCHED
+safe_provenance_verified=true only if every claimed lock verifies
+```
+
+The matrix below is exhaustive for this acquisition result. An HTTP status of
+`null` means no completed HTTP response was safely recorded; a non-200 or
+incomplete HTTP-200 response has null hash and byte-length fields and no lock.
+
+| Result / `failure_stage` | ROOT state | Locator state | TERMINAL state | Provenance |
+| --- | --- | --- | --- | --- |
+| `SUCCESS` / `NONE` | locked; attempts 1..3 | run and succeeded | locked; attempts 1..3 | true; `raw_lock_count=2` |
+| `PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED` / `ROOT_TRANSPORT` | unlocked; attempts exactly 3; payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
+| `PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED` / `TERMINAL_TRANSPORT` | locked; attempts 1..3 | run and succeeded | unlocked; attempts exactly 3; payload fields null | true for the one ROOT lock; count 1 |
+| `DATA_QUALITY_FAILURE` / `ROOT_LOCATOR` | locked; attempts 1..3 | run and not succeeded | attempts 0; unlocked | true for the one ROOT lock; count 1 |
+| `INPUT_BINDING_FAILURE` / `PRE_NETWORK_INPUT_BINDING` | attempts 0; unlocked; status/payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
+| `GOVERNANCE_FAILURE` / `EXECUTION_BINDING_CONFLICT` | attempts 0; unlocked; status/payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
+| `GOVERNANCE_FAILURE` / `ROOT_PERSISTENCE_EXHAUSTED` | attempts 1..3; status 200; unlocked; payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
+| `GOVERNANCE_FAILURE` / `TERMINAL_PERSISTENCE_EXHAUSTED` | locked; attempts 1..3 | run and succeeded | attempts 1..3; status 200; unlocked; payload fields null | true for the one ROOT lock; count 1 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_PRE_ROOT` | attempts 0; unlocked; status/payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_ROOT_TRANSPORT` | attempts 1..2; unlocked; payload fields null | not run; hash null | attempts 0; unlocked | false; count 0 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_POST_ROOT_PRE_LOCATOR` | locked; attempts 1..3 | not run; hash null | attempts 0; unlocked | true for the one ROOT lock; count 1 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_POST_LOCATOR_PRE_TERMINAL` | locked; attempts 1..3 | run and succeeded | attempts 0; unlocked | true for the one ROOT lock; count 1 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_TERMINAL_TRANSPORT` | locked; attempts 1..3 | run and succeeded | attempts 1..2; unlocked; payload fields null | true for the one ROOT lock; count 1 |
+| `IMPLEMENTATION_FAILURE` / `IMPLEMENTATION_POST_TERMINAL_PRE_PROVENANCE` | locked; attempts 1..3 | run and succeeded | locked; attempts 1..3 | false; count 2 |
+
+`failure_stage=NONE` is valid only for `SUCCESS`; every other result must use
+exactly the matching row above. This table forbids retaining arbitrary partial
+evidence: every permitted lock, count, nullability state, and locator outcome
+is mechanically determined by the row. A terminal read-only crash adjudication
+is not a gracefully reported acquisition result and must not synthesize this
+schema with unknown request counts; it records only the separately frozen
+terminal governance disposition unless durable `SUCCESS` evidence already
+exists.
 
 Safe evidence must never emit raw href, raw URL, resolved URL, raw payload,
 local or private path, operator identity, terminal month `T`, ticker identity,
 or arbitrary exception text. None of these result classes is a source,
 profitability, or strategy finding.
 
-## 10. Required workflow
+## 11. Required workflow
 
 After GPT exact-SHA PASS of this design, the only next engineering work is
 implementation plus synthetic tests. That implementation then requires GPT
