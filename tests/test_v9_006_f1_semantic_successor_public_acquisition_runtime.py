@@ -91,6 +91,62 @@ def test_exact_partial_lock_can_finish_but_mismatched_partial_lock_is_preserved(
     assert bad_payload.read_bytes() == b"mismatch" and not (bad_directory / runtime._METADATA).exists()
 
 
+def test_root_payload_partial_write_requires_later_existing_file_fsync_before_locator(tmp_path, monkeypatch):
+    original_fsync, fsync_calls, located = runtime.os.fsync, [], []
+    def fail_created_payload_once(descriptor):
+        fsync_calls.append(descriptor)
+        if len(fsync_calls) == 2:
+            raise OSError("payload fsync")
+        return original_fsync(descriptor)
+    monkeypatch.setattr(runtime.os, "fsync", fail_created_payload_once)
+    result = run_success(tmp_path / "state", locator_runner=lambda payload, *args: located.append(payload) or locator_success(payload, *args))
+    payload_path = tmp_path / "state" / runtime._RAW / acq.ROOT_PERIOD / runtime._PAYLOAD
+    assert result["result"] == "SUCCESS" and payload_path.read_bytes() == ROOT_BYTES
+    assert len(fsync_calls) >= 4 and located == [ROOT_BYTES]
+
+
+def test_root_payload_fsync_failure_exhausts_without_locator_or_refetch(tmp_path, monkeypatch):
+    original_fsync, fsync_calls, root_calls, terminal_calls, located = runtime.os.fsync, [], [], [], []
+    def fail_every_lock_fsync(descriptor):
+        fsync_calls.append(descriptor)
+        if len(fsync_calls) >= 2:
+            raise OSError("lock fsync")
+        return original_fsync(descriptor)
+    monkeypatch.setattr(runtime.os, "fsync", fail_every_lock_fsync)
+    result = run_success(tmp_path / "state", root_fetch=lambda *_: root_calls.append(True) or outcome(200, ROOT_BYTES, True, ROOT_URL), terminal_fetch=lambda *_: terminal_calls.append(True), locator_runner=lambda *_: located.append(True))
+    payload_path = tmp_path / "state" / runtime._RAW / acq.ROOT_PERIOD / runtime._PAYLOAD
+    assert result["failure_stage"] == "ROOT_PERSISTENCE_EXHAUSTED" and root_calls == [True] and terminal_calls == [] and located == []
+    assert payload_path.read_bytes() == ROOT_BYTES and len(fsync_calls) == 4
+
+
+def test_root_metadata_partial_write_requires_later_existing_file_fsync(tmp_path, monkeypatch):
+    original_fsync, fsync_calls = runtime.os.fsync, []
+    def fail_created_metadata_once(descriptor):
+        fsync_calls.append(descriptor)
+        if len(fsync_calls) == 3:
+            raise OSError("metadata fsync")
+        return original_fsync(descriptor)
+    monkeypatch.setattr(runtime.os, "fsync", fail_created_metadata_once)
+    result = run_success(tmp_path / "state")
+    metadata_path = tmp_path / "state" / runtime._RAW / acq.ROOT_PERIOD / runtime._METADATA
+    assert result["result"] == "SUCCESS" and json.loads(metadata_path.read_text())["payload_sha256"] == acq.sha256(ROOT_BYTES).hexdigest()
+    assert len(fsync_calls) >= 5
+
+
+def test_terminal_partial_fsync_exhaustion_preserves_bytes_without_refetch(tmp_path, monkeypatch):
+    original_fsync, fsync_calls, terminal_calls = runtime.os.fsync, [], []
+    def fail_terminal_payload_and_reproof(descriptor):
+        fsync_calls.append(descriptor)
+        if len(fsync_calls) >= 4:
+            raise OSError("terminal fsync")
+        return original_fsync(descriptor)
+    monkeypatch.setattr(runtime.os, "fsync", fail_terminal_payload_and_reproof)
+    result = run_success(tmp_path / "state", terminal_fetch=lambda *_: terminal_calls.append(True) or outcome(200, TERMINAL_BYTES, True, TERM_URL))
+    payload_path = tmp_path / "state" / runtime._RAW / acq.TERMINAL_PERIOD / runtime._PAYLOAD
+    assert result["failure_stage"] == "TERMINAL_PERSISTENCE_EXHAUSTED" and terminal_calls == [True]
+    assert payload_path.read_bytes() == TERMINAL_BYTES and len(fsync_calls) == 6
+
+
 def test_runtime_persistence_retries_receive_the_same_authoritative_bytes(tmp_path, monkeypatch):
     original_write, identities, failures = runtime._write_exclusive, [], [True]
     def fail_first_metadata(path, content):

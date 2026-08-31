@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import stat
 from typing import Callable
 
 from src import v9_006_f1_semantic_successor_public_acquisition as acquisition
@@ -33,6 +34,25 @@ def _write_exclusive(path: Path, content: bytes) -> bool:
             handle.flush()
             os.fsync(handle.fileno())
     except Exception:
+        return False
+    return True
+
+
+def _verify_existing_durable(path: Path, expected: bytes) -> bool:
+    """Re-prove an exact preserved component without changing its pathname."""
+    try:
+        descriptor = os.open(path, os.O_RDWR)
+    except OSError:
+        return False
+    try:
+        with os.fdopen(descriptor, "r+b", closefd=True) as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return False
+            if handle.read() != expected:
+                return False
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
         return False
     return True
 
@@ -119,21 +139,16 @@ class DurableState:
             return None
         payload_path, metadata_path = directory / _PAYLOAD, directory / _METADATA
         if payload_path.exists():
-            try:
-                if payload_path.read_bytes() != payload:
-                    return None
-            except OSError:
+            if not _verify_existing_durable(payload_path, payload):
                 return None
         elif not _write_exclusive(payload_path, payload):
             return None
         metadata = self._metadata(period, payload, resolved_url)
+        metadata_bytes = _canonical(metadata)
         if metadata_path.exists():
-            try:
-                if json.loads(metadata_path.read_text(encoding="utf-8")) != metadata:
-                    return None
-            except (OSError, UnicodeError, json.JSONDecodeError):
+            if not _verify_existing_durable(metadata_path, metadata_bytes):
                 return None
-        elif not _write_exclusive(metadata_path, _canonical(metadata)):
+        elif not _write_exclusive(metadata_path, metadata_bytes):
             return None
         return self._read(period, payload, resolved_url)
 
