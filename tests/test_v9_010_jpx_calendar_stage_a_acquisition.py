@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import urllib.error
 from pathlib import Path
@@ -61,6 +62,87 @@ def test_import_and_offline_calls_have_zero_network(monkeypatch):
     importlib.reload(acq)
     assert calls == []
     assert acq.expected_manifest()[0]["source_slot"] == "2017-01"
+
+
+def _valid_readiness():
+    return {
+        "REAL_EXECUTION_ENVIRONMENT_READY": True,
+        "REAL_EXECUTION_ENVIRONMENT_FROZEN": True,
+        "INTERPRETER_MATCH": True,
+        "PYTHON_PATCH_MATCH": True,
+        "DEPENDENCY_READINESS": "PASS",
+        "JPX_XLS_PARSER_SYNTHETIC_PROBE": "PASS",
+        "TLS_STDLIB_PROBE": "PASS",
+        "TRUSTED_HOST_REQUEST_CONSTRUCTION_PROBE": "PASS",
+        "FILESYSTEM_PROBE": "PASS",
+        "ENVIRONMENT_LOCK_CHECK": "PASS",
+        "ENVIRONMENT_FREEZE_CHECK": "PASS",
+        "REAL_NETWORK_REQUESTS": 0,
+        "PRIVATE_READS": 0,
+        "GATES_CONSUMED": 0,
+    }
+
+
+def _patch_synthetic_windows_environment(monkeypatch, readiness):
+    expected = ROOT / ".venv-real-execution" / "Scripts" / "python.exe"
+    monkeypatch.setattr(acq.os, "name", "nt")
+    monkeypatch.setattr(acq.sys, "platform", "win32")
+    monkeypatch.setattr(acq.sys, "executable", str(expected))
+    monkeypatch.setattr(acq, "_run_real_readiness_checks", lambda: readiness)
+
+
+@pytest.mark.parametrize("field, value, reason", [
+    ("REAL_EXECUTION_ENVIRONMENT_READY", False, "PROTECTED_ENVIRONMENT_READINESS_NOT_PASS"),
+    ("REAL_EXECUTION_ENVIRONMENT_FROZEN", False, "PROTECTED_ENVIRONMENT_READINESS_NOT_PASS"),
+    ("ENVIRONMENT_LOCK_CHECK", "FAIL", "PROTECTED_ENVIRONMENT_READINESS_NOT_PASS"),
+    ("ENVIRONMENT_FREEZE_CHECK", "FAIL", "PROTECTED_ENVIRONMENT_READINESS_NOT_PASS"),
+    ("REAL_NETWORK_REQUESTS", 1, "PROTECTED_ENVIRONMENT_SAFETY_COUNTER_NONZERO"),
+    ("PRIVATE_READS", 1, "PROTECTED_ENVIRONMENT_SAFETY_COUNTER_NONZERO"),
+    ("GATES_CONSUMED", 1, "PROTECTED_ENVIRONMENT_SAFETY_COUNTER_NONZERO"),
+])
+def test_protected_environment_readiness_failures_block_before_fetcher(monkeypatch, field, value, reason):
+    readiness = _valid_readiness()
+    readiness[field] = value
+    _patch_synthetic_windows_environment(monkeypatch, readiness)
+    opener_calls = []
+    monkeypatch.setattr(acq.urllib.request, "build_opener", lambda: opener_calls.append(True))
+    with pytest.raises(acq.StageAError, match=reason):
+        acq.fetch_http_once("https://www.jpx.co.jp/calendar/201701.html")
+    assert opener_calls == []
+
+
+def test_wrong_interpreter_blocks_before_checker_and_network(monkeypatch):
+    readiness_calls = []
+    monkeypatch.setattr(acq.os, "name", "nt")
+    monkeypatch.setattr(acq.sys, "platform", "win32")
+    monkeypatch.setattr(acq.sys, "executable", str(ROOT / ".venv" / "Scripts" / "python.exe"))
+    monkeypatch.setattr(acq, "_run_real_readiness_checks", lambda: readiness_calls.append(True))
+    network_calls = []
+    monkeypatch.setattr(acq.urllib.request, "build_opener", lambda: network_calls.append(True))
+    with pytest.raises(acq.StageAError, match="PROTECTED_ENVIRONMENT_WRONG_INTERPRETER"):
+        acq.fetch_http_once("https://www.jpx.co.jp/calendar/201701.html")
+    assert readiness_calls == [] and network_calls == []
+
+
+def test_checker_failure_and_malformed_output_block(monkeypatch):
+    _patch_synthetic_windows_environment(monkeypatch, {})
+    with pytest.raises(acq.StageAError, match="PROTECTED_ENVIRONMENT_CHECKER_OUTPUT_MALFORMED"):
+        acq.verify_protected_environment(ROOT)
+    monkeypatch.setattr(acq, "_run_real_readiness_checks", lambda: (_ for _ in ()).throw(RuntimeError("checker")))
+    with pytest.raises(acq.StageAError, match="PROTECTED_ENVIRONMENT_CHECKER_FAILURE"):
+        acq.verify_protected_environment(ROOT)
+
+
+def test_canonical_valid_synthetic_readiness_allows_preflight_to_continue(monkeypatch):
+    readiness = _valid_readiness()
+    _patch_synthetic_windows_environment(monkeypatch, readiness)
+    result = acq.verify_protected_environment(ROOT)
+    assert result["protected_environment_verified"] is True
+
+
+def test_production_api_has_no_environment_check_bypass_parameter():
+    names = set(inspect.signature(acq.run_production_acquisition).parameters)
+    assert names.isdisjoint({"readiness_checker", "readiness_result", "bypass_environment_check", "environment_check"})
 
 
 def test_retry_policy_is_exact_three_attempts_with_frozen_backoff(tmp_path):
@@ -238,7 +320,8 @@ def test_parser_semantic_or_dq_failure_has_no_refetch_path(tmp_path):
     assert len(calls) == 1
 
 
-def test_provenance_sha_design_manifest_and_git_state_fail_closed():
+def test_provenance_sha_design_manifest_and_git_state_fail_closed(monkeypatch):
+    _patch_synthetic_windows_environment(monkeypatch, _valid_readiness())
     with pytest.raises(acq.StageAError, match="IMPLEMENTATION_SHA_INVALID"):
         acq.verify_production_preflight(ROOT, expected_implementation_sha="not-a-sha", confirmation=acq.HUMAN_CONFIRMATION)
 

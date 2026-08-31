@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -524,6 +525,7 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def fetch_http_once(url: str) -> FetchResult:
     """The only production HTTP request function; redirects are disabled."""
+    verify_protected_environment(Path(__file__).resolve().parents[1])
     validate_manifest_url(url)
     request = urllib.request.Request(url, method="GET")
     opener = urllib.request.build_opener(_NoRedirectHandler())
@@ -548,6 +550,78 @@ def _check_sha(value: object, reason: str) -> str:
     if not _is_sha(value, HEX40):
         raise StageAError(reason)
     return value
+
+
+def _load_real_execution_checker() -> Any:
+    """Load the repository's existing no-network readiness checker."""
+    from scripts import check_real_execution_env
+
+    return check_real_execution_env
+
+
+def _run_real_readiness_checks() -> dict[str, Any]:
+    """Run the actual checker in the current interpreter."""
+    return _load_real_execution_checker().run_readiness_checks()
+
+
+def verify_protected_environment(repo_root: str | Path) -> dict[str, object]:
+    """Require the reviewed canonical protected environment before JPX I/O.
+
+    The checker result is accepted only when its exact public readiness
+    contract passes.  No caller-supplied checker, result, interpreter, or
+    bypass flag is exposed by the production API; tests replace the private
+    no-network runner only to exercise failure/validity branches offline.
+    """
+    root = Path(repo_root).resolve()
+    expected_executable = (root / ".venv-real-execution" / "Scripts" / "python.exe").resolve()
+    try:
+        actual_executable = Path(sys.executable).resolve()
+    except Exception as exc:
+        raise StageAError("PROTECTED_ENVIRONMENT_INTERPRETER_UNRESOLVABLE") from exc
+    if os.name != "nt" or sys.platform != "win32":
+        raise StageAError("PROTECTED_ENVIRONMENT_WRONG_PLATFORM")
+    if actual_executable != expected_executable:
+        raise StageAError("PROTECTED_ENVIRONMENT_WRONG_INTERPRETER")
+    try:
+        checker = _load_real_execution_checker()
+        if checker.REPO_ROOT.resolve() != root or checker.CANONICAL_WINDOWS_INTERPRETER.resolve() != expected_executable:
+            raise StageAError("PROTECTED_ENVIRONMENT_CHECKER_BINDING_MISMATCH")
+        result = _run_real_readiness_checks()
+    except StageAError:
+        raise
+    except Exception as exc:
+        raise StageAError("PROTECTED_ENVIRONMENT_CHECKER_FAILURE") from exc
+    if type(result) is not dict:
+        raise StageAError("PROTECTED_ENVIRONMENT_CHECKER_OUTPUT_MALFORMED")
+    true_fields = (
+        "REAL_EXECUTION_ENVIRONMENT_READY",
+        "REAL_EXECUTION_ENVIRONMENT_FROZEN",
+        "INTERPRETER_MATCH",
+        "PYTHON_PATCH_MATCH",
+    )
+    pass_fields = (
+        "DEPENDENCY_READINESS",
+        "JPX_XLS_PARSER_SYNTHETIC_PROBE",
+        "TLS_STDLIB_PROBE",
+        "TRUSTED_HOST_REQUEST_CONSTRUCTION_PROBE",
+        "FILESYSTEM_PROBE",
+        "ENVIRONMENT_LOCK_CHECK",
+        "ENVIRONMENT_FREEZE_CHECK",
+    )
+    try:
+        if any(result[field] is not True for field in true_fields):
+            raise StageAError("PROTECTED_ENVIRONMENT_READINESS_NOT_PASS")
+        if any(type(result[field]) is not str or result[field] != "PASS" for field in pass_fields):
+            raise StageAError("PROTECTED_ENVIRONMENT_READINESS_NOT_PASS")
+        if any(type(result[field]) is not int or result[field] != 0 for field in ("REAL_NETWORK_REQUESTS", "PRIVATE_READS", "GATES_CONSUMED")):
+            raise StageAError("PROTECTED_ENVIRONMENT_SAFETY_COUNTER_NONZERO")
+    except KeyError as exc:
+        raise StageAError("PROTECTED_ENVIRONMENT_CHECKER_OUTPUT_MALFORMED") from exc
+    return {
+        "protected_environment_verified": True,
+        "canonical_interpreter": str(expected_executable),
+        "readiness_contract": "PASS",
+    }
 
 
 def verify_production_preflight(
@@ -582,6 +656,7 @@ def verify_production_preflight(
     manifest, digest = load_manifest(root / MANIFEST_FILENAME)
     if digest != MANIFEST_SHA256 or len(manifest) != SOURCE_SLOT_COUNT:
         raise StageAError("MANIFEST_BINDING_MISMATCH")
+    environment = verify_protected_environment(root)
     return {
         "authoritative_branch": branch,
         "implementation_git_sha": implementation_sha,
@@ -591,6 +666,7 @@ def verify_production_preflight(
         "source_manifest_sha256": digest,
         "source_slot_count": len(manifest),
         "human_confirmation_verified": True,
+        **environment,
     }
 
 
@@ -676,5 +752,6 @@ __all__ = [
     "validate_manifest_url",
     "validate_raw_lock_record",
     "validate_raw_lock_set",
+    "verify_protected_environment",
     "verify_production_preflight",
 ]
