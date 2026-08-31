@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from http.client import IncompleteRead
+from http.client import HTTPException, IncompleteRead
 from pathlib import Path
+import ssl
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -32,6 +33,15 @@ class Opener:
         self.calls.append(request)
         if self.error: raise self.error
         return self.response
+
+
+class SequenceOpener:
+    def __init__(self, outcomes): self.outcomes, self.calls = list(outcomes), []
+    def open(self, request):
+        self.calls.append(request)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException): raise outcome
+        return outcome
 
 
 def conflict_result():
@@ -69,6 +79,12 @@ def test_http_error_is_handled_before_url_error_and_transport_errors_are_empty()
     assert (result.http_status, result.payload, result.complete) == (None, None, False)
 
 
+@pytest.mark.parametrize("error", [ssl.SSLError("tls"), HTTPException("protocol")])
+def test_expected_tls_or_http_open_failure_becomes_retriable_incomplete_outcome(error):
+    result = production.HttpTransport(Opener(error=error)).fetch(ROOT_URL, 1)
+    assert (result.http_status, result.payload, result.complete, result.resolved_url) == (None, None, False, ROOT_URL)
+
+
 @pytest.mark.parametrize("error", [IncompleteRead(b"part"), TimeoutError(), ConnectionError()])
 def test_interrupted_200_has_status_without_payload(error):
     response, opener = Response(200, error=error), Opener(Response(200, error=error))
@@ -76,9 +92,32 @@ def test_interrupted_200_has_status_without_payload(error):
     assert (result.http_status, result.payload, result.complete) == (200, None, False)
 
 
+@pytest.mark.parametrize("error", [ssl.SSLError("tls"), HTTPException("protocol")])
+def test_expected_tls_or_http_body_failure_keeps_200_without_partial_payload(error):
+    response = Response(200, error=error)
+    result = production.HttpTransport(Opener(response)).fetch(ROOT_URL, 1)
+    assert (result.http_status, result.payload, result.complete, result.resolved_url) == (200, None, False, ROOT_URL)
+
+
 def test_unexpected_opener_exception_propagates():
     with pytest.raises(RuntimeError):
         production.HttpTransport(Opener(error=RuntimeError("bug"))).fetch(ROOT_URL, 1)
+
+
+@pytest.mark.parametrize("error", [ssl.SSLError("tls"), HTTPException("protocol")])
+def test_three_expected_open_failures_use_stage1_retry_budget(error):
+    transport = production.HttpTransport(SequenceOpener([error, error, error]))
+    result = acq.run_pure_acquisition(SHA, ROOT_URL, transport.fetch, lambda *_: pytest.fail("terminal"), lambda *_: None)
+    assert (result["result"], result["failure_stage"], result["discovery_root_attempt_count"]) == ("PLUMBING_FAILURE_RETRY_BUDGET_EXHAUSTED", "ROOT_TRANSPORT", 3)
+
+
+@pytest.mark.parametrize("error", [ssl.SSLError("tls"), HTTPException("protocol")])
+def test_expected_open_failure_then_complete_200_retries_and_succeeds(error):
+    transport = production.HttpTransport(SequenceOpener([error, Response(200, b"root")]))
+    # The bytes are transport-valid here; Stage-1 endpoint/persistence binding is the next boundary.
+    calls = []
+    result = acq.run_pure_acquisition(SHA, ROOT_URL, transport.fetch, lambda *_: pytest.fail("terminal"), lambda family, period, payload, url, attempt: calls.append(attempt) or acq.VerifiedLock(family, period, 200, acq.sha256(payload).hexdigest(), len(payload), url))
+    assert result["discovery_root_attempt_count"] == 2 and calls == [1] and result["failure_stage"] == "ROOT_LOCATOR"
 
 
 def test_mismatched_resolved_url_is_rejected_by_stage1_endpoint_binding():

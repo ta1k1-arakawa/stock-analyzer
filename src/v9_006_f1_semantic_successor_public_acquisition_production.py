@@ -1,12 +1,13 @@
 """Stage-2B standard-library HTTP and production output boundary."""
 from __future__ import annotations
 
-from http.client import IncompleteRead, RemoteDisconnected
+from http.client import HTTPException, IncompleteRead, RemoteDisconnected
 from hashlib import sha256
 import argparse
 import json
 from pathlib import Path
 import socket
+import ssl
 import subprocess
 import sys
 from typing import Callable
@@ -41,7 +42,7 @@ class HttpTransport:
         except HTTPError as error:
             resolved = error.geturl() or url
             return acquisition.FetchOutcome(error.code, None, False, resolved)
-        except (URLError, socket.timeout, TimeoutError, ConnectionError, RemoteDisconnected):
+        except (ssl.SSLError, HTTPException, URLError, socket.timeout, TimeoutError, ConnectionError, RemoteDisconnected):
             return acquisition.FetchOutcome(None, None, False, url)
         status = response.getcode()
         resolved = response.geturl() or url
@@ -50,7 +51,7 @@ class HttpTransport:
             return acquisition.FetchOutcome(status, None, False, resolved)
         try:
             payload = response.read()
-        except (IncompleteRead, URLError, socket.timeout, TimeoutError, ConnectionError, RemoteDisconnected):
+        except (ssl.SSLError, HTTPException, IncompleteRead, URLError, socket.timeout, TimeoutError, ConnectionError, RemoteDisconnected):
             return acquisition.FetchOutcome(200, None, False, resolved)
         finally:
             response.close()
