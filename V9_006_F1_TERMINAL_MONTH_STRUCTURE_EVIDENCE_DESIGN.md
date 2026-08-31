@@ -94,10 +94,14 @@ identity fields equal the bindings above, and `network_request_count=0`:
   is the supported path for this diagnostic.
 * `sheet_count` is a nonnegative integer and `sheets` has exactly that many
   entries ordered by one-based sheet ordinal.
-* Each sheet contains only `sheet_ordinal`, `sheet_name`, `visibility`,
-  `row_count`, `column_count`, and `column_cell_type_counts`. Names and text
-  are bounded to the reviewed code-point limit; dimensions/counts are exact
-  nonnegative integers; cell-type counts are taxonomy only.
+* Each sheet contains only `sheet_ordinal`, `visibility`, `row_count`,
+  `column_count`, `column_cell_type_counts`, `sheet_name_date_text`, and
+  `sheet_name_was_redacted`. The first five fields are structural values.
+  `sheet_name_date_text` is either `null` or the actual sheet-name string only
+  when that entire name passes the frozen date/month allowlist below;
+  `sheet_name_was_redacted` is `true` exactly when the name was not emitted.
+  No raw or hashed rejected sheet name is retained. Dimensions/counts are exact
+  nonnegative integers and cell-type counts are taxonomy only.
 * `text_neighborhood` contains deterministically ordered visible-sheet rows
   and cells bounded to the reviewed row/cell limits. Each cell has only
   sheet/row/column ordinals, `cell_type`, and (for `TEXT` cells only) bounded
@@ -162,17 +166,26 @@ integer, security code, company name, or text containing one of these forms is
 rejected. Punctuation outside the explicitly shown comma, period, separators,
 and heading parentheses is rejected.
 
-For every TEXT cell that fails this whole-string allowlist, the public
-projection emits only its coordinates and `cell_type`; its text is discarded
-before serialization, logging, exception construction, structural hashing, or
-any reversible lookup artifact. The implementation must not retain a hidden
-side channel containing discarded text.
+For every TEXT cell or sheet name that fails this whole-string allowlist, the
+public projection emits only coordinates and taxonomy (for a sheet name, the
+fixed redaction boolean); its text is discarded before serialization, logging,
+exception construction, structural hashing, or any reversible lookup
+artifact. The implementation must not retain a hidden side channel containing
+discarded text. In particular, a rejected sheet name must never be represented
+by a digest, hash, length-derived token, or lookup key.
 
 The allowlist is evidence filtering, not a T parser. Zero qualifying date-text
 cells, multiple qualifying cells, or any profiler truncation are reported as
 bounded evidence conditions and never trigger a guessed month, rule broadening,
 or downstream action. GPT will decide later whether the evidence is sufficient
 to freeze a deterministic T rule.
+
+The arbitrary-text-channel closure is mechanical: top-level strings are fixed
+identities/enums; sheet names are represented only by the allowlisted
+`sheet_name_date_text` or the fixed redaction boolean; text-neighborhood cells
+carry only allowlisted date text or coordinates/taxonomy; failure rows carry no
+payload-derived strings; and `structural_evidence_sha256` hashes only this
+already-filtered projection. Rejected text is absent before hashing.
 
 ## No T decision and no downstream authorization
 
