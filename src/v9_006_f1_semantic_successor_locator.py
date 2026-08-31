@@ -1,6 +1,7 @@
 """Offline-only semantic successor locator for the already-locked F1 root."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from hashlib import sha256
 from html.parser import HTMLParser
 import json
@@ -171,6 +172,33 @@ def _post_uniqueness_revalidate(bound_resolved_root_url: str, selected: dict[str
         return False
 
 
+@dataclass(frozen=True)
+class _Selection:
+    """Private shared semantic-selection result; never serialize `selected`."""
+    result: str
+    mechanical_candidate_count: int
+    qualifying_candidate_count: int
+    selected: dict[str, str] | None
+
+
+def _run_selection_core(raw: bytes, resolved_root_url: str) -> _Selection:
+    """Run the frozen selector sequence after a wrapper's input binding passes."""
+    try:
+        mechanical, qualifying = _locate_private(raw, resolved_root_url)
+    except _Unsupported:
+        return _Selection("HTML_STRUCTURE_UNSUPPORTED", 0, 0, None)
+    except _Unsafe:
+        return _Selection("SAFE_OUTPUT_VALIDATION_FAILURE", 0, 0, None)
+    except Exception:
+        return _Selection("INPUT_BINDING_FAILURE", 0, 0, None)
+    if len(qualifying) != 1:
+        return _Selection("SOURCE_OR_DATA_FEASIBILITY_FAILURE", 0, 0, None)
+    selected = qualifying[0]
+    if not _post_uniqueness_revalidate(resolved_root_url, selected):
+        return _Selection("INPUT_BINDING_FAILURE", 0, 0, None)
+    return _Selection("SUCCESSOR_LOCATOR_MATCHED", len(mechanical), 1, selected)
+
+
 def _empty(result: str, payload: str | None = None) -> dict[str, object]:
     return {"schema_version": SCHEMA_VERSION, "task": TASK, "input_payload_sha256": payload, "result": result, "mechanical_candidate_count": 0, "qualifying_candidate_count": 0, "selected_raw_href_sha256": None, "selected_resolved_url_sha256": None, "network_requests": 0, "replacement_locator_authorized": False}
 
@@ -223,18 +251,12 @@ def run_locator(output_root: object) -> dict[str, object]:
         raw, base = _read_bound(output_root)
     except Exception:
         return _finalize(_empty("INPUT_BINDING_FAILURE"))
-    try:
-        mechanical, qualifying = _locate_private(raw, base)
-    except _Unsupported:
-        return _finalize(_empty("HTML_STRUCTURE_UNSUPPORTED", EXPECTED_PAYLOAD_SHA256))
-    except _Unsafe:
-        return _finalize(_empty("SAFE_OUTPUT_VALIDATION_FAILURE", EXPECTED_PAYLOAD_SHA256))
-    if len(qualifying) != 1:
-        return _finalize(_empty("SOURCE_OR_DATA_FEASIBILITY_FAILURE", EXPECTED_PAYLOAD_SHA256))
-    selected = qualifying[0]
-    if not _post_uniqueness_revalidate(base, selected):
-        return _finalize(_empty("INPUT_BINDING_FAILURE", EXPECTED_PAYLOAD_SHA256))
-    return _finalize({"schema_version": SCHEMA_VERSION, "task": TASK, "input_payload_sha256": EXPECTED_PAYLOAD_SHA256, "result": "SUCCESSOR_LOCATOR_MATCHED", "mechanical_candidate_count": len(mechanical), "qualifying_candidate_count": 1, "selected_raw_href_sha256": selected["raw_href_sha256"], "selected_resolved_url_sha256": selected["resolved_url_sha256"], "network_requests": 0, "replacement_locator_authorized": False})
+    selection = _run_selection_core(raw, base)
+    if selection.result != "SUCCESSOR_LOCATOR_MATCHED":
+        return _finalize(_empty(selection.result, EXPECTED_PAYLOAD_SHA256))
+    selected = selection.selected
+    assert selected is not None
+    return _finalize({"schema_version": SCHEMA_VERSION, "task": TASK, "input_payload_sha256": EXPECTED_PAYLOAD_SHA256, "result": selection.result, "mechanical_candidate_count": selection.mechanical_candidate_count, "qualifying_candidate_count": selection.qualifying_candidate_count, "selected_raw_href_sha256": selected["raw_href_sha256"], "selected_resolved_url_sha256": selected["resolved_url_sha256"], "network_requests": 0, "replacement_locator_authorized": False})
 
 
 def _fresh_finalize(value: dict[str, object]) -> dict[str, object]:
@@ -280,16 +302,11 @@ def run_fresh_root_locator(raw: bytes, resolved_root_url: str, payload_sha256: s
         return _fresh_finalize(_fresh_empty("INPUT_BINDING_FAILURE", digest, length)), None
     try:
         _prior.validate_jpx_url(resolved_root_url)
-        mechanical, qualifying = _locate_private(raw, resolved_root_url)
-    except _Unsupported:
-        return _fresh_finalize(_fresh_empty("HTML_STRUCTURE_UNSUPPORTED", digest, length)), None
-    except _Unsafe:
-        return _fresh_finalize(_fresh_empty("SAFE_OUTPUT_VALIDATION_FAILURE", digest, length)), None
     except Exception:
         return _fresh_finalize(_fresh_empty("INPUT_BINDING_FAILURE", digest, length)), None
-    if len(qualifying) != 1:
-        return _fresh_finalize(_fresh_empty("SOURCE_OR_DATA_FEASIBILITY_FAILURE", digest, length)), None
-    selected = qualifying[0]
-    if not _post_uniqueness_revalidate(resolved_root_url, selected):
-        return _fresh_finalize(_fresh_empty("INPUT_BINDING_FAILURE", digest, length)), None
-    return _fresh_finalize({"schema_version": FRESH_SCHEMA_VERSION, "task": TASK, "input_payload_sha256": digest, "input_payload_byte_length": length, "result": "SUCCESSOR_LOCATOR_MATCHED", "mechanical_candidate_count": len(mechanical), "qualifying_candidate_count": 1, "selected_raw_href_sha256": selected["raw_href_sha256"], "selected_resolved_url_sha256": selected["resolved_url_sha256"], "network_requests": 0, "replacement_locator_authorized": False}), selected["resolved_url"]
+    selection = _run_selection_core(raw, resolved_root_url)
+    if selection.result != "SUCCESSOR_LOCATOR_MATCHED":
+        return _fresh_finalize(_fresh_empty(selection.result, digest, length)), None
+    selected = selection.selected
+    assert selected is not None
+    return _fresh_finalize({"schema_version": FRESH_SCHEMA_VERSION, "task": TASK, "input_payload_sha256": digest, "input_payload_byte_length": length, "result": selection.result, "mechanical_candidate_count": selection.mechanical_candidate_count, "qualifying_candidate_count": selection.qualifying_candidate_count, "selected_raw_href_sha256": selected["raw_href_sha256"], "selected_resolved_url_sha256": selected["resolved_url_sha256"], "network_requests": 0, "replacement_locator_authorized": False}), selected["resolved_url"]

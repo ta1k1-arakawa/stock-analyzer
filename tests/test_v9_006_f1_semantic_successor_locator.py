@@ -286,6 +286,61 @@ def test_fresh_root_success_hashes_and_parses_the_same_bytes(monkeypatch):
     assert result["input_payload_byte_length"] == len(parsed[0])
 
 
+def test_historical_wrapper_calls_shared_core_once_after_binding(monkeypatch, tmp_path):
+    root, _ = bound_root(monkeypatch, tmp_path)
+    original = locator._run_selection_core
+    calls = []
+
+    def capture(raw, base):
+        calls.append((raw, base))
+        return original(raw, base)
+
+    monkeypatch.setattr(locator, "_run_selection_core", capture)
+    assert locator.run_locator(root)["result"] == "SUCCESSOR_LOCATOR_MATCHED"
+    assert len(calls) == 1
+
+
+def test_fresh_wrapper_calls_shared_core_once_after_binding_and_zero_when_rejected(monkeypatch):
+    original = locator._run_selection_core
+    calls = []
+
+    def capture(raw, base):
+        calls.append((raw, base))
+        return original(raw, base)
+
+    monkeypatch.setattr(locator, "_run_selection_core", capture)
+    raw = html()
+    assert fresh(raw)[0]["result"] == "SUCCESSOR_LOCATOR_MATCHED"
+    assert len(calls) == 1
+    assert locator.run_fresh_root_locator(raw, BASE, "0" * 64, len(raw))[0]["result"] == "INPUT_BINDING_FAILURE"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("result", ["HTML_STRUCTURE_UNSUPPORTED", "SAFE_OUTPUT_VALIDATION_FAILURE", "SOURCE_OR_DATA_FEASIBILITY_FAILURE", "INPUT_BINDING_FAILURE", "SUCCESSOR_LOCATOR_MATCHED"])
+def test_wrappers_map_shared_core_results_to_existing_safe_projections(monkeypatch, tmp_path, result):
+    root, _ = bound_root(monkeypatch, tmp_path)
+    selected = {"raw_href_sha256": "1" * 64, "resolved_url_sha256": "2" * 64, "resolved_url": urllib_join(BASE, "a.xls")}
+    selection = locator._Selection(result, 2 if result == "SUCCESSOR_LOCATOR_MATCHED" else 0, 1 if result == "SUCCESSOR_LOCATOR_MATCHED" else 0, selected if result == "SUCCESSOR_LOCATOR_MATCHED" else None)
+    monkeypatch.setattr(locator, "_run_selection_core", lambda *_: selection)
+    historical = locator.run_locator(root)
+    fresh_result, private_url = fresh(html())
+    assert historical["result"] == fresh_result["result"] == result
+    if result == "SUCCESSOR_LOCATOR_MATCHED":
+        assert historical["mechanical_candidate_count"] == fresh_result["mechanical_candidate_count"] == 2
+        assert historical["qualifying_candidate_count"] == fresh_result["qualifying_candidate_count"] == 1
+        assert private_url == selected["resolved_url"]
+    else:
+        assert historical["mechanical_candidate_count"] == fresh_result["mechanical_candidate_count"] == 0
+        assert private_url is None
+
+
+def test_post_uniqueness_revalidation_is_owned_by_shared_core(monkeypatch):
+    calls = []
+    monkeypatch.setattr(locator, "_post_uniqueness_revalidate", lambda *_: calls.append(True) or True)
+    selection = locator._run_selection_core(html(), BASE)
+    assert selection.result == "SUCCESSOR_LOCATOR_MATCHED" and calls == [True]
+
+
 def test_fresh_safe_validator_hash_and_bool_closure():
     result, _ = fresh(html())
     locator.validate_fresh_safe_result(result)
