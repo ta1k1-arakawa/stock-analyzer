@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+import src.v9_012_actual_tse_trading_day_authority as reviewed_v9012
 import src.v9_013_v9_012_authority_failure_diagnostic as diag
 
 
@@ -349,6 +350,102 @@ def test_frozen_chain_mismatch_stops_before_semantic_diagnosis(tmp_path, monkeyp
             diagnostic_design_git_sha=diag.FROZEN_DESIGN_GIT_SHA,
             diagnostic_implementation_git_sha=IMPLEMENTATION_SHA,
         )
+
+
+def test_synthetic_protected_binding_success_path_matches_reviewed_v9012(tmp_path, monkeypatch):
+    covered_dates = reviewed_v9012._coverage_dates()
+    sentinel_dates = {"2020-09-30", "2020-10-01", "2020-10-02"}
+    source_a_payload = page([
+        {"Date": date_value, "HolDiv": "1" if date_value in sentinel_dates else "0"}
+        for date_value in covered_dates
+    ])
+    source_b_payload = page([
+        {"Date": "2020-09-30", "O": 1.0, "H": 2.0, "L": 0.5, "C": 1.5},
+        {"Date": "2020-10-01", "O": None, "H": None, "L": None, "C": None},
+        {"Date": "2020-10-02", "O": 2.0, "H": 3.0, "L": 1.5, "C": 2.5},
+    ])
+
+    request_a = reviewed_v9012.PageRequest(reviewed_v9012.SOURCE_A, 1, None)
+    reviewed_v9012.PageLockStore(tmp_path, reviewed_v9012.SOURCE_A).lock_page(
+        request_a,
+        reviewed_v9012.PageFetchResult(
+            source_a_payload, 200, reviewed_v9012.expected_request_url(request_a),
+        ),
+    )
+    assert reviewed_v9012.validate_durable_source_order(tmp_path)["source_a_terminal"] is True
+
+    request_b = reviewed_v9012.PageRequest(reviewed_v9012.SOURCE_B, 1, None)
+    reviewed_v9012.PageLockStore(tmp_path, reviewed_v9012.SOURCE_B).lock_page(
+        request_b,
+        reviewed_v9012.PageFetchResult(
+            source_b_payload, 200, reviewed_v9012.expected_request_url(request_b),
+        ),
+    )
+
+    reviewed_a_pages = reviewed_v9012.PageLockStore(
+        tmp_path, reviewed_v9012.SOURCE_A,
+    ).read_locked_chain(require_terminal=True)
+    reviewed_b_pages = reviewed_v9012.PageLockStore(
+        tmp_path, reviewed_v9012.SOURCE_B,
+    ).read_locked_chain(require_terminal=True)
+    reviewed_a_sha = reviewed_v9012.source_chain_sha256(
+        reviewed_v9012.build_source_chain_manifest(reviewed_v9012.SOURCE_A, reviewed_a_pages),
+        reviewed_v9012.SOURCE_A,
+    )
+    reviewed_b_sha = reviewed_v9012.source_chain_sha256(
+        reviewed_v9012.build_source_chain_manifest(reviewed_v9012.SOURCE_B, reviewed_b_pages),
+        reviewed_v9012.SOURCE_B,
+    )
+    assert len(reviewed_a_pages) == 1
+    assert len(reviewed_b_pages) == 1
+
+    monkeypatch.setattr(diag, "FROZEN_SOURCE_A_CHAIN_SHA256", reviewed_a_sha)
+    monkeypatch.setattr(diag, "FROZEN_SOURCE_B_CHAIN_SHA256", reviewed_b_sha)
+    diagnostic_a_pages, diagnostic_b_pages = diag._verify_frozen_chains(tmp_path)
+    assert diag.sha256_bytes(diag.canonical_json_no_lf(
+        diag._build_chain_manifest(diag.SOURCE_A, diagnostic_a_pages),
+    )) == reviewed_a_sha
+    assert diag.sha256_bytes(diag.canonical_json_no_lf(
+        diag._build_chain_manifest(diag.SOURCE_B, diagnostic_b_pages),
+    )) == reviewed_b_sha
+
+    result = diag.diagnose_preserved_state(
+        tmp_path,
+        diagnostic_design_git_sha=diag.FROZEN_DESIGN_GIT_SHA,
+        diagnostic_implementation_git_sha=IMPLEMENTATION_SHA,
+    )
+    assert result["status"] == "COMPLETE"
+    assert result["source_a_category"] == "A_VALID"
+    assert result["source_b_category"] == "B_VALID"
+    assert result["source_a_row_count"] == len(covered_dates)
+    assert result["source_b_row_count"] == 3
+    assert result["scheduled_open_count"] == 3
+    assert result["topix_active_count"] == 2
+    assert result["relation_evaluated"] is True
+    assert result["left_diff_count"] == 1
+    assert result["right_diff_count"] == 0
+    assert result["unexpected_left_diff_count"] == 0
+    assert result["missing_expected_exception_count"] == 0
+    assert result["left_exact_expected"] is True
+    assert result["right_empty"] is True
+    assert result["neighbor_2020_09_30_active"] is True
+    assert result["sentinel_2020_10_01_inactive"] is True
+    assert result["neighbor_2020_10_02_active"] is True
+    assert result["diagnostic_class"] == "NO_V9_012_FAILURE_REPRODUCED"
+
+    serialized = diag.serialize_public_result(result)
+    assert set(json.loads(serialized.decode("utf-8"))) == diag.PUBLIC_KEYS
+    assert serialized == diag.canonical_json_no_lf(json.loads(serialized.decode("utf-8")))
+    assert not serialized.endswith(b"\n")
+    assert str(tmp_path).encode("utf-8") not in serialized
+    assert b'"Date"' not in serialized
+    assert b'"HolDiv"' not in serialized
+    assert b'"O"' not in serialized
+    assert b"2020-09-30" not in serialized
+    assert b"2020-10-01" not in serialized
+    assert b"2020-10-02" not in serialized
+    assert b"1.0" not in serialized
+    assert b"2.0" not in serialized
 
 
 def test_no_acquisition_or_network_path_is_imported_or_reachable():
