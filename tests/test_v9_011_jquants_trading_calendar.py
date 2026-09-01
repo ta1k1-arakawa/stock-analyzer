@@ -85,7 +85,7 @@ def test_one_page_query_and_raw_lock_precede_envelope_inspection(tmp_path, monke
     provenance, requests, fetch_calls = acquire_from_pages(tmp_path, [payload])
     assert requests == 1
     assert fetch_calls[0].params == {"from": cal.COVERED_START, "to": cal.COVERED_END}
-    assert calls == [payload]
+    assert calls and all(locked_payload == payload for locked_payload in calls)
     assert provenance["page_count"] == 1
     assert (tmp_path / "raw_pages" / "000001.bin").read_bytes() == payload
 
@@ -264,6 +264,128 @@ def test_restart_uses_locked_prefix_and_never_refetches_it(tmp_path):
     assert calls_two[0].page_index == 2
     assert calls_two[0].continuation_key == "next-key"
     assert (tmp_path / "raw_pages" / "000001.bin").read_bytes() == locked_bytes
+
+
+def test_restart_reconstructs_next_page_from_raw_lock_without_envelope(tmp_path):
+    first = page([], "raw-lock-key", include_key=True)
+    store = cal.PageLockStore(tmp_path)
+    store.lock_page(cal.PageRequest(1), result_for(cal.PageRequest(1), first))
+    assert not list((tmp_path / "page_envelopes").glob("*.json"))
+    calls = []
+
+    def fetch(request):
+        calls.append(request)
+        return result_for(request, page())
+
+    provenance, requests = cal.acquire_page_chain(tmp_path, fetcher=fetch)
+    assert requests == 1
+    assert len(calls) == 1
+    assert calls[0].page_index == 2
+    assert calls[0].continuation_key == "raw-lock-key"
+    assert calls[0].params == {
+        "from": cal.COVERED_START,
+        "to": cal.COVERED_END,
+        "pagination_key": "raw-lock-key",
+    }
+    assert provenance["page_count"] == 2
+
+
+def test_terminal_locked_raw_page_restart_requires_zero_network(tmp_path):
+    request = cal.PageRequest(1)
+    store = cal.PageLockStore(tmp_path)
+    store.lock_page(request, result_for(request, page()))
+    calls = []
+
+    def forbidden(request):
+        calls.append(request)
+        raise AssertionError("terminal locked page must not be fetched")
+
+    provenance, requests = cal.acquire_page_chain(tmp_path, fetcher=forbidden)
+    assert provenance["page_count"] == 1
+    assert requests == 0
+    assert calls == []
+
+
+@pytest.mark.parametrize("bad_key", [None, "", [], 1])
+def test_restart_bad_pagination_metadata_stops_without_network(tmp_path, bad_key):
+    request = cal.PageRequest(1)
+    store = cal.PageLockStore(tmp_path)
+    store.lock_page(request, result_for(request, page([], bad_key, include_key=True)))
+    calls = []
+
+    def forbidden(request):
+        calls.append(request)
+        raise AssertionError("bad locked pagination metadata must not fetch")
+
+    with pytest.raises(cal.V9011Error, match="PAGINATION_KEY_INVALID"):
+        cal.acquire_page_chain(tmp_path, fetcher=forbidden)
+    assert calls == []
+
+
+def test_restart_reconstructs_repeated_key_before_any_network(tmp_path):
+    store = cal.PageLockStore(tmp_path)
+    first_request = cal.PageRequest(1)
+    store.lock_page(first_request, result_for(first_request, page([], "repeat", include_key=True)))
+    second_request = cal.PageRequest(2, "repeat")
+    store.lock_page(second_request, result_for(second_request, page([], "repeat", include_key=True)))
+    with pytest.raises(cal.V9011Error, match="PAGINATION_KEY_REPEATED"):
+        cal.acquire_page_chain(tmp_path, fetcher=lambda _request: (_ for _ in ()).throw(AssertionError("no network")))
+
+
+def test_restart_corrupt_raw_bytes_vs_lock_stops_without_network(tmp_path):
+    request = cal.PageRequest(1)
+    store = cal.PageLockStore(tmp_path)
+    store.lock_page(request, result_for(request, page()))
+    (tmp_path / "raw_pages" / "000001.bin").write_bytes(b"corrupted")
+    with pytest.raises(cal.V9011Error, match="PAGE_LOCK_PAYLOAD_MISMATCH"):
+        cal.acquire_page_chain(tmp_path, fetcher=lambda _request: (_ for _ in ()).throw(AssertionError("no network")))
+
+
+def test_orphan_raw_payload_without_lock_fails_closed_without_network(tmp_path):
+    cal.PageLockStore(tmp_path)
+    (tmp_path / "raw_pages" / "000001.bin").write_bytes(b"orphan")
+    with pytest.raises(cal.V9011Error, match="DURABLE_STATE_INCOMPLETE_PAIR"):
+        cal.acquire_page_chain(tmp_path, fetcher=lambda _request: (_ for _ in ()).throw(AssertionError("no network")))
+
+
+def test_lock_without_raw_payload_fails_closed_without_network(tmp_path):
+    request = cal.PageRequest(1)
+    store = cal.PageLockStore(tmp_path)
+    store.lock_page(request, result_for(request, page()))
+    (tmp_path / "raw_pages" / "000001.bin").unlink()
+    with pytest.raises(cal.V9011Error, match="DURABLE_STATE_INCOMPLETE_PAIR"):
+        cal.acquire_page_chain(tmp_path, fetcher=lambda _request: (_ for _ in ()).throw(AssertionError("no network")))
+
+
+def test_optional_corrupt_derived_envelope_never_overrides_raw_lock(tmp_path):
+    request = cal.PageRequest(1)
+    store = cal.PageLockStore(tmp_path)
+    store.lock_page(request, result_for(request, page([], "raw-authority", include_key=True)))
+    envelope = tmp_path / "page_envelopes" / "000001.json"
+    envelope.write_bytes(b"not-json")
+    calls = []
+
+    def fetch(next_request):
+        calls.append(next_request)
+        return result_for(next_request, page())
+
+    cal.acquire_page_chain(tmp_path, fetcher=fetch)
+    assert len(calls) == 1
+    assert calls[0].continuation_key == "raw-authority"
+
+
+def test_restart_acquisition_never_reads_date_or_holdiv(tmp_path):
+    store = cal.PageLockStore(tmp_path)
+    first = cal.PageRequest(1)
+    second = cal.PageRequest(2, "continuation")
+    store.lock_page(first, result_for(first, page([{"Date": "invalid", "HolDiv": "invalid"}], "continuation", include_key=True)))
+    store.lock_page(second, result_for(second, page([{"Date": "also-invalid", "HolDiv": "also-invalid"}])))
+    provenance, requests = cal.acquire_page_chain(
+        tmp_path,
+        fetcher=lambda _request: (_ for _ in ()).throw(AssertionError("complete locked chain must not fetch")),
+    )
+    assert provenance["page_count"] == 2
+    assert requests == 0
 
 
 def test_source_chain_known_hash_vector():

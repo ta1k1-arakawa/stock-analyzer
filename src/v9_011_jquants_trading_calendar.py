@@ -389,7 +389,11 @@ def _exclusive_write(path: Path, content: bytes) -> None:
 
 
 class PageLockStore:
-    """External durable raw pages, lock records, and private envelopes."""
+    """External durable raw pages and lock records.
+
+    ``page_envelopes`` is retained only as an optional legacy/derived cache;
+    recovery never reads it and never requires it to resume acquisition.
+    """
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).resolve()
@@ -466,7 +470,6 @@ class PageLockStore:
         try:
             lock_paths = list(self.lock_dir.iterdir())
             payload_paths = list(self.payload_dir.iterdir())
-            envelope_paths = list(self.envelope_dir.iterdir())
         except Exception as exc:
             raise V9011Error("DURABLE_STATE_ENUMERATION_FAILURE") from exc
         def valid_page_name(path: Path, suffix: str) -> bool:
@@ -482,19 +485,16 @@ class PageLockStore:
         for path in payload_paths:
             if not path.is_file() or path.suffix != ".bin" or not path.stem.isdigit() or int(path.stem) < 1:
                 raise V9011Error("DURABLE_STATE_EXTRA_PAYLOAD")
-        for path in envelope_paths:
-            if not valid_page_name(path, ".json"):
-                raise V9011Error("DURABLE_STATE_EXTRA_ENVELOPE")
         indices = sorted(int(path.stem) for path in lock_paths)
         if not indices:
-            if payload_paths or envelope_paths:
+            if payload_paths:
                 raise V9011Error("DURABLE_STATE_INCOMPLETE_PAIR")
             if require_terminal:
                 raise V9011Error("PAGE_CHAIN_EMPTY")
             return []
         if indices != list(range(1, max(indices) + 1)):
             raise V9011Error("PAGE_CHAIN_ORDER_INVALID")
-        if {int(path.stem) for path in payload_paths} != set(indices) or {int(path.stem) for path in envelope_paths} != set(indices):
+        if {int(path.stem) for path in payload_paths} != set(indices):
             raise V9011Error("DURABLE_STATE_INCOMPLETE_PAIR")
         result: list[LockedPage] = []
         previous_key: str | None = None
@@ -514,7 +514,10 @@ class PageLockStore:
             _check_sha(record["payload_sha256"], HEX64, "PAGE_LOCK_DIGEST_INVALID")
             if not _strict_int(record["byte_count"], minimum=0) or record["byte_count"] != len(payload) or record["payload_sha256"] != sha256_bytes(payload) or raw_record != canonical_json_bytes(record):
                 raise V9011Error("PAGE_LOCK_PAYLOAD_MISMATCH")
-            continuation, key = self._read_envelope(index)
+            # The raw locked page is the sole continuation authority.  This
+            # inspection occurs only after the raw bytes and lock binding
+            # have both been validated.
+            continuation, key = _inspect_pagination_envelope(payload)
             if continuation:
                 if key in seen_keys:
                     raise V9011Error("PAGINATION_KEY_REPEATED")
@@ -631,7 +634,6 @@ def acquire_page_chain(
         try:
             store.lock_page(current_request, result)
             continued, key = _inspect_pagination_envelope(result.payload)
-            store.persist_envelope(current_request.page_index, key if continued else None)
             if continued and key in seen_keys:
                 raise V9011Error("PAGINATION_KEY_REPEATED", attempts=1, requests=requests)
             if not continued:
