@@ -244,27 +244,71 @@ unrelated source data.
 
 ## 9. Protected one-shot execution workflow
 
-### Phase A — no-network preflight
+### Phase A — metadata-only, no-network preflight
 
-Before any protected semantic read, verify without inspecting Date, HolDiv,
-or OHLC semantics:
+Phase A is strictly metadata-only with respect to the preserved V9_012 raw
+payloads. Before fresh V9_013 protected-read authorization, Phase A must not
+open or read any `raw_pages/*.bin` bytes, hash raw payload contents, parse raw
+JSON, inspect a pagination envelope, inspect `Date`, `HolDiv`, or `O/H/L/C`,
+call `read_locked_chain` or another helper that reads protected raw bytes, or
+reconstruct a source-chain SHA from protected bytes.
 
-- Git state, provenance, reviewed design and implementation blobs, and clean
-  tree;
-- the frozen source-chain SHA and page-count evidence;
-- existence and safe lock/raw pairing of the preserved durable state.
+Phase A may verify only safe, non-content preflight evidence:
 
+- Git/branch/HEAD/remote/cleanliness;
+- reviewed design and implementation blob bindings;
+- expected preserved-state container existence;
+- SOURCE_A and SOURCE_B directory existence;
+- expected page/lock filename and count structure;
+- filesystem file-size metadata without opening raw content;
+- reviewed/safe page-lock JSON provenance fields already classified as safe
+  metadata, without opening raw payload content;
+- the previously recorded public evidence of one page for each source and
+  the two frozen source-chain SHA values;
+- durable-root non-ambiguity/existence without printing private paths.
+
+Phase A does not prove that raw bytes generate the frozen source-chain SHA
+values. That proof necessarily occurs after the protected-content boundary.
 Phase A has no network and no protected semantic read. It requires GPT
 adjudication before proceeding.
 
-### Phase B — one protected semantic read
+### Phase B — one protected byte-read and semantic invocation
 
-After Phase A PASS and fresh human authorization specifically for the
-preserved V9_012 locked-payload offline semantic diagnostic read, invoke the
-reviewed diagnostic runner once through a minimal direct Windows PowerShell
-command. The invocation has no network and no API-key read, and captures
-stdout, stderr, and exit status separately. Authorization is consumed at the
-protected semantic-read boundary. There is no automatic rerun.
+After Phase A PASS, obtain fresh human authorization specifically covering
+all V9_013 protected locked-payload byte reads required for immutable
+lock/raw integrity verification, pagination/chain reconstruction, exact
+source-chain SHA/page-count binding, and—only after those pass—Date/HolDiv/
+OHLC diagnostic semantic inspection.
+
+Invoke the reviewed diagnostic runner once through a minimal direct Windows
+PowerShell command with no network and no API-key read, capturing stdout,
+stderr, and exit status separately. Authorization is consumed at the first
+protected raw-payload byte read, even if the diagnostic stops before semantic
+inspection. The exact order is:
+
+1. consume fresh V9_013 protected-read authorization at the first raw-byte
+   read;
+2. validate immutable raw/lock pairing and payload hashes;
+3. validate pagination, terminal, and source-order provenance needed for the
+   preserved chains;
+4. reconstruct both source-chain SHA values;
+5. require exactly the frozen one-page SOURCE_A and SOURCE_B chain SHA
+   values:
+
+   ```text
+   SOURCE_A_CHAIN_SHA256=aee49fac48358be373ac4efbcf0568b796c68fa31177e0f34c5031352297fe45
+   SOURCE_B_CHAIN_SHA256=7b4c8624b78d51a30625672c411a76fcd85ab692765e99ee9cf6cc2239a3e33e
+   SOURCE_A_PAGE_COUNT=1
+   SOURCE_B_PAGE_COUNT=1
+   ```
+6. on any mismatch, return `PRESERVED_V9_012_INPUT_BINDING_FAILURE` and stop
+   before Date/HolDiv/OHLC semantic inspection;
+7. only after every binding check passes, begin the diagnostic semantic
+   processing.
+
+No new network authorization exists. A binding failure after the protected
+byte boundary consumes the authorization and does not permit an automatic
+rerun. V9_013 has `JQUANTS_API_REQUESTS=0` and `API_KEY_READS=0`.
 
 ### Phase C — no-network result inspection
 
