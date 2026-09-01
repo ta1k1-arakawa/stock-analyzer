@@ -14,6 +14,18 @@ production/protected state; it is not a real runner. It never materializes a
 final ``trading_dates`` sequence -- per the frozen design (Section 6.1 and
 Section 8), that subtraction is authority-driven and occurs only in a later
 reviewed implementation/execution stage after every frozen validation PASS.
+
+``evaluate_cross_source_relation`` mechanically enforces SOURCE_B date/table
+coverage closure: it requires an actual per-date :class:`DateClassification`
+(produced by :func:`classify_date`) for every scheduled-open date, not an
+opaque caller-asserted "proven active" list. A scheduled-open date whose
+required SOURCE_B date/table coverage is entirely absent, or whose
+classification is ``DQ``, can never yield ``RELATION_PASS`` -- even when the
+resulting left-set difference would otherwise coincidentally equal
+``EXPECTED_UNPROVEN_SET``. ``validate_source_b_object_collection`` separately
+proves, over the complete caller-supplied physical-object collection, that
+it covers exactly the 109 frozen logical months with exactly their required
+object parts and exactly 110 total physical objects.
 """
 
 from __future__ import annotations
@@ -140,6 +152,23 @@ OBJECT_BUNDLE_MISSING_OR_UNEXPECTED_PART_FAILURE = (
 )
 OBJECT_BUNDLE_DUPLICATE_PART_FAILURE = "OBJECT_BUNDLE_DUPLICATE_PART_DQ_FAILURE"
 OBJECT_BUNDLE_UNKNOWN_MONTH_FAILURE = "OBJECT_BUNDLE_UNKNOWN_MONTH_DQ_FAILURE"
+
+SOURCE_B_OBJECT_COLLECTION_OK = "SOURCE_B_OBJECT_COLLECTION_OK"
+SOURCE_B_OBJECT_COLLECTION_MISSING_MONTH_FAILURE = (
+    "SOURCE_B_OBJECT_COLLECTION_MISSING_MONTH_DQ_FAILURE"
+)
+SOURCE_B_OBJECT_COLLECTION_UNEXPECTED_MONTH_FAILURE = (
+    "SOURCE_B_OBJECT_COLLECTION_UNEXPECTED_MONTH_DQ_FAILURE"
+)
+SOURCE_B_OBJECT_COLLECTION_DUPLICATE_MONTH_FAILURE = (
+    "SOURCE_B_OBJECT_COLLECTION_DUPLICATE_MONTH_DQ_FAILURE"
+)
+SOURCE_B_OBJECT_COLLECTION_MONTH_BUNDLE_FAILURE = (
+    "SOURCE_B_OBJECT_COLLECTION_MONTH_BUNDLE_DQ_FAILURE"
+)
+SOURCE_B_OBJECT_COLLECTION_COUNT_MISMATCH_FAILURE = (
+    "SOURCE_B_OBJECT_COLLECTION_COUNT_MISMATCH_DQ_FAILURE"
+)
 
 RELATION_PASS = "RELATION_PASS"
 RELATION_FAILURE = "ACTUAL_TRADING_DAY_AUTHORITY_FAILURE"
@@ -459,6 +488,70 @@ def validate_source_b_object_bundle(
     return ObjectBundleValidation(OBJECT_BUNDLE_OK)
 
 
+@dataclass(frozen=True)
+class ObjectCollectionValidation:
+    status: str
+    failing_month: Optional[str] = None
+    total_object_count: Optional[int] = None
+
+
+def validate_source_b_object_collection(
+    entries: Sequence,
+) -> ObjectCollectionValidation:
+    """Collection-level SOURCE_B physical-object completeness.
+
+    ``entries`` is a sequence of ``(logical_month, present_parts)`` pairs
+    (not a mapping, so a duplicate logical-month entry is representable and
+    detectable). This proves, over the complete caller-supplied collection,
+    that it covers exactly the 109 frozen logical months 2017-01 through
+    2026-01, each present exactly once; that every month's object bundle is
+    exactly its frozen required parts (the 2022-04 two-part bundle
+    included); and that the total required physical parts equal exactly
+    110. Any violation fails closed and returns a status other than
+    ``SOURCE_B_OBJECT_COLLECTION_OK``.
+    """
+
+    months_given = [month for month, _parts in entries]
+
+    if len(months_given) != len(set(months_given)):
+        duplicate = min({m for m in months_given if months_given.count(m) > 1})
+        return ObjectCollectionValidation(
+            SOURCE_B_OBJECT_COLLECTION_DUPLICATE_MONTH_FAILURE, failing_month=duplicate
+        )
+
+    given_set = set(months_given)
+    required_set = set(REQUIRED_LOGICAL_MONTHS)
+
+    missing = required_set - given_set
+    if missing:
+        return ObjectCollectionValidation(
+            SOURCE_B_OBJECT_COLLECTION_MISSING_MONTH_FAILURE, failing_month=min(missing)
+        )
+
+    unexpected = given_set - required_set
+    if unexpected:
+        return ObjectCollectionValidation(
+            SOURCE_B_OBJECT_COLLECTION_UNEXPECTED_MONTH_FAILURE, failing_month=min(unexpected)
+        )
+
+    parts_by_month = dict(entries)  # safe: duplicate keys already rejected above
+    total_parts = 0
+    for month in REQUIRED_LOGICAL_MONTHS:
+        bundle_result = validate_source_b_object_bundle(month, parts_by_month[month])
+        if bundle_result.status != OBJECT_BUNDLE_OK:
+            return ObjectCollectionValidation(
+                SOURCE_B_OBJECT_COLLECTION_MONTH_BUNDLE_FAILURE, failing_month=month
+            )
+        total_parts += len(parts_by_month[month])
+
+    if total_parts != REQUIRED_PHYSICAL_SOURCE_B_OBJECT_COUNT:
+        return ObjectCollectionValidation(
+            SOURCE_B_OBJECT_COLLECTION_COUNT_MISMATCH_FAILURE, total_object_count=total_parts
+        )
+
+    return ObjectCollectionValidation(SOURCE_B_OBJECT_COLLECTION_OK, total_object_count=total_parts)
+
+
 # --- SOURCE_C and frozen cross-source relation/sentinel validation ---------
 def source_c_confirmed_exception_set(
     auction_market_had_no_execution: bool,
@@ -480,6 +573,9 @@ def source_c_confirmed_exception_set(
 @dataclass(frozen=True)
 class RelationEvaluation:
     status: str
+    coverage_complete: bool
+    missing_coverage_dates: frozenset
+    dq_coverage_dates: frozenset
     left_diff: frozenset
     right_diff: frozenset
     left_exact_expected: bool
@@ -491,19 +587,48 @@ class RelationEvaluation:
 
 def evaluate_cross_source_relation(
     scheduled_open_dates: Sequence[str],
-    proven_auction_active_dates: Sequence[str],
+    source_b_date_classifications: Mapping[str, DateClassification],
     source_c_exception_set: Sequence[str],
 ) -> RelationEvaluation:
-    """Frozen cross-source exact-set/sentinel validation (design Section 6).
+    """Frozen cross-source exact-set/sentinel validation (design Section 6),
+    with mechanically enforced SOURCE_B date/table coverage closure.
+
+    ``source_b_date_classifications`` maps date to the actual
+    :class:`DateClassification` produced by :func:`classify_date` for that
+    date -- not an opaque caller-asserted "proven active" list. This closes
+    the gap where a date's required SOURCE_B date/table coverage could be
+    entirely absent yet still be silently treated as unproven: a date that
+    exists and was classified ``NOT_PROVEN`` is legitimately permitted, but
+    a date entirely missing from ``source_b_date_classifications``, or one
+    classified ``DQ``, is a coverage failure and can never yield
+    ``RELATION_PASS`` -- even when the resulting left-set difference would
+    otherwise coincidentally equal ``EXPECTED_UNPROVEN_SET``.
 
     Uses only caller-supplied synthetic scheduled-open evidence, SOURCE_B
-    proven-active evidence, and a SOURCE_C confirmed exception set. This
-    function never materializes a final ``trading_dates`` sequence.
+    per-date classification evidence, and a SOURCE_C confirmed exception
+    set. This function never materializes a final ``trading_dates``
+    sequence.
     """
 
     scheduled = frozenset(scheduled_open_dates)
-    proven_active = frozenset(proven_auction_active_dates)
     source_c = frozenset(source_c_exception_set)
+
+    missing_coverage_dates = frozenset(
+        date for date in scheduled if date not in source_b_date_classifications
+    )
+    dq_coverage_dates = frozenset(
+        date
+        for date in scheduled
+        if date in source_b_date_classifications
+        and source_b_date_classifications[date].status == DQ
+    )
+    coverage_complete = not missing_coverage_dates and not dq_coverage_dates
+
+    proven_active = frozenset(
+        date
+        for date, classification in source_b_date_classifications.items()
+        if classification.status == PROVEN_AUCTION_ACTIVE
+    )
 
     left_diff = scheduled - proven_active
     right_diff = proven_active - scheduled
@@ -515,7 +640,8 @@ def evaluate_cross_source_relation(
     sentinel_2 = SENTINEL_PROVEN_ACTIVE_DATES[1] in proven_active
 
     overall_pass = (
-        left_exact_expected
+        coverage_complete
+        and left_exact_expected
         and right_empty
         and cross_source_consistent
         and sentinel_1
@@ -525,6 +651,9 @@ def evaluate_cross_source_relation(
 
     return RelationEvaluation(
         status=status,
+        coverage_complete=coverage_complete,
+        missing_coverage_dates=missing_coverage_dates,
+        dq_coverage_dates=dq_coverage_dates,
         left_diff=left_diff,
         right_diff=right_diff,
         left_exact_expected=left_exact_expected,
