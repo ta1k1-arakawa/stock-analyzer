@@ -111,7 +111,7 @@ SOURCE_CHAIN_PAGE_KEYS = frozenset({
     "page_index", "page_request_identity_sha256", "payload_sha256",
 })
 LOCK_KEYS = frozenset({
-    "byte_count", "page_index", "page_request_identity_sha256",
+    "byte_count", "http_status", "page_index", "page_request_identity_sha256",
     "payload_sha256", "source_api_identity", "source_role",
 })
 
@@ -426,6 +426,7 @@ class PageLockStore:
             raise V9012Error("TRANSPORT_RESPONSE_NOT_LOCKABLE", source_key=self.source_key)
         record: dict[str, object] = {
             "byte_count": len(result.payload),
+            "http_status": result.http_status,
             "page_index": request.page_index,
             "page_request_identity_sha256": page_request_identity_sha256(request),
             "payload_sha256": sha256_bytes(result.payload),
@@ -472,6 +473,8 @@ class PageLockStore:
                 raise V9012Error("DURABLE_STATE_LOCK_READ_FAILURE", source_key=self.source_key) from exc
             if type(record) is not dict or set(record) != LOCK_KEYS:
                 raise V9012Error("PAGE_LOCK_SCHEMA_INVALID", source_key=self.source_key)
+            if type(record["http_status"]) is not int or record["http_status"] != 200:
+                raise V9012Error("PAGE_LOCK_HTTP_STATUS_INVALID", source_key=self.source_key)
             request = PageRequest(self.source_key, index, previous_key)
             if (
                 record["page_index"] != index

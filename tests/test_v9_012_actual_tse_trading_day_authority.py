@@ -145,6 +145,77 @@ def test_raw_bytes_are_locked_before_pagination_inspection(tmp_path, monkeypatch
     assert seen[0] == payload
 
 
+def test_new_lock_has_exact_http_status_schema_and_integer_200(tmp_path):
+    fetch, _calls = fetcher_for({(cal.SOURCE_A, 1): page()})
+    cal.acquire_source(tmp_path, cal.SOURCE_A, fetcher=fetch)
+    lock_path = tmp_path / "source_a" / "page_locks" / "000001.json"
+    record = json.loads(lock_path.read_bytes().decode("utf-8"))
+    assert set(record) == cal.LOCK_KEYS
+    assert type(record["http_status"]) is int
+    assert record["http_status"] == 200
+    assert cal.PageLockStore(tmp_path, cal.SOURCE_A).read_locked_chain()[-1].record == record
+
+
+def test_legacy_lock_without_http_status_fails_closed_without_fetch(tmp_path):
+    fetch, _calls = fetcher_for({(cal.SOURCE_A, 1): page()})
+    cal.acquire_source(tmp_path, cal.SOURCE_A, fetcher=fetch)
+    lock_path = tmp_path / "source_a" / "page_locks" / "000001.json"
+    record = json.loads(lock_path.read_bytes().decode("utf-8"))
+    record.pop("http_status")
+    lock_path.write_bytes(cal.canonical_json_bytes(record))
+    restart_fetch, calls = fetcher_for({(cal.SOURCE_A, 1): page()})
+    with pytest.raises(cal.V9012Error, match="PAGE_LOCK_SCHEMA_INVALID"):
+        cal.acquire_source(tmp_path, cal.SOURCE_A, fetcher=restart_fetch)
+    assert calls == []
+
+
+@pytest.mark.parametrize("bad_status", [201, 404, True])
+def test_invalid_persisted_http_status_fails_closed_without_fetch(tmp_path, bad_status):
+    fetch, _calls = fetcher_for({(cal.SOURCE_A, 1): page()})
+    cal.acquire_source(tmp_path, cal.SOURCE_A, fetcher=fetch)
+    lock_path = tmp_path / "source_a" / "page_locks" / "000001.json"
+    record = json.loads(lock_path.read_bytes().decode("utf-8"))
+    record["http_status"] = bad_status
+    lock_path.write_bytes(cal.canonical_json_bytes(record))
+    restart_fetch, calls = fetcher_for({(cal.SOURCE_A, 1): page()})
+    with pytest.raises(cal.V9012Error, match="PAGE_LOCK_HTTP_STATUS_INVALID"):
+        cal.acquire_source(tmp_path, cal.SOURCE_A, fetcher=restart_fetch)
+    assert calls == []
+
+
+def test_bad_source_a_http_status_with_source_b_fails_source_order_before_fetch(tmp_path):
+    fetch, _calls = fetcher_for({(cal.SOURCE_A, 1): page()})
+    cal.acquire_source(tmp_path, cal.SOURCE_A, fetcher=fetch)
+    lock_path = tmp_path / "source_a" / "page_locks" / "000001.json"
+    record = json.loads(lock_path.read_bytes().decode("utf-8"))
+    record["http_status"] = 404
+    lock_path.write_bytes(cal.canonical_json_bytes(record))
+    (tmp_path / "source_b").mkdir()
+    restart_fetch, calls = fetcher_for({(cal.SOURCE_A, 1): page(), (cal.SOURCE_B, 1): page()})
+    with pytest.raises(cal.V9012Error, match="DURABLE_SOURCE_ORDER_VIOLATION"):
+        cal.acquire_sources(tmp_path, fetcher=restart_fetch)
+    assert calls == []
+
+
+def test_http_status_is_not_in_source_chain_manifest_or_hash_domain(tmp_path):
+    fetch, _calls = fetcher_for({(cal.SOURCE_A, 1): page()})
+    manifest, _requests = cal.acquire_source(tmp_path, cal.SOURCE_A, fetcher=fetch)
+    assert set(manifest["pages"][0]) == cal.SOURCE_CHAIN_PAGE_KEYS
+    assert "http_status" not in manifest["pages"][0]
+    assert "http_status" not in cal.canonical_json_no_lf(manifest).decode("utf-8")
+
+
+def test_http_status_is_not_in_canonical_artifact_or_receipt(tmp_path, monkeypatch):
+    acquire_valid(tmp_path, monkeypatch)
+    result = cal.materialize_sources(
+        tmp_path,
+        acquisition_design_git_sha="a" * 40,
+        acquisition_implementation_git_sha="b" * 40,
+    )
+    public = result.canonical_bytes + cal.canonical_json_bytes(result.receipt)
+    assert b"http_status" not in public
+
+
 def test_acquisition_does_not_inspect_source_semantics(tmp_path, monkeypatch):
     monkeypatch.setattr(cal, "validate_source_a_rows", lambda *_args: (_ for _ in ()).throw(AssertionError()))
     monkeypatch.setattr(cal, "validate_source_b_rows", lambda *_args: (_ for _ in ()).throw(AssertionError()))
