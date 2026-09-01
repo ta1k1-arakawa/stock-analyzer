@@ -117,14 +117,116 @@ invalid. Dates must be unique. SOURCE_B has no full-calendar coverage
 requirement. An active date is exactly a row with four valid, non-null,
 finite real numeric OHLC values.
 
+### 4.3 Exact source evaluation precedence
+
+Because the preserved input has exactly one locked page for each source,
+semantic diagnosis is defined over exactly that one page. After Phase-B input
+binding passes, the order is exactly:
+
+1. evaluate the SOURCE_A semantic mirror;
+2. if SOURCE_A fails, stop semantic evaluation with
+   `diagnostic_class=SOURCE_A_SEMANTIC_FAILURE`; do not process SOURCE_B
+   semantic values and do not evaluate the relation;
+3. only if SOURCE_A is `A_VALID`, evaluate SOURCE_B;
+4. if SOURCE_B fails, use `diagnostic_class=SOURCE_B_SEMANTIC_FAILURE` and do
+   not evaluate the relation;
+5. only if both sources are valid, evaluate the frozen relation and sentinels.
+
+This mirrors the V9_012 call order
+`validate_source_a_rows -> validate_source_b_rows -> _adjudicate_dates`.
+SOURCE_B raw bytes may already have been read solely for the Phase-B
+immutable input-binding proof required by HIGH_1, but SOURCE_B `Date`, `O`,
+`H`, `L`, and `C` semantic processing is forbidden after a SOURCE_A semantic
+failure.
+
+### 4.4 SOURCE_A exact failure precedence
+
+The diagnostic mirror follows V9_012 `_payload_data` and
+`validate_source_a_rows` in this exact order:
+
+**A1 — JSON decoding.** Decode the page bytes as UTF-8 JSON. Failure is
+`A_PAYLOAD_JSON_DECODE_FAILURE`, with page index 1, null row and field, and
+null observed type.
+
+**A2 — root schema.** Require the decoded root to be exactly an object/dict.
+Failure is `A_PAYLOAD_ROOT_SCHEMA_FAILURE`, with `field_name=root` and the
+actual closed JSON type.
+
+**A3 — data schema.** Require `root.get("data")` to be a list. Missing
+`data` and explicit JSON null therefore produce the same
+`A_DATA_FIELD_SCHEMA_FAILURE`; missing data reports observed type null,
+otherwise the actual closed JSON type.
+
+**A4 — global row-object scan.** Before checking `Date` or `HolDiv` on any
+row, scan the entire list in source order and require every row to be exactly
+an object/dict. The first non-object row produces
+`A_ROW_SCHEMA_FAILURE`. This global scan has precedence over every
+`Date`/`HolDiv` failure in earlier object rows. For example, an object row 1
+missing `Date` followed by a non-object row 2 reports row 2, not
+`A_REQUIRED_FIELD_MISSING`.
+
+**A5 — row loop.** Only after A4 passes, process object rows in source order:
+
+- If `Date` is missing, report `A_REQUIRED_FIELD_MISSING` with
+  `field_name=Date`; else if `HolDiv` is missing, report the same category
+  with `field_name=HolDiv`. If both are missing, `Date` wins. Observed type is
+  null.
+- Require `Date` to be exactly a string matching the frozen date regex;
+  otherwise report `A_DATE_TYPE_OR_FORMAT_INVALID` with `field_name=Date` and
+  the actual type.
+- Require `date.fromisoformat` to succeed; otherwise report
+  `A_DATE_VALUE_INVALID` with `field_name=Date` and observed type string.
+- Require the date to be within `2017-01-01..2026-01-31`; otherwise report
+  `A_DATE_OUT_OF_COVERAGE` with `field_name=Date` and observed type string.
+- Require `HolDiv` to be exactly a string in `{"0","1","2","3"}`;
+  otherwise report `A_HOLDIV_TYPE_OR_DOMAIN_INVALID` with
+  `field_name=HolDiv` and the actual type. The value is never exposed.
+- Check the validated date against prior validated rows; a duplicate reports
+  `A_DUPLICATE_DATE` with `field_name=Date` and observed type string.
+
+**A6 — full coverage.** After every row passes, require the seen Date set to
+equal every calendar date in the frozen coverage. Failure is
+`A_COVERAGE_DATE_SET_MISMATCH` with null page/row, `field_name=Date`, and
+null observed type. Otherwise the category is `A_VALID`.
+
+### 4.5 SOURCE_B exact failure precedence
+
+SOURCE_B stages B1 through B4 are structurally identical to A1 through A4,
+with the corresponding B categories. The global entire-list row-object scan
+must occur before any row-level `Date`, `O`, `H`, `L`, or `C` check. For
+example, an object row 1 missing `O` followed by a non-object row 2 reports
+`B_ROW_SCHEMA_FAILURE` at row 2.
+
+After that scan, process rows in source order:
+
+- Check required fields in exactly `Date`, `O`, `H`, `L`, `C` order. The first
+  missing field reports `B_REQUIRED_FIELD_MISSING` with that field and null
+  observed type.
+- Apply the strict Date type/regex, ISO validity, and coverage checks in that
+  order, producing respectively `B_DATE_TYPE_OR_FORMAT_INVALID`,
+  `B_DATE_VALUE_INVALID`, or `B_DATE_OUT_OF_COVERAGE`.
+- Check duplicate Date before any OHLC null/type check. A duplicate reports
+  `B_DUPLICATE_DATE` with `field_name=Date`.
+- Evaluate the OHLC null pattern in exact `O,H,L,C` order. All four null means
+  the row is inactive and succeeds. A null count of 1, 2, or 3 reports
+  `B_OHLC_MIXED_NULL_FAILURE` with null field and observed type; no individual
+  OHLC field is designated as the cause.
+- Only when all four are non-null, apply the finite-real check in exact
+  short-circuit order `O`, `H`, `L`, `C`. The first invalid field reports
+  `B_OHLC_NONFINITE_OR_TYPE_FAILURE` with that field and its actual closed
+  type. Boolean values remain invalid even though Python treats them as
+  int-like.
+
+After all rows pass, the category is `B_VALID`. SOURCE_B has no full-calendar
+coverage requirement.
+
 ## 5. Deterministic first-failure location
 
 For either source, pages are processed in ascending page index and rows in
-source order. Envelope checks precede row checks; for each row the category
-checks are applied in the exact order listed above. The first failure for
-each source is reported. `page_index` is a positive page ordinal and
-`row_index` is a one-based source-row ordinal; either is null when the
-failure is not associated with that level.
+source order, with the exact source-specific precedence in Sections 4.4 and
+4.5. The first failure for each evaluated source is reported. `page_index` is
+a positive page ordinal and `row_index` is a one-based source-row ordinal;
+either is null when the failure is not associated with that level.
 
 Failure metadata is limited to:
 
@@ -191,6 +293,30 @@ if SOURCE_B is not `B_VALID`, it is `SOURCE_B_SEMANTIC_FAILURE`. Else, if any
 relation or sentinel condition fails, it is `RELATION_OR_SENTINEL_FAILURE`.
 Otherwise it is `NO_V9_012_FAILURE_REPRODUCED`. The last class is not a
 V9_012 pass; it is a diagnostic inconsistency requiring GPT adjudication.
+
+The source-result nullability is fixed as follows:
+
+- `source_a_category` is always one SOURCE_A closed category after input
+  binding succeeds.
+- `source_a_failure_location` is null exactly for `A_VALID`; otherwise it is
+  the exact safe location object.
+- `source_b_category` is null when SOURCE_A is not `A_VALID`; otherwise it is
+  one SOURCE_B closed category. There is no `B_NOT_EVALUATED` category.
+- `source_b_failure_location` is null when SOURCE_B is null or `B_VALID`;
+  otherwise it is the exact safe location object.
+
+Row-count semantics are also fixed. `source_a_row_count` is null for JSON
+decode, root-schema, or data-schema failure, and otherwise equals `len(data)`,
+including row-schema, row-level, and coverage failures.
+`source_b_row_count` is null when SOURCE_B was not reached because SOURCE_A
+failed, or for SOURCE_B JSON decode, root-schema, or data-schema failure; it
+otherwise equals `len(data)`, including row-schema and later failures.
+
+`scheduled_open_count` is an exact integer only for `A_VALID`, and is null
+otherwise. `topix_active_count` is an exact integer only for `B_VALID`, and is
+null otherwise. `relation_evaluated` is true exactly when both sources are
+valid and false otherwise. When false, all relation counts, hashes, and
+booleans are null. When true, all of those relation fields are non-null.
 
 ## 8. Exact public diagnostic result
 
@@ -322,6 +448,18 @@ Before protected data is read, implementation and targeted tests use
 synthetic fixtures only. Tests must cover every closed category, safe
 failure-location rule, relation count/hash/boolean, and top-level precedence.
 No real V9_012 state or raw data may tune the diagnostic logic.
+
+The synthetic parity suite must specifically prove the compound precedence
+cases: SOURCE_A object row 1 missing `Date` followed by a non-object row 2
+reports `A_ROW_SCHEMA_FAILURE` at row 2; SOURCE_B object row 1 missing `O`
+followed by a non-object row 2 reports `B_ROW_SCHEMA_FAILURE` at row 2;
+SOURCE_A with both required fields missing reports `Date`; SOURCE_B with
+multiple required fields missing uses `Date,O,H,L,C` order; a duplicate Date
+with invalid OHLC reports `B_DUPLICATE_DATE`; multiple invalid non-null OHLC
+fields use `O,H,L,C` short-circuit order; SOURCE_A failure leaves SOURCE_B
+category/count/location null and does not evaluate the relation; and SOURCE_B
+failure leaves the relation unevaluated with every relation field null. These
+tests are synthetic-only and may not use preserved V9_012 data.
 
 V9_013 prohibits V9_012 retry/refetch, alternate J-Quants endpoints,
 alternate tickers or indexes, source substitution, manual date inspection,
