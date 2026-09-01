@@ -313,6 +313,54 @@ def _validate_state_root_container(state_root: str | Path) -> None:
         raise V9012Error("DURABLE_STATE_UNEXPECTED_FILE")
 
 
+def _source_directory_present(state_root: str | Path, source_key: str) -> bool:
+    """Return whether any durable directory/state exists for a source."""
+    return _state_source_root(state_root, source_key).exists()
+
+
+def _source_terminal_proven(state_root: str | Path, source_key: str) -> bool:
+    """Prove terminal completion from transport/provenance state only.
+
+    This deliberately reads no Date, HolDiv, or OHLC values.  The pagination
+    envelope is inspected only because it is the durable evidence needed to
+    prove the locked chain's terminal page.
+    """
+    source_root = _state_source_root(state_root, source_key)
+    if not source_root.exists() or not source_root.is_dir():
+        return False
+    try:
+        children = {child.name for child in source_root.iterdir()}
+    except Exception:
+        return False
+    if children != {"raw_pages", "page_locks"}:
+        return False
+    try:
+        pages = PageLockStore(state_root, source_key).read_locked_chain(require_terminal=True)
+    except V9012Error:
+        return False
+    return bool(pages) and not pages[-1].continuation_issued
+
+
+def validate_durable_source_order(state_root: str | Path) -> dict[str, bool]:
+    """Validate SOURCE_A-before-SOURCE_B durable state without semantics."""
+    _validate_state_root_container(state_root)
+    source_a_present = _source_directory_present(state_root, SOURCE_A)
+    source_b_present = _source_directory_present(state_root, SOURCE_B)
+    source_a_terminal = (
+        _source_terminal_proven(state_root, SOURCE_A) if source_a_present else False
+    )
+    if source_b_present and not source_a_terminal:
+        raise V9012Error("DURABLE_SOURCE_ORDER_VIOLATION")
+    return {
+        "source_a_present": source_a_present,
+        "source_a_terminal": source_a_terminal,
+        "source_b_present": source_b_present,
+    }
+
+
+validate_source_order_state = validate_durable_source_order
+
+
 def _valid_page_name(path: Path, suffix: str) -> bool:
     return (
         path.is_file() and path.suffix == suffix and path.stem.isdigit()
@@ -584,7 +632,9 @@ def acquire_source(
     sleep: Callable[[float], None] = lambda _seconds: None,
 ) -> tuple[dict[str, object], int]:
     """Acquire one source chain without inspecting Date/HolDiv/OHLC semantics."""
-    _validate_state_root_container(state_root)
+    order_state = validate_durable_source_order(state_root)
+    if source_key == SOURCE_B and not order_state["source_a_terminal"]:
+        raise V9012Error("DURABLE_SOURCE_ORDER_VIOLATION")
     store = PageLockStore(state_root, source_key)
     locked = store.read_locked_chain()
     requests = 0
@@ -812,7 +862,7 @@ def materialize_sources(
     """Materialize only complete locked source chains; no network path exists."""
     design_sha = _check_sha(acquisition_design_git_sha, HEX40, "ACQUISITION_DESIGN_GIT_SHA_INVALID")
     implementation_sha = _check_sha(acquisition_implementation_git_sha, HEX40, "ACQUISITION_IMPLEMENTATION_GIT_SHA_INVALID")
-    _validate_state_root_container(state_root)
+    validate_durable_source_order(state_root)
     try:
         source_a_pages = _get_complete_pages(state_root, SOURCE_A)
         source_b_pages = _get_complete_pages(state_root, SOURCE_B)
@@ -953,6 +1003,8 @@ def verify_production_preflight(
         raise V9012Error("DURABLE_STATE_MUST_BE_EXTERNAL")
     if output.exists() and not _restartable_root_shape(output):
         raise V9012Error("DURABLE_EXECUTION_ROOT_COLLISION")
+    if output.exists():
+        validate_durable_source_order(output)
     runner = git_runner or (lambda args: _default_git_runner(root, args))
     try:
         branch = runner(["branch", "--show-current"])
@@ -1099,6 +1151,7 @@ __all__ = [
     "page_request_identity", "page_request_identity_sha256", "pagination_key_sha256",
     "safe_acquisition_result", "sha256_bytes", "sha256_utf8", "source_api_identity",
     "source_chain_sha256", "source_role", "validate_canonical_content", "validate_receipt",
-    "validate_source_a_rows", "validate_source_b_rows", "validate_source_chain_manifest",
+    "validate_durable_source_order", "validate_source_a_rows", "validate_source_b_rows",
+    "validate_source_chain_manifest", "validate_source_order_state",
     "verify_production_preflight", "write_materialized_artifacts",
 ]

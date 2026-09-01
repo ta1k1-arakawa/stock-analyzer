@@ -80,6 +80,16 @@ def locked(source, payload):
     return cal.LockedPage({}, payload, False, None)
 
 
+def lock_synthetic_page(root, source_key, page_index=1, *, continuation_key=MISSING, data=None):
+    request = cal.PageRequest(
+        source_key,
+        page_index,
+        None if page_index == 1 else continuation_key,
+    )
+    payload = page(data, pagination_key=continuation_key)
+    cal.PageLockStore(root, source_key).lock_page(request, result_for(request, payload))
+
+
 def test_constants_bind_frozen_sources_and_queries():
     assert cal.STUDY == "V9_012_ACTUAL_TSE_TRADING_DAY_AUTHORITY_SUCCESSOR"
     assert cal.SOURCE_A_ENDPOINT == "https://api.jquants.com/v2/markets/calendar"
@@ -204,6 +214,75 @@ def test_restart_source_a_complete_continues_only_source_b(tmp_path):
     resume, resume_calls = fetcher_for({(cal.SOURCE_B, 2): page()})
     cal.acquire_sources(tmp_path, fetcher=resume)
     assert [(x.source_key, x.page_index) for x in resume_calls] == [(cal.SOURCE_B, 2)]
+
+
+def test_source_order_rejects_source_b_when_source_a_is_absent(tmp_path):
+    (tmp_path / "source_b").mkdir()
+    fetch, calls = fetcher_for({(cal.SOURCE_A, 1): page(), (cal.SOURCE_B, 1): page()})
+    with pytest.raises(cal.V9012Error, match="DURABLE_SOURCE_ORDER_VIOLATION"):
+        cal.acquire_sources(tmp_path, fetcher=fetch)
+    assert calls == []
+
+
+def test_source_order_rejects_source_a_partial_with_empty_source_b(tmp_path):
+    lock_synthetic_page(tmp_path, cal.SOURCE_A, continuation_key="a-next")
+    (tmp_path / "source_b").mkdir()
+    fetch, calls = fetcher_for({(cal.SOURCE_A, 2): page(), (cal.SOURCE_B, 1): page()})
+    with pytest.raises(cal.V9012Error, match="DURABLE_SOURCE_ORDER_VIOLATION"):
+        cal.acquire_sources(tmp_path, fetcher=fetch)
+    assert calls == []
+
+
+def test_source_order_rejects_source_a_partial_with_locked_source_b(tmp_path):
+    lock_synthetic_page(tmp_path, cal.SOURCE_A, continuation_key="a-next")
+    lock_synthetic_page(tmp_path, cal.SOURCE_B)
+    fetch, calls = fetcher_for({(cal.SOURCE_A, 2): page(), (cal.SOURCE_B, 2): page()})
+    with pytest.raises(cal.V9012Error, match="DURABLE_SOURCE_ORDER_VIOLATION"):
+        cal.acquire_sources(tmp_path, fetcher=fetch)
+    assert calls == []
+
+
+def test_source_order_accepts_source_a_terminal_and_fetches_only_source_b(tmp_path):
+    lock_synthetic_page(tmp_path, cal.SOURCE_A)
+    fetch, calls = fetcher_for({(cal.SOURCE_B, 1): page()})
+    cal.acquire_sources(tmp_path, fetcher=fetch)
+    assert [(request.source_key, request.page_index) for request in calls] == [(cal.SOURCE_B, 1)]
+
+
+def test_source_order_resumes_only_first_missing_source_b_page(tmp_path):
+    lock_synthetic_page(tmp_path, cal.SOURCE_A)
+    lock_synthetic_page(tmp_path, cal.SOURCE_B, continuation_key="b-next")
+    fetch, calls = fetcher_for({(cal.SOURCE_B, 2): page()})
+    cal.acquire_sources(tmp_path, fetcher=fetch)
+    assert [(request.source_key, request.page_index) for request in calls] == [(cal.SOURCE_B, 2)]
+
+
+def test_source_order_accepts_both_terminal_chains_with_zero_fetches(tmp_path):
+    lock_synthetic_page(tmp_path, cal.SOURCE_A)
+    lock_synthetic_page(tmp_path, cal.SOURCE_B)
+    fetch, calls = fetcher_for({})
+    result, requests = cal.acquire_sources(tmp_path, fetcher=fetch)
+    assert result[cal.SOURCE_A]["page_count"] == 1
+    assert result[cal.SOURCE_B]["page_count"] == 1
+    assert requests == 0
+    assert calls == []
+
+
+def test_source_order_proof_does_not_inspect_source_semantics(tmp_path, monkeypatch):
+    lock_synthetic_page(
+        tmp_path,
+        cal.SOURCE_A,
+        data=[{"Date": "not-a-date", "HolDiv": "not-a-holiday-value"}],
+    )
+    (tmp_path / "source_b").mkdir()
+    monkeypatch.setattr(cal, "validate_source_a_rows", lambda *_args: pytest.fail("semantic A inspection"))
+    monkeypatch.setattr(cal, "validate_source_b_rows", lambda *_args: pytest.fail("semantic B inspection"))
+    state = cal.validate_durable_source_order(tmp_path)
+    assert state == {
+        "source_a_present": True,
+        "source_a_terminal": True,
+        "source_b_present": True,
+    }
 
 
 def test_source_identity_cannot_cross_satisfy_lock_state(tmp_path):
