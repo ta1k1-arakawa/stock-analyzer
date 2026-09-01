@@ -6,8 +6,8 @@
 study_id=V9_014_JPX_MONTHLY_AUCTION_ACTIVITY_AUTHORITY_SUCCESSOR
 evidence_role=INPUT_BINDING_ONLY
 profitability_evidential_capacity=ZERO
-design_status=AWAITING_GPT_REVIEW
-document_status=DESIGN_DRAFT_ONLY
+design_status=BLOCKED_AWAITING_REMEDIATION_REVIEW
+document_status=DESIGN_REMEDIATION_DRAFT
 ```
 
 V9_014 is a NEW successor study identity. It is not a retry, repair,
@@ -22,26 +22,37 @@ V9_013_DIAGNOSTIC_CLASS=RELATION_OR_SENTINEL_FAILURE
 ```
 
 This document authorizes no implementation, no code or test change, no
-Python execution, no JPX / J-Quants / Yahoo / external-data network request,
-no protected or private state read, no API-key read, no raw-payload
-acquisition or reuse, no materialization, no T0 / cache / outcome / backtest
-/ model execution, and no profitability evaluation. It is a design draft
-awaiting GPT-5.6 Sol exact-SHA review.
+Python execution, no JPX / J-Quants / Yahoo / external-data acquisition, no
+protected or private state read, no API-key read, no raw-payload acquisition
+or reuse, no materialization, no T0 / cache / outcome / backtest / model
+execution, and no profitability evaluation.
+
+### 1.1 Review state
+
+```text
+V9_014_DESIGN_REVIEWED_SHA=05d0ed3ca5cea8e84ff386fb73c65dba575030c2
+V9_014_DESIGN_REVIEW_RESULT=BLOCK
+CRITICAL=0
+HIGH=2
+MEDIUM=0
+HIGH_1=JPX_REPORTED_UNIT_QUANTIZATION_INVALIDATES_EXACT_SHARE_AND_ZERO_INACTIVITY_RULE
+HIGH_2=SOURCE_B_ERA_AND_OBJECT_BINDING_INCOMPLETE_INCLUDING_2022_04_SPLIT
+```
+
+This revision remediates HIGH_1 and HIGH_2 and closes OPEN_1 through OPEN_5.
+No V9_014 design PASS is claimed.
 
 ## 2. Why a successor study is required
 
 V9_012 froze TOPIX daily index bars as its actual-activity evidence source
 and failed terminally with `ACTUAL_TRADING_DAY_AUTHORITY_FAILURE`. V9_013
-diagnosed that failure without repairing it and established, as recorded
-public-safe evidence, that both V9_012 sources were schema- and
-data-quality-valid (`SOURCE_A=A_VALID`, `SOURCE_B=B_VALID`) and that the
-failure was located in the frozen relation/sentinel layer
-(`V9_013_DIAGNOSTIC_CLASS=RELATION_OR_SENTINEL_FAILURE`), with
+diagnosed that failure without repairing it and established that both V9_012
+sources were schema- and data-quality-valid (`SOURCE_A=A_VALID`,
+`SOURCE_B=B_VALID`) and that the failure was located in the frozen
+relation/sentinel layer, with
 `V9_013_FAILURE_CAUSE=TOPIX_ACTIVITY_EVIDENCE_DOES_NOT_EXCLUDE_FROZEN_2020_10_01_FULL_DAY_TSE_OUTAGE`.
 
 ### 2.1 Mandatory interpretation of the V9_013 sentinel value
-
-The recorded V9_013 diagnostic value is:
 
 ```text
 V9_013_SENTINEL_2020_10_01_INACTIVE=false
@@ -50,48 +61,44 @@ V9_013_SENTINEL_2020_10_01_INACTIVE=false
 `false` means the frozen "inactive" sentinel check **FAILED**. It must not be
 described, summarized, or reused as if `2020-10-01` had been classified
 inactive by TOPIX activity evidence. The already-recorded companion values
-`V9_013_LEFT_DIFF_COUNT=0` and
-`V9_013_MISSING_EXPECTED_EXCEPTION_COUNT=1` are consistent with that reading:
-`2020-10-01` was not present in the observed left set difference, so the
-frozen `EXPECTED_EXCEPTION_SET` was not reproduced by that source.
-
-This clarification is additive. It corrects no historical record, changes no
-frozen V9_012 or V9_013 result, and creates no new evidential capacity.
+`V9_013_LEFT_DIFF_COUNT=0` and `V9_013_MISSING_EXPECTED_EXCEPTION_COUNT=1`
+are consistent with that reading.
 
 ### 2.2 Consequence for source selection
 
 TOPIX / index OHLC activity cannot serve as actual TSE cash-equity
-auction-activity evidence and is therefore **prohibited** as a V9_014
-source. V9_014 replaces the failed activity source with official JPX/TSE
-monthly auction/ToSTNeT trading-volume evidence, keeping the scheduled
-business-day superset role unchanged.
+auction-activity evidence and is **prohibited** as a V9_014 source.
 
 ## 3. Frozen coverage and authority boundary
 
 ```text
 coverage_start=2017-01-01
 coverage_end=2026-01-31
+logical_coverage_month_count=109
 ```
 
-The required inclusive coverage is exactly `2017-01-01..2026-01-31`. The
-required SOURCE_B monthly-object count over that coverage is exactly `109`
-consecutive calendar months `2017-01 .. 2026-01`, consistent with the
-already-recorded repository value
-`V9_010_CALENDAR_REQUIRED_SOURCE_MONTH_COUNT=109`. A missing, unresolved,
-duplicated, or ambiguous required month is a feasibility/data-quality
-failure. It is never permission to shorten coverage, interpolate a month,
-substitute a provider, or accept a partial calendar.
+The required inclusive coverage is exactly `2017-01-01..2026-01-31`, spanning
+exactly `109` logical calendar months `2017-01 .. 2026-01`, consistent with
+the already-recorded `V9_010_CALENDAR_REQUIRED_SOURCE_MONTH_COUNT=109`.
 
-V9_014 has `evidence_role=INPUT_BINDING_ONLY`. It can produce, at most, a
-calendar input binding. It produces no signal, no model, no outcome, no
-backtest, and no profitability evidence. Its
-`profitability_evidential_capacity` is `ZERO` at every stage, including
-after a full PASS.
+`logical_coverage_month_count` is a month count, not a physical object count.
+The required physical SOURCE_B object count is `110`: one Report 2 monthly
+object for each of the 109 logical months, plus the one additional official
+`(Reference) Status on April 1, 2022` object described in Section 7.3.
+
+A missing, unresolved, duplicated, or ambiguous required object is a
+feasibility/data-quality failure. It is never permission to shorten coverage,
+interpolate a month, substitute a provider, or accept a partial calendar.
+
+V9_014 has `evidence_role=INPUT_BINDING_ONLY`. It produces no signal, model,
+outcome, backtest, or profitability evidence. Its
+`profitability_evidential_capacity` is `ZERO` at every stage, including after
+a full PASS.
 
 ## 4. Independent official source roles
 
-Two independent official sources with separate provenance are required.
-Neither source is authoritative alone for actual trading dates.
+Three independent official sources with separate provenance are required. No
+source is authoritative alone.
 
 ### 4.1 SOURCE_A — scheduled TSE business-day superset
 
@@ -102,11 +109,15 @@ endpoint=https://api.jquants.com/v2/markets/calendar
 base_query={"from":"2017-01-01","to":"2026-01-31"}
 hol_div=omitted
 scheduled_open_predicate=HolDiv in {"1","2"}
+byte_provenance=PRESERVED_IMMUTABLE_V9_012_SOURCE_A_CHAIN
+source_a_chain_sha256=aee49fac48358be373ac4efbcf0568b796c68fa31177e0f34c5031352297fe45
+source_a_page_count=1
+fresh_source_a_acquisition_authorized=false
 ```
 
 SOURCE_A keeps exactly the semantic role it had in V9_012. Its frozen
 scheduled-open interpretation is inherited unchanged and must not be
-modified, relaxed, widened, or reinterpreted by V9_014:
+modified, relaxed, widened, or reinterpreted:
 
 - the payload root must be a JSON object with a list-valued `data` field;
 - every row must be an object carrying required `Date` and `HolDiv` fields;
@@ -118,11 +129,18 @@ modified, relaxed, widened, or reinterpreted by V9_014:
 - `scheduled_open_dates` is exactly the set of `Date` values whose `HolDiv`
   is `"1"` or `"2"`.
 
-SOURCE_A remains a scheduled superset. It never defines actual trading dates
-by itself, and `hol_div` remains intentionally absent from the base query,
-not null.
+V9_014 **must reuse** the preserved immutable V9_012 SOURCE_A locked chain
+identified by the exact chain SHA-256 and page count above. There is no fresh
+SOURCE_A acquisition, no new SOURCE_A network request, and no alternate
+calendar endpoint. Before any SOURCE_A semantic read, the implementation must
+mechanically prove the exact chain SHA-256 and page count; a mismatch is
+`PRESERVED_V9_012_SOURCE_A_INPUT_BINDING_FAILURE` and stops the study.
 
-### 4.2 SOURCE_B — actual TSE regular-auction activity evidence
+That preserved state is protected durable evidence. Reading it later requires
+fresh point-of-use human authorization; no prior V9_012 or V9_013
+authorization is reusable.
+
+### 4.2 SOURCE_B — regular-auction activity proof evidence
 
 ```text
 role=ACTUAL_TSE_REGULAR_AUCTION_ACTIVITY_DATE_EVIDENCE
@@ -130,209 +148,305 @@ provider=OFFICIAL_JPX_TSE_MONTHLY_STATISTICS_REPORT_ARCHIVE
 archive_root=https://www.jpx.co.jp/english/markets/statistics-equities/monthly/index.html
 report=Report 2 "Stock Trading Volume & Value"
 table=Trading Volume & Value (Daily)
+object_format=PDF
 ```
 
-The archive root above is the same official monthly-statistics root already
-established in this repository's frozen V9_006 source-slot locator
-methodology. Monthly-object resolution must follow that already-frozen
-traversal discipline: discover the year page only through the official
-archive selector from the root, then the semantic report/row label, then the
-requested month, then the unique same-domain linked object. Archive
-numbering must never be hardcoded, and no month may be resolved by guessing
-a URL pattern.
-
 SOURCE_B supplies, per date and per required domestic-stock market segment,
-the total Trading Volume and the "of which ToSTNeT" Trading Volume, from
-which regular-auction activity is derived in Section 6.
+the reported total Trading Volume and the reported "of which ToSTNeT"
+Trading Volume. Because those figures are unit-quantized (Section 5),
+SOURCE_B can **prove activity** but can **never prove inactivity**.
 
-### 4.3 Prohibited sources and substitutions
+### 4.3 SOURCE_C — exceptional full-day auction-closure authority
 
-The following are prohibited for V9_014 at every stage:
+```text
+role=EXCEPTIONAL_FULL_DAY_AUCTION_CLOSURE_AUTHORITY
+provider=OFFICIAL_JPX_TSE_MARKET_NEWS
+document_date=2020-10-01
+document_title=Treatment of Trades for Today at arrowhead
+document_language=ENGLISH
+```
+
+SOURCE_C is a fixed public official document identity, preregistered before
+acquisition. Its required semantic content is:
+
+- the Auction Market had **no execution** that day; and
+- ToSTNeT orders received by **08:56** had executions.
+
+Both assertions must be present. SOURCE_C is the only permitted authority for
+a full-day auction closure, precisely because SOURCE_B's quantized figures
+cannot establish exact zero.
+
+`source_c_confirmed_exception_set` is derived from the SOURCE_C document's own
+official date together with its verified semantic content. It must equal
+exactly:
+
+```text
+source_c_confirmed_exception_set == {"2020-10-01"}
+```
+
+No manually injected date is permitted. The exception date is never a literal
+typed into the calendar pipeline, never appended, and never widened. Any
+other resulting set is terminal `ACTUAL_TRADING_DAY_AUTHORITY_FAILURE`.
+
+### 4.4 Prohibited sources and substitutions
 
 - TOPIX or any other index OHLC series as activity evidence;
 - total stock trading volume alone as an activity criterion, because
-  `2020-10-01` had no auction executions while ToSTNeT executions existed,
-  so a total-volume-only rule cannot separate the two;
+  `2020-10-01` had no auction executions while ToSTNeT executions existed;
 - generic weekday ranges, `pd.bdate_range`, national-holiday subtraction,
   OS/locale calendars, Yahoo observed dates, broker calendars, or any
   vendor-derived calendar;
-- any alternate provider, endpoint, index, ticker, report, or table
+- any alternate provider, endpoint, index, ticker, report, table, or document
   substituted after results are observed.
 
-## 5. Parsing, unit declaration, and exact integer normalization
+## 5. Reported-value interval semantics (HIGH_1 remediation)
 
-For every date and every required domestic-stock market segment, the
-implementation must:
+The previous revision claimed that reported `thous.shs.` values could be
+reconstructed as exact share counts. **That claim is deleted.** It was
+invalid: JPX reports omit quantities below the indicated unit, so a reported
+figure is a quantized lower-truncated observation, not an exact share count.
+No exact share count and no exact zero can be recovered from a quantized
+cell.
 
-1. parse the total Trading Volume cell;
-2. parse the corresponding "of which ToSTNeT" Trading Volume cell;
-3. parse the **declared unit** explicitly from the source object, per report
-   and per table, never assumed and never inherited across objects;
-4. normalize both parsed values exactly to **integer shares** using that
-   declared unit before any arithmetic.
+### 5.1 Interval rule
 
-Normalization is exact-integer only. Binary floating point must not appear
-anywhere on the parsing, normalization, comparison, or aggregation path:
-no `float()`, no float dtype, no float-backed numeric container, and no
-float intermediate. Exact integer arithmetic (arbitrary-precision integers,
-or exact decimal arithmetic converted to an exact integer) is the only
-permitted mechanism. If a declared unit and a parsed literal do not yield an
-exact integer share count, that is a data-quality failure, never a rounding,
-truncation, or nearest-value decision.
-
-An absent, unparseable, ambiguous, or multiply-declared unit is a
-data-quality failure. There is no default unit.
-
-Per date and per required segment, the frozen value checks are:
+For a numeric integer cell value `q` with declared share-unit multiplier `m`:
 
 ```text
-require total >= 0
-require tostnet >= 0
-require tostnet <= total
-auction_volume = total - tostnet
+m == 1  =>  [q, q]
+m >  1  =>  [q * m, q * m + (m - 1)]
 ```
 
-Any violation is a data-quality failure.
+All interval endpoints are exact integers computed with exact integer
+arithmetic. Binary floating point must not appear anywhere on the parsing,
+normalization, comparison, or aggregation path: no `float()`, no float dtype,
+no float-backed numeric container, no float intermediate.
 
-### 5.1 Non-silent cell semantics
+The declared unit is parsed explicitly from the source object, per report,
+per table, and per required column. It is never assumed, never defaulted, and
+never inherited across objects. An absent, unparseable, ambiguous, or
+multiply-declared unit is a data-quality failure.
 
-Blank, dash, placeholder, malformed, or ambiguous cells are **NOT** silently
-treated as zero. Each is a data-quality failure, **unless** the frozen era
-schema for that exact object explicitly marks that segment as nonexistent or
-not applicable for that era, in which case the segment contributes nothing
-and its absence is recorded as an explicit era-schema fact rather than as an
-observed zero.
+### 5.2 Per-segment adjudication
+
+For each required segment on a given date, with total interval
+`[total_lower, total_upper]` and ToSTNeT interval
+`[tostnet_lower, tostnet_upper]`:
+
+```text
+DQ failure                  iff total_upper < tostnet_lower
+DEFINITELY_AUCTION_ACTIVE   iff total_lower > tostnet_upper
+otherwise                   NOT_PROVEN
+```
+
+The first condition is the structural impossibility check: ToSTNeT volume is
+a subset of total volume, so an interval pair that cannot satisfy
+`tostnet <= total` is a data-quality failure. The second condition is
+equivalent to a strictly positive lower bound on
+`auction_volume = total - ToSTNeT`.
+
+`NOT_PROVEN` is **never** silently treated as zero, inactive, closed, or
+absent. It means exactly that the reported quantization does not prove
+regular-auction activity for that segment on that date.
+
+### 5.3 Date-level rule
+
+```text
+d is PROVEN_AUCTION_ACTIVE  iff  at least one required segment for d's era
+                                 is DEFINITELY_AUCTION_ACTIVE
+```
+
+`proven_auction_active_dates` is the set of dates satisfying that condition.
+There is no `PROVEN_INACTIVE` state derivable from SOURCE_B. A date that is
+not `PROVEN_AUCTION_ACTIVE` is unproven, not inactive.
+
+### 5.4 JPX token semantics
+
+- A numeric `0` in a column with `m > 1` is **not** an exact zero. Its
+  interval is `[0, m - 1]`, exactly as the Section 5.1 rule yields for
+  `q = 0`.
+- A dash / "Nil or no value" token is **not** malformed and is not a parse
+  error.
+- A dash never, by itself, proves positive activity and never, by itself,
+  proves exact zero. Mechanically: a dash establishes no lower bound above
+  zero and no upper bound below the structural bound, so a required segment
+  whose total or ToSTNeT cell is a dash can never be
+  `DEFINITELY_AUCTION_ACTIVE`. It is `NOT_PROVEN` unless the structural
+  impossibility check fires.
+- Mixed or structurally impossible token combinations fail closed as
+  data-quality failures — for example a dash total against a strictly
+  positive numeric ToSTNeT — **unless** the frozen era schema explicitly
+  marks that segment as out-of-era or not applicable, in which case the
+  segment is absent by preregistration and contributes no proof.
+- A blank required in-era cell remains a data-quality failure.
 
 No cell may be repaired, imputed, defaulted, cross-filled from an adjacent
 date or segment, or reconstructed from a total-minus-others identity.
 
-## 6. Frozen auction-activity rule
+## 6. Frozen validation relation and sentinels
 
-For each date `d` in the frozen coverage, define the exact sum over the
-frozen required domestic-stock market segments for the era applicable to `d`:
-
-```text
-auction_volume_total(d) = SUM over required segments of
-                          (total(d, segment) - tostnet(d, segment))
-```
-
-computed entirely in exact integer arithmetic. Then:
+Evaluated only after SOURCE_A, SOURCE_B, and SOURCE_C have each passed every
+binding, schema, unit, interval, and data-quality check above:
 
 ```text
-d is ACTUAL_AUCTION_ACTIVE  iff  auction_volume_total(d) > 0
-d is inactive               iff  auction_volume_total(d) == 0
-```
+EXPECTED_UNPROVEN_SET={"2020-10-01"}
 
-`actual_auction_active_dates` is the set of dates satisfying the first
-condition. There is no third state: a date whose required-segment data is
-not completely and validly parsed is a data-quality failure and stops the
-study, rather than being classified active or inactive.
+scheduled_open_dates - proven_auction_active_dates
+    == EXPECTED_UNPROVEN_SET
 
-## 7. Era handling
-
-Era handling is explicit and preregistered. It is never inferred post hoc,
-never selected by whichever schema happens to parse, and never chosen after
-observing the relation result.
-
-```text
-ERA_LEGACY            = daily rows dated 2017-01-01 .. 2022-03-31
-ERA_RESTRUCTURE_2022_04 = the 2022-04 monthly object, which spans both schemas
-ERA_POST_RESTRUCTURE  = daily rows dated 2022-04-04 .. 2026-01-31
-```
-
-The 2022-04 market restructure is an **intra-month** boundary and must be
-handled as a special transition case, not as a whole-month era assignment:
-
-```text
-2022-04-01 uses the pre-restructure market-segment schema
-2022-04-04 onward uses the post-restructure Prime / Standard / Growth schema
-```
-
-The post-restructure schema applies to every later month through the end of
-coverage. The implementation must bind each daily row to its era by the
-row's own date, must assert that the observed table structure matches the
-preregistered era schema for that row, and must fail closed on any
-era/schema mismatch rather than adapting the parser to the observed table.
-
-### 7.1 Declared-unit / layout change
-
-The official 2020 unit and layout change affecting the ToSTNeT fields must
-be explicitly accounted for. The frozen rule is that the **declared unit
-drives normalization**: the implementation reads and records the declared
-unit for every monthly object, report, table, and required segment column,
-and normalizes with that declared unit only. It must additionally record
-where the declared unit or layout changes across the monthly sequence and
-assert that observed change points match the preregistered era boundaries.
-A unit or layout change that is observed but not preregistered is a
-data-quality failure, not an accepted variation.
-
-### 7.2 Required segment enumeration — OPEN
-
-The design must enumerate the exact required domestic-stock market-segment
-columns for each era **before** implementation begins. The repository facts
-currently available, and the public facts available to this design task
-without any external-data network request, are not sufficient to enumerate
-those exact column names. Column names must not be invented, guessed,
-translated, or reconstructed from memory.
-
-```text
-CHATGPT_DECISION_REQUIRED
-V9_014_ERA_SEGMENT_ENUMERATION=OPEN
-```
-
-See Section 10 for the full open-item list. Implementation may not begin
-while this item is OPEN, because the auction-activity rule in Section 6 is
-defined over exactly that frozen segment set.
-
-## 8. Frozen validation relation and sentinels
-
-The following relation is frozen **before** any V9_014 acquisition and is
-evaluated only after SOURCE_A and SOURCE_B have both passed every schema,
-unit, normalization, and data-quality check above:
-
-```text
-EXPECTED_EXCEPTION_SET={"2020-10-01"}
-
-scheduled_open_dates - actual_auction_active_dates
-    == EXPECTED_EXCEPTION_SET
-
-actual_auction_active_dates - scheduled_open_dates
+proven_auction_active_dates - scheduled_open_dates
     == empty set
 ```
 
-The mandatory sentinels are:
+The mandatory neighbor sentinels are:
 
 ```text
-2020-09-30 active=true
-2020-10-01 active=false
-2020-10-02 active=true
+2020-09-30 PROVEN_AUCTION_ACTIVE=true
+2020-10-02 PROVEN_AUCTION_ACTIVE=true
 ```
 
-Any mismatch of the set relation or of any sentinel is terminal:
+`2020-10-01` has no SOURCE_B activity sentinel, by design. SOURCE_B is
+required only to leave it **unproven**; the assertion that no auction
+execution occurred that day comes solely from SOURCE_C. Restating
+`2020-10-01` as "proven inactive by SOURCE_B" is exactly the invalid
+inference HIGH_1 removes.
+
+The frozen cross-source consistency requirement is:
+
+```text
+(scheduled_open_dates - proven_auction_active_dates)
+    == source_c_confirmed_exception_set
+    == {"2020-10-01"}
+```
+
+Any mismatch of the set relation, either neighbor sentinel, or the
+cross-source consistency requirement is terminal:
 
 ```text
 ACTUAL_TRADING_DAY_AUTHORITY_FAILURE
 ```
 
-This relation captures the exceptional exchange-wide closure directly: the
-official scheduled superset lists `2020-10-01`, while independent official
-auction-activity evidence must show zero regular-auction volume on that date
-even though ToSTNeT executions existed.
+### 6.1 Deferred final calendar rule
 
-### 8.1 Prohibitions on the adjudication
+Final actual trading dates may later be formed as:
+
+```text
+actual_trading_dates = scheduled_open_dates - source_c_confirmed_exception_set
+```
+
+**only if** SOURCE_B proves every other scheduled-open date
+`PROVEN_AUCTION_ACTIVE` and every frozen relation and sentinel above passes.
+The subtraction is authority-driven, never a manual edit: no date is deleted
+by hand, hard-coded, or injected into the calendar pipeline.
+
+### 6.2 Prohibitions on the adjudication
 
 - No manual deletion of `2020-10-01` from any set or artifact.
 - No hard-coded correction in the produced calendar.
 - No post-hoc override, exception widening, or expected-set edit after
   observation.
+- No treatment of `NOT_PROVEN` as inactive to force the relation to pass.
 - No alternate source substitution after seeing results.
-- No retry, refetch, redraw, reparse-until-PASS, or repeated acquisition
-  attempt aimed at obtaining a passing relation.
+- No retry, refetch, redraw, or reparse-until-PASS.
 - A data-quality, parser, era-schema, or relation failure never authorizes a
   new network attempt; it is terminal for V9_014 under the failure-class
-  discipline already frozen in `AI_RESEARCH_EXECUTION_RULES.md` §6.1.
+  discipline frozen in `AI_RESEARCH_EXECUTION_RULES.md` §6.1.
 
-## 9. Staged gates and V9_009 binding
+## 7. Era and object binding (HIGH_2 remediation)
+
+Era handling is explicit and preregistered. It is never inferred post hoc,
+never selected by whichever schema happens to parse, and never chosen after
+observing the relation result.
+
+### 7.1 Frozen required segments
+
+```text
+PRE  (through 2022-04-01):
+  1st Section
+  2nd Section
+  Mothers
+  JASDAQ Standard
+  JASDAQ Growth
+
+POST (from 2022-04-04):
+  Prime
+  Standard
+  Growth
+```
+
+TOKYO PRO Market is **not** a required SOURCE_B proof segment. It contributes
+no proof, its cells are not required, and its absence or dash content is not
+a data-quality failure.
+
+Each daily row binds to its era by the row's own date. The implementation
+must assert that the observed table structure matches the preregistered era
+schema for that row and fail closed on any era/schema mismatch, rather than
+adapting the parser to the observed table.
+
+### 7.2 Era boundaries
+
+```text
+ERA_PRE   = daily rows dated 2017-01-01 .. 2022-04-01
+ERA_POST  = daily rows dated 2022-04-04 .. 2026-01-31
+```
+
+The 2022 market restructure boundary falls between `2022-04-01` and
+`2022-04-04`; `2022-04-02` and `2022-04-03` are non-business days.
+
+### 7.3 The 2022-04 two-part source bundle
+
+The 2022-04 logical month is a **two-part source bundle**, not one object:
+
+```text
+PRE  part: the official "(Reference) Status on April 1, 2022" object,
+           covering 2022-04-01 on the pre-restructure segment schema
+POST part: the normal Report 2 monthly object,
+           covering 2022-04-04 onward on the post-restructure segment schema
+```
+
+It must **not** be claimed that one physical Report 2 object covers April 1.
+Both parts are mandatory; a missing part is a feasibility/data-quality
+failure for the whole study.
+
+### 7.4 Archive locator discipline
+
+Object resolution is semantic and fail-closed, following the already-frozen
+V9_006 official monthly-archive traversal discipline:
+
+```text
+official Monthly Statistics archive root
+  -> required year
+  -> Report 2 "Stock Trading Volume & Value"
+  -> required month
+```
+
+with the special official `(Reference) Status on April 1, 2022` branch used
+for the PRE April object. Objects are **PDF only**. Each required object must
+resolve to a unique same-domain object. Archive numbering must never be
+hardcoded and no URL may be guessed, pattern-derived, or reconstructed from
+memory. Ambiguous or non-unique resolution is a fail-closed locator failure.
+
+### 7.5 Unit-era binding
+
+```text
+2017-01 .. 2019-12  Mothers ToSTNeT Trading Volume = shs.
+from 2020-01        Mothers ToSTNeT Trading Volume = thous.shs.
+```
+
+The declared source unit must still be parsed from each object and must match
+the preregistered expectation. An unexpected unit or layout change is a
+data-quality failure, never an accepted variation and never a reason to
+re-derive the multiplier from the data.
+
+For every required segment column other than the explicitly frozen Mothers
+ToSTNeT case above, the mechanical preregistration rule is unit constancy
+within era: the declared unit is recorded for every required cell, must be
+constant across that column's frozen era, and any intra-era change point that
+is not preregistered is a data-quality failure. This is a mechanical closure
+of the frozen intent under `AI_RESEARCH_CHECKPOINT_WORKFLOW.md` §5; it
+introduces no unit token values not read from the source.
+
+## 8. Staged gates and V9_009 binding
 
 V9_014 does not resolve `V9_009_HIGH_2`. That finding remains:
 
@@ -345,71 +459,44 @@ until every one of the following has completed, in this exact order:
 ```text
 1. V9_014 design PASS                      (GPT exact-SHA review)
 2. V9_014 implementation PASS              (GPT exact-SHA review)
-3. authorized real acquisition / execution (fresh human point-of-use gate)
-4. exact frozen validation PASS            (Section 8, offline)
+3. authorized real acquisition / execution (fresh human point-of-use gate;
+                                            includes the protected SOURCE_A
+                                            preserved-state read)
+4. exact frozen validation PASS            (Section 6, offline)
 5. canonical artifact review PASS          (GPT exact-SHA review)
 ```
 
 Final `trading_dates` may be materialized **only** in a later reviewed
-implementation/execution stage after all frozen validations pass. No stage
-of V9_014 may be skipped, reordered, merged, or satisfied by a partial
-result. A PASS at any earlier stage confers no calendar authority and no
-V9_009 consumption right.
-
+implementation/execution stage after all frozen validations pass. No stage may
+be skipped, reordered, merged, or satisfied by a partial result. A PASS at any
+earlier stage confers no calendar authority and no V9_009 consumption right.
 Until stage 5 completes, V9_009 must not read, consume, or bind any V9_014
 output, and must not substitute any other calendar.
 
-## 10. Open items requiring ChatGPT decision
+## 9. Open-item resolution
 
-```text
-CHATGPT_DECISION_REQUIRED
-```
+All five previously open items are now closed by GPT methodology decision.
 
-The following are OPEN. They are methodological or scope decisions reserved
-to the GPT methodology authority under `AI_RESEARCH_EXECUTION_RULES.md` §1.2
-and §2, and this execution agent must not resolve them. Implementation may
-not begin while OPEN_1 stands, and each remaining item must be closed or
-explicitly deferred by GPT before the stage it governs.
+- **OPEN_1 — CLOSED.** Required domestic-stock segments are frozen in
+  Section 7.1 for both eras; TOKYO PRO Market is excluded as a proof segment.
+- **OPEN_2 — CLOSED.** SOURCE_A must reuse the preserved immutable V9_012
+  SOURCE_A chain
+  `aee49fac48358be373ac4efbcf0568b796c68fa31177e0f34c5031352297fe45` with
+  `page_count=1`. No fresh SOURCE_A acquisition. A later protected read
+  requires fresh human authorization (Section 4.1).
+- **OPEN_3 — CLOSED.** The SOURCE_B locator, the PDF-only object format, the
+  2022-04 two-part bundle, and the `(Reference) Status on April 1, 2022`
+  branch are frozen in Sections 7.3 and 7.4.
+- **OPEN_4 — CLOSED.** The Mothers ToSTNeT unit era boundary at 2020-01 and
+  the declared-unit matching requirement are frozen in Section 7.5.
+- **OPEN_5 — CLOSED.** A scheduled-open date missing entirely from the
+  required in-era date/table coverage is a **data-quality failure**. It is
+  never treated as inactive, never as an accepted exception, and never as
+  zero.
 
-- **OPEN_1 — `V9_014_ERA_SEGMENT_ENUMERATION`.** The exact required
-  domestic-stock market-segment column names for `ERA_LEGACY`,
-  `ERA_RESTRUCTURE_2022_04` (both the `2022-04-01` pre-restructure and the
-  `2022-04-04` onward post-restructure sides), and `ERA_POST_RESTRUCTURE`
-  are not enumerable from repository or currently available public facts
-  without an external-data network request. They must be supplied exactly.
-  No column name is invented here.
+No item remains `CHATGPT_DECISION_REQUIRED` in this design.
 
-- **OPEN_2 — SOURCE_A byte provenance.** Whether V9_014 SOURCE_A binds the
-  preserved immutable V9_012 locked `/markets/calendar` chain
-  (`V9_012_LAST_SOURCE_A_CHAIN_SHA256=aee49fac48358be373ac4efbcf0568b796c68fa31177e0f34c5031352297fe45`,
-  page count `1`) as protected durable state, or performs a fresh
-  independently authorized acquisition under a new non-colliding V9_014
-  root, is unspecified. This determines whether a protected-read gate, a
-  network gate, or both apply, so it is not an execution-agent choice.
-
-- **OPEN_3 — SOURCE_B object locator and format binding.** The exact frozen
-  archive traversal labels, per-era object file formats, and per-era table
-  locators for Report 2 "Stock Trading Volume & Value" / "Trading Volume &
-  Value (Daily)" are not established in this repository. The V9_006
-  traversal discipline is inherited, but the exact frozen label strings and
-  format handling per era must be supplied before implementation.
-
-- **OPEN_4 — declared-unit token set and 2020 change boundary.** The exact
-  declared-unit tokens and the exact effective boundary of the official 2020
-  unit/layout change affecting the ToSTNeT fields are not established here.
-  The "declared unit drives normalization" rule in Section 7.1 is frozen,
-  but the preregistered change points against which observed changes are
-  asserted must be supplied.
-
-- **OPEN_5 — missing daily row semantics.** The treatment of a scheduled-open
-  date within coverage that has no daily row at all in a required segment's
-  table is unspecified by the frozen rule set. Section 6 defines active and
-  inactive only over completely parsed required-segment data. Until GPT
-  closes this item, the implementation must fail closed on that case under
-  `AI_RESEARCH_EXECUTION_RULES.md` §7; it must not silently treat a missing
-  row as zero, as inactive, or as an accepted exception.
-
-## 11. Non-actions and execution boundary
+## 10. Non-actions and execution boundary
 
 This design task performed and authorized none of the following:
 
@@ -430,13 +517,15 @@ human_gates_consumed=0
 Git fetch and push to `origin` were the only network operations performed by
 this task.
 
-The provider roles, coverage, prohibited sources, parsing and exact-integer
-normalization contract, auction-activity rule, era-handling discipline,
-frozen relation, sentinels, failure class, prohibitions, and staged gates
-above are frozen for V9_014 subject to GPT exact-SHA review. No
-implementation-time source substitution, semantic weakening, threshold
-relaxation, or methodology invention is permitted. Where this design leaves
-an item OPEN, the correct behavior is to stop and report
-`CHATGPT_DECISION_REQUIRED`, never to guess.
+The source roles, byte-provenance binding, coverage, prohibited sources,
+reported-value interval semantics, per-segment and date-level activity
+adjudication, token semantics, era and object binding, frozen relation,
+sentinels, cross-source consistency requirement, deferred final calendar
+rule, failure class, prohibitions, and staged gates above are frozen for
+V9_014 subject to GPT exact-SHA review. No implementation-time source
+substitution, semantic weakening, threshold relaxation, or methodology
+invention is permitted. Where an item is not covered by this design, the
+correct behavior is to stop and report `CHATGPT_DECISION_REQUIRED`, never to
+guess.
 
 GPT-5.6 Sol remains the final methodology authority and exact-SHA reviewer.
