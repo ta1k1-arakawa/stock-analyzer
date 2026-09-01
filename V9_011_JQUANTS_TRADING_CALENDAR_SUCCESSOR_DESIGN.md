@@ -60,10 +60,18 @@ PURCHASE_AUTHORIZED=false
 NETWORK_AUTHORIZED=false
 ```
 
-A future Phase A must re-check the current official plan and coverage before
-any purchase or network boundary. If the official coverage or API contract
-has changed, classify `PLAN_OR_API_CONTRACT_CHANGED`, stop, and require a new
-ChatGPT decision. No automatic upgrade or purchase is permitted.
+Before any subscription purchase, GPT methodology authority must independently
+re-check the current official public J-Quants documentation for the V2
+Trading Calendar endpoint and contract, required historical coverage, and
+plan availability sufficient for this coverage. This is public contract
+verification only: it accesses no API key and no protected study data. If
+the official coverage or API contract has changed or is insufficient,
+classify `PLAN_OR_API_CONTRACT_CHANGED`, stop, and require a new ChatGPT
+decision. No automatic upgrade or purchase is permitted.
+
+Future Phase A is entirely no-network and must not perform this live plan or
+coverage re-check. It relies on the preceding GPT public-contract
+verification.
 
 F6 TOPIX annual `DATE` fields are not a daily-calendar substitute and cannot
 replace this authoritative Trading Calendar source.
@@ -281,14 +289,35 @@ No real execution occurs under this design task. A future sequence is:
 
 1. This design receives GPT-5.6 Sol exact-SHA PASS.
 2. The implementation receives GPT-5.6 Sol exact-SHA PASS.
-3. Any required Standard subscription or purchase receives explicit human
-   approval. Purchase authority and network authority are separate and
-   non-transferable.
-4. Fresh point-of-use human network/API authorization is obtained.
-5. Phase A no-network preflight passes using the real protected environment.
-6. Phase B performs only the minimal frozen API acquisition and immediately
+3. Before any purchase, GPT methodology authority re-checks the current
+   official public endpoint, contract, coverage, and plan sufficiency. This
+   is public contract verification only and creates no API/data authority.
+   A changed or insufficient contract is `PLAN_OR_API_CONTRACT_CHANGED` and
+   requires a new ChatGPT decision.
+4. If a paid subscription is actually required, explicit human purchase
+   approval is obtained. Purchase authority authorizes only subscription
+   purchase/account provisioning; it does not authorize API acquisition,
+   cache/outcome/T0 access, and is not reusable as network authorization.
+5. After required account/API-key provisioning exists, Phase A performs an
+   entirely no-network preflight using the real protected environment. It
+   binds the exact repository provenance, reviewed design and implementation,
+   required files, environment readiness, a new non-colliding durable root,
+   the private credential's existence/unique resolution without reading its
+   content, purchase prerequisite if applicable, and unopened T0/cache/
+   outcome state. Phase A does not re-check live public documentation.
+6. Phase-A output is returned to GPT, which must adjudicate Phase-A PASS
+   before any network/API authorization is requested.
+7. Only after Phase-A PASS is fresh point-of-use human network/API
+   authorization obtained. It is scope-bound to the reviewed V9_011 Trading
+   Calendar acquisition, separate from purchase authority, and not
+   authorization for cache/outcomes/T0/private/sealed data.
+8. Immediately before Phase B, if GPT methodology authority determines that
+   the previously checked public API/plan contract may have materially
+   changed, official public documentation is re-checked. This creates no
+   API/data-acquisition authority; a change stops the process.
+9. Phase B performs only the minimal frozen API acquisition and immediately
    locks the first complete HTTP-200 bytes.
-7. Phase C performs projection and validation with no network and no refetch.
+10. Phase C performs projection and validation with no network and no refetch.
 
 Until both GPT implementation review and the required future gates pass,
 `V9_009_HIGH_2` and `V9_009_MEDIUM_1` remain open. This design creates no
