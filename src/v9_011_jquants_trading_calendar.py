@@ -162,6 +162,14 @@ class PageRequest:
         return result
 
 
+def expected_request_url(request: PageRequest) -> str:
+    """Return the exact secret-free URL bound to this frozen page request."""
+    query = [("from", COVERED_START), ("to", COVERED_END)]
+    if request.continuation_key is not None:
+        query.append(("pagination_key", request.continuation_key))
+    return ENDPOINT + "?" + urllib.parse.urlencode(query)
+
+
 @dataclass(frozen=True)
 class PageFetchResult:
     payload: bytes
@@ -416,7 +424,7 @@ class PageLockStore:
     def lock_page(self, request: PageRequest, result: PageFetchResult) -> dict[str, object]:
         if type(result.payload) is not bytes or type(result.http_status) is not int or type(result.resolved_url) is not str:
             raise V9011Error("TRANSPORT_RESPONSE_TYPE_INVALID")
-        if result.http_status != 200 or result.resolved_url != ENDPOINT:
+        if result.http_status != 200 or result.resolved_url != expected_request_url(request):
             raise V9011Error("TRANSPORT_RESPONSE_NOT_LOCKABLE")
         record: dict[str, object] = {
             "page_index": request.page_index,
@@ -548,7 +556,7 @@ def _transport_failure(exc: BaseException, requests: int) -> V9011Error:
     return V9011Error(reason, attempts=requests, requests=requests)
 
 
-def _validate_transport_result(result: object) -> PageFetchResult:
+def _validate_transport_result(request: PageRequest, result: object) -> PageFetchResult:
     if type(result) is not PageFetchResult:
         raise V8CTransportNamedFailure("UNKNOWN_FAIL_CLOSED_NONRETRYABLE")
     if type(result.payload) is not bytes or type(result.http_status) is not int or type(result.resolved_url) is not str:
@@ -559,7 +567,7 @@ def _validate_transport_result(result: object) -> PageFetchResult:
         if 300 <= result.http_status < 400:
             raise V8CTransportNamedFailure("UNTRUSTED_REDIRECT")
         raise V8CTransportNamedFailure("UNKNOWN_FAIL_CLOSED_NONRETRYABLE")
-    if result.resolved_url != ENDPOINT:
+    if result.resolved_url != expected_request_url(request):
         raise V8CTransportNamedFailure("RESPONSE_HOST_MISMATCH")
     return result
 
@@ -609,7 +617,7 @@ def acquire_page_chain(
             def attempt() -> PageFetchResult:
                 nonlocal requests
                 requests += 1
-                return _validate_transport_result(fetcher(current_request))
+                return _validate_transport_result(current_request, fetcher(current_request))
 
             result, _audit = attempt_with_frozen_retry(
                 attempt,
@@ -803,11 +811,9 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 def _build_request(request: PageRequest, api_key: str) -> urllib.request.Request:
     if type(api_key) is not str or api_key == "":
         raise V9011Error("API_KEY_MISSING")
-    query = [("from", COVERED_START), ("to", COVERED_END)]
-    if request.continuation_key is not None:
-        query.append(("pagination_key", request.continuation_key))
-    url = ENDPOINT + "?" + urllib.parse.urlencode(query)
-    return urllib.request.Request(url, headers={"x-api-key": api_key}, method="GET")
+    return urllib.request.Request(
+        expected_request_url(request), headers={"x-api-key": api_key}, method="GET"
+    )
 
 
 def fetch_http_page(request: PageRequest) -> PageFetchResult:
@@ -973,7 +979,7 @@ __all__ = [
     "REVIEWED_DESIGN_BLOB_SHA", "REVIEWED_DESIGN_GIT_SHA", "SOURCE_CHAIN_MANIFEST_KEYS",
     "V9011Error", "acquire_page_chain", "build_canonical_hash_receipt",
     "build_page_chain_provenance", "build_source_chain_manifest", "canonical_json_bytes",
-    "continuation_key_sha256", "fetch_http_page", "identity_json_bytes", "main",
+    "continuation_key_sha256", "expected_request_url", "fetch_http_page", "identity_json_bytes", "main",
     "materialize_calendar", "page_chain_provenance_bytes", "page_request_identity",
     "page_request_identity_sha256", "projected_calendar_sha256", "run_production_acquisition",
     "sha256_bytes", "sha256_utf8", "source_chain_sha256", "validate_canonical_content",

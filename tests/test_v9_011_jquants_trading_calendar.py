@@ -10,8 +10,14 @@ import pytest
 import src.v9_011_jquants_trading_calendar as cal
 
 
-def result(payload=b'{"data":[]}', status=200, url=cal.ENDPOINT):
+def result(payload=b'{"data":[]}', status=200, url=None):
+    if url is None:
+        raise AssertionError("successful synthetic responses need an exact request URL")
     return cal.PageFetchResult(payload, status, url)
+
+
+def result_for(request, payload=b'{"data":[]}', status=200, url=None):
+    return result(payload, status, cal.expected_request_url(request) if url is None else url)
 
 
 def page(data=None, pagination_key=None, *, include_key=False):
@@ -40,7 +46,7 @@ def acquire_from_pages(tmp_path, payloads, *, sleep=None):
         value = payloads[request.page_index - 1]
         if isinstance(value, BaseException):
             raise value
-        return result(value)
+        return result_for(request, value)
 
     provenance, requests = cal.acquire_page_chain(
         tmp_path, fetcher=fetch, sleep=(sleep or (lambda _seconds: None))
@@ -56,7 +62,7 @@ def test_import_and_materialization_have_no_network_path(tmp_path, monkeypatch):
     monkeypatch.setattr(cal.urllib.request, "urlopen", forbidden)
     importlib.reload(cal)
     payload = page(full_rows({"2017-01-02": "1"}))
-    cal.acquire_page_chain(tmp_path, fetcher=lambda _request: result(payload))
+    cal.acquire_page_chain(tmp_path, fetcher=lambda request: result_for(request, payload))
     materialized = cal.materialize_calendar(
         tmp_path,
         acquisition_design_git_sha="a" * 40,
@@ -100,6 +106,57 @@ def test_multi_page_pagination_preserves_frozen_query_and_server_key(tmp_path):
     assert provenance["pages"][0]["continuation_key_sha256"] == cal.sha256_utf8("server-issued-key")
 
 
+def test_expected_request_urls_are_exact_and_api_key_is_header_only():
+    first = cal.PageRequest(1)
+    continuation = cal.PageRequest(2, "server-issued-key")
+    assert cal.expected_request_url(first) == (
+        "https://api.jquants.com/v2/markets/calendar?from=2017-01-01&to=2026-01-31"
+    )
+    assert cal.expected_request_url(continuation) == (
+        "https://api.jquants.com/v2/markets/calendar?from=2017-01-01&to=2026-01-31&pagination_key=server-issued-key"
+    )
+    request = cal._build_request(first, "synthetic-api-key")
+    assert request.full_url == cal.expected_request_url(first)
+    assert request.get_header("X-api-key") == "synthetic-api-key"
+    assert "synthetic-api-key" not in request.full_url
+    accepted = cal._validate_transport_result(
+        first,
+        result(b"{}", url=cal.expected_request_url(first)),
+    )
+    assert accepted.resolved_url == cal.expected_request_url(first)
+
+
+@pytest.mark.parametrize(
+    "resolved_url",
+    [
+        cal.ENDPOINT,
+        "http://api.jquants.com/v2/markets/calendar?from=2017-01-01&to=2026-01-31",
+        "https://evil.example/v2/markets/calendar?from=2017-01-01&to=2026-01-31",
+        "https://api.jquants.com/v2/other?from=2017-01-01&to=2026-01-31",
+        "https://api.jquants.com/v2/markets/calendar?from=2017-01-02&to=2026-01-31",
+        "https://api.jquants.com/v2/markets/calendar?from=2017-01-01&to=2026-02-01",
+        "https://api.jquants.com/v2/markets/calendar?from=2017-01-01&to=2026-01-31&hol_div=0",
+        "https://api.jquants.com/v2/markets/calendar?from=2017-01-01&to=2026-01-31&pagination_key=substituted",
+        "https://api.jquants.com/v2/markets/calendar?from=2017-01-01&from=2017-01-01&to=2026-01-31",
+        "https://api.jquants.com/v2/markets/calendar?from=2017-01-01&to=2026-01-31#fragment",
+    ],
+)
+def test_http_200_requires_exact_request_url(resolved_url):
+    request = cal.PageRequest(2, "server-issued-key")
+    with pytest.raises(cal.V8CTransportNamedFailure, match="RESPONSE_HOST_MISMATCH") as caught:
+        cal._validate_transport_result(request, result(b"{}", url=resolved_url))
+    assert "server-issued-key" not in str(caught.value)
+
+
+def test_exact_continuation_url_is_accepted_by_transport_validation():
+    request = cal.PageRequest(2, "server-issued-key")
+    accepted = cal._validate_transport_result(
+        request,
+        result(b"{}", url=cal.expected_request_url(request)),
+    )
+    assert accepted.resolved_url == cal.expected_request_url(request)
+
+
 def test_retry_is_three_attempts_with_frozen_backoff(tmp_path):
     failures = [urllib.error.HTTPError(cal.ENDPOINT, 503, "", {}, None)] * 2
     calls = []
@@ -109,7 +166,7 @@ def test_retry_is_three_attempts_with_frozen_backoff(tmp_path):
         calls.append(1)
         if failures:
             raise failures.pop(0)
-        return result(page())
+        return result_for(_request, page())
 
     provenance, requests = cal.acquire_page_chain(
         tmp_path, fetcher=fetch, sleep=sleeps.append
@@ -138,7 +195,7 @@ def test_nonretryable_http_does_not_retry(tmp_path, status):
 
     def fetch(_request):
         calls.append(1)
-        return result(b"nonretryable", status)
+        return result_for(_request, b"nonretryable", status)
 
     with pytest.raises(cal.V9011Error, match=f"HTTP_{status}"):
         cal.acquire_page_chain(tmp_path, fetcher=fetch)
@@ -151,7 +208,7 @@ def test_auth_failures_are_separate_and_nonretryable(tmp_path, status):
 
     def fetch(_request):
         calls.append(1)
-        return result(b"auth", status)
+        return result_for(_request, b"auth", status)
 
     with pytest.raises(cal.V9011Error, match="AUTH_OR_PLAN_FAILURE"):
         cal.acquire_page_chain(tmp_path, fetcher=fetch)
@@ -174,7 +231,7 @@ def test_repeated_pagination_key_fails_closed_without_page_three(tmp_path):
 
     def fetch(request):
         calls.append(request.page_index)
-        return result([first, second][request.page_index - 1])
+        return result_for(request, [first, second][request.page_index - 1])
 
     with pytest.raises(cal.V9011Error, match="PAGINATION_KEY_REPEATED"):
         cal.acquire_page_chain(tmp_path, fetcher=fetch)
@@ -189,7 +246,7 @@ def test_restart_uses_locked_prefix_and_never_refetches_it(tmp_path):
 
     def first_run(request):
         calls_one.append(request.page_index)
-        return result(first) if request.page_index == 1 else (_ for _ in ()).throw(failure)
+        return result_for(request, first) if request.page_index == 1 else (_ for _ in ()).throw(failure)
 
     with pytest.raises(cal.V9011Error, match="HTTP_404"):
         cal.acquire_page_chain(tmp_path, fetcher=first_run)
@@ -199,7 +256,7 @@ def test_restart_uses_locked_prefix_and_never_refetches_it(tmp_path):
 
     def second_run(request):
         calls_two.append(request)
-        return result(page())
+        return result_for(request, page())
 
     provenance, requests = cal.acquire_page_chain(tmp_path, fetcher=second_run)
     assert provenance["page_count"] == 2
@@ -249,7 +306,7 @@ def test_projected_hash_known_vector_and_sentinel():
 
 def test_materialization_hashes_final_lf_without_self_reference(tmp_path):
     rows = full_rows({"2017-01-02": "1", "2017-01-03": "2", "2017-01-04": "3"})
-    cal.acquire_page_chain(tmp_path, fetcher=lambda _request: result(page(rows)))
+    cal.acquire_page_chain(tmp_path, fetcher=lambda request: result_for(request, page(rows)))
     materialized = cal.materialize_calendar(
         tmp_path,
         acquisition_design_git_sha="a" * 40,
@@ -267,7 +324,7 @@ def test_materialization_hashes_final_lf_without_self_reference(tmp_path):
 def test_public_artifacts_exclude_raw_url_and_payload(tmp_path):
     secret = "synthetic-api-key-never-public"
     payload = json.dumps({"data": full_rows(), "secret": secret}, separators=(",", ":")).encode()
-    cal.acquire_page_chain(tmp_path / "state", fetcher=lambda _request: result(payload))
+    cal.acquire_page_chain(tmp_path / "state", fetcher=lambda request: result_for(request, payload))
     materialized = cal.materialize_calendar(
         tmp_path / "state",
         acquisition_design_git_sha="a" * 40,
@@ -284,15 +341,15 @@ def test_public_artifacts_exclude_raw_url_and_payload(tmp_path):
 def test_lock_conflict_is_rejected_without_overwrite(tmp_path):
     store = cal.PageLockStore(tmp_path)
     request = cal.PageRequest(1)
-    original = result(b"original")
+    original = result_for(request, b"original")
     store.lock_page(request, original)
     with pytest.raises(cal.LockConflictError, match="DURABLE_STATE_CONFLICT"):
-        store.lock_page(request, result(b"different"))
+        store.lock_page(request, result_for(request, b"different"))
     assert (tmp_path / "raw_pages" / "000001.bin").read_bytes() == b"original"
 
 
 def test_exact_schemas_reject_missing_and_extra_fields(tmp_path):
-    cal.acquire_page_chain(tmp_path, fetcher=lambda _request: result(page(full_rows())))
+    cal.acquire_page_chain(tmp_path, fetcher=lambda request: result_for(request, page(full_rows())))
     materialized = cal.materialize_calendar(
         tmp_path,
         acquisition_design_git_sha="a" * 40,
@@ -338,7 +395,7 @@ def test_projected_validation_rejects_bad_coverage_and_values(mutator, reason):
 
 def test_trading_date_filter_and_sentinel_are_frozen(tmp_path):
     rows = full_rows({"2017-01-02": "1", "2017-01-03": "2", "2017-01-04": "3", "2020-10-01": "0"})
-    cal.acquire_page_chain(tmp_path, fetcher=lambda _request: result(page(rows)))
+    cal.acquire_page_chain(tmp_path, fetcher=lambda request: result_for(request, page(rows)))
     materialized = cal.materialize_calendar(
         tmp_path,
         acquisition_design_git_sha="a" * 40,
