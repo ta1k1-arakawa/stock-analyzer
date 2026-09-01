@@ -236,10 +236,10 @@ acquisition_implementation_git_sha
 
 The acquisition design and implementation Git SHA fields must be exact
 lowercase 40-hex repository SHAs from the independently reviewed code/design
-actually used. Every SHA-256 field is exact lowercase 64-hex. Source/API
-identity values are frozen stable role identifiers; base-query identities bind
-the exact query objects above. Source-chain digests bind the complete locked
-page chains.
+actually used. Every SHA-256 field is exact lowercase 64-hex. The
+source/API identity fields equal the exact API identity strings defined below;
+base-query identities bind the exact query objects below, and source-chain
+digests bind the complete locked page chains.
 
 Public canonical JSON is deterministic: UTF-8, `ensure_ascii=false`,
 `sort_keys=true`, `separators=(',',':')`, `allow_nan=false`, and exactly one
@@ -256,6 +256,195 @@ field validity, duplicate and range rules, the exact set relation, the three
 neighbor checks, sorted unique `trading_dates`, exact artifact schema, and
 all digest/provenance fields. Any mismatch fails before V9_009 can read or
 consume the artifact.
+
+## Exact provenance and hash-domain closure
+
+The following definitions are frozen before V9_012 implementation. The
+primitive `CANONICAL_JSON_NO_LF(value)` is UTF-8 JSON serialized with
+`ensure_ascii=false`, `sort_keys=true`, `separators=(',',':')`,
+`allow_nan=false`, no BOM, and no final LF. Every SHA-256 value is exact
+lowercase 64-hex.
+
+The exact API identity strings are:
+
+```text
+SCHEDULED_CALENDAR_SOURCE_API_IDENTITY=https://api.jquants.com/v2/markets/calendar
+TOPIX_SOURCE_API_IDENTITY=https://api.jquants.com/v2/indices/bars/daily/topix
+```
+
+The public artifact fields with those names must equal the corresponding
+strings exactly. The exact base-query object for both sources is:
+
+```json
+{"from":"2017-01-01","to":"2026-01-31"}
+```
+
+`hol_div` is intentionally absent, not null, for SOURCE_A. SOURCE_B uses the
+same exact object. For each source:
+
+```text
+BASE_QUERY_SHA256=SHA256(CANONICAL_JSON_NO_LF(BASE_QUERY_OBJECT))
+```
+
+The two base-query SHA-256 values are therefore equal; source/API identity and
+source role bind the otherwise equal query objects independently.
+
+For an exact server-issued pagination-key string:
+
+```text
+PAGINATION_KEY_SHA256=SHA256(UTF8(exact string))
+```
+
+There is no trimming, normalization, case conversion, decoding substitution,
+or reserialization. The exact page-request identity object is:
+
+```json
+{
+  "base_query_sha256":"<64hex>",
+  "continuation_key_sha256":"<64hex or null>",
+  "page_index":<positive integer>,
+  "source_api_identity":"<exact API identity string>",
+  "source_role":"<exact frozen source role>"
+}
+```
+
+SOURCE_A uses `SCHEDULED_TSE_BUSINESS_DAY_SUPERSET`; SOURCE_B uses
+`ACTUAL_TSE_MARKET_ACTIVITY_DATE_EVIDENCE`. Page 1 has
+`continuation_key_sha256=null`; every later request uses the exact hash of the
+server-issued key from the immediately preceding page. The request identity
+digest is:
+
+```text
+PAGE_REQUEST_IDENTITY_SHA256=
+  SHA256(CANONICAL_JSON_NO_LF(page-request identity object))
+```
+
+For each source, the exact source-chain manifest object is:
+
+```json
+{
+  "base_query_sha256":"<64hex>",
+  "page_count":<positive integer>,
+  "pages":[
+    {
+      "byte_count":<nonnegative integer>,
+      "continuation_issued":<boolean>,
+      "continuation_key_sha256":"<64hex or null>",
+      "page_index":<positive integer>,
+      "page_request_identity_sha256":"<64hex>",
+      "payload_sha256":"<64hex>"
+    }
+  ],
+  "source_api_identity":"<exact API identity string>",
+  "source_role":"<exact frozen source role>",
+  "terminal_page_index":<positive integer>
+}
+```
+
+Manifest requirements are exact: page indices are `1..page_count` in strict
+order; `terminal_page_index == page_count`; only the terminal page has
+`continuation_issued=false` and `continuation_key_sha256=null`; every
+nonterminal page has `continuation_issued=true` and a 64-hex continuation-key
+identity; `payload_sha256` hashes exact locked raw HTTP response bytes; and
+`byte_count` equals exact raw payload byte length. No raw pagination key
+appears in the manifest. The manifest and every page are source-identity
+bound.
+
+```text
+SOURCE_CHAIN_MANIFEST_BYTES=CANONICAL_JSON_NO_LF(manifest)
+SOURCE_CHAIN_SHA256=SHA256(SOURCE_CHAIN_MANIFEST_BYTES)
+```
+
+The canonical fields `scheduled_calendar_source_chain_sha256` and
+`topix_source_chain_sha256` must equal the corresponding source-specific
+`SOURCE_CHAIN_SHA256` values exactly.
+
+The accepted canonical artifact field set remains exact, with no missing or
+extra fields:
+
+```text
+schema_version
+covered_start
+covered_end
+trading_dates
+scheduled_calendar_source_chain_sha256
+topix_source_chain_sha256
+scheduled_open_count
+actual_trading_date_count
+expected_exception_dates
+observed_exception_dates
+scheduled_calendar_source_api_identity
+topix_source_api_identity
+scheduled_calendar_base_query_sha256
+topix_base_query_sha256
+acquisition_design_git_sha
+acquisition_implementation_git_sha
+```
+
+Its exact value rules are:
+
+```text
+schema_version=V9_012_CANONICAL_ACTUAL_TSE_TRADING_DAYS_V1
+covered_start="2017-01-01"
+covered_end="2026-01-31"
+expected_exception_dates=["2020-10-01"]
+observed_exception_dates=["2020-10-01"] for PASS
+scheduled_open_count=len(sorted unique scheduled_open_dates)
+actual_trading_date_count=len(trading_dates)
+```
+
+`trading_dates` is the strictly ascending unique TOPIX_ACTIVE_DATE sequence,
+formed only after all exact-set, data-quality, and neighbor/sentinel checks
+pass. `acquisition_design_git_sha` and `acquisition_implementation_git_sha`
+are exact lowercase 40-hex SHAs for the independently GPT-reviewed V9_012
+design and implementation actually used.
+
+The exact artifact byte and digest domain is:
+
+```text
+CANONICAL_ARTIFACT_CONTENT=the exact field-set object above
+CANONICAL_ARTIFACT_BYTES=
+  UTF-8 JSON with ensure_ascii=false,
+  sort_keys=true,
+  separators=(',',':'),
+  allow_nan=false,
+  no BOM,
+  and exactly one final LF
+CANONICAL_ARTIFACT_SHA256=SHA256(CANONICAL_ARTIFACT_BYTES)
+```
+
+The artifact must not contain its own SHA. The external receipt object has
+exactly these fields:
+
+```text
+schema_version
+status
+canonical_artifact_sha256
+```
+
+with exact values:
+
+```text
+schema_version=V9_012_CANONICAL_HASH_RECEIPT_V1
+status=COMPLETE
+canonical_artifact_sha256=exact lowercase SHA256 of CANONICAL_ARTIFACT_BYTES
+```
+
+Receipt bytes use the same deterministic public JSON serialization with
+exactly one final LF; the receipt has no self-reference.
+
+The public artifact, receipt, and project state contain no raw TOPIX numeric
+`O`/`H`/`L`/`C` values, raw responses, raw pagination keys, API key, private
+paths, prices, ticker identities, or unrelated source data.
+
+Before acceptance, implementation must reject any alternative hash domain or
+serializer, missing or extra artifact/receipt/manifest field, a SOURCE_A
+query containing `hol_div:null`, reordered or incomplete page chain,
+source-identity mismatch, or any noncanonical public artifact. It must verify
+both complete source chains, exact page/request/lock/payload bindings, exact
+coverage, field validity, duplicate and range rules, the exact set relation,
+the three neighbor checks, sorted unique `trading_dates`, and every digest
+and provenance field before V9_009 can read or consume the artifact.
 
 ## V9_009 binding gate
 
