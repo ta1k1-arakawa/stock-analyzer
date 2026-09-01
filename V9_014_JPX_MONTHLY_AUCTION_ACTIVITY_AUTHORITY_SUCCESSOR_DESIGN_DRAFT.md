@@ -30,17 +30,22 @@ execution, and no profitability evaluation.
 ### 1.1 Review state
 
 ```text
-V9_014_DESIGN_REVIEWED_SHA=05d0ed3ca5cea8e84ff386fb73c65dba575030c2
+V9_014_DESIGN_REVIEWED_SHA=48fb8c59975b5afa967c6ff34e3e9343a8551c51
+V9_014_DESIGN_REVIEW_PARENT_SHA=05d0ed3ca5cea8e84ff386fb73c65dba575030c2
 V9_014_DESIGN_REVIEW_RESULT=BLOCK
 CRITICAL=0
-HIGH=2
-MEDIUM=0
-HIGH_1=JPX_REPORTED_UNIT_QUANTIZATION_INVALIDATES_EXACT_SHARE_AND_ZERO_INACTIVITY_RULE
-HIGH_2=SOURCE_B_ERA_AND_OBJECT_BINDING_INCOMPLETE_INCLUDING_2022_04_SPLIT
+HIGH=0
+MEDIUM=1
+V9_014_DESIGN_HIGH_1=RESOLVED
+V9_014_DESIGN_HIGH_2=RESOLVED
+MEDIUM_1=DECLARED_SHARE_UNIT_TOKEN_TO_MULTIPLIER_MAPPING_NOT_EXACTLY_FROZEN
 ```
 
-This revision remediates HIGH_1 and HIGH_2 and closes OPEN_1 through OPEN_5.
-No V9_014 design PASS is claimed.
+The prior HIGH_1 and HIGH_2 remediations are accepted and remain in force.
+This revision remediates MEDIUM_1 only, by freezing the exact declared
+share-unit token-to-multiplier mapping (Section 5.2) and the exact per-column
+required unit expectations (Section 7.5). OPEN_1 through OPEN_5 remain
+CLOSED. No V9_014 design PASS is claimed.
 
 ## 2. Why a successor study is required
 
@@ -227,7 +232,69 @@ per table, and per required column. It is never assumed, never defaulted, and
 never inherited across objects. An absent, unparseable, ambiguous, or
 multiply-declared unit is a data-quality failure.
 
-### 5.2 Per-segment adjudication
+### 5.2 Declared share-unit token mapping
+
+The accepted Trading Volume share-unit semantics are frozen exactly. There
+are exactly two canonical semantic units:
+
+```text
+SHARES           multiplier=1
+THOUSAND_SHARES  multiplier=1000
+```
+
+The source PDF may present the declared unit bilingually. Parser recognition
+must be based on the exact normalized semantic tokens taken from the declared
+unit cell, never on fuzzy substring matching.
+
+Accepted English tokens:
+
+```text
+"shs."        -> SHARES
+"thous.shs."  -> THOUSAND_SHARES
+```
+
+Accepted Japanese equivalents, recognized **only** when they occur in the
+SAME declared bilingual unit cell:
+
+```text
+"株"    -> SHARES
+"千株"  -> THOUSAND_SHARES
+```
+
+A bilingual declaration must be semantically consistent:
+
+```text
+株   + shs.        => valid SHARES
+千株 + thous.shs.  => valid THOUSAND_SHARES
+```
+
+Any contradictory bilingual declaration is a data-quality failure.
+
+The following are never accepted:
+
+- guessed abbreviations;
+- fuzzy matches;
+- case-insensitive invented aliases;
+- multipliers inferred from numeric magnitude;
+- value-based unit guessing;
+- unit inheritance from a previous month;
+- any other multiplier.
+
+Any other unit token or value is:
+
+```text
+UNSUPPORTED_SHARE_UNIT_DQ_FAILURE
+```
+
+The exact interval rule of Section 5.1 restated over the two frozen units,
+using integer arithmetic only:
+
+```text
+SHARES           [q, q]
+THOUSAND_SHARES  [q * 1000, q * 1000 + 999]
+```
+
+### 5.3 Per-segment adjudication
 
 For each required segment on a given date, with total interval
 `[total_lower, total_upper]` and ToSTNeT interval
@@ -249,7 +316,7 @@ equivalent to a strictly positive lower bound on
 absent. It means exactly that the reported quantization does not prove
 regular-auction activity for that segment on that date.
 
-### 5.3 Date-level rule
+### 5.4 Date-level rule
 
 ```text
 d is PROVEN_AUCTION_ACTIVE  iff  at least one required segment for d's era
@@ -260,7 +327,7 @@ d is PROVEN_AUCTION_ACTIVE  iff  at least one required segment for d's era
 There is no `PROVEN_INACTIVE` state derivable from SOURCE_B. A date that is
 not `PROVEN_AUCTION_ACTIVE` is unproven, not inactive.
 
-### 5.4 JPX token semantics
+### 5.5 JPX token semantics
 
 - A numeric `0` in a column with `m > 1` is **not** an exact zero. Its
   interval is `[0, m - 1]`, exactly as the Section 5.1 rule yields for
@@ -426,25 +493,55 @@ resolve to a unique same-domain object. Archive numbering must never be
 hardcoded and no URL may be guessed, pattern-derived, or reconstructed from
 memory. Ambiguous or non-unique resolution is a fail-closed locator failure.
 
-### 7.5 Unit-era binding
+### 7.5 Required unit expectations
+
+Every required segment column has an exactly preregistered expected unit,
+expressed in the canonical semantic units of Section 5.2.
+
+`ERA_PRE` required segments (through `2022-04-01`):
 
 ```text
-2017-01 .. 2019-12  Mothers ToSTNeT Trading Volume = shs.
-from 2020-01        Mothers ToSTNeT Trading Volume = thous.shs.
+1st Section       total   = THOUSAND_SHARES
+                  ToSTNeT = THOUSAND_SHARES
+
+2nd Section       total   = THOUSAND_SHARES
+                  ToSTNeT = THOUSAND_SHARES
+
+Mothers           total   = THOUSAND_SHARES
+                  ToSTNeT: 2017-01 .. 2019-12      = SHARES
+                           2020-01 .. 2022-04-01   = THOUSAND_SHARES
+
+JASDAQ Standard   total   = THOUSAND_SHARES
+                  ToSTNeT = THOUSAND_SHARES
+
+JASDAQ Growth     total   = THOUSAND_SHARES
+                  ToSTNeT = THOUSAND_SHARES
 ```
 
-The declared source unit must still be parsed from each object and must match
-the preregistered expectation. An unexpected unit or layout change is a
-data-quality failure, never an accepted variation and never a reason to
-re-derive the multiplier from the data.
+`ERA_POST` required segments (from `2022-04-04`):
 
-For every required segment column other than the explicitly frozen Mothers
-ToSTNeT case above, the mechanical preregistration rule is unit constancy
-within era: the declared unit is recorded for every required cell, must be
-constant across that column's frozen era, and any intra-era change point that
-is not preregistered is a data-quality failure. This is a mechanical closure
-of the frozen intent under `AI_RESEARCH_CHECKPOINT_WORKFLOW.md` §5; it
-introduces no unit token values not read from the source.
+```text
+Prime             total   = THOUSAND_SHARES
+                  ToSTNeT = THOUSAND_SHARES
+
+Standard          total   = THOUSAND_SHARES
+                  ToSTNeT = THOUSAND_SHARES
+
+Growth            total   = THOUSAND_SHARES
+                  ToSTNeT = THOUSAND_SHARES
+```
+
+The declared unit must be parsed from each object for every required column
+and must match the exact expected unit above. Any mismatch is a data-quality
+failure.
+
+There is no first-observed-unit learning. A required column's unit is never
+established by observed intra-era constancy, never inferred from the data,
+never re-derived from numeric magnitude, and never inherited from a previous
+month or object. The preregistered expectation above is the only authority,
+and the parsed declaration is checked against it rather than defining it. An
+unexpected unit or layout change is a data-quality failure, never an accepted
+variation.
 
 ## 8. Staged gates and V9_009 binding
 
@@ -487,8 +584,10 @@ All five previously open items are now closed by GPT methodology decision.
 - **OPEN_3 — CLOSED.** The SOURCE_B locator, the PDF-only object format, the
   2022-04 two-part bundle, and the `(Reference) Status on April 1, 2022`
   branch are frozen in Sections 7.3 and 7.4.
-- **OPEN_4 — CLOSED.** The Mothers ToSTNeT unit era boundary at 2020-01 and
-  the declared-unit matching requirement are frozen in Section 7.5.
+- **OPEN_4 — CLOSED.** The canonical share-unit token-to-multiplier mapping
+  is frozen in Section 5.2, and the exact per-column required unit
+  expectations, including the Mothers ToSTNeT boundary at 2020-01, are frozen
+  in Section 7.5.
 - **OPEN_5 — CLOSED.** A scheduled-open date missing entirely from the
   required in-era date/table coverage is a **data-quality failure**. It is
   never treated as inactive, never as an accepted exception, and never as
