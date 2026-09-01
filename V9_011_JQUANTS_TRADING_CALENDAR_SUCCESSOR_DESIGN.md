@@ -43,7 +43,12 @@ logical_query_hol_div=omitted
 api_contract_version=V2
 ```
 
-The one logical source object is the exact requested calendar response.
+The logical source object is the complete ordered finite locked page chain
+generated from the one frozen base query and server-issued pagination
+continuation. A single HTTP response is a `PAGE_PAYLOAD`, not the logical
+source object. If pagination is absent, the logical source object is a
+one-page chain.
+
 Authentication uses the private `x-api-key` header. The API key is never
 committed, printed, hashed into a public report, placed in a public artifact,
 or exposed through command-line output. A future real execution may obtain it
@@ -246,7 +251,107 @@ refetch a page.
 
 ## 8. Canonical artifact contract
 
-The canonical artifact must bind at minimum:
+All SHA-256 values below are lowercase hexadecimal. Define `UTF8(s)` as the
+exact UTF-8 encoding of `s` with no BOM.
+
+The endpoint identity digest is:
+
+```text
+ENDPOINT_IDENTITY_SHA256 = SHA256(UTF8("https://api.jquants.com/v2/markets/calendar"))
+```
+
+The base-query identity object is exactly:
+
+```json
+{"from":"2017-01-01","hol_div":null,"to":"2026-01-31"}
+```
+
+`BASE_QUERY_IDENTITY_BYTES` is the canonical JSON serialization of that
+object with `ensure_ascii=false`, `sort_keys=true`,
+`separators=(',', ':')`, and `allow_nan=false`, with no final LF.
+
+```text
+BASE_QUERY_IDENTITY_SHA256 = SHA256(BASE_QUERY_IDENTITY_BYTES)
+```
+
+For a server-issued continuation key:
+
+```text
+CONTINUATION_KEY_SHA256 = SHA256(UTF8(exact raw server-issued pagination_key string))
+```
+
+No trimming or normalization is applied. The exact page-request identity
+object is:
+
+```json
+{
+  "base_query_identity_sha256": "<64hex>",
+  "continuation_key_sha256": "<64hex or null>",
+  "endpoint_identity_sha256": "<64hex>",
+  "page_index": 1
+}
+```
+
+`PAGE_REQUEST_IDENTITY_SHA256` is the SHA-256 of its canonical JSON bytes
+using the same identity procedure and no final LF. `page_index` is the
+one-based page index. Page 1 uses a null continuation-key identity; later
+pages use the identity of the exact key issued by the immediately preceding
+locked page.
+
+`PAGE_PAYLOAD_SHA256` remains the SHA-256 of the exact locked raw HTTP
+response bytes. It is never replaced with a digest of parsed or concatenated
+content.
+
+The logical source-chain manifest object is exactly:
+
+```json
+{
+  "base_query_identity_sha256": "<64hex>",
+  "endpoint_identity_sha256": "<64hex>",
+  "page_count": 1,
+  "pages": [
+    {
+      "byte_count": 0,
+      "continuation_issued": false,
+      "continuation_key_sha256": null,
+      "page_index": 1,
+      "page_request_identity_sha256": "<64hex>",
+      "payload_sha256": "<64hex>"
+    }
+  ],
+  "terminal_page_index": 1
+}
+```
+
+The values shown are structural examples: the actual `page_count`, byte
+count, and digests are determined by the locked chain. `pages` is strictly
+ordered with `page_index=1..page_count`, `terminal_page_index == page_count`,
+and only the terminal page has `continuation_issued=false` and
+`continuation_key_sha256=null`.
+
+`SOURCE_CHAIN_MANIFEST_BYTES` is the canonical JSON serialization of this
+object with `ensure_ascii=false`, `sort_keys=true`,
+`separators=(',', ':')`, and `allow_nan=false`, with no final LF.
+
+```text
+SOURCE_CHAIN_SHA256 = SHA256(SOURCE_CHAIN_MANIFEST_BYTES)
+```
+
+The deterministic page-chain provenance artifact defined in Section 7 is
+serialized as canonical UTF-8 JSON with the same key ordering and no BOM,
+including exactly one final LF for its file format. Its public provenance
+digest is:
+
+```text
+SOURCE_PAGE_CHAIN_PROVENANCE_SHA256 =
+SHA256(exact canonical page-chain provenance artifact file bytes)
+```
+
+Raw pagination keys remain outside that artifact; only their SHA-256
+identities are present. No synthetic concatenation of raw page bytes is used
+as source-chain identity.
+
+The canonical calendar artifact content object must bind at minimum:
 
 ```text
 schema_version
@@ -254,18 +359,20 @@ calendar_source_family
 covered_start
 covered_end
 trading_dates
-source_payload_sha256
+source_chain_sha256
+source_page_chain_provenance_sha256
 projected_calendar_sha256
-canonical_calendar_sha256
 source_row_count
 trading_date_count
 acquisition_design_git_sha
 acquisition_implementation_git_sha
 api_contract_version=V2
 endpoint_identity_sha256
+base_query_identity_sha256
 ```
 
-The canonical JSON byte procedure is:
+The content object must not contain `canonical_calendar_sha256`. Its bytes are
+the complete canonical artifact serialization:
 
 ```text
 encoding=UTF-8
@@ -273,15 +380,55 @@ ensure_ascii=false
 sort_keys=true
 separators=(',', ':')
 allow_nan=false
-final_byte=LF
+exactly_one_final_LF=true
 ```
+
+`CANONICAL_CALENDAR_SHA256` is external provenance metadata accompanying the
+artifact, not a field in the hashed content:
+
+```text
+CANONICAL_ARTIFACT_BYTES = exact canonical artifact content bytes
+CANONICAL_CALENDAR_SHA256 = SHA256(CANONICAL_ARTIFACT_BYTES)
+```
+
+No self-reference or fixed-point construction is permitted.
+
+The projected calendar object is exactly:
+
+```json
+{
+  "covered_end":"2026-01-31",
+  "covered_start":"2017-01-01",
+  "rows":[
+    {"Date":"YYYY-MM-DD","HolDiv":"0|1|2|3"}
+  ]
+}
+```
+
+Its `rows` already satisfy the frozen validation contract and are strictly
+chronologically ordered. `PROJECTED_CALENDAR_BYTES` is its canonical JSON
+serialization using `ensure_ascii=false`, `sort_keys=true`,
+`separators=(',', ':')`, and `allow_nan=false`, with no final LF.
+
+```text
+PROJECTED_CALENDAR_SHA256 = SHA256(PROJECTED_CALENDAR_BYTES)
+```
+
+`source_row_count` is the total number of projected `Date`/`HolDiv` rows
+across the complete validated page chain before filtering to TSE trading
+dates. `trading_date_count` is `len(trading_dates)`, and `trading_dates` are
+the strictly ascending `Date` values whose `HolDiv` is exactly `"1"` or
+`"2"`.
 
 The public canonical artifact must contain no API key, raw response bytes,
 URL containing credentials, prices, ticker identities, or unrelated J-Quants
-data. The endpoint identity digest binds the exact endpoint identity without
-creating credential material. Implementation and design Git SHAs must be
-lowercase exact 40-hex provenance values bound at the reviewed execution
-boundary.
+data. Any inability to reproduce one of these exact byte domains or hashes is
+`IMPLEMENTATION_FAILURE` and stops the process. No fallback serialization,
+alternate ordering, or executor-inferred hash domain is permitted.
+
+The endpoint, coverage, HolDiv semantics, `2020-10-01` sentinel, pagination
+continuation, retry policy, content lock, purchase/network ordering, and
+authorization semantics are unchanged by these hash-domain definitions.
 
 ## 9. Future execution phases and authorization gates
 
