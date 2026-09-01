@@ -146,6 +146,66 @@ All page locks bind the source/page identity, safe request identity, HTTP
 status, byte count, payload SHA-256, and chain position. Raw pagination keys
 and raw payloads are protected durable evidence, not public artifact content.
 
+## Deterministic source order, restart, and authorization
+
+The real acquisition order is frozen as `SOURCE_A` first, then `SOURCE_B`.
+The two source states are separate and source-identity bound. A page, lock,
+request, continuation key, or terminal marker from one source can never
+satisfy, resume, or be used as state for the other source.
+
+Once an HTTP-200 page has its exact raw bytes and an immutable valid lock, that
+raw/lock pair is authoritative durable state. A locked page is never fetched
+again. A completed terminal source chain is immutable across process restart.
+
+If a process, wrapper, timeout, or transport operation is interrupted before
+both source chains are complete, all durable state is preserved. It is never
+deleted, reset, or overwritten merely to restart. Restart validates the
+locked raw/lock pairs and reconstructs pagination only from those validated
+pairs, using transport-envelope and lock metadata as in the V9_011
+crash-safe restart procedure. Restart does not inspect `Date`, `HolDiv`, or
+`O`/`H`/`L`/`C` values merely to decide where to resume.
+
+Continuation is allowed only at the first missing page of the first
+incomplete source. If SOURCE_A is partial, only its first missing page may be
+requested; SOURCE_B cannot start. If SOURCE_A is terminally complete,
+SOURCE_A is never requested again and continuation may proceed only with
+SOURCE_B. If both chains are already complete, restart performs zero network
+requests and proceeds directly to offline validation.
+
+Every invocation that can issue a new HTTP request requires the ordered
+authority sequence `Phase A PASS -> GPT adjudication -> fresh point-of-use
+human network/API authorization`. Authorization is one-shot for that
+invocation and is consumed when the private credential/network boundary is
+crossed, even if the invocation produces zero lockable payloads. Consumed
+authorization is never reused after a crash, wrapper failure, transport
+failure, timeout, nonzero exit, or partial acquisition. A resumed invocation
+that can issue any new request requires fresh authorization. An offline
+restart over complete locked state has no network path and requires no
+network authorization.
+
+The maximum remains `MAX_PRE_COMPLETE_ATTEMPTS=3` for one exact page request
+within one authorized invocation, with backoff `[5,30]` seconds and no
+jitter. A page is never retried after its HTTP-200 payload is locked. A
+nonretryable transport result is immediately terminal for that invocation;
+exhaustion of the three retryable attempts stops that invocation. No
+automatic second invocation or cross-invocation retry loop is allowed. A
+later continuation invocation is possible only after GPT reviews safe
+preserved-state evidence and a human supplies fresh point-of-use
+authorization, and it resumes only the first missing page without refetching
+any locked page.
+
+After both chains are complete, all `Date`/`HolDiv`/TOPIX OHLC semantic,
+parser, schema, data-quality, exact-set, and sentinel processing is offline
+only. Any such failure is terminal `ACTUAL_TRADING_DAY_AUTHORITY_FAILURE`
+for V9_012 and authorizes no refetch, new network attempt, source
+substitution, or durable-state reset.
+
+Safe restart evidence may expose only source role/id, page counts, lock
+counts, payload SHA-256 and byte counts, terminal booleans, first missing
+page index, request count, process exit code, authorization-consumed
+boolean, and safe failure class. It must never expose raw payloads, raw
+pagination keys, API keys, TOPIX values, or private paths.
+
 ## Offline validation and canonical artifact
 
 After both complete source chains are locked, all parsing and adjudication is
