@@ -186,6 +186,61 @@ def test_first_complete_http_200_locks_exact_bytes_and_stops_retrying(tmp_path, 
     assert set(json.loads((tmp_path / "state" / "raw_locks" / "2017-01.json").read_text())) == acq.LOCK_SCHEMA_KEYS
 
 
+def test_empty_http_200_locks_before_dq_and_stops_before_next_slot(tmp_path):
+    manifest, _ = acq.load_manifest(MANIFEST_PATH)
+    state = tmp_path / "state"
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if url == manifest[0]["source_url"]:
+            return response(url, b"")
+        raise AssertionError("a later slot was requested after locked-empty DQ")
+
+    with pytest.raises(acq.StageAError) as caught:
+        acq.acquire_stage_a(state, fetcher=fetch)
+    assert caught.value.reason == "DATA_QUALITY_FAILURE"
+    assert caught.value.network_request_count == 1
+    assert calls == [manifest[0]["source_url"]]
+    payload_path = state / "raw_payloads" / "2017-01.bin"
+    lock_path = state / "raw_locks" / "2017-01.json"
+    assert payload_path.exists() and payload_path.read_bytes() == b""
+    record = json.loads(lock_path.read_text(encoding="utf-8"))
+    assert record == {
+        "source_slot": "2017-01",
+        "source_url_sha256": manifest[0]["source_url_sha256"],
+        "http_status": 200,
+        "byte_count": 0,
+        "payload_sha256": acq.sha256_bytes(b""),
+    }
+    assert not (state / "safe_receipt.json").exists()
+
+
+def test_empty_http_200_lock_restart_is_zero_request_and_preserves_bytes(tmp_path):
+    manifest, _ = acq.load_manifest(MANIFEST_PATH)
+    state = tmp_path / "state"
+
+    with pytest.raises(acq.StageAError) as first:
+        acq.acquire_stage_a(state, fetcher=lambda url: response(url, b""))
+    assert first.value.reason == "DATA_QUALITY_FAILURE"
+    payload_before = (state / "raw_payloads" / "2017-01.bin").read_bytes()
+    lock_before = (state / "raw_locks" / "2017-01.json").read_bytes()
+    calls = []
+
+    def must_not_fetch(url):
+        calls.append(url)
+        raise AssertionError("restart refetched a locked empty slot")
+
+    with pytest.raises(acq.StageAError) as second:
+        acq.acquire_stage_a(state, fetcher=must_not_fetch)
+    assert second.value.reason == "DATA_QUALITY_FAILURE"
+    assert second.value.network_request_count == 0
+    assert calls == []
+    assert (state / "raw_payloads" / "2017-01.bin").read_bytes() == payload_before
+    assert (state / "raw_locks" / "2017-01.json").read_bytes() == lock_before
+    assert not (state / "safe_receipt.json").exists()
+
+
 def test_retry_exhaustion_and_nonretryable_response_or_error_stop_without_refetch(tmp_path):
     manifest, _ = acq.load_manifest(MANIFEST_PATH)
     for status in (404, 301):
@@ -264,13 +319,29 @@ def test_raw_lock_schema_count_hash_and_determinism():
         with pytest.raises(acq.StageAError):
             acq.raw_lock_set_sha256(bad, manifest)
     wrong = [dict(item) for item in records]
-    wrong[0]["byte_count"] = 0
+    wrong[0]["byte_count"] = -1
     with pytest.raises(acq.StageAError):
         acq.raw_lock_set_sha256(wrong, manifest)
     with pytest.raises(acq.StageAError):
         acq.validate_raw_lock_record(
             {**records[0], "payload_sha256": "0" * 64}, manifest[0], b"payload:2017-01"
         )
+
+
+def test_zero_byte_lock_is_valid_hashable_but_rejected_by_safe_receipt_closure():
+    manifest, _ = acq.load_manifest(MANIFEST_PATH)
+    records = _synthetic_records(manifest)
+    records[0] = {
+        **records[0],
+        "byte_count": 0,
+        "payload_sha256": acq.sha256_bytes(b""),
+    }
+    assert acq.validate_raw_lock_record(records[0], manifest[0], b"")["byte_count"] == 0
+    digest1 = acq.raw_lock_set_sha256(records, manifest)
+    digest2 = acq.raw_lock_set_sha256(records, manifest)
+    assert digest1 == digest2 == acq.sha256_bytes(acq.canonical_json_bytes(records))
+    with pytest.raises(acq.StageAError, match="DATA_QUALITY_FAILURE"):
+        acq.build_safe_receipt(records, 109)
 
 
 def test_safe_receipt_excludes_raw_urls_and_payloads():

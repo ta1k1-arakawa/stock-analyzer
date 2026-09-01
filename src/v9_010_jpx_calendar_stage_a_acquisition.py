@@ -222,7 +222,7 @@ def validate_raw_lock_record(record: object, manifest_item: Mapping[str, str], p
         raise StageAError("RAW_LOCK_DIGEST_INVALID", source_slot=manifest_item["source_slot"])
     if record["source_slot"] != manifest_item["source_slot"] or record["source_url_sha256"] != manifest_item["source_url_sha256"]:
         raise StageAError("RAW_LOCK_ENDPOINT_BINDING_MISMATCH", source_slot=manifest_item["source_slot"])
-    if record["http_status"] != 200 or record["byte_count"] <= 0:
+    if record["http_status"] != 200 or record["byte_count"] < 0:
         raise StageAError("RAW_LOCK_COMPLETENESS_INVALID", source_slot=manifest_item["source_slot"])
     if payload is not None and (record["byte_count"] != len(payload) or record["payload_sha256"] != sha256_bytes(payload)):
         raise StageAError("RAW_LOCK_PAYLOAD_DIGEST_MISMATCH", source_slot=manifest_item["source_slot"])
@@ -346,7 +346,7 @@ class RawLockStore:
         slot = manifest_item["source_slot"]
         if type(response.payload) is not bytes or type(response.http_status) is not int or type(response.resolved_url) is not str:
             raise StageAError("TRANSPORT_RESPONSE_TYPE_INVALID", source_slot=slot)
-        if response.http_status != 200 or response.resolved_url != manifest_item["source_url"] or not response.payload:
+        if response.http_status != 200 or response.resolved_url != manifest_item["source_url"]:
             raise StageAError("TRANSPORT_RESPONSE_NOT_LOCKABLE", source_slot=slot)
         record: dict[str, object] = {
             "source_slot": slot,
@@ -419,6 +419,8 @@ def acquire_one(
     slot = manifest_item["source_slot"]
     existing = store.read_one(manifest_item)
     if existing is not None:
+        if existing["byte_count"] == 0:
+            raise StageAError("DATA_QUALITY_FAILURE", source_slot=slot, attempts=0, requests=0)
         return existing, 0
     requests = 0
 
@@ -440,8 +442,6 @@ def acquire_one(
             raise V8CTransportNamedFailure("DATA_QUALITY_GATE_FAILURE")
         if result.resolved_url != manifest_item["source_url"]:
             raise V8CTransportNamedFailure("RESPONSE_HOST_MISMATCH")
-        if not result.payload:
-            raise V8CTransportNamedFailure("DATA_QUALITY_GATE_FAILURE")
         return result
 
     try:
@@ -451,14 +451,19 @@ def acquire_one(
     except BaseException as exc:  # the shared classifier intentionally handles concrete transport BaseExceptions
         raise _transport_failure_from_exception(exc, slot, requests) from exc
     try:
-        return store.lock(manifest_item, result), requests
+        record = store.lock(manifest_item, result)
     except StageAError as exc:
         exc.network_request_count = requests
         raise
+    if record["byte_count"] == 0:
+        raise StageAError("DATA_QUALITY_FAILURE", source_slot=slot, attempts=1, requests=requests)
+    return record, requests
 
 
 def build_safe_receipt(raw_lock_records: Sequence[object], network_request_count: int) -> dict[str, object]:
     validated = validate_raw_lock_set(raw_lock_records)
+    if any(record["byte_count"] == 0 for record in validated):
+        raise StageAError("DATA_QUALITY_FAILURE")
     if type(network_request_count) is not int or network_request_count < 0:
         raise StageAError("NETWORK_REQUEST_COUNT_INVALID")
     return {
@@ -484,6 +489,8 @@ def acquire_stage_a(
     manifest, _ = load_manifest(path)
     store = RawLockStore(output_root)
     existing = store.read_existing(manifest)
+    if any(record["byte_count"] == 0 for record in existing.values()):
+        raise StageAError("DATA_QUALITY_FAILURE", requests=0)
     receipt = store.read_safe_receipt()
     if receipt is not None:
         records = [existing[item["source_slot"]] for item in manifest]
