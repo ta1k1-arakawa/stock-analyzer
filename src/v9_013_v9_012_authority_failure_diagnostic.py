@@ -528,16 +528,22 @@ def validate_public_result(value: object) -> dict[str, object]:
     for field in ("source_a_row_count", "source_b_row_count", "scheduled_open_count", "topix_active_count"):
         if value[field] is not None and (type(value[field]) is not int or value[field] < 0):
             raise DiagnosticError("DIAGNOSTIC_RESULT_VALIDATION_FAILURE")
-    if value["source_a_row_count"] is None and value["source_a_category"] not in {
+    a_row_count_is_null = value["source_a_row_count"] is None
+    a_row_count_must_be_null = value["source_a_category"] in {
         "A_PAYLOAD_JSON_DECODE_FAILURE", "A_PAYLOAD_ROOT_SCHEMA_FAILURE", "A_DATA_FIELD_SCHEMA_FAILURE",
-    }:
+    }
+    if a_row_count_is_null != a_row_count_must_be_null:
         raise DiagnosticError("DIAGNOSTIC_RESULT_VALIDATION_FAILURE")
-    if not a_valid and value["source_b_row_count"] is not None:
-        raise DiagnosticError("DIAGNOSTIC_RESULT_VALIDATION_FAILURE")
-    if a_valid and value["source_b_row_count"] is None and b_category not in {
-        "B_PAYLOAD_JSON_DECODE_FAILURE", "B_PAYLOAD_ROOT_SCHEMA_FAILURE", "B_DATA_FIELD_SCHEMA_FAILURE",
-    }:
-        raise DiagnosticError("DIAGNOSTIC_RESULT_VALIDATION_FAILURE")
+    if not a_valid:
+        if value["source_b_row_count"] is not None:
+            raise DiagnosticError("DIAGNOSTIC_RESULT_VALIDATION_FAILURE")
+    else:
+        b_row_count_is_null = value["source_b_row_count"] is None
+        b_row_count_must_be_null = b_category in {
+            "B_PAYLOAD_JSON_DECODE_FAILURE", "B_PAYLOAD_ROOT_SCHEMA_FAILURE", "B_DATA_FIELD_SCHEMA_FAILURE",
+        }
+        if b_row_count_is_null != b_row_count_must_be_null:
+            raise DiagnosticError("DIAGNOSTIC_RESULT_VALIDATION_FAILURE")
     if (value["scheduled_open_count"] is None) != (not a_valid):
         raise DiagnosticError("DIAGNOSTIC_RESULT_VALIDATION_FAILURE")
     b_valid = a_valid and b_category == "B_VALID"
@@ -561,6 +567,22 @@ def validate_public_result(value: object) -> dict[str, object]:
     for field in RELATION_KEYS[6:]:
         if value[field] is not None and type(value[field]) is not bool:
             raise DiagnosticError("DIAGNOSTIC_RESULT_VALIDATION_FAILURE")
+    if not a_valid:
+        expected_class = "SOURCE_A_SEMANTIC_FAILURE"
+    elif not b_valid:
+        expected_class = "SOURCE_B_SEMANTIC_FAILURE"
+    elif not (
+        value["left_exact_expected"]
+        and value["right_empty"]
+        and value["neighbor_2020_09_30_active"]
+        and value["sentinel_2020_10_01_inactive"]
+        and value["neighbor_2020_10_02_active"]
+    ):
+        expected_class = "RELATION_OR_SENTINEL_FAILURE"
+    else:
+        expected_class = "NO_V9_012_FAILURE_REPRODUCED"
+    if value["diagnostic_class"] != expected_class:
+        raise DiagnosticError("DIAGNOSTIC_RESULT_VALIDATION_FAILURE")
     if value["source_a_chain_sha256"] != FROZEN_SOURCE_A_CHAIN_SHA256 or value["source_b_chain_sha256"] != FROZEN_SOURCE_B_CHAIN_SHA256:
         raise DiagnosticError("DIAGNOSTIC_RESULT_VALIDATION_FAILURE")
     if not _validate_sha(value["diagnostic_design_git_sha"], HEX40_RE) or not _validate_sha(value["diagnostic_implementation_git_sha"], HEX40_RE):

@@ -240,6 +240,85 @@ def test_public_schema_validator_rejects_extra_keys_nullability_and_raw_date(mon
         diag.validate_public_result(broken)
 
 
+def test_public_validator_rejects_nonnull_early_source_a_row_count(monkeypatch):
+    result = valid_result(monkeypatch)
+    result["source_a_category"] = "A_PAYLOAD_JSON_DECODE_FAILURE"
+    result["source_a_failure_location"] = diag._location(diag.SOURCE_A_ROLE, 1, None, None, None)
+    result["source_a_row_count"] = 1
+    result["source_b_category"] = None
+    result["source_b_failure_location"] = None
+    result["scheduled_open_count"] = None
+    result["topix_active_count"] = None
+    result.update(diag._null_relation())
+    with pytest.raises(diag.DiagnosticError, match="DIAGNOSTIC_RESULT_VALIDATION_FAILURE"):
+        diag.validate_public_result(result)
+
+
+def test_public_validator_rejects_null_late_source_a_row_count(monkeypatch):
+    result = valid_result(monkeypatch)
+    result["source_a_row_count"] = None
+    with pytest.raises(diag.DiagnosticError, match="DIAGNOSTIC_RESULT_VALIDATION_FAILURE"):
+        diag.validate_public_result(result)
+
+
+def test_public_validator_rejects_unevaluated_b_row_count(monkeypatch):
+    result = diag.diagnose_payloads(
+        [page([{}])], [b"not-json"], diagnostic_implementation_git_sha=IMPLEMENTATION_SHA,
+    )
+    result["source_b_row_count"] = 1
+    with pytest.raises(diag.DiagnosticError, match="DIAGNOSTIC_RESULT_VALIDATION_FAILURE"):
+        diag.validate_public_result(result)
+
+
+def test_public_validator_rejects_nonnull_early_source_b_row_count(monkeypatch):
+    result = diag.diagnose_payloads(
+        [page(valid_a_rows())], [b"not-json"], diagnostic_implementation_git_sha=IMPLEMENTATION_SHA,
+    )
+    result["source_b_row_count"] = 1
+    with pytest.raises(diag.DiagnosticError, match="DIAGNOSTIC_RESULT_VALIDATION_FAILURE"):
+        diag.validate_public_result(result)
+
+
+def test_public_validator_rejects_null_late_source_b_row_count(monkeypatch):
+    result = valid_result(monkeypatch)
+    result["source_b_row_count"] = None
+    with pytest.raises(diag.DiagnosticError, match="DIAGNOSTIC_RESULT_VALIDATION_FAILURE"):
+        diag.validate_public_result(result)
+
+
+def test_public_validator_enforces_top_level_class_for_source_a_failure(monkeypatch):
+    result = diag.diagnose_payloads(
+        [page([{}])], [b"not-json"], diagnostic_implementation_git_sha=IMPLEMENTATION_SHA,
+    )
+    result["diagnostic_class"] = "NO_V9_012_FAILURE_REPRODUCED"
+    with pytest.raises(diag.DiagnosticError, match="DIAGNOSTIC_RESULT_VALIDATION_FAILURE"):
+        diag.validate_public_result(result)
+
+
+def test_public_validator_enforces_top_level_class_for_source_b_failure(monkeypatch):
+    use_small_coverage(monkeypatch)
+    result = diag.diagnose_payloads(
+        [page(valid_a_rows())], [b"not-json"], diagnostic_implementation_git_sha=IMPLEMENTATION_SHA,
+    )
+    result["diagnostic_class"] = "SOURCE_A_SEMANTIC_FAILURE"
+    with pytest.raises(diag.DiagnosticError, match="DIAGNOSTIC_RESULT_VALIDATION_FAILURE"):
+        diag.validate_public_result(result)
+
+
+def test_public_validator_enforces_relation_failure_class(monkeypatch):
+    result = valid_result(monkeypatch, extra_active=True)
+    result["diagnostic_class"] = "NO_V9_012_FAILURE_REPRODUCED"
+    with pytest.raises(diag.DiagnosticError, match="DIAGNOSTIC_RESULT_VALIDATION_FAILURE"):
+        diag.validate_public_result(result)
+
+
+def test_public_validator_rejects_relation_class_when_all_relation_checks_pass(monkeypatch):
+    result = valid_result(monkeypatch)
+    result["diagnostic_class"] = "RELATION_OR_SENTINEL_FAILURE"
+    with pytest.raises(diag.DiagnosticError, match="DIAGNOSTIC_RESULT_VALIDATION_FAILURE"):
+        diag.validate_public_result(result)
+
+
 def test_public_serializer_is_canonical_no_final_lf_and_has_no_outcome_or_path_values(monkeypatch):
     result = valid_result(monkeypatch)
     output = diag.serialize_public_result(result)
