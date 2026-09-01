@@ -148,7 +148,95 @@ empty payload, must be durably preserved and SHA-256 locked before any
 projection, schema, semantic, or data-quality inspection. After that lock,
 parser/schema/semantic/data-quality failure cannot cause a refetch.
 
-## 7. Canonical artifact contract
+## 7. Deterministic pagination and content-lock contract
+
+The `LOGICAL_SOURCE_OBJECT` is the complete ordered finite page chain for the
+one frozen base query. Pagination is continuation of the same logical source
+acquisition, not a retry, refetch, provider substitution, or source change.
+
+The page-1 request is exactly the frozen base query with no
+`pagination_key` parameter:
+
+```text
+page_1_query_from=2017-01-01
+page_1_query_to=2026-01-31
+page_1_query_hol_div=omitted
+page_1_pagination_key=absent
+```
+
+For every page N, the existing reviewed pre-complete retry policy is applied
+to that exact page request only: at most three attempts with `[5,30]`
+backoff and no jitter. On the first transport-complete HTTP-200 response for
+that page, the exact raw bytes are durably persisted and SHA-256 locked before
+JSON inspection. Once locked, that page is immutable and can never be
+refetched.
+
+After a page is locked, acquisition may inspect only the transport envelope
+needed to determine whether pagination continues. It must not inspect
+`Date`, `HolDiv`, projected rows, or any calendar semantic value. Semantic
+calendar processing begins only after the entire page chain has reached a
+terminal page and every page is durably locked.
+
+If a locked page has no `pagination_key` member, it is the terminal page and
+the chain is complete. If the member is present, it must be a non-empty
+string. Its exact value, without trimming, normalization, or substitution,
+must be used as the only pagination key in the next request. The next request
+must retain the exact base query and add exactly that server-issued key; no
+other query parameter, endpoint, provider, plan, or source identity may
+change. The key must come only from the immediately preceding locked page.
+
+Page indices advance strictly by one. A pagination key already observed in
+the chain, including a key repeated by a later page, is invalid. Page
+skipping, page reordering, a manually supplied key, a substituted key, or any
+page-order ambiguity is invalid. A present-but-null key, present-but-empty
+key, malformed pagination metadata, or inability to prove the exact chain is
+also invalid. These failures stop before any `Date`/`HolDiv` semantic calendar
+processing and never authorize a refetch.
+
+The safe page-chain provenance is deterministic and contains no raw
+pagination key:
+
+```text
+schema_version=V9_011_PAGE_CHAIN_PROVENANCE_V1
+base_query_identity_sha256
+endpoint_identity_sha256
+page_count
+pages
+terminal_page_index
+terminal_page_reached=true
+chain_lock_status=COMPLETE
+semantic_processing_precondition=ALL_PAGES_LOCKED_BEFORE_DATE_HOLDIV_INSPECTION
+```
+
+`pages` is ordered by the one-based `page_index` and each page entry binds:
+
+```text
+page_index
+page_request_identity_sha256
+byte_count
+payload_sha256
+continuation_issued
+continuation_key_sha256
+```
+
+For a terminal page, `continuation_issued=false` and
+`continuation_key_sha256=null`. For a continuing page,
+`continuation_issued=true` and `continuation_key_sha256` is the lowercase
+SHA-256 of the exact server-issued pagination-key bytes. The raw key remains
+machine-local durable state only. `page_request_identity_sha256` is the
+canonical digest of the exact endpoint identity, frozen base-query identity,
+page index, and continuation-key identity (or null for page 1); it is not a
+second source-selection mechanism.
+
+The provenance is emitted only after the terminal page is locked and all
+ordered page entries are present. This ordering proves page count, per-page
+byte counts, per-page payload digests, exact base-query identity, continuation
+status, non-secret key identity, terminal-page reachability, and complete
+chain locking before semantic processing. Parser, schema, semantic, or DQ
+repair may reprocess only this complete locked page chain and may never
+refetch a page.
+
+## 8. Canonical artifact contract
 
 The canonical artifact must bind at minimum:
 
@@ -187,7 +275,7 @@ creating credential material. Implementation and design Git SHAs must be
 lowercase exact 40-hex provenance values bound at the reviewed execution
 boundary.
 
-## 8. Future execution phases and authorization gates
+## 9. Future execution phases and authorization gates
 
 No real execution occurs under this design task. A future sequence is:
 
@@ -206,7 +294,7 @@ Until both GPT implementation review and the required future gates pass,
 `V9_009_HIGH_2` and `V9_009_MEDIUM_1` remain open. This design creates no
 purchase authority and no network authority.
 
-## 9. Deferred research state
+## 10. Deferred research state
 
 ```text
 V9_011_JQUANTS_TRADING_CALENDAR_SUCCESSOR_DESIGN=AWAITING_GPT_REVIEW
@@ -218,4 +306,3 @@ real_cache_reads=0
 real_outcome_calculations=0
 future_profitability_established=false
 ```
-
