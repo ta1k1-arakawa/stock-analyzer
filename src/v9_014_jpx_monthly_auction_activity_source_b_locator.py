@@ -37,6 +37,21 @@ a later stage; this module does not invent it). Label/report/month matching
 uses exact string equality only -- no fuzzy matching, case-folding,
 substring matching, or invented aliases.
 
+Every normal Report-2 monthly candidate and every April-2022 PRE
+special-reference candidate carries an explicit ``parent_year_page_url``
+provenance field. ``resolve_source_b_normal_month_object`` and
+``resolve_source_b_april_pre_object`` each require the caller to also pass
+the exact ``selected_year_page_url`` -- the same URL previously resolved by
+``resolve_source_b_year_page`` -- and only a candidate whose
+``parent_year_page_url`` equals that exact bound URL is eligible to match,
+in addition to its label/month semantics. A candidate whose parent snapshot
+URL differs from the selected year page fails closed (folds into the
+existing zero-candidates outcome) even when its report label, month, JPX
+domain, and PDF URL are all otherwise valid. Parenthood is never inferred
+from a child href's path, a year substring, archive numbering, a filename
+pattern, or the requested month -- only this explicit synthetic provenance
+identity binds a child to its parent.
+
 It performs NO network request, NO filesystem access, NO subprocess, NO
 environment/credential read, and NO durable-state access; it is not a real
 runner. It reuses the existing reviewed ``validate_jpx_url`` domain/scheme
@@ -119,11 +134,16 @@ class RootYearCandidate:
 class MonthlyReportCandidate:
     """One candidate object from a selected year's archive snapshot.
 
+    ``parent_year_page_url`` is the exact, already fully resolved absolute
+    URL of the year-page snapshot this candidate was extracted from -- it
+    must equal the exact URL previously resolved by
+    :func:`resolve_source_b_year_page` for the candidate to be eligible.
     ``report_label`` and ``month`` are the candidate's exact normalized
     traversal-semantic labels (never fuzzy-matched); ``href`` is its exact,
     already fully resolved absolute URL.
     """
 
+    parent_year_page_url: str
     report_label: str
     month: str
     href: str
@@ -131,8 +151,15 @@ class MonthlyReportCandidate:
 
 @dataclass(frozen=True)
 class AprilPreReferenceCandidate:
-    """One candidate object for the special 2022-04 PRE reference branch."""
+    """One candidate object for the special 2022-04 PRE reference branch.
 
+    ``parent_year_page_url`` is the exact, already fully resolved absolute
+    URL of the year-page snapshot this candidate was extracted from -- it
+    must equal the exact URL previously resolved by
+    :func:`resolve_source_b_year_page` for the candidate to be eligible.
+    """
+
+    parent_year_page_url: str
     label: str
     href: str
 
@@ -195,19 +222,45 @@ def resolve_source_b_year_page(
     return _finalize_selected_url(selected[0].href, require_pdf=False)
 
 
+def _bind_selected_parent_url(selected_year_page_url: object) -> LocatorResult | str:
+    """Validate and return the exact bound parent year-page URL, or a
+    closed-failure result. This is the single provenance anchor every child
+    candidate's ``parent_year_page_url`` must equal exactly."""
+
+    if not isinstance(selected_year_page_url, str) or not selected_year_page_url:
+        return LocatorResult(LOCATOR_INVALID_INPUT_FAILURE)
+    try:
+        return validate_jpx_url(selected_year_page_url)
+    except V9005StageABlocked:
+        return LocatorResult(LOCATOR_OFF_DOMAIN_OR_INVALID_URL_FAILURE)
+
+
 def resolve_source_b_normal_month_object(
-    year_page_candidates: Sequence[MonthlyReportCandidate], requested_month: str
+    year_page_candidates: Sequence[MonthlyReportCandidate],
+    requested_month: str,
+    *,
+    selected_year_page_url: str,
 ) -> LocatorResult:
     """Resolve exactly one normal Report-2 monthly PDF object.
 
-    The object comes only from the selected year's snapshot, matched by the
+    ``selected_year_page_url`` must be the exact URL previously resolved by
+    :func:`resolve_source_b_year_page`; it is itself validated against the
+    reviewed ``validate_jpx_url`` policy before any candidate is considered.
+    The object comes only from candidates whose own
+    ``parent_year_page_url`` equals that exact bound URL, matched by the
     exact Report 2 "Stock Trading Volume & Value" semantic label and the
-    exact requested month -- both by exact string equality only. This is the
-    same normal-month path used for every required logical month, including
-    the POST part of 2022-04; the April PRE special branch is resolved
-    separately by :func:`resolve_source_b_april_pre_object` and never
-    substituted here.
+    exact requested month -- all by exact string/URL equality only. A
+    candidate whose parent snapshot URL differs from the selected year page
+    is never eligible, even if its label, month, JPX domain, and PDF URL are
+    otherwise valid. This is the same normal-month path used for every
+    required logical month, including the POST part of 2022-04; the April
+    PRE special branch is resolved separately by
+    :func:`resolve_source_b_april_pre_object` and never substituted here.
     """
+
+    bound_parent_url = _bind_selected_parent_url(selected_year_page_url)
+    if isinstance(bound_parent_url, LocatorResult):
+        return bound_parent_url
 
     if not isinstance(requested_month, str) or requested_month not in REQUIRED_LOGICAL_MONTHS:
         return LocatorResult(LOCATOR_INVALID_INPUT_FAILURE)
@@ -219,7 +272,11 @@ def resolve_source_b_normal_month_object(
 
     selected = _select_unique(
         year_page_candidates,
-        lambda c: c.report_label == SOURCE_B_REPORT and c.month == requested_month,
+        lambda c: (
+            c.parent_year_page_url == bound_parent_url
+            and c.report_label == SOURCE_B_REPORT
+            and c.month == requested_month
+        ),
     )
     if isinstance(selected, LocatorResult):
         return selected
@@ -228,15 +285,26 @@ def resolve_source_b_normal_month_object(
 
 def resolve_source_b_april_pre_object(
     candidates: Sequence[AprilPreReferenceCandidate],
+    *,
+    selected_year_page_url: str,
 ) -> LocatorResult:
     """Resolve exactly one 2022-04 PRE special-reference-branch PDF object.
 
-    The PRE object comes only from the supplied exact special-reference
-    branch candidates, matched by exact label equality to
-    :data:`APRIL_1_2022_REFERENCE_LABEL` only. This is entirely separate
-    from the normal April Report-2 object resolved by
-    :func:`resolve_source_b_normal_month_object`.
+    ``selected_year_page_url`` must be the exact URL previously resolved by
+    :func:`resolve_source_b_year_page` for 2022; it is itself validated
+    against the reviewed ``validate_jpx_url`` policy before any candidate is
+    considered. The PRE object comes only from candidates whose own
+    ``parent_year_page_url`` equals that exact bound URL, matched by exact
+    label equality to :data:`APRIL_1_2022_REFERENCE_LABEL` only. A candidate
+    whose parent snapshot URL differs from the selected year page is never
+    eligible, even if its label, JPX domain, and PDF URL are otherwise
+    valid. This is entirely separate from the normal April Report-2 object
+    resolved by :func:`resolve_source_b_normal_month_object`.
     """
+
+    bound_parent_url = _bind_selected_parent_url(selected_year_page_url)
+    if isinstance(bound_parent_url, LocatorResult):
+        return bound_parent_url
 
     if not isinstance(candidates, (list, tuple)):
         return LocatorResult(LOCATOR_INVALID_INPUT_FAILURE)
@@ -244,7 +312,10 @@ def resolve_source_b_april_pre_object(
         if not isinstance(candidate, AprilPreReferenceCandidate):
             return LocatorResult(LOCATOR_INVALID_INPUT_FAILURE)
 
-    selected = _select_unique(candidates, lambda c: c.label == APRIL_1_2022_REFERENCE_LABEL)
+    selected = _select_unique(
+        candidates,
+        lambda c: c.parent_year_page_url == bound_parent_url and c.label == APRIL_1_2022_REFERENCE_LABEL,
+    )
     if isinstance(selected, LocatorResult):
         return selected
     return _finalize_selected_url(selected[0].href, require_pdf=True)
