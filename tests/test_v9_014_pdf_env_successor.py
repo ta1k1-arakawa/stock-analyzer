@@ -1171,6 +1171,157 @@ def test_staging_path_external_parent_symlink_toward_reserved_environment_reject
 
 
 # =============================================================================
+# HIGH_2B remediation: Resolve-ExistingAncestorRealPath (the .ps1 shared
+# helper) must walk the COMPLETE existing ancestor chain, not merely the
+# nearest existing ancestor. Root cause: the prior implementation found the
+# nearest existing ancestor and checked LinkType only on that single item;
+# a HIGHER ancestor further up the chain being a symlink/junction/reparse
+# point -- while the nearest existing ancestor below it is an ordinary
+# directory -- was not mechanically inspected.
+# =============================================================================
+
+
+@pytest.fixture(scope="module")
+def resolve_existing_ancestor_realpath_helper_block(staging_runner_source: str) -> str:
+    helper_start = staging_runner_source.index("function Resolve-ExistingAncestorRealPath")
+    preflight_4b_start = staging_runner_source.index("# Preflight 4b: StagingRoot REAL-PATH protected-state guard")
+    assert helper_start < preflight_4b_start
+    return staging_runner_source[helper_start:preflight_4b_start]
+
+
+def test_staging_runner_realpath_helper_walks_full_existing_ancestor_chain(
+    resolve_existing_ancestor_realpath_helper_block: str,
+):
+    # Test 12: a dedicated second loop walks EVERY existing ancestor, from
+    # the nearest existing one up to the filesystem root -- not merely
+    # `$existingItem`, the single nearest-existing-ancestor variable used
+    # by the pre-HIGH_2B implementation.
+    helper_block = resolve_existing_ancestor_realpath_helper_block
+    assert helper_block.count("while (") >= 2, "expected both the nearest-ancestor search loop and the full chain-walk loop"
+    assert "while ($true)" in helper_block
+    assert "$chainNode" in helper_block
+    assert "$chainItem" in helper_block
+    assert "$nearestExistingItem" in helper_block
+    assert "$existingItem" not in helper_block
+    # The chain walk terminates only at filesystem root, exactly like the
+    # nearest-existing-ancestor search preceding it -- not after a single
+    # inspection.
+    assert helper_block.count("[string]::IsNullOrEmpty(") >= 2
+    assert "Split-Path -Path $chainNode -Parent" in helper_block
+
+
+def test_staging_runner_realpath_helper_rejects_any_reparse_point_anywhere_in_chain(
+    resolve_existing_ancestor_realpath_helper_block: str,
+):
+    # Test 13: any existing ancestor anywhere in the chain -- not only the
+    # nearest one -- that is a symlink/junction/reparse point is rejected,
+    # via both LinkType and the ReparsePoint attributes bitmask (belt and
+    # suspenders: junctions do not always populate LinkType the same way
+    # symlinks do).
+    helper_block = resolve_existing_ancestor_realpath_helper_block
+    assert "PRE_GATE_PATH_REPARSE_ANCESTOR_CHATGPT_DECISION_REQUIRED" in helper_block
+    assert "$chainItem.LinkType" in helper_block
+    assert "$chainItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint" in helper_block
+
+
+def test_staging_runner_realpath_helper_never_follows_reparse_target_and_continues(
+    resolve_existing_ancestor_realpath_helper_block: str,
+):
+    # Test 14: the pre-HIGH_2B behavior of following a detected reparse
+    # point's `.Target` and continuing resolution through it must be
+    # entirely gone -- a detected reparse point is now an unconditional
+    # fail-closed `throw`, never a followed alias.
+    helper_block = resolve_existing_ancestor_realpath_helper_block
+    assert ".Target" not in helper_block
+    assert "Select-Object -First 1" not in helper_block
+
+
+def test_staging_runner_realpath_helper_fails_closed_on_ancestor_inspection_failure(
+    resolve_existing_ancestor_realpath_helper_block: str,
+):
+    # Test 15: an inability to inspect any ancestor's attributes -- not
+    # only the nearest one -- is CHATGPT_DECISION_REQUIRED, never assumed
+    # safe.
+    helper_block = resolve_existing_ancestor_realpath_helper_block
+    assert "try {" in helper_block
+    assert "} catch {" in helper_block
+    assert "-ErrorAction Stop" in helper_block
+    assert helper_block.count("PRE_GATE_PATH_SAFETY_UNDETERMINED_CHATGPT_DECISION_REQUIRED") >= 2
+
+
+def test_staging_runner_realpath_helper_shared_by_staging_and_output_root(staging_runner_source: str):
+    # Test 16: the same strengthened helper governs BOTH -StagingRoot and
+    # -OutputRoot (requirement #6 of the HIGH_2B remediation contract) --
+    # neither path gets a separate, weaker chain-walk implementation.
+    assert "$realResolvedStagingRoot = Resolve-ExistingAncestorRealPath -Path $StagingRoot" in staging_runner_source
+    assert "$realResolvedOutputRoot = Resolve-ExistingAncestorRealPath -Path $OutputRoot" in staging_runner_source
+
+
+def _make_alias_with_existing_normal_parent(tmp_path: Path, reserved_leaf_name: str) -> Path:
+    """Build the MANDATORY regression shape: `external_alias` is a
+    symlink toward a stand-in reserved-environment directory;
+    `external_alias/existing-normal-parent/` EXISTS as an ORDINARY
+    (non-symlink) directory; the caller then appends a NONEXISTENT leaf
+    underneath it. Returns that nonexistent leaf path. Raises
+    `pytest.skip` if symlinks are unavailable in this environment.
+    """
+    if not hasattr(Path, "symlink_to"):
+        pytest.skip("symlink support unavailable in this environment")
+    fake_repo = tmp_path / "fake-repo-alias-chain"
+    fake_repo.mkdir()
+    fake_reserved_environment = fake_repo / reserved_leaf_name
+    fake_reserved_environment.mkdir()
+    external_alias = tmp_path / "external-alias-toward-reserved-environment"
+    try:
+        external_alias.symlink_to(fake_reserved_environment, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted in this environment")
+
+    existing_normal_parent = external_alias / "existing-normal-parent"
+    existing_normal_parent.mkdir()
+    assert existing_normal_parent.exists()
+    assert not existing_normal_parent.is_symlink()
+
+    nonexistent_leaf = existing_normal_parent / "nonexistent-leaf"
+    assert not nonexistent_leaf.exists()
+    return nonexistent_leaf
+
+
+def test_staging_path_nested_normal_child_under_higher_alias_rejected(tmp_path: Path):
+    # MANDATORY regression case (runtime fixture): the nearest existing
+    # ancestor of StagingRoot ("existing-normal-parent") is an ORDINARY
+    # directory -- not itself a symlink -- but a HIGHER ancestor
+    # ("external_alias") IS a symlink/junction toward a stand-in reserved
+    # environment. This shape must still be rejected before any mutation.
+    # The Python semantic authority (validate_staging_path, unmodified by
+    # this HIGH_2B remediation) already walks every ancestor -- existing
+    # or not -- of the supplied path, so it already covers this exact
+    # shape; this proves that contract explicitly for the specific shape
+    # named in the HIGH_2B task rather than relying on the more general
+    # existing symlink regression above.
+    nonexistent_staging_child = _make_alias_with_existing_normal_parent(tmp_path, ".venv-real-execution")
+    result = env_successor.validate_staging_path(nonexistent_staging_child, repo_root=REPO_ROOT)
+    assert result.status == env_successor.STAGING_PATH_IS_SYMLINK_FAILURE
+
+
+def test_output_path_nested_normal_child_under_higher_alias_rejected(tmp_path: Path):
+    # Analogous OutputRoot regression: the shared .ps1 helper governs both
+    # -StagingRoot and -OutputRoot path-safety decisions, so both must
+    # reject the same "ordinary nearest ancestor beneath a higher alias"
+    # shape. Uses a distinct, non-overlapping staging_root argument so the
+    # StagingRoot-overlap checks in validate_output_path never trigger
+    # first and mask the symlink-chain check under test.
+    nonexistent_output_child = _make_alias_with_existing_normal_parent(tmp_path, ".venv")
+    unrelated_staging_root = tmp_path / "unrelated-staging-root-not-created"
+    result = env_successor.validate_output_path(
+        nonexistent_output_child,
+        staging_root=unrelated_staging_root,
+        repo_root=REPO_ROOT,
+    )
+    assert result.status == env_successor.OUTPUT_PATH_IS_SYMLINK_FAILURE
+
+
+# =============================================================================
 # No real source/PDF/network/trading_dates/profitability paths anywhere in
 # the new E2 files
 # =============================================================================

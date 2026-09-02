@@ -21,8 +21,11 @@
 #     NEVER reused: -OutputRoot must not already exist, must not alias
 #     or overlap -StagingRoot in either direction, must not be inside
 #     the repository, and must not be, or be nested inside, either
-#     reserved environment -- re-verified against the nearest existing
-#     ancestor's real, symlink/junction/reparse-resolved path);
+#     reserved environment -- re-verified against both paths' COMPLETE
+#     existing-ancestor chains, from the nearest existing ancestor all
+#     the way to the filesystem root, never merely the nearest one; ANY
+#     symlink/junction/reparse point anywhere in either chain is
+#     rejected outright -- never followed and continued through);
 #   - NEVER creates, writes to, deletes, or resets
 #     ".venv-real-execution" (the canonical protected environment) or
 #     ".venv" (the separate general project environment) -- neither
@@ -181,17 +184,25 @@ param(
 
     # ------------------------------------------------------------------
     # Shared helper: resolve the nearest EXISTING ancestor of a path,
-    # following its real (symlink/junction/reparse-resolved) target if
-    # that ancestor is itself a reparse point, then reattach the
-    # not-yet-existing suffix. Used below to re-verify path safety on
-    # REAL resolved paths, not merely lexical ones -- so an external
-    # parent symlink/junction whose real target lands inside the repo or
-    # a reserved environment is caught even when the leaf path itself
-    # does not yet exist. If a required path-safety decision cannot be
-    # established reliably (no existing ancestor found, or a reparse
-    # point's target cannot be read), this fails closed with
-    # CHATGPT_DECISION_REQUIRED rather than falling back to lexical
-    # safety.
+    # under a CONSERVATIVE fail-closed policy. Finding the nearest
+    # existing ancestor alone is not sufficient: an ordinary directory
+    # can sit directly beneath a HIGHER symlink/junction/reparse point
+    # (e.g. an external alias whose immediate child is a perfectly normal
+    # directory, itself containing the not-yet-existing StagingRoot/
+    # OutputRoot leaf) -- inspecting only the nearest existing ancestor
+    # would silently miss that higher alias entirely. This helper instead
+    # walks EVERY existing ancestor, from the nearest one up to the
+    # filesystem root, and fails closed the instant ANY of them is a
+    # reparse point of any kind. It never follows an alias's target and
+    # "continues through" it optimistically: a detected reparse point
+    # anywhere in the existing ancestor chain is CHATGPT_DECISION_REQUIRED,
+    # full stop -- as is any failure to inspect an ancestor's attributes,
+    # or finding no existing ancestor at all. Only once the ENTIRE
+    # existing ancestor chain is proven reparse-point-free does this
+    # return the nearest existing ancestor's own (unaliased) real path,
+    # with the not-yet-existing suffix reattached, for the caller's
+    # lexical repo/reserved/overlap checks to rely on. Used for BOTH
+    # -StagingRoot and -OutputRoot, since both call this same helper.
     # ------------------------------------------------------------------
     function Resolve-ExistingAncestorRealPath {
         param([Parameter(Mandatory = $true)][string]$Path)
@@ -205,14 +216,34 @@ param(
             }
             $current = $parent
         }
-        $existingItem = Get-Item -LiteralPath $current -Force
-        $resolvedExisting = $existingItem.FullName
-        if ($existingItem.LinkType) {
-            if (-not $existingItem.Target) {
-                throw "PRE_GATE_PATH_SAFETY_UNDETERMINED_CHATGPT_DECISION_REQUIRED: reparse point '$current' has no readable target."
+
+        # Walk the COMPLETE existing ancestor chain -- $current (the
+        # nearest existing ancestor) and every existing directory above
+        # it, all the way to the filesystem root -- inspecting each for
+        # a reparse point. This never stops at the first existing
+        # ancestor the way plain path resolution would.
+        $nearestExistingItem = $null
+        $chainNode = $current
+        while ($true) {
+            try {
+                $chainItem = Get-Item -LiteralPath $chainNode -Force -ErrorAction Stop
+            } catch {
+                throw "PRE_GATE_PATH_SAFETY_UNDETERMINED_CHATGPT_DECISION_REQUIRED: unable to inspect existing ancestor '$chainNode' of '$Path': $($_.Exception.Message)"
             }
-            $resolvedExisting = $existingItem.Target | Select-Object -First 1
+            if ($null -eq $nearestExistingItem) {
+                $nearestExistingItem = $chainItem
+            }
+            if ($chainItem.LinkType -or ($chainItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                throw "PRE_GATE_PATH_REPARSE_ANCESTOR_CHATGPT_DECISION_REQUIRED: existing ancestor '$chainNode' of '$Path' is a symlink/junction/reparse point; refusing to resolve through it."
+            }
+            $chainParent = Split-Path -Path $chainNode -Parent
+            if ([string]::IsNullOrEmpty($chainParent) -or $chainParent -eq $chainNode) {
+                break
+            }
+            $chainNode = $chainParent
         }
+
+        $resolvedExisting = $nearestExistingItem.FullName
         foreach ($part in $suffixParts) {
             $resolvedExisting = Join-Path $resolvedExisting $part
         }
