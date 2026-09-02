@@ -116,8 +116,8 @@ this state definition, and is written to match it exactly.
 
 **State 2 -- `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`**
 (begins at the instant Stage E9 starts its canonical mutation, holds
-through Stages E10, E11, and E12 -- the entire exact-SHA promotion chain
-up to and including Stage E13's own review):
+through Stages E10, E11, E12, E13, and E14 -- the entire exact-SHA
+promotion chain up to and including Stage E15's own review):
 
 - from this instant, `.venv-real-execution` is **no longer** described as
   unchanged, frozen, or "live canonical" in the predecessor sense -- it is
@@ -125,26 +125,32 @@ up to and including Stage E13's own review):
   may claim otherwise while this state holds;
 - the successor environment is **not yet** canonical or frozen either --
   no stage may claim `CANONICAL_ENVIRONMENT_STATUS` for the successor
-  package set until State 3 is reached;
+  package set until State 3 is reached; in particular, Stage E13's own
+  `PASS` confers only `FINAL_PROMOTION_ARTIFACTS_AND_TOOLING_REVIEW=PASS`
+  and never `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_CANONICAL_FROZEN` or
+  `V9_014_PDF_ENVIRONMENT_SUCCESSOR_PROMOTED=true`;
 - **NO** protected/private/research execution of any kind is permitted
   under either the predecessor's or the successor's environment authority
-  while this state holds -- across E9, E10, E11, and E12 alike;
+  while this state holds -- across E9, E10, E11, E12, E13, and E14 alike;
 - only the reviewed migration operation (Stage E9), its no-network
   live-validation operation (Stage E10), its evidence-commit-and-review
-  checkpoint (Stage E11), and its post-review freeze/promotion-record
-  finalization (Stage E12) are permitted, each under its own separate
-  point-of-use authority (Section 5);
-- **no automatic rollback, reset, delete, recreate, or retry** occurs on
-  failure at any point while this state holds (Section 6), including a
-  Stage E11 review `BLOCK`: a failure or a `BLOCK` is preserved as durable
+  checkpoint (Stage E11), its post-review freeze/promotion-record
+  finalization (Stage E12), the freeze-record/tooling commit-and-review
+  checkpoint (Stage E13), and the final no-network live reverification of
+  that exact reviewed checkout (Stage E14) are permitted, each under its
+  own separate point-of-use authority (Section 5);
+- **no automatic rollback, reset, delete, recreate, retry, or reinstall**
+  occurs on failure at any point while this state holds (Section 6),
+  including a Stage E11, E13, or E15 review `BLOCK`, or a Stage E14
+  verification failure: a failure or a `BLOCK` is preserved as durable
   evidence and returns control to GPT/human authority rather than being
   silently resolved, and `CANONICAL_ENVIRONMENT_STATE` simply remains
   `SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED` until a human/GPT
   decision moves the work forward.
 
 **State 3 -- `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_CANONICAL_FROZEN`**
-(begins only once Stage E13's GPT exact-SHA review of the Stage E12
-freeze/promotion-record commit is `PASS`):
+(begins only once Stage E15's GPT exact-SHA review of the Stage E14 final
+freeze verification evidence commit is `PASS`):
 
 - only now is the mutated `.venv-real-execution` accepted as successor
   canonical/frozen for the successor package set;
@@ -157,13 +163,17 @@ freeze/promotion-record commit is `PASS`):
 The correct mutation gate, stated once and unambiguously: **no mutation of
 any kind through Stage E8's `PASS`; Stage E9 alone is the sole stage
 authorized to perform the canonical mutation, under its own fresh
-point-of-use authority; Stage E13 alone is the sole stage that may declare
+point-of-use authority; Stage E15 alone is the sole stage that may declare
 the mutated environment accepted as successor canonical/frozen.** E9 and
-E13 are deliberately not the same stage, and are separated by three
-further checkpoints (E10 live validation, E11 evidence-commit exact-SHA
-review, E12 freeze-record finalization) so that the exact-SHA provenance
-chain from mutation through acceptance is never assumed, only reviewed.
-Throughout E9-E12 (State 2), the environment is in a migration-in-progress
+E15 are deliberately not the same stage, and are separated by five further
+checkpoints (E10 live validation, E11 evidence-commit exact-SHA review,
+E12 freeze-record finalization, E13 freeze-record/tooling commit-and-
+review -- artifact correctness only, not promotion -- and E14 final
+no-network live reverification of that exact reviewed checkout) so that
+the exact-SHA provenance chain from mutation through acceptance is never
+assumed, only reviewed, and the final promoted state is itself proven to
+mechanically hold on the live environment before it is ever declared.
+Throughout E9-E14 (State 2), the environment is in a migration-in-progress
 state that is neither the old canonical nor the new canonical, and no
 protected execution of any kind is permitted against it.
 
@@ -260,14 +270,16 @@ one-shot resolution against the staging environment.
 A distinct V9_014 environment-successor identity is defined so the
 predecessor's frozen environment history (Section 1) remains fully
 auditable and is never silently overwritten. The successor path is
-composed of five distinct artifacts, each with its own name and its own
+composed of six distinct artifacts, each with its own name and its own
 lifecycle status, mirroring -- but never replacing -- the predecessor's
 four-artifact shape (`requirements-real-execution.txt` /
 `REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json` /
 `REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json` /
-`REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json`), plus one additional
-artifact the predecessor path has no analogue for: durable evidence of the
-live canonical migration itself.
+`REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json`), plus two additional
+artifacts the predecessor path has no analogue for: durable evidence of
+the live canonical migration itself, and durable evidence that the final
+reviewed promotion commit itself mechanically passes on the already-
+mutated canonical environment.
 
 | Role | Successor artifact name (future; not created by this task) | Predecessor analogue | Produced by |
 |---|---|---|---|
@@ -275,13 +287,15 @@ live canonical migration itself.
 | Successor resolved lock candidate | `V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json` | `REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json` | Stage E5/E6 (staging-environment one-shot resolution result), committed at Stage E7 |
 | Successor Windows validation evidence | `V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_WINDOWS_VALIDATION_EVIDENCE.json` | `REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json` | Stage E6 (staging-environment inspection, including the operational PDF probe result), committed at Stage E7 |
 | Successor live canonical validation evidence | `V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LIVE_CANONICAL_VALIDATION_EVIDENCE.json` | (none -- predecessor path has no live-migration analogue) | Stage E10 (post-mutation live validation of `.venv-real-execution`), committed at Stage E11 and independently exact-SHA reviewed there |
-| Successor freeze/promotion record | `V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FREEZE_RECORD.json` | `REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json` | Stage E12 (only after Stage E11's `PASS`), committed at Stage E13 and independently exact-SHA reviewed there |
+| Successor freeze/promotion record | `V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FREEZE_RECORD.json` | `REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json` | Stage E12 (only after Stage E11's `PASS`), committed and reviewed for artifact/tooling correctness at Stage E13 (this review does **not** itself promote -- see Stage E13) |
+| Successor final freeze verification evidence | `V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FINAL_FREEZE_VERIFICATION_EVIDENCE.json` | (none -- predecessor path has no final-live-reverification analogue) | Stage E14 (no-network live verification of the exact E13-reviewed checkout against the already-mutated `.venv-real-execution`), committed at Stage E15 and independently exact-SHA reviewed there -- **this** is the review that actually promotes |
 
-None of these five artifacts is created, populated, or reserved by this
+None of these six artifacts is created, populated, or reserved by this
 design task; it only fixes their names, roles, and exact producing stage.
 See Section 5b for the live canonical validation evidence artifact's
-required content, and Section 5, Stage E12 for the freeze/promotion
-record's required content.
+required content, Section 5, Stage E12 for the freeze/promotion record's
+required content, and Section 5c for the final freeze verification
+evidence artifact's required content.
 
 **Correction to the prior revision:** Stage E2 produces **only** the
 successor direct-spec candidate (the first artifact above) plus the
@@ -298,18 +312,25 @@ If the repository's existing generic canonical environment files
 `REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json`,
 `REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json`) must eventually change to
 incorporate the successor, that change occurs **only** as part of the live
-canonical-promotion sequence (Section 5, Stages E9-E13), finalized no
-earlier than Stage E12 and committed and reviewed only at Stage E13 --
-never fabricated or finalized earlier at Stage E8, which may only plan and
-draft which items need updating (Section 6a). This is gated on the
-successor candidate/evidence artifacts having themselves passed exact-SHA
-review (Section 5, Stage E7 `PASS`), the promotion-completeness review
-(Section 5, Stage E8 `PASS`), the live-validation evidence commit review
-(Section 5, Stage E11 `PASS`), and finally the freeze/promotion-record
-commit's own exact-SHA review (Section 5, Stage E13 `PASS`). This design
-task does not perform, schedule, or pre-approve that promotion; it only
-defines the conditions under which one may later occur. See Section 6a for
-the full promotion-completeness scope.
+canonical-promotion sequence (Section 5, Stages E9-E15), finalized no
+earlier than Stage E12 and committed at Stage E13 -- but Stage E13's own
+review confers only artifact/tooling correctness, never promotion itself
+(Section 5, Stage E13). Actual promotion requires Stage E14's no-network
+live reverification of that exact E13 checkout against the already-
+mutated environment, and only Stage E15's exact-SHA review of E14's
+evidence commit may declare the environment successor canonical/frozen.
+None of this is fabricated or finalized earlier at Stage E8, which may
+only plan and draft which items need updating (Section 6a). This is gated
+on the successor candidate/evidence artifacts having themselves passed
+exact-SHA review (Section 5, Stage E7 `PASS`), the promotion-completeness
+review (Section 5, Stage E8 `PASS`), the live-validation evidence commit
+review (Section 5, Stage E11 `PASS`), the freeze/promotion-record and
+generic-authority-artifact commit's own exact-SHA review (Section 5, Stage
+E13 `PASS`), and finally the final freeze verification evidence commit's
+exact-SHA review (Section 5, Stage E15 `PASS`). This design task does not
+perform, schedule, or pre-approve that promotion; it only defines the
+conditions under which one may later occur. See Section 6a for the full
+promotion-completeness scope.
 
 ## 5. Resolution / execution phases
 
@@ -323,14 +344,20 @@ validating the successor **only** in the non-canonical staging environment
 E1-E8, including E8's promotion-completeness review. Stage E9 is the sole
 stage that transitions the state to
 `SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED` and performs the
-canonical mutation, gated on both E7's `PASS` and E8's `PASS`. Stages E10,
-E11, and E12 all run under that same in-progress state -- E10 produces
+canonical mutation, gated on both E7's `PASS` and E8's `PASS`. Stages E10
+through E14 all run under that same in-progress state -- E10 produces
 live-validation evidence, E11 is the repo-writing checkpoint that commits
-and exact-SHA-reviews that evidence, and E12 (only after E11's `PASS`)
-finalizes the freeze/promotion record. Stage E13 alone -- reviewing E12's
-own commit -- transitions the state to `SUCCESSOR_CANONICAL_FROZEN`. No
-stage before E13 may claim, set, or imply
-`V9_014_PDF_ENVIRONMENT_SUCCESSOR_PROMOTED=true`.
+and exact-SHA-reviews that evidence, E12 (only after E11's `PASS`)
+finalizes the freeze/promotion record, E13 commits that record (and any
+E12-authorized generic-authority updates) and obtains its own exact-SHA
+review that confers **only** `FINAL_PROMOTION_ARTIFACTS_AND_TOOLING_REVIEW=PASS`
+-- never promotion itself -- and E14 (only after E13's `PASS`) performs a
+final no-network live reverification of that exact E13-reviewed checkout
+against the already-mutated `.venv-real-execution`, capturing the sixth
+successor artifact. Stage E15 alone -- reviewing E14's evidence commit --
+transitions the state to `SUCCESSOR_CANONICAL_FROZEN`. No stage before E15
+may claim, set, or imply `V9_014_PDF_ENVIRONMENT_SUCCESSOR_PROMOTED=true`
+or `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_CANONICAL_FROZEN`.
 
 ```
 E1  This successor-design exact-SHA GPT PASS.
@@ -425,7 +452,7 @@ E9  Separately authorized live canonical-promotion operation: only after
     2): the predecessor environment is no longer claimed unchanged/
     frozen/canonical from this point, the successor is not yet claimed
     canonical/frozen, and NO protected/private/research execution is
-    permitted under either environment's authority until State 3 (E13
+    permitted under either environment's authority until State 3 (E15
     `PASS`).
 
 E10 Post-mutation live validation, performed entirely under
@@ -446,7 +473,7 @@ E10 Post-mutation live validation, performed entirely under
       (Section 4, artifact 4; content requirements in Section 5b) --
       captured here, but NOT YET committed or reviewed
     - this stage does **not** transition `CANONICAL_ENVIRONMENT_STATE` to
-      `SUCCESSOR_CANONICAL_FROZEN` under any outcome; only Stage E13 may
+      `SUCCESSOR_CANONICAL_FROZEN` under any outcome; only Stage E15 may
       do that
     - **NO** protected/private/research execution occurs during this
       stage, under either the predecessor's or the successor's authority
@@ -493,9 +520,14 @@ E12 Freeze/promotion-record finalization, performed only after Stage
         observed at Stage E10 (not re-guessed or re-derived)
       - `future_protected_execution_authorized=false`
     - this record **never** claims its own commit's SHA was reviewed
-      before that commit exists -- it binds only already-reviewed prior
-      SHAs (E7, E8, E11) and previously captured E10 evidence; it is
-      itself submitted for review only at Stage E13, after it is written
+      before that commit exists, and **never** fabricates its own future
+      Stage E13 commit SHA or any future Stage E14/E15 SHA -- it binds
+      only already-reviewed prior SHAs (E7, E8, E11) and previously
+      captured E10 evidence; it is itself submitted for review only at
+      Stage E13, after it is written. The provenance chain is closed
+      later, without self-reference, by Stage E14 (which binds the actual
+      exact Stage E13 commit SHA and this record's actual Git blob hash
+      once both exist) and Stage E15 (which reviews E14's evidence).
     - any generic canonical freeze/authority artifact whose final values
       depend on E10/E11 evidence (per the already-reviewed Stage E8
       promotion-completeness plan, Section 6a) is finalized **only** at
@@ -506,17 +538,70 @@ E12 Freeze/promotion-record finalization, performed only after Stage
 E13 Commit the freeze/promotion record (Section 4, artifact 5) and any
     Stage E12-authorized final updates to the generic canonical-authority
     artifacts (Section 6a) as one explicitly scoped commit. GPT
-    independently reviews that exact 40-hex commit SHA. **Only** a `PASS`
-    on this exact commit transitions `CANONICAL_ENVIRONMENT_STATE` to
-    `SUCCESSOR_CANONICAL_FROZEN` (Section 2a, State 3) and promotes
-    `.venv-real-execution` to `CANONICAL_ENVIRONMENT_STATUS` for the
-    successor package set. **Only** this `PASS` may set
-    `V9_014_PDF_ENVIRONMENT_SUCCESSOR_PROMOTED=true`. Only after this
-    `PASS` may V9_014 PDF calibration-runner Stage C (per
+    independently reviews that exact 40-hex commit SHA. This is a **review
+    of artifacts and tooling only**: a `PASS` here means **exclusively**
+    `FINAL_PROMOTION_ARTIFACTS_AND_TOOLING_REVIEW=PASS`. It **MUST NOT**,
+    and does not, yet transition `CANONICAL_ENVIRONMENT_STATE` to
+    `SUCCESSOR_CANONICAL_FROZEN`, and **MUST NOT**, and does not, yet set
+    `V9_014_PDF_ENVIRONMENT_SUCCESSOR_PROMOTED=true` -- the state remains
+    `SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED` (Section 2a, State 2)
+    after this `PASS`. A `BLOCK` at this stage follows the same rule as
+    E11: **STOP**, state remains
+    `SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`, no
+    rollback/retry/re-execution.
+
+E14 Final NO-NETWORK live verification, performed only after Stage E13's
+    `PASS`, still under
+    `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`.
+    A separately reviewed Phase A/C-style verification, using **exactly**
+    the Stage E13-reviewed checkout:
+    - **NO** package install, **NO** environment mutation (staging or
+      canonical), **NO** network access, **NO** re-execution or rerun of
+      Stage E9's mutation, and **NO** re-execution or rerun of Stage E10's
+      validation merely to seek a `PASS` -- this stage only inspects and
+      verifies what already exists
+    - mechanically verify, before running anything else: repo/branch;
+      local `HEAD` equals the exact Stage E13 reviewed SHA; remote `HEAD`
+      equals that same SHA; a clean working tree; the frozen V9_014 design
+      provenance (Section 1); the final freeze record's and the live
+      canonical validation evidence's exact Git blobs; and the canonical
+      interpreter identity
+    - then invoke the **final, Stage E13-reviewed** canonical checker
+      (the Section 6a-updated `scripts/check_real_execution_env.py`)
+      against the existing, already-mutated `.venv-real-execution` --
+      never against a freshly created or re-mutated environment
+    - require it to mechanically prove, at minimum:
+      `REAL_EXECUTION_ENVIRONMENT_READY=true`,
+      `REAL_EXECUTION_ENVIRONMENT_FROZEN=true`, the exact successor
+      package set, a `PASS` binding against the final environment-lock
+      artifact, a `PASS` binding against the final freeze record, a `PASS`
+      on the synthetic XLS probe, a `PASS` on the synthetic PDF
+      operational probe (Section 5a), and a `PASS` on the exact
+      Python/platform fingerprint
+    - capture the successor final freeze verification evidence artifact
+      (Section 4, artifact 6; content requirements in Section 5c) --
+      captured here, but NOT YET committed or reviewed
+    - if verification fails in any respect: **STOP**. **NO**
+      retry/reset/rollback/reinstall of any kind. State remains
+      `SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`; the failure is
+      preserved as durable evidence and control returns to GPT/human
+      authority
+
+E15 Commit **only** the successor final freeze verification evidence
+    (Section 4, artifact 6) captured at Stage E14, plus the minimum
+    authorized state/log recording needed for provenance -- **NO**
+    environment mutation and **NO** re-execution or rerun of any prior
+    stage occurs here. GPT independently reviews that exact commit.
+    **Only** a `PASS` on this exact commit transitions
+    `CANONICAL_ENVIRONMENT_STATE` to `SUCCESSOR_CANONICAL_FROZEN` (Section
+    2a, State 3) and promotes `.venv-real-execution` to
+    `CANONICAL_ENVIRONMENT_STATUS` for the successor package set. **Only**
+    this `PASS` may set `V9_014_PDF_ENVIRONMENT_SUCCESSOR_PROMOTED=true`.
+    Only after this `PASS` may V9_014 PDF calibration-runner Stage C (per
     `V9_014_SOURCE_B_PDF_STRUCTURAL_CALIBRATION_METHOD_CONTRACT.md`
     Section 7) begin, subject to that stage's own required authority. A
-    `BLOCK` at this stage follows the same rule as E11: **STOP**, state
-    remains `SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`, no
+    `BLOCK` at this stage follows the same rule as E11/E13: **STOP**,
+    state remains `SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`, no
     rollback/retry/re-execution.
 ```
 
@@ -581,6 +666,59 @@ contain/bind, at minimum:
 This artifact contains **no** private path, raw payload, or secret
 material of any kind. It is evidence of environment mechanics only.
 
+### 5c. Final freeze verification evidence artifact
+
+The successor final freeze verification evidence artifact (Section 4,
+artifact 6:
+`V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FINAL_FREEZE_VERIFICATION_EVIDENCE.json`)
+is safe, durable evidence that the **final reviewed promotion commit
+itself** (Stage E13) mechanically passes on the already-mutated canonical
+Windows environment, captured at Stage E14 and committed/independently
+exact-SHA reviewed at Stage E15 (Section 5). It exists precisely because
+Stage E13's own review only certifies the artifacts and tooling are
+correct on paper -- it does not by itself prove the live environment still
+mechanically satisfies them, and this artifact is what closes that gap
+without self-reference (Stage E12's freeze record binds only what already
+existed at E12 time; this artifact binds the actual E13 commit SHA and the
+freeze record's actual blob hash once both exist). It must eventually
+bind, at minimum:
+
+- the exact final promotion Git SHA being validated (the Stage E13
+  reviewed commit)
+- the exact final freeze-record Git blob/hash (Section 4, artifact 5, as
+  committed at Stage E13)
+- the exact final canonical lock/candidate authority identities (the
+  successor lock candidate and any generic canonical lock/candidate
+  artifacts updated at Stage E13 per the Stage E8 plan)
+- the exact final checker/tooling Git identities (the Section 6a-updated
+  `scripts/check_real_execution_env.py` and any companion tooling, as
+  committed at Stage E13)
+- the canonical interpreter/platform identity actually observed at Stage
+  E14 (`.venv-real-execution\Scripts\python.exe`, Python
+  implementation/version, OS/platform fingerprint)
+- the exact live package-set fingerprint/hash/count, as actually observed
+  by Stage E14's inspection of `.venv-real-execution` -- not re-derived
+  from any earlier stage's record
+- the Stage E14 environment-lock check result
+- the Stage E14 environment-freeze check result
+- `REAL_EXECUTION_ENVIRONMENT_READY` as actually observed (must be `true`
+  for Stage E14 to have succeeded at all)
+- `REAL_EXECUTION_ENVIRONMENT_FROZEN` as actually observed (must be `true`
+  for Stage E14 to have succeeded at all)
+- the synthetic XLS probe result as actually observed at Stage E14
+- the synthetic PDF operational probe result as actually observed at
+  Stage E14 (Section 5a)
+- the Stage E14 verification process's exact exit code
+- explicit counts, each `0`: network requests, protected reads, private
+  reads, and source-acquisition operations performed by Stage E14
+- an explicit statement that **no** profitability or `trading_dates`
+  claim is made by this artifact
+
+This artifact contains **no** private path, raw payload, or secret
+material of any kind. It is evidence of environment mechanics only, and it
+is the artifact whose own Stage E15 review is the sole event that may
+transition `CANONICAL_ENVIRONMENT_STATE` to `SUCCESSOR_CANONICAL_FROZEN`.
+
 ## 6. Fail-closed
 
 The following are never permitted at any stage of this successor path,
@@ -594,23 +732,30 @@ in either the staging environment or the live canonical environment:
   mutation, or from the predecessor environment's own authorization)
 - environment deletion/reset performed to erase failure evidence, whether
   of the staging venv (Section 2b) or of `.venv-real-execution` after a
-  Stage E9/E10/E11/E13 failure or `BLOCK`
+  Stage E9/E10/E11/E13/E14/E15 failure or `BLOCK`
 - upgrading, downgrading, or removing an existing predecessor pin to
   resolve an incompatibility (Section 3a) rather than stopping under
   `CHATGPT_DECISION_REQUIRED`
 - re-executing Stage E9's mutation or Stage E10's validation in response
-  to a Stage E11 or Stage E13 `BLOCK` -- a `BLOCK` at either stage leaves
+  to a Stage E11, E13, or E15 `BLOCK`, or in response to a Stage E14
+  verification failure -- a `BLOCK` or failure at any of these stages
+  leaves
   `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`
   and requires a new, separately reviewed remediation task, never an
   automatic retry from within this sequence
+- reinstalling, repairing, or otherwise mutating the package set at Stage
+  E14 in response to a check failure -- Stage E14 only inspects; it never
+  fixes
 - claiming or setting `V9_014_PDF_ENVIRONMENT_SUCCESSOR_PROMOTED=true`, or
-  claiming `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_CANONICAL_FROZEN`,
-  before Stage E13's own exact-SHA review is `PASS`
+  claiming `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_CANONICAL_FROZEN`, at
+  Stage E13 or at any stage before Stage E15's own exact-SHA review is
+  `PASS` -- Stage E13's `PASS` confers only
+  `FINAL_PROMOTION_ARTIFACTS_AND_TOOLING_REVIEW=PASS`
 
 No package shopping is permitted until a stage's own GPT `PASS` is
 recorded.
 
-Any governance decision needed to fully specify E2-E13 that is not already
+Any governance decision needed to fully specify E2-E15 that is not already
 answered by this document, by
 `V9_014_SOURCE_B_PDF_STRUCTURAL_CALIBRATION_METHOD_CONTRACT.md`, or by
 existing repository governance (`AI_RESEARCH_EXECUTION_RULES.md`,
@@ -620,7 +765,7 @@ may not be decided unilaterally by an executor at implementation time.
 
 ### 6a. Promotion completeness
 
-Stage E8's promotion-completeness review is not limited to the five
+Stage E8's promotion-completeness review is not limited to the six
 successor artifacts named in Section 4. At minimum, that review must
 explicitly assess whether an update is needed to **each** of the following
 mechanically coupled canonical-authority items, and record its
