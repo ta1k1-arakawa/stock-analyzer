@@ -13,6 +13,11 @@ from src.v9_005_stage_a_jpx_probe import V9005StageABlocked
 
 
 ROOT_URL = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/index.html"
+# A different, but genuinely valid HTTPS same-domain JPX page -- must never
+# be accepted as a substitute for the exact frozen root.
+FAKE_SAME_DOMAIN_ROOT = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/other.html"
+# Differs from ROOT_URL only by a trailing empty query string.
+ROOT_URL_DIFFERING_ONLY_BY_TRAILING_QUERY = ROOT_URL + "?"
 YEAR_PAGE_URL_2019 = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/archives/2019.html"
 YEAR_PAGE_URL_2022 = "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/archives/2022.html"
 
@@ -25,13 +30,34 @@ def _month_table(rows_html: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# ROOT -> YEAR CANDIDATES
+# ROOT -> YEAR CANDIDATES, bound to the exact frozen SOURCE_B_ARCHIVE_ROOT
 # ---------------------------------------------------------------------------
+
+def test_root_exact_frozen_root_valid_year_anchor_passes():
+    html = b'<a href="archives/2019.html">2019</a>'
+    candidates = parser.extract_root_year_candidates(html, parser.SOURCE_B_ARCHIVE_ROOT, 2019)
+    assert candidates == (loc.RootYearCandidate(label="2019", href=YEAR_PAGE_URL_2019),)
+
 
 def test_root_valid_relative_year_href_yields_exact_absolute_candidate():
     html = b'<a href="archives/2019.html">2019</a>'
     candidates = parser.extract_root_year_candidates(html, ROOT_URL, 2019)
     assert candidates == (loc.RootYearCandidate(label="2019", href=YEAR_PAGE_URL_2019),)
+
+
+def test_root_another_valid_same_domain_jpx_page_fails():
+    # FAKE_SAME_DOMAIN_ROOT is genuinely https and genuinely jpx.co.jp --
+    # it would pass validate_jpx_url's domain policy -- but it is not the
+    # exact frozen SOURCE_B_ARCHIVE_ROOT, so it must still fail closed.
+    html = b'<a href="archives/2019.html">2019</a>'
+    with pytest.raises(V9005StageABlocked):
+        parser.extract_root_year_candidates(html, FAKE_SAME_DOMAIN_ROOT, 2019)
+
+
+def test_root_differing_only_by_trailing_query_fails():
+    html = b'<a href="archives/2019.html">2019</a>'
+    with pytest.raises(V9005StageABlocked):
+        parser.extract_root_year_candidates(html, ROOT_URL_DIFFERING_ONLY_BY_TRAILING_QUERY, 2019)
 
 
 def test_root_zero_year_matches_yields_empty_tuple():
@@ -295,12 +321,14 @@ def test_normal_month_malformed_html_fails():
 
 
 # ---------------------------------------------------------------------------
-# APRIL PRE CANDIDATES
+# APRIL PRE CANDIDATES, bound to the exact 2022 selected-year context
 # ---------------------------------------------------------------------------
 
-def test_april_pre_exact_reference_anchor_yields_candidate_and_locator_pass():
+def test_april_pre_selected_year_2022_exact_reference_yields_candidate_and_locator_pass():
     html = f'<a href="reference-april-1.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
-    candidates = parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022)
+    candidates = parser.extract_april_pre_candidates(
+        html, YEAR_PAGE_URL_2022, selected_year=2022
+    )
     assert len(candidates) == 1
     result = loc.resolve_source_b_april_pre_object(
         list(candidates), selected_year_page_url=YEAR_PAGE_URL_2022
@@ -311,9 +339,54 @@ def test_april_pre_exact_reference_anchor_yields_candidate_and_locator_pass():
     )
 
 
+def test_april_pre_selected_year_2019_with_same_anchor_and_valid_parent_fails():
+    # Otherwise perfect: exact reference anchor, valid JPX parent URL --
+    # only the declared year context is wrong, and that alone must fail.
+    html = f'<a href="reference-april-1.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
+    with pytest.raises(V9005StageABlocked):
+        parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022, selected_year=2019)
+
+
+@pytest.mark.parametrize("wrong_year", [2020, 2023])
+def test_april_pre_representative_wrong_years_fail(wrong_year):
+    html = f'<a href="reference-april-1.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
+    with pytest.raises(V9005StageABlocked):
+        parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022, selected_year=wrong_year)
+
+
+def test_april_pre_selected_year_bool_true_fails():
+    html = f'<a href="reference-april-1.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
+    with pytest.raises(V9005StageABlocked):
+        parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022, selected_year=True)
+
+
+def test_april_pre_selected_year_non_int_fails():
+    html = f'<a href="reference-april-1.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
+    with pytest.raises(V9005StageABlocked):
+        parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022, selected_year="2022")
+
+
+def test_april_pre_missing_selected_year_keyword_fails():
+    html = f'<a href="reference-april-1.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
+    with pytest.raises(TypeError):
+        parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022)
+
+
+def test_april_pre_year_never_inferred_from_url_path_containing_2022():
+    # The URL literally contains "2022" in its path, but the declared
+    # selected_year is the only authority -- a wrong declared year must
+    # still fail even though the URL "looks like" 2022.
+    misleading_but_wrong_declared_year_url = YEAR_PAGE_URL_2022
+    html = f'<a href="reference-april-1.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
+    with pytest.raises(V9005StageABlocked):
+        parser.extract_april_pre_candidates(
+            html, misleading_but_wrong_declared_year_url, selected_year=2019
+        )
+
+
 def test_april_pre_missing_reference_fails_downstream():
     html = b"<html></html>"
-    candidates = parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022)
+    candidates = parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022, selected_year=2022)
     assert candidates == ()
     result = loc.resolve_source_b_april_pre_object(
         list(candidates), selected_year_page_url=YEAR_PAGE_URL_2022
@@ -326,7 +399,7 @@ def test_april_pre_duplicate_exact_reference_fails_downstream():
         f'<a href="a.pdf">{APRIL_LABEL_HTML}</a>'
         f'<a href="b.pdf">{APRIL_LABEL_HTML}</a>'
     ).encode("utf-8")
-    candidates = parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022)
+    candidates = parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022, selected_year=2022)
     assert len(candidates) == 2
     result = loc.resolve_source_b_april_pre_object(
         list(candidates), selected_year_page_url=YEAR_PAGE_URL_2022
@@ -340,13 +413,13 @@ def test_april_pre_case_substring_fuzzy_rejected():
         b'<a href="b.pdf">Status on April 1, 2022</a>'
         b'<a href="c.pdf">(Reference) Status on April 1 2022</a>'
     )
-    candidates = parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022)
+    candidates = parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022, selected_year=2022)
     assert candidates == ()
 
 
 def test_april_pre_relative_url_resolution():
     html = f'<a href="ref/april1.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
-    candidates = parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022)
+    candidates = parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022, selected_year=2022)
     assert candidates[0].href == (
         "https://www.jpx.co.jp/english/markets/statistics-equities/monthly/archives/ref/april1.pdf"
     )
@@ -355,19 +428,21 @@ def test_april_pre_relative_url_resolution():
 def test_april_pre_off_domain_parent_fails():
     html = f'<a href="a.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
     with pytest.raises(V9005StageABlocked):
-        parser.extract_april_pre_candidates(html, "https://evil.example.com/2022.html")
+        parser.extract_april_pre_candidates(
+            html, "https://evil.example.com/2022.html", selected_year=2022
+        )
 
 
 def test_april_pre_explicit_parent_provenance_preserved():
     html = f'<a href="a.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
-    candidates = parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022)
+    candidates = parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022, selected_year=2022)
     assert candidates[0].parent_year_page_url == YEAR_PAGE_URL_2022
 
 
 def test_april_pre_malformed_html_fails():
     html = b"<table><tr><td>x</td>"
     with pytest.raises(V9005StageABlocked):
-        parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022)
+        parser.extract_april_pre_candidates(html, YEAR_PAGE_URL_2022, selected_year=2022)
 
 
 # ---------------------------------------------------------------------------
@@ -396,18 +471,41 @@ def test_end_to_end_root_to_normal_month_locator_ok():
     )
 
 
-def test_end_to_end_root_to_april_pre_locator_ok():
+def test_end_to_end_exact_root_to_2022_to_april_pre_locator_ok():
     root_html = b'<a href="archives/2022.html">2022</a>'
-    root_candidates = parser.extract_root_year_candidates(root_html, ROOT_URL, 2022)
+    root_candidates = parser.extract_root_year_candidates(root_html, parser.SOURCE_B_ARCHIVE_ROOT, 2022)
     year_result = loc.resolve_source_b_year_page(list(root_candidates), 2022)
     assert year_result.status == loc.LOCATOR_OK
 
     april_html = f'<a href="reference-april-1.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
-    april_candidates = parser.extract_april_pre_candidates(april_html, year_result.url)
+    april_candidates = parser.extract_april_pre_candidates(
+        april_html, year_result.url, selected_year=2022
+    )
     april_result = loc.resolve_source_b_april_pre_object(
         list(april_candidates), selected_year_page_url=year_result.url
     )
     assert april_result.status == loc.LOCATOR_OK
+
+
+def test_end_to_end_same_domain_fake_root_cannot_reach_locator_ok():
+    root_html = b'<a href="archives/2022.html">2022</a>'
+    with pytest.raises(V9005StageABlocked):
+        parser.extract_root_year_candidates(root_html, FAKE_SAME_DOMAIN_ROOT, 2022)
+
+
+def test_end_to_end_exact_root_wrong_selected_year_cannot_reach_locator_ok():
+    root_html = b'<a href="archives/2019.html">2019</a>'
+    root_candidates = parser.extract_root_year_candidates(root_html, ROOT_URL, 2019)
+    year_result = loc.resolve_source_b_year_page(list(root_candidates), 2019)
+    assert year_result.status == loc.LOCATOR_OK
+
+    # A synthetic, otherwise exact April reference label found on the 2019
+    # year page -- declaring selected_year=2019 (correctly matching the
+    # actual traversal context) must still be rejected, since only 2022 is
+    # ever a valid April-PRE year context.
+    april_html = f'<a href="reference-april-1.pdf">{APRIL_LABEL_HTML}</a>'.encode("utf-8")
+    with pytest.raises(V9005StageABlocked):
+        parser.extract_april_pre_candidates(april_html, year_result.url, selected_year=2019)
 
 
 def test_end_to_end_invalid_traversal_never_yields_locator_ok():

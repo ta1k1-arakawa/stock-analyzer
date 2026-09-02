@@ -44,6 +44,20 @@ environment/credential read, and NO durable-state access; it is not a real
 runner. It produces no ``DateClassification``, no relation result, no
 ``trading_dates``, and no profitability output, and it never downloads,
 reads, or parses a PDF.
+
+``extract_root_year_candidates`` requires ``root_url`` to equal the frozen
+``SOURCE_B_ARCHIVE_ROOT`` exactly -- not merely pass the same-JPX-domain
+policy, and never normalized, redirect-equated, path/query-rewritten, or
+case-folded into an equivalent root; a same-domain but otherwise unrelated
+JPX page can never produce a ``RootYearCandidate``.
+``extract_april_pre_candidates`` requires an explicit, caller-supplied
+``selected_year`` keyword argument equal exactly to ``2022`` (derived from
+the single frozen ``APRIL_2022_LOGICAL_MONTH`` source of truth, never a
+duplicated literal); the year is never inferred from
+``selected_year_page_url``'s path or an anchor's text, and any other year
+context -- 2019, 2020, 2023, or a non-``int``/``bool`` value -- fails closed
+before any HTML parsing occurs, even given an otherwise perfect exact
+reference anchor and a valid JPX parent URL.
 """
 
 from __future__ import annotations
@@ -57,9 +71,13 @@ from src.v9_005_stage_a_jpx_probe import (
     _parse_year_month,
     _resolve_locked_page_link,
 )
-from src.v9_014_jpx_monthly_auction_activity_authority import REQUIRED_LOGICAL_MONTHS
+from src.v9_014_jpx_monthly_auction_activity_authority import (
+    APRIL_2022_LOGICAL_MONTH,
+    REQUIRED_LOGICAL_MONTHS,
+)
 from src.v9_014_jpx_monthly_auction_activity_source_b_locator import (
     APRIL_1_2022_REFERENCE_LABEL,
+    SOURCE_B_ARCHIVE_ROOT,
     SOURCE_B_REPORT,
     AprilPreReferenceCandidate,
     MonthlyReportCandidate,
@@ -72,6 +90,13 @@ __all__ = [
     "extract_april_pre_candidates",
 ]
 
+# The exact required year context for the April-2022 PRE special-reference
+# branch, derived from the single frozen source of truth
+# (APRIL_2022_LOGICAL_MONTH) rather than a duplicated literal.
+REQUIRED_APRIL_PRE_YEAR, _REQUIRED_APRIL_PRE_MONTH_NUMBER = _parse_year_month(
+    APRIL_2022_LOGICAL_MONTH
+)
+
 
 def extract_root_year_candidates(
     root_bytes: bytes, root_url: str, requested_year: int
@@ -79,14 +104,19 @@ def extract_root_year_candidates(
     """Extract every official-root candidate whose exact normalized visible
     anchor text equals ``str(requested_year)``.
 
-    ``root_url`` is the exact locked page URL every relative href is resolved
-    against; it is never inferred, guessed, or pattern-derived, and no
-    archive-year URL is ever constructed. Multiplicity is preserved: zero,
-    one, or many resulting candidates are all returned, deferring the
-    uniqueness decision to :func:`resolve_source_b_year_page`.
+    ``root_url`` must equal the frozen :data:`SOURCE_B_ARCHIVE_ROOT` exactly
+    -- not merely pass the same-JPX-domain policy, and never normalized,
+    redirect-equated, query/path-rewritten, or case-folded into an
+    equivalent root. A same-domain but otherwise unrelated JPX page can
+    never produce a candidate. Every relative href is resolved against this
+    exact bound root; no archive-year URL is ever constructed. Multiplicity
+    is preserved: zero, one, or many resulting candidates are all returned,
+    deferring the uniqueness decision to :func:`resolve_source_b_year_page`.
     """
 
     if isinstance(requested_year, bool) or not isinstance(requested_year, int):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
+    if root_url != SOURCE_B_ARCHIVE_ROOT:
         raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
 
     parser = _parse_monthly_statistics_html(root_bytes)
@@ -164,18 +194,37 @@ def extract_normal_month_candidates(
 
 
 def extract_april_pre_candidates(
-    year_page_bytes: bytes, selected_year_page_url: str
+    year_page_bytes: bytes,
+    selected_year_page_url: str,
+    *,
+    selected_year: int,
 ) -> Tuple[AprilPreReferenceCandidate, ...]:
     """Extract every 2022-04 PRE special-reference-branch candidate from a
     selected archive-year page's locked HTML bytes.
 
-    Candidates are matched only by exact normalized anchor-text equality to
-    :data:`APRIL_1_2022_REFERENCE_LABEL` -- no case-changed, substring, or
-    fuzzy variant is ever accepted. ``selected_year_page_url`` is the exact
-    locked page URL every relative href is resolved against; no URL is ever
-    inferred from anchor text or path. Multiplicity is preserved, deferring
-    the uniqueness decision to :func:`resolve_source_b_april_pre_object`.
+    ``selected_year`` is the caller-supplied semantic year context from the
+    already-selected traversal (never inferred from ``selected_year_page_url``'s
+    path, an anchor's text, or any other pattern) and must equal exactly
+    :data:`REQUIRED_APRIL_PRE_YEAR` (``2022``), as a genuine ``int`` and not
+    a ``bool``; any other value fails closed before any HTML parsing occurs.
+    A caller-declared 2019/2020/2023/etc. context can never yield a
+    candidate, even given an otherwise perfect exact reference anchor and a
+    valid JPX parent URL. Candidates are matched only by exact normalized
+    anchor-text equality to :data:`APRIL_1_2022_REFERENCE_LABEL` -- no
+    case-changed, substring, or fuzzy variant is ever accepted.
+    ``selected_year_page_url`` is the exact locked page URL every relative
+    href is resolved against, and it is preserved exactly as each
+    candidate's ``parent_year_page_url``; no URL is ever inferred from
+    anchor text or path. Multiplicity is preserved, deferring the
+    uniqueness decision to :func:`resolve_source_b_april_pre_object`.
     """
+
+    if (
+        isinstance(selected_year, bool)
+        or not isinstance(selected_year, int)
+        or selected_year != REQUIRED_APRIL_PRE_YEAR
+    ):
+        raise V9005StageABlocked(IMPLEMENTATION_FAILURE)
 
     parser = _parse_monthly_statistics_html(year_page_bytes)
     matches = [
