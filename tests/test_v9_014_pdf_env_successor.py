@@ -626,16 +626,31 @@ def test_staging_runner_never_calls_remove_item(staging_runner_source: str):
 
 
 def test_staging_runner_never_uses_retry_or_reset_language(staging_runner_source: str):
-    # No looping/retry construct wraps the successor-resolution
-    # invocation, and no git history-mutating command appears anywhere.
+    # No git history-mutating command appears anywhere in the file.
     lowered = staging_runner_source.lower()
-    assert "while (" not in staging_runner_source
-    assert "for (" not in staging_runner_source
-    assert "do {" not in staging_runner_source
     assert ".reset(" not in lowered
     assert "git reset" not in lowered
     assert "git clean" not in lowered
     assert "git checkout" not in lowered
+
+
+def test_staging_runner_no_loop_construct_wraps_successor_resolution(staging_runner_source: str):
+    # A `while` loop legitimately exists elsewhere in this file (path-
+    # ancestor walking inside Resolve-ExistingAncestorRealPath -- not a
+    # retry of anything). What must never happen is a loop construct
+    # wrapping the ONE successor-resolution pip invocation itself. Slice
+    # out just the E5 step 4 region (from its own comment marker to the
+    # line that captures its exit code) and assert no loop keyword
+    # appears inside that slice.
+    start_marker = "# E5 step 4:"
+    end_marker = "$successorResolutionExitCode = $LASTEXITCODE"
+    start = staging_runner_source.index(start_marker)
+    end = staging_runner_source.index(end_marker, start) + len(end_marker)
+    successor_resolution_region = staging_runner_source[start:end]
+    assert "while (" not in successor_resolution_region
+    assert "for (" not in successor_resolution_region
+    assert "do {" not in successor_resolution_region
+    assert "foreach (" not in successor_resolution_region
 
 
 def test_staging_runner_canonical_and_general_environments_never_write_targets(staging_runner_source: str):
@@ -715,6 +730,311 @@ def test_staging_runner_never_performs_jpx_or_yahoo_network_request(staging_runn
     lowered = staging_runner_source.lower()
     for forbidden in ("jpx.co.jp", "finance.yahoo", "yahoo.co.jp"):
         assert forbidden not in lowered
+
+
+# =============================================================================
+# HIGH_1 remediation: mandatory tests 1-6 -- predecessor-baseline-file
+# CLI/helper semantics, not just string presence.
+# =============================================================================
+
+_SEVEN_PIN_FREEZE_TEXT = (
+    "numpy==2.5.2\n"
+    "pandas==3.0.5\n"
+    "pip==25.0.1\n"
+    "python-dateutil==2.9.0.post0\n"
+    "six==1.17.0\n"
+    "tzdata==2026.3\n"
+    "xlrd==2.0.2\n"
+)
+
+
+def test_baseline_file_helper_exact_seven_pins_pass(tmp_path: Path):
+    freeze_file = tmp_path / "before_freeze.txt"
+    freeze_file.write_text(_SEVEN_PIN_FREEZE_TEXT, encoding="utf-8")
+    result = env_successor.validate_predecessor_baseline_file(freeze_file)
+    assert result.status == env_successor.BASELINE_OK
+
+
+def test_baseline_file_helper_missing_pin_fails(tmp_path: Path):
+    freeze_file = tmp_path / "before_freeze.txt"
+    freeze_file.write_text(_SEVEN_PIN_FREEZE_TEXT.replace("xlrd==2.0.2\n", ""), encoding="utf-8")
+    result = env_successor.validate_predecessor_baseline_file(freeze_file)
+    assert result.status == env_successor.BASELINE_FAILURE
+    assert result.missing == ("xlrd",)
+
+
+def test_baseline_file_helper_extra_package_fails(tmp_path: Path):
+    freeze_file = tmp_path / "before_freeze.txt"
+    freeze_file.write_text(_SEVEN_PIN_FREEZE_TEXT + "pdfplumber==0.11.10\n", encoding="utf-8")
+    result = env_successor.validate_predecessor_baseline_file(freeze_file)
+    assert result.status == env_successor.BASELINE_FAILURE
+    assert result.unexpected_extra == ("pdfplumber",)
+
+
+def test_baseline_file_helper_version_drift_fails(tmp_path: Path):
+    freeze_file = tmp_path / "before_freeze.txt"
+    freeze_file.write_text(_SEVEN_PIN_FREEZE_TEXT.replace("xlrd==2.0.2", "xlrd==2.0.3"), encoding="utf-8")
+    result = env_successor.validate_predecessor_baseline_file(freeze_file)
+    assert result.status == env_successor.BASELINE_FAILURE
+    assert result.version_mismatches == {"xlrd": "2.0.3"}
+
+
+def test_baseline_file_helper_malformed_and_duplicate_freeze_fails(tmp_path: Path):
+    malformed_file = tmp_path / "malformed.txt"
+    malformed_file.write_text(_SEVEN_PIN_FREEZE_TEXT + "-e git+https://example.invalid/foo.git\n", encoding="utf-8")
+    malformed_result = env_successor.validate_predecessor_baseline_file(malformed_file)
+    assert malformed_result.status == env_successor.BASELINE_FAILURE
+
+    duplicate_file = tmp_path / "duplicate.txt"
+    duplicate_file.write_text(_SEVEN_PIN_FREEZE_TEXT + "numpy==2.5.2\n", encoding="utf-8")
+    duplicate_result = env_successor.validate_predecessor_baseline_file(duplicate_file)
+    assert duplicate_result.status == env_successor.BASELINE_FAILURE
+
+
+def test_baseline_file_helper_bom_input_handled_deterministically(tmp_path: Path):
+    bom_file = tmp_path / "bom_before_freeze.txt"
+    bom_file.write_bytes(b"\xef\xbb\xbf" + _SEVEN_PIN_FREEZE_TEXT.encode("utf-8"))
+    plain_file = tmp_path / "plain_before_freeze.txt"
+    plain_file.write_text(_SEVEN_PIN_FREEZE_TEXT, encoding="utf-8")
+
+    bom_result = env_successor.validate_predecessor_baseline_file(bom_file)
+    plain_result = env_successor.validate_predecessor_baseline_file(plain_file)
+    assert bom_result.status == env_successor.BASELINE_OK
+    assert plain_result.status == env_successor.BASELINE_OK
+    assert bom_result == plain_result
+
+
+def test_baseline_file_helper_missing_file_fails_closed(tmp_path: Path):
+    result = env_successor.validate_predecessor_baseline_file(tmp_path / "does-not-exist.txt")
+    assert result.status == env_successor.BASELINE_FILE_MISSING_FAILURE
+
+
+def test_baseline_file_helper_undecodable_bytes_fails_closed(tmp_path: Path):
+    bad_file = tmp_path / "bad_bytes.txt"
+    bad_file.write_bytes(b"\xff\xfe\x00\x01numpy==2.5.2")
+    result = env_successor.validate_predecessor_baseline_file(bad_file)
+    assert result.status == env_successor.BASELINE_FILE_DECODE_FAILURE
+
+
+def test_baseline_file_helper_reuses_existing_parse_and_validate_functions():
+    import inspect
+
+    source = inspect.getsource(env_successor.validate_predecessor_baseline_file)
+    assert "parse_pip_freeze_all(" in source
+    assert "validate_predecessor_baseline(" in source
+
+
+def test_baseline_cli_exit_code_reflects_validation_status(tmp_path: Path, capsys):
+    import sys as _sys
+
+    good_file = tmp_path / "good.txt"
+    good_file.write_text(_SEVEN_PIN_FREEZE_TEXT, encoding="utf-8")
+    old_argv = _sys.argv
+    try:
+        exit_code = env_successor.main(["--validate-predecessor-baseline-file", str(good_file)])
+    finally:
+        _sys.argv = old_argv
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert f"status={env_successor.BASELINE_OK}" in captured.out
+    assert "real_pdfplumber_imported=false" in captured.out
+
+    bad_file = tmp_path / "bad.txt"
+    bad_file.write_text(_SEVEN_PIN_FREEZE_TEXT.replace("six==1.17.0\n", ""), encoding="utf-8")
+    exit_code_bad = env_successor.main(["--validate-predecessor-baseline-file", str(bad_file)])
+    captured_bad = capsys.readouterr()
+    assert exit_code_bad == 1
+    assert f"status={env_successor.BASELINE_FAILURE}" in captured_bad.out
+    assert "missing=six" in captured_bad.out
+
+
+def test_baseline_cli_no_args_is_still_a_noop():
+    exit_code = env_successor.main([])
+    assert exit_code == 0
+
+
+# =============================================================================
+# HIGH_1 remediation: mandatory tests 7-10 -- runner static/order proof
+# that predecessor-baseline validation is mechanically enforced, not
+# merely present as seven hardcoded strings.
+# =============================================================================
+
+
+def test_staging_runner_baseline_validation_occurs_after_before_capture(staging_runner_source: str):
+    before_capture_index = staging_runner_source.index('$beforeFreezePath = Join-Path $OutputRoot "before_freeze.txt"')
+    validation_invocation_index = staging_runner_source.index("--validate-predecessor-baseline-file $beforeFreezePath")
+    assert before_capture_index < validation_invocation_index
+
+
+def test_staging_runner_baseline_validation_occurs_before_successor_resolution(staging_runner_source: str):
+    validation_invocation_index = staging_runner_source.index("--validate-predecessor-baseline-file $beforeFreezePath")
+    successor_resolution_index = staging_runner_source.index("# E5 step 4:")
+    assert validation_invocation_index < successor_resolution_index
+
+    # The nonzero-exit throw for the baseline validator must also appear
+    # strictly before the successor-resolution invocation begins.
+    throw_index = staging_runner_source.index("E5_STEP3_PREDECESSOR_BASELINE_VALIDATION_FAILED")
+    assert validation_invocation_index < throw_index < successor_resolution_index
+
+
+def test_staging_runner_baseline_validation_nonzero_exit_has_explicit_throw(staging_runner_source: str):
+    validation_block_start = staging_runner_source.index("--validate-predecessor-baseline-file $beforeFreezePath")
+    validation_block_end = staging_runner_source.index("# E5 step 4:")
+    validation_block = staging_runner_source[validation_block_start:validation_block_end]
+    assert "$baselineValidationExitCode -ne 0" in validation_block
+    assert "throw" in validation_block
+    assert "E5_STEP3_PREDECESSOR_BASELINE_VALIDATION_FAILED" in validation_block
+
+
+def test_staging_runner_baseline_validation_invokes_reviewed_python_tooling_not_bare_grep(staging_runner_source: str):
+    # The seven hardcoded pin strings alone (already asserted present by
+    # test_staging_runner_hardcodes_all_seven_predecessor_pins) are not
+    # treated as sufficient proof of enforcement: the runner must
+    # actually invoke the reviewed Python CLI/helper against the staging
+    # interpreter, and must not implement a parallel `Select-String`/grep-
+    # based comparison as a substitute.
+    assert "$stagingInterpreter $offlineToolingPath --validate-predecessor-baseline-file" in staging_runner_source
+    assert "Select-String" not in staging_runner_source
+    assert "-match" not in staging_runner_source or "$baseInterpreterVersion -notmatch" in staging_runner_source
+
+
+# =============================================================================
+# Output-root validation (Python-side authority the runner mirrors)
+# =============================================================================
+
+
+def test_output_path_inside_repo_fails(tmp_path: Path):
+    staging_root = tmp_path / "staging"
+    result = env_successor.validate_output_path(REPO_ROOT / "some-output-dir", staging_root=staging_root)
+    assert result.status == env_successor.OUTPUT_PATH_INSIDE_REPO_FAILURE
+
+
+def test_output_path_matches_canonical_environment_name_fails(tmp_path: Path):
+    staging_root = tmp_path / "staging"
+    result = env_successor.validate_output_path(tmp_path / ".venv-real-execution", staging_root=staging_root)
+    assert result.status == env_successor.OUTPUT_PATH_MATCHES_CANONICAL_NAME_FAILURE
+
+
+def test_output_path_matches_general_environment_name_fails(tmp_path: Path):
+    staging_root = tmp_path / "staging"
+    result = env_successor.validate_output_path(tmp_path / ".venv", staging_root=staging_root)
+    assert result.status == env_successor.OUTPUT_PATH_MATCHES_GENERAL_NAME_FAILURE
+
+
+def test_output_path_nested_inside_reserved_environment_fails(tmp_path: Path):
+    staging_root = tmp_path / "staging"
+    result = env_successor.validate_output_path(
+        tmp_path / ".venv-real-execution" / "nested-output", staging_root=staging_root
+    )
+    assert result.status == env_successor.OUTPUT_PATH_INSIDE_RESERVED_ENVIRONMENT_FAILURE
+
+
+def test_output_path_already_exists_fails(tmp_path: Path):
+    staging_root = tmp_path / "staging"
+    existing_output = tmp_path / "existing-output"
+    existing_output.mkdir()
+    result = env_successor.validate_output_path(existing_output, staging_root=staging_root)
+    assert result.status == env_successor.OUTPUT_PATH_ALREADY_EXISTS_FAILURE
+
+
+def test_output_path_equals_staging_root_fails(tmp_path: Path):
+    staging_root = tmp_path / "staging"
+    result = env_successor.validate_output_path(staging_root, staging_root=staging_root)
+    assert result.status == env_successor.OUTPUT_PATH_EQUALS_STAGING_ROOT_FAILURE
+
+
+def test_output_path_ancestor_of_staging_root_fails(tmp_path: Path):
+    staging_root = tmp_path / "outer" / "staging"
+    result = env_successor.validate_output_path(tmp_path / "outer", staging_root=staging_root)
+    assert result.status == env_successor.OUTPUT_PATH_ANCESTOR_OF_STAGING_ROOT_FAILURE
+
+
+def test_output_path_descendant_of_staging_root_fails(tmp_path: Path):
+    staging_root = tmp_path / "staging"
+    result = env_successor.validate_output_path(staging_root / "nested-output", staging_root=staging_root)
+    assert result.status == env_successor.OUTPUT_PATH_DESCENDANT_OF_STAGING_ROOT_FAILURE
+
+
+def test_output_path_safe_distinct_nonexisting_external_pass(tmp_path: Path):
+    staging_root = tmp_path / "staging-root"
+    output_root = tmp_path / "output-root"
+    result = env_successor.validate_output_path(output_root, staging_root=staging_root)
+    assert result.status == env_successor.OUTPUT_PATH_OK
+
+
+def test_output_path_not_absolute_fails():
+    result = env_successor.validate_output_path(Path("relative/output"), staging_root=Path("/tmp/staging"))
+    assert result.status == env_successor.OUTPUT_PATH_NOT_ABSOLUTE_FAILURE
+
+
+# =============================================================================
+# HIGH_1 remediation: mandatory tests 11-20 -- OutputRoot static
+# assertions on the runner itself.
+# =============================================================================
+
+
+def test_staging_runner_output_root_inside_repo_fails_closed(staging_runner_source: str):
+    assert "PRE_GATE_OUTPUT_PATH_INSIDE_REPO" in staging_runner_source
+
+
+def test_staging_runner_output_root_canonical_name_fails_closed(staging_runner_source: str):
+    assert "PRE_GATE_OUTPUT_PATH_MATCHES_CANONICAL_NAME" in staging_runner_source
+
+
+def test_staging_runner_output_root_general_name_fails_closed(staging_runner_source: str):
+    assert "PRE_GATE_OUTPUT_PATH_MATCHES_GENERAL_NAME" in staging_runner_source
+
+
+def test_staging_runner_output_root_already_exists_fails_closed(staging_runner_source: str):
+    assert "PRE_GATE_OUTPUT_PATH_ALREADY_EXISTS" in staging_runner_source
+
+
+def test_staging_runner_output_root_equals_staging_root_fails_closed(staging_runner_source: str):
+    assert "PRE_GATE_OUTPUT_PATH_EQUALS_STAGING_ROOT" in staging_runner_source
+
+
+def test_staging_runner_output_root_staging_overlap_both_directions_fail_closed(staging_runner_source: str):
+    assert "PRE_GATE_OUTPUT_PATH_ANCESTOR_OF_STAGING_ROOT" in staging_runner_source
+    assert "PRE_GATE_OUTPUT_PATH_DESCENDANT_OF_STAGING_ROOT" in staging_runner_source
+
+
+def test_staging_runner_output_root_reserved_environment_nesting_fails_closed(staging_runner_source: str):
+    assert "PRE_GATE_OUTPUT_PATH_INSIDE_RESERVED_ENVIRONMENT" in staging_runner_source
+
+
+def test_staging_runner_no_force_reuse_of_output_root(staging_runner_source: str):
+    # `-Force` is legitimately used elsewhere (e.g. `Get-Item -Force` to
+    # reliably read a hidden/system reparse point during path-safety
+    # resolution) -- what must never happen is `New-Item` creating
+    # OutputRoot with `-Force`, which would silently permit reuse of an
+    # existing directory.
+    code_only = _strip_powershell_comment_lines(staging_runner_source)
+    assert not re.search(r"New-Item[^\n]*-Force", code_only)
+    assert re.search(r"New-Item -ItemType Directory -Path \$OutputRoot \|", code_only)
+
+
+def test_staging_runner_output_root_created_only_after_all_preflight(staging_runner_source: str):
+    creation_index = staging_runner_source.index("New-Item -ItemType Directory -Path $OutputRoot")
+    preflight5_start = staging_runner_source.index("# Preflight 5: OutputRoot fail-closed validation")
+    all_preflight_passed_index = staging_runner_source.index("All preflight checks passed, including OutputRoot fail-closed validation")
+    assert preflight5_start < all_preflight_passed_index < creation_index
+
+
+def test_staging_runner_still_never_calls_remove_item_after_output_root_remediation(staging_runner_source: str):
+    code_only = _strip_powershell_comment_lines(staging_runner_source)
+    assert "Remove-Item" not in code_only
+
+
+def test_staging_runner_still_exactly_one_successor_resolution_invocation_after_remediation(staging_runner_source: str):
+    successor_calls = re.findall(
+        r"pip install `\s*\n\s*-c \$predecessorLockRelativePath `\s*\n\s*-r \$directSpecRelativePath",
+        staging_runner_source,
+    )
+    assert len(successor_calls) == 1
+
+
+def test_staging_runner_path_safety_undetermined_routes_to_chatgpt_decision_required(staging_runner_source: str):
+    assert "CHATGPT_DECISION_REQUIRED" in staging_runner_source
 
 
 # =============================================================================

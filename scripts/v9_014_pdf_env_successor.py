@@ -234,6 +234,48 @@ def validate_predecessor_baseline(freeze_result: PipFreezeParseResult) -> Baseli
     return BaselineValidation(status=BASELINE_OK)
 
 
+BASELINE_FILE_MISSING_FAILURE = "PREDECESSOR_BASELINE_FILE_MISSING_DQ_FAILURE"
+BASELINE_FILE_DECODE_FAILURE = "PREDECESSOR_BASELINE_FILE_DECODE_DQ_FAILURE"
+
+
+def read_freeze_file_text(path: Path) -> str:
+    """Read a captured `pip freeze --all` output file as text, standard
+    library only. Decodes as UTF-8 and transparently strips a leading
+    UTF-8 byte-order mark if present (`"utf-8-sig"` handles both a
+    BOM-prefixed file, as PowerShell's default UTF-8 encoding on Windows
+    commonly writes, and a plain BOM-less UTF-8 file identically -- there
+    is no separate "Windows path" and "normal path": both decode through
+    the exact same call). Raises `UnicodeDecodeError` on genuinely
+    non-UTF-8 bytes; callers (`validate_predecessor_baseline_file`) treat
+    that as a hard failure, never a silent skip.
+    """
+    return path.read_bytes().decode("utf-8-sig")
+
+
+def validate_predecessor_baseline_file(path: Path) -> BaselineValidation:
+    """Read and validate a captured BEFORE `pip freeze --all` snapshot
+    file against the exact 7 frozen predecessor pins, reusing the
+    existing `parse_pip_freeze_all` / `validate_predecessor_baseline`
+    semantic authority verbatim -- no second, independently invented
+    package-comparison methodology. This is the exact function the future
+    Stage E5 staging runner invokes, via this module's CLI (see `main`),
+    after capturing `before_freeze.txt` and before attempting the single
+    successor-resolution command.
+
+    Performs no package/environment mutation, no network access, and
+    never imports `pdfplumber`. Fails closed (a dedicated status, never
+    `BASELINE_OK`) if the file is missing or cannot be decoded as text.
+    """
+    if not path.exists():
+        return BaselineValidation(status=BASELINE_FILE_MISSING_FAILURE)
+    try:
+        text = read_freeze_file_text(path)
+    except UnicodeDecodeError:
+        return BaselineValidation(status=BASELINE_FILE_DECODE_FAILURE)
+    freeze_result = parse_pip_freeze_all(text)
+    return validate_predecessor_baseline(freeze_result)
+
+
 @dataclass(frozen=True)
 class SuccessorValidation:
     status: str
@@ -532,6 +574,153 @@ def validate_staging_path(
 
 
 # =============================================================================
+# Output-root validation (Section 5, Stage E5's -OutputRoot). Distinct from
+# staging-path validation: OutputRoot additionally may never alias or
+# overlap StagingRoot in either direction, and -- unlike a staging path,
+# which may legitimately be reused across attempts prior to a one-shot
+# resolution -- an OutputRoot must NEVER already exist: a previous
+# evidence directory is never reused, appended to, or overwritten.
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class OutputPathValidation:
+    status: str
+
+
+OUTPUT_PATH_OK = "OUTPUT_PATH_OK"
+OUTPUT_PATH_NOT_ABSOLUTE_FAILURE = "OUTPUT_PATH_NOT_ABSOLUTE_DQ_FAILURE"
+OUTPUT_PATH_INSIDE_REPO_FAILURE = "OUTPUT_PATH_INSIDE_REPO_DQ_FAILURE"
+OUTPUT_PATH_MATCHES_CANONICAL_NAME_FAILURE = "OUTPUT_PATH_MATCHES_CANONICAL_ENVIRONMENT_NAME_DQ_FAILURE"
+OUTPUT_PATH_MATCHES_GENERAL_NAME_FAILURE = "OUTPUT_PATH_MATCHES_GENERAL_ENVIRONMENT_NAME_DQ_FAILURE"
+OUTPUT_PATH_INSIDE_RESERVED_ENVIRONMENT_FAILURE = "OUTPUT_PATH_INSIDE_RESERVED_ENVIRONMENT_DQ_FAILURE"
+OUTPUT_PATH_EQUALS_STAGING_ROOT_FAILURE = "OUTPUT_PATH_EQUALS_STAGING_ROOT_DQ_FAILURE"
+OUTPUT_PATH_ANCESTOR_OF_STAGING_ROOT_FAILURE = "OUTPUT_PATH_ANCESTOR_OF_STAGING_ROOT_DQ_FAILURE"
+OUTPUT_PATH_DESCENDANT_OF_STAGING_ROOT_FAILURE = "OUTPUT_PATH_DESCENDANT_OF_STAGING_ROOT_DQ_FAILURE"
+OUTPUT_PATH_ALREADY_EXISTS_FAILURE = "OUTPUT_PATH_ALREADY_EXISTS_DQ_FAILURE"
+OUTPUT_PATH_IS_SYMLINK_FAILURE = "OUTPUT_PATH_IS_SYMLINK_DQ_FAILURE"
+OUTPUT_PATH_SAFETY_UNDETERMINED_FAILURE = "OUTPUT_PATH_SAFETY_UNDETERMINED_CHATGPT_DECISION_REQUIRED"
+
+_RESERVED_ENVIRONMENT_NAMES = (CANONICAL_ENVIRONMENT_DIRECTORY_NAME, GENERAL_PROJECT_ENVIRONMENT_DIRECTORY_NAME)
+
+
+def _contains_reserved_environment_component(path: Path) -> bool:
+    """True if ANY path component (not just the leaf) is literally named
+    `.venv-real-execution` or `.venv` -- catches an OutputRoot nested
+    underneath a reserved-named directory, not merely equal to one.
+    """
+    return any(part in _RESERVED_ENVIRONMENT_NAMES for part in path.parts)
+
+
+def _is_path_inside(candidate: Path, other: Path) -> bool:
+    try:
+        candidate.relative_to(other)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_existing_ancestor(path: Path) -> Path:
+    """Resolve the nearest EXISTING ancestor of `path` (following any real
+    symlinks/junctions the OS reports) and reattach the non-existing
+    suffix, producing a best-effort fully resolved candidate for
+    aliasing/overlap re-verification -- without ever creating anything.
+    """
+    node = path
+    suffix: list[str] = []
+    while not node.exists():
+        suffix.append(node.name)
+        parent = node.parent
+        if parent == node:
+            break
+        node = parent
+    resolved_existing = node.resolve()
+    for name in reversed(suffix):
+        resolved_existing = resolved_existing / name
+    return resolved_existing
+
+
+def validate_output_path(
+    path: Path,
+    *,
+    staging_root: Path,
+    repo_root: Path = REPO_ROOT,
+) -> OutputPathValidation:
+    """Validate a caller-supplied Stage E5 `-OutputRoot` path. Fails
+    closed, in order, unless: absolute; outside the repository tree; not
+    named (nor nested inside a directory named) `.venv-real-execution` or
+    `.venv`; not equal to, an ancestor of, or a descendant of
+    `staging_root`; does not already exist (a previous evidence directory
+    is NEVER reused); and no existing ancestor is a symlink. As a final
+    step, the nearest existing ancestor is resolved (following real
+    symlinks/junctions) and every overlap check above is re-applied to
+    that resolved candidate, so a parent-directory symlink cannot
+    silently alias OutputRoot into the repo, a reserved environment, or
+    StagingRoot. If resolution itself cannot be completed (an OS-level
+    error), this fails closed with `OUTPUT_PATH_SAFETY_UNDETERMINED_FAILURE`
+    rather than assuming safety.
+
+    Purely a path-string/filesystem-metadata check -- performs no
+    directory creation, deletion, or mutation of any kind.
+    """
+    if not path.is_absolute():
+        return OutputPathValidation(status=OUTPUT_PATH_NOT_ABSOLUTE_FAILURE)
+
+    resolved_repo_root = repo_root.resolve()
+    if _is_path_inside(path, resolved_repo_root):
+        return OutputPathValidation(status=OUTPUT_PATH_INSIDE_REPO_FAILURE)
+
+    if path.name == CANONICAL_ENVIRONMENT_DIRECTORY_NAME:
+        return OutputPathValidation(status=OUTPUT_PATH_MATCHES_CANONICAL_NAME_FAILURE)
+    if path.name == GENERAL_PROJECT_ENVIRONMENT_DIRECTORY_NAME:
+        return OutputPathValidation(status=OUTPUT_PATH_MATCHES_GENERAL_NAME_FAILURE)
+    if _contains_reserved_environment_component(path):
+        return OutputPathValidation(status=OUTPUT_PATH_INSIDE_RESERVED_ENVIRONMENT_FAILURE)
+
+    if path == staging_root:
+        return OutputPathValidation(status=OUTPUT_PATH_EQUALS_STAGING_ROOT_FAILURE)
+    if _is_path_inside(staging_root, path):
+        return OutputPathValidation(status=OUTPUT_PATH_ANCESTOR_OF_STAGING_ROOT_FAILURE)
+    if _is_path_inside(path, staging_root):
+        return OutputPathValidation(status=OUTPUT_PATH_DESCENDANT_OF_STAGING_ROOT_FAILURE)
+
+    if path.exists():
+        return OutputPathValidation(status=OUTPUT_PATH_ALREADY_EXISTS_FAILURE)
+
+    node = path
+    while True:
+        if node.is_symlink():
+            return OutputPathValidation(status=OUTPUT_PATH_IS_SYMLINK_FAILURE)
+        if node.parent == node:
+            break
+        node = node.parent
+
+    try:
+        resolved_candidate = _resolve_existing_ancestor(path)
+    except OSError:
+        return OutputPathValidation(status=OUTPUT_PATH_SAFETY_UNDETERMINED_FAILURE)
+
+    if resolved_candidate != path:
+        if _is_path_inside(resolved_candidate, resolved_repo_root):
+            return OutputPathValidation(status=OUTPUT_PATH_INSIDE_REPO_FAILURE)
+        if _contains_reserved_environment_component(resolved_candidate):
+            return OutputPathValidation(status=OUTPUT_PATH_INSIDE_RESERVED_ENVIRONMENT_FAILURE)
+        resolved_staging_root: Optional[Path]
+        try:
+            resolved_staging_root = _resolve_existing_ancestor(staging_root)
+        except OSError:
+            return OutputPathValidation(status=OUTPUT_PATH_SAFETY_UNDETERMINED_FAILURE)
+        if resolved_candidate == resolved_staging_root:
+            return OutputPathValidation(status=OUTPUT_PATH_EQUALS_STAGING_ROOT_FAILURE)
+        if _is_path_inside(resolved_staging_root, resolved_candidate):
+            return OutputPathValidation(status=OUTPUT_PATH_ANCESTOR_OF_STAGING_ROOT_FAILURE)
+        if _is_path_inside(resolved_candidate, resolved_staging_root):
+            return OutputPathValidation(status=OUTPUT_PATH_DESCENDANT_OF_STAGING_ROOT_FAILURE)
+
+    return OutputPathValidation(status=OUTPUT_PATH_OK)
+
+
+# =============================================================================
 # Section 5a: synthetic PDF operational-readiness probe
 # =============================================================================
 
@@ -663,11 +852,50 @@ def run_synthetic_pdf_operational_probe(
     )
 
 
-def main() -> int:
-    """No-op informational entry point. This module performs no action
-    when run directly -- every real behavior is a function called by a
-    later, separately reviewed stage or by this module's own test suite.
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry point.
+
+    With no arguments: a no-op informational message, exit 0 -- unchanged
+    from Stage E2's original scope.
+
+    `--validate-predecessor-baseline-file PATH`: the ONLY real action this
+    CLI performs. Reads the captured BEFORE `pip freeze --all` snapshot at
+    PATH and validates it against the exact 7 frozen predecessor pins via
+    `validate_predecessor_baseline_file` (which itself reuses
+    `parse_pip_freeze_all` / `validate_predecessor_baseline` verbatim --
+    no independently invented comparison). This is the exact invocation
+    the future Stage E5 staging runner makes, with the staging
+    interpreter, immediately after capturing `before_freeze.txt` and
+    strictly before attempting the single successor-resolution command.
+    Prints the resulting status (and, on failure, the specific missing/
+    drifted/extra package detail) and exits 0 only on `BASELINE_OK` --
+    nonzero on every other status. Performs no package/environment
+    mutation, no network access, and never imports `pdfplumber`.
     """
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--validate-predecessor-baseline-file",
+        metavar="PATH",
+        help="Validate a captured BEFORE 'pip freeze --all' file against the exact 7 frozen predecessor pins.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.validate_predecessor_baseline_file is not None:
+        result = validate_predecessor_baseline_file(Path(args.validate_predecessor_baseline_file))
+        print(f"status={result.status}")
+        if result.missing:
+            print(f"missing={','.join(result.missing)}")
+        if result.version_mismatches:
+            print(f"version_mismatches={result.version_mismatches}")
+        if result.unexpected_extra:
+            print(f"unexpected_extra={','.join(result.unexpected_extra)}")
+        print("real_pdfplumber_imported=false")
+        print("network_requests=0")
+        print("environment_mutations=0")
+        return 0 if result.status == BASELINE_OK else 1
+
     print("V9_014 PDF real-execution environment successor -- Stage E2 offline tooling module.")
     print("This module performs no action when run directly. See module docstring for scope.")
     return 0
