@@ -1016,7 +1016,7 @@ def test_staging_runner_no_force_reuse_of_output_root(staging_runner_source: str
 def test_staging_runner_output_root_created_only_after_all_preflight(staging_runner_source: str):
     creation_index = staging_runner_source.index("New-Item -ItemType Directory -Path $OutputRoot")
     preflight5_start = staging_runner_source.index("# Preflight 5: OutputRoot fail-closed validation")
-    all_preflight_passed_index = staging_runner_source.index("All preflight checks passed, including OutputRoot fail-closed validation")
+    all_preflight_passed_index = staging_runner_source.index("All preflight checks passed, including StagingRoot and OutputRoot real-path fail-closed validation")
     assert preflight5_start < all_preflight_passed_index < creation_index
 
 
@@ -1035,6 +1035,139 @@ def test_staging_runner_still_exactly_one_successor_resolution_invocation_after_
 
 def test_staging_runner_path_safety_undetermined_routes_to_chatgpt_decision_required(staging_runner_source: str):
     assert "CHATGPT_DECISION_REQUIRED" in staging_runner_source
+
+
+# =============================================================================
+# HIGH_2 remediation: mandatory tests 1-12 -- StagingRoot REAL-PATH
+# protected-state guard (the real resolved StagingRoot was computed but
+# never re-validated against the repo and reserved environments).
+# =============================================================================
+
+
+def test_staging_runner_realpath_staging_vs_repo_rejection_present(staging_runner_source: str):
+    # Test 1: explicit realResolvedStagingRoot-vs-realRepo rejection.
+    assert "PRE_GATE_STAGING_PATH_REALPATH_INSIDE_REPO" in staging_runner_source
+    assert "$realResolvedStagingRoot.StartsWith($realResolvedRepoRoot" in staging_runner_source
+
+
+def test_staging_runner_realpath_staging_vs_canonical_environment_rejection_present(staging_runner_source: str):
+    # Test 2: realResolvedStagingRoot equal/descendant of canonical env
+    # is rejected.
+    assert "PRE_GATE_STAGING_PATH_REALPATH_INSIDE_CANONICAL_ENVIRONMENT" in staging_runner_source
+    assert "$realResolvedStagingRoot -eq $realResolvedCanonicalEnvironmentPath" in staging_runner_source
+    assert "$realResolvedStagingRoot.StartsWith($realResolvedCanonicalEnvironmentPath" in staging_runner_source
+
+
+def test_staging_runner_realpath_staging_vs_general_environment_rejection_present(staging_runner_source: str):
+    # Test 3: realResolvedStagingRoot equal/descendant of general ".venv"
+    # is rejected.
+    assert "PRE_GATE_STAGING_PATH_REALPATH_INSIDE_GENERAL_ENVIRONMENT" in staging_runner_source
+    assert "$realResolvedStagingRoot -eq $realResolvedGeneralEnvironmentPath" in staging_runner_source
+    assert "$realResolvedStagingRoot.StartsWith($realResolvedGeneralEnvironmentPath" in staging_runner_source
+
+
+def test_staging_runner_realpath_checks_use_real_resolved_path_not_only_lexical(staging_runner_source: str):
+    # Test 4: the new StagingRoot protected-state checks are keyed off
+    # $realResolvedStagingRoot (the symlink/junction/reparse-resolved
+    # value), not merely $resolvedStagingRoot (the lexical
+    # GetFullPath value) -- both variables exist, and the new
+    # REALPATH_INSIDE_* checks specifically reference the "real" one.
+    preflight_4b_start = staging_runner_source.index("# Preflight 4b: StagingRoot REAL-PATH protected-state guard")
+    preflight_5_start = staging_runner_source.index("# Preflight 5: OutputRoot fail-closed validation")
+    preflight_4b_block = staging_runner_source[preflight_4b_start:preflight_5_start]
+    assert "$realResolvedStagingRoot" in preflight_4b_block
+    assert "$resolvedStagingRoot" not in preflight_4b_block
+
+
+def test_staging_runner_realpath_staging_guards_occur_before_output_root_creation(staging_runner_source: str):
+    # Test 5: all real staging safety checks occur before OutputRoot
+    # creation.
+    preflight_4b_start = staging_runner_source.index("# Preflight 4b: StagingRoot REAL-PATH protected-state guard")
+    last_staging_realpath_check = staging_runner_source.rindex("PRE_GATE_STAGING_PATH_REALPATH_INSIDE_GENERAL_ENVIRONMENT")
+    output_root_creation = staging_runner_source.index("New-Item -ItemType Directory -Path $OutputRoot")
+    assert preflight_4b_start < last_staging_realpath_check < output_root_creation
+
+
+def test_staging_runner_realpath_staging_guards_occur_before_venv_creation(staging_runner_source: str):
+    # Test 6: all real staging safety checks occur before
+    # "python -m venv $StagingRoot".
+    last_staging_realpath_check = staging_runner_source.rindex("PRE_GATE_STAGING_PATH_REALPATH_INSIDE_GENERAL_ENVIRONMENT")
+    venv_creation = staging_runner_source.index("python -m venv $StagingRoot")
+    assert last_staging_realpath_check < venv_creation
+
+
+def test_staging_runner_realpath_staging_guards_occur_before_any_pip_install(staging_runner_source: str):
+    # Test 7: all real staging safety checks occur before any pip
+    # install invocation.
+    last_staging_realpath_check = staging_runner_source.rindex("PRE_GATE_STAGING_PATH_REALPATH_INSIDE_GENERAL_ENVIRONMENT")
+    first_pip_install = staging_runner_source.index("pip install")
+    assert last_staging_realpath_check < first_pip_install
+
+
+def test_staging_runner_realpath_output_vs_staging_overlap_still_rejected(staging_runner_source: str):
+    # Test 8: real StagingRoot / real OutputRoot equal or
+    # ancestor/descendant remains rejected.
+    output_vs_staging_realpath_block_start = staging_runner_source.index(
+        "$realResolvedOutputRoot = Resolve-ExistingAncestorRealPath -Path $OutputRoot"
+    )
+    output_vs_staging_realpath_block = staging_runner_source[output_vs_staging_realpath_block_start:]
+    assert "$realResolvedOutputRoot -eq $realResolvedStagingRoot" in output_vs_staging_realpath_block
+    assert "$realResolvedStagingRoot.StartsWith($realResolvedOutputRoot" in output_vs_staging_realpath_block
+    assert "$realResolvedOutputRoot.StartsWith($realResolvedStagingRoot" in output_vs_staging_realpath_block
+
+
+def test_staging_runner_baseline_exact7_ordering_preserved_after_high2_remediation(staging_runner_source: str):
+    # Test 9: predecessor exact-7 validation ordering remains intact.
+    before_capture_index = staging_runner_source.index('$beforeFreezePath = Join-Path $OutputRoot "before_freeze.txt"')
+    validation_invocation_index = staging_runner_source.index("--validate-predecessor-baseline-file $beforeFreezePath")
+    successor_resolution_index = staging_runner_source.index("# E5 step 4:")
+    assert before_capture_index < validation_invocation_index < successor_resolution_index
+
+
+def test_staging_runner_single_successor_resolution_preserved_after_high2_remediation(staging_runner_source: str):
+    # Test 10: exactly one successor-resolution invocation remains.
+    successor_calls = re.findall(
+        r"pip install `\s*\n\s*-c \$predecessorLockRelativePath `\s*\n\s*-r \$directSpecRelativePath",
+        staging_runner_source,
+    )
+    assert len(successor_calls) == 1
+
+
+def test_staging_runner_no_remove_item_reset_retry_preserved_after_high2_remediation(staging_runner_source: str):
+    # Test 11: no Remove-Item/reset/retry.
+    code_only = _strip_powershell_comment_lines(staging_runner_source)
+    assert "Remove-Item" not in code_only
+    lowered = code_only.lower()
+    assert "git reset" not in lowered
+    assert "git clean" not in lowered
+    assert "git checkout" not in lowered
+
+
+def test_staging_path_external_parent_symlink_toward_reserved_environment_rejected(tmp_path: Path):
+    # Optional path-semantic fixture: an external parent symlink whose
+    # real target is a stand-in reserved-environment directory, with a
+    # NONEXISTENT child StagingRoot underneath it. The existing Python
+    # semantic authority (validate_staging_path, unmodified by this
+    # HIGH_2 remediation) already fails closed on any symlink encountered
+    # while walking the path's ancestors -- rejecting outright rather
+    # than following the symlink to inspect its target -- which is at
+    # least as strict as the .ps1 runner's follow-and-re-check contract.
+    if not hasattr(Path, "symlink_to"):
+        pytest.skip("symlink support unavailable in this environment")
+    fake_repo = tmp_path / "fake-repo"
+    fake_repo.mkdir()
+    fake_canonical_environment = fake_repo / ".venv-real-execution"
+    fake_canonical_environment.mkdir()
+    external_parent = tmp_path / "external-parent-symlink"
+    try:
+        external_parent.symlink_to(fake_canonical_environment, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted in this environment")
+
+    nonexistent_staging_child = external_parent / "nonexistent-staging-root"
+    assert not nonexistent_staging_child.exists()
+    result = env_successor.validate_staging_path(nonexistent_staging_child, repo_root=REPO_ROOT)
+    assert result.status == env_successor.STAGING_PATH_IS_SYMLINK_FAILURE
 
 
 # =============================================================================

@@ -180,15 +180,18 @@ param(
     }
 
     # ------------------------------------------------------------------
-    # Preflight 5: OutputRoot fail-closed validation, performed BEFORE
-    # any filesystem creation/write of any kind. A previous evidence
-    # directory is NEVER reused: OutputRoot must not already exist, and
-    # -OutputRoot must not alias or overlap -StagingRoot, the repository,
-    # or either reserved environment in any direction. If a required
-    # path-safety decision cannot be established reliably (e.g. an
-    # existing ancestor's reparse-point target cannot be read), this
-    # fails closed with CHATGPT_DECISION_REQUIRED rather than weakening
-    # the guard.
+    # Shared helper: resolve the nearest EXISTING ancestor of a path,
+    # following its real (symlink/junction/reparse-resolved) target if
+    # that ancestor is itself a reparse point, then reattach the
+    # not-yet-existing suffix. Used below to re-verify path safety on
+    # REAL resolved paths, not merely lexical ones -- so an external
+    # parent symlink/junction whose real target lands inside the repo or
+    # a reserved environment is caught even when the leaf path itself
+    # does not yet exist. If a required path-safety decision cannot be
+    # established reliably (no existing ancestor found, or a reparse
+    # point's target cannot be read), this fails closed with
+    # CHATGPT_DECISION_REQUIRED rather than falling back to lexical
+    # safety.
     # ------------------------------------------------------------------
     function Resolve-ExistingAncestorRealPath {
         param([Parameter(Mandatory = $true)][string]$Path)
@@ -216,6 +219,42 @@ param(
         return $resolvedExisting
     }
 
+    # ------------------------------------------------------------------
+    # Preflight 4b: StagingRoot REAL-PATH protected-state guard,
+    # performed BEFORE any OutputRoot creation, staging venv creation,
+    # pip invocation, or filesystem mutation of any kind. The lexical
+    # checks above (leaf name, lexical inside-repo) are NOT sufficient by
+    # themselves: an external parent symlink/junction whose REAL target
+    # lands inside the repository, inside ".venv-real-execution", or
+    # inside ".venv" must be rejected even though -StagingRoot itself
+    # does not yet exist and its own leaf name looks unremarkable.
+    # ------------------------------------------------------------------
+    $realResolvedRepoRoot = Resolve-ExistingAncestorRealPath -Path $repoRoot
+    $canonicalEnvironmentAbsolutePath = Join-Path $repoRoot $canonicalEnvironmentDirectoryName
+    $generalEnvironmentAbsolutePath = Join-Path $repoRoot $generalEnvironmentDirectoryName
+    $realResolvedCanonicalEnvironmentPath = Resolve-ExistingAncestorRealPath -Path $canonicalEnvironmentAbsolutePath
+    $realResolvedGeneralEnvironmentPath = Resolve-ExistingAncestorRealPath -Path $generalEnvironmentAbsolutePath
+    $realResolvedStagingRoot = Resolve-ExistingAncestorRealPath -Path $StagingRoot
+
+    if ($realResolvedStagingRoot.StartsWith($realResolvedRepoRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "PRE_GATE_STAGING_PATH_REALPATH_INSIDE_REPO: -StagingRoot resolves inside the repository tree through an existing parent alias."
+    }
+    if ($realResolvedStagingRoot -eq $realResolvedCanonicalEnvironmentPath -or
+        $realResolvedStagingRoot.StartsWith($realResolvedCanonicalEnvironmentPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "PRE_GATE_STAGING_PATH_REALPATH_INSIDE_CANONICAL_ENVIRONMENT: -StagingRoot resolves to, or inside, the canonical protected environment through an existing parent alias."
+    }
+    if ($realResolvedStagingRoot -eq $realResolvedGeneralEnvironmentPath -or
+        $realResolvedStagingRoot.StartsWith($realResolvedGeneralEnvironmentPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "PRE_GATE_STAGING_PATH_REALPATH_INSIDE_GENERAL_ENVIRONMENT: -StagingRoot resolves to, or inside, the general project environment through an existing parent alias."
+    }
+
+    # ------------------------------------------------------------------
+    # Preflight 5: OutputRoot fail-closed validation, performed BEFORE
+    # any filesystem creation/write of any kind. A previous evidence
+    # directory is NEVER reused: OutputRoot must not already exist, and
+    # -OutputRoot must not alias or overlap -StagingRoot, the repository,
+    # or either reserved environment in any direction.
+    # ------------------------------------------------------------------
     if (-not [System.IO.Path]::IsPathRooted($OutputRoot)) {
         throw "PRE_GATE_OUTPUT_PATH_NOT_ABSOLUTE: -OutputRoot must be an absolute path."
     }
@@ -247,34 +286,37 @@ param(
         throw "PRE_GATE_OUTPUT_PATH_ALREADY_EXISTS: -OutputRoot already exists; a previous evidence directory is never reused."
     }
 
-    # Re-verify every overlap check above against the nearest EXISTING
-    # ancestor's real (symlink/junction/reparse-resolved) path, so a
-    # parent-directory alias cannot silently defeat the checks above.
-    # Neither -StagingRoot nor -OutputRoot exists yet at this point (both
-    # already confirmed above), so both resolve via their nearest
-    # existing ancestor.
-    $realResolvedStagingRoot = Resolve-ExistingAncestorRealPath -Path $StagingRoot
+    # Re-verify every OutputRoot overlap check above against REAL resolved
+    # paths (unconditionally -- not merely when a real path happens to
+    # differ from its lexical form, since relying on that comparison to
+    # decide whether to even look is itself a way uncertainty could be
+    # waved through). -StagingRoot's own real-path repo/reserved-
+    # environment safety was already fully established in Preflight 4b
+    # above; this block only needs to re-check REAL OutputRoot against
+    # the repo, the reserved environments, and REAL StagingRoot.
     $realResolvedOutputRoot = Resolve-ExistingAncestorRealPath -Path $OutputRoot
-    if ($realResolvedOutputRoot -ne $resolvedOutputRoot -or $realResolvedStagingRoot -ne $resolvedStagingRoot) {
-        if ($realResolvedOutputRoot.StartsWith($resolvedRepoRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "PRE_GATE_OUTPUT_PATH_INSIDE_REPO: -OutputRoot resolves inside the repository tree through an existing parent alias."
-        }
-        $realOutputSegments = $realResolvedOutputRoot.Split([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
-        if ($realOutputSegments -contains $canonicalEnvironmentDirectoryName -or $realOutputSegments -contains $generalEnvironmentDirectoryName) {
-            throw "PRE_GATE_OUTPUT_PATH_INSIDE_RESERVED_ENVIRONMENT: -OutputRoot resolves inside a reserved environment through an existing parent alias."
-        }
-        if ($realResolvedOutputRoot -eq $realResolvedStagingRoot) {
-            throw "PRE_GATE_OUTPUT_PATH_EQUALS_STAGING_ROOT: -OutputRoot resolves to the same real path as -StagingRoot through an existing parent alias."
-        }
-        if ($realResolvedStagingRoot.StartsWith($realResolvedOutputRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "PRE_GATE_OUTPUT_PATH_ANCESTOR_OF_STAGING_ROOT: -OutputRoot resolves as an ancestor of -StagingRoot through an existing parent alias."
-        }
-        if ($realResolvedOutputRoot.StartsWith($realResolvedStagingRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "PRE_GATE_OUTPUT_PATH_DESCENDANT_OF_STAGING_ROOT: -OutputRoot resolves as a descendant of -StagingRoot through an existing parent alias."
-        }
+    if ($realResolvedOutputRoot.StartsWith($realResolvedRepoRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "PRE_GATE_OUTPUT_PATH_REALPATH_INSIDE_REPO: -OutputRoot resolves inside the repository tree through an existing parent alias."
+    }
+    if ($realResolvedOutputRoot -eq $realResolvedCanonicalEnvironmentPath -or
+        $realResolvedOutputRoot.StartsWith($realResolvedCanonicalEnvironmentPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "PRE_GATE_OUTPUT_PATH_REALPATH_INSIDE_CANONICAL_ENVIRONMENT: -OutputRoot resolves to, or inside, the canonical protected environment through an existing parent alias."
+    }
+    if ($realResolvedOutputRoot -eq $realResolvedGeneralEnvironmentPath -or
+        $realResolvedOutputRoot.StartsWith($realResolvedGeneralEnvironmentPath + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "PRE_GATE_OUTPUT_PATH_REALPATH_INSIDE_GENERAL_ENVIRONMENT: -OutputRoot resolves to, or inside, the general project environment through an existing parent alias."
+    }
+    if ($realResolvedOutputRoot -eq $realResolvedStagingRoot) {
+        throw "PRE_GATE_OUTPUT_PATH_EQUALS_STAGING_ROOT: -OutputRoot resolves to the same real path as -StagingRoot through an existing parent alias."
+    }
+    if ($realResolvedStagingRoot.StartsWith($realResolvedOutputRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "PRE_GATE_OUTPUT_PATH_ANCESTOR_OF_STAGING_ROOT: -OutputRoot resolves as an ancestor of -StagingRoot through an existing parent alias."
+    }
+    if ($realResolvedOutputRoot.StartsWith($realResolvedStagingRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "PRE_GATE_OUTPUT_PATH_DESCENDANT_OF_STAGING_ROOT: -OutputRoot resolves as a descendant of -StagingRoot through an existing parent alias."
     }
 
-    Write-Host "All preflight checks passed, including OutputRoot fail-closed validation. Proceeding with the frozen, single-attempt E5 sequence."
+    Write-Host "All preflight checks passed, including StagingRoot and OutputRoot real-path fail-closed validation. Proceeding with the frozen, single-attempt E5 sequence."
 
     # ==================================================================
     # Frozen Stage E5 sequence (Section 5, Stage E5). Fixed in source;
