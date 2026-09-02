@@ -80,29 +80,83 @@ completely unaffected by, V9_014 PDF work.
 
 ## 2. Canonical environment and successor staging environment
 
-### 2a. Canonical predecessor immutability
+### 2a. Canonical environment lifecycle state
 
 `.venv-real-execution` is the exact predecessor canonical protected
-environment (Section 1). **It MUST NOT be mutated** at any point in this
-successor path **until the final live canonical-promotion review (Section
-5, Stage E11) is `PASS`.** No stage before E11 -- design, offline
-implementation, staging resolution, staging inspection, or candidate/
-evidence review -- creates, writes to, deletes, or otherwise touches
-`.venv-real-execution` in any way.
+environment (Section 1):
 
 ```
 .venv-real-execution
 .venv-real-execution\Scripts\python.exe
 ```
 
-Until Stage E11 is independently reviewed `PASS`:
+Its lifecycle through this successor path is governed by exactly three
+states, in this order, each defined precisely so that no stage's own
+description can contradict it. Every other section of this document that
+describes `.venv-real-execution`'s mutation status must be read subject to
+this state definition, and is written to match it exactly.
 
-- the current frozen environment (Section 1) remains canonical and
-  continues to serve already-authorized predecessor (V8-lineage) work
-  unchanged, unmutated, and untouched by any successor activity;
+**State 1 -- `CANONICAL_ENVIRONMENT_STATE=PREDECESSOR_CANONICAL_FROZEN`**
+(holds through Stage E8's own `PASS`, i.e. for all of E1-E8):
+
+- `.venv-real-execution` **MUST NOT be mutated** by any activity in
+  Stages E1-E8 -- design, offline implementation, staging-venv creation,
+  staging resolution, staging inspection, candidate/evidence review, or
+  promotion-completeness review. None of these stages creates, writes to,
+  deletes, or otherwise touches `.venv-real-execution` in any way.
+- the predecessor frozen package/environment authority (Section 1) remains
+  valid and continues to serve already-authorized predecessor (V8-lineage)
+  work exactly as it did before this design existed; successor staging
+  activity (Section 2b) does not change that authorization in any way;
 - V9_014 PDF execution requiring `pdfplumber` remains **BLOCKED**;
 - no environment may satisfy `CANONICAL_ENVIRONMENT_STATUS` other than
-  `.venv-real-execution` itself.
+  `.venv-real-execution` itself, and `.venv-real-execution` holds that
+  status only under its existing predecessor (V8-lineage) authorization,
+  not for any V9_014 PDF purpose.
+
+**State 2 -- `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`**
+(begins at the instant Stage E9 starts its canonical mutation, holds
+through Stage E10):
+
+- from this instant, `.venv-real-execution` is **no longer** described as
+  unchanged, frozen, or "live canonical" in the predecessor sense -- it is
+  actively being migrated, and neither this document nor any stage output
+  may claim otherwise while this state holds;
+- the successor environment is **not yet** canonical or frozen either --
+  no stage may claim `CANONICAL_ENVIRONMENT_STATUS` for the successor
+  package set until State 3 is reached;
+- **NO** protected/private/research execution of any kind is permitted
+  under either the predecessor's or the successor's environment authority
+  while this state holds;
+- only the reviewed migration operation itself (Stage E9) and its
+  no-network/live-validation operation (Stage E10) are permitted, each
+  under its own separate point-of-use authority (Section 5, Stages E9/E10);
+- **no automatic rollback, reset, delete, recreate, or retry** occurs on
+  failure at any point while this state holds (Section 6); a failure is
+  preserved as durable evidence and returns control to GPT/human authority
+  rather than being silently resolved.
+
+**State 3 -- `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_CANONICAL_FROZEN`**
+(begins only once Stage E11's GPT review of the Stage E10 evidence is
+`PASS`):
+
+- only now is the mutated `.venv-real-execution` accepted as successor
+  canonical/frozen for the successor package set;
+- only now may V9_014 PDF calibration-runner Stage C (per
+  `V9_014_SOURCE_B_PDF_STRUCTURAL_CALIBRATION_METHOD_CONTRACT.md`
+  Section 7) begin, and only subject to that stage's own required
+  authority -- this design does not itself grant it.
+
+The correct mutation gate, stated once and unambiguously: **no mutation of
+any kind through Stage E8's `PASS`; Stage E9 alone is the sole stage
+authorized to perform the canonical mutation, under its own fresh
+point-of-use authority; Stage E11 alone is the sole stage that may declare
+the mutated environment accepted as successor canonical/frozen.** E9 and
+E11 are deliberately not the same stage: E9 performs the mutation, E11
+reviews its evidence and only then confers canonical status. Between them
+(State 2), the environment is in a migration-in-progress state that is
+neither the old canonical nor the new canonical, and no protected
+execution of any kind is permitted against it.
 
 ### 2b. Successor staging environment
 
@@ -241,12 +295,17 @@ scope.
 
 The following order is frozen. No stage may be skipped or reordered; each
 stage marked "GPT ... PASS" requires an independent exact-SHA GPT-5.6 Sol
-review before the next stage may begin. The sequence is now explicitly
-two-tracked: Stages E1-E7 validate the successor **only** in the
-non-canonical staging environment (Section 2b); `.venv-real-execution`
-itself is untouched throughout. Stages E8-E11 are the separately
-authorized **live canonical promotion**, gated entirely behind E7's
-`PASS`.
+review before the next stage may begin. The sequence follows the
+three-state canonical lifecycle of Section 2a exactly: Stages E1-E8 all
+occur under `CANONICAL_ENVIRONMENT_STATE=PREDECESSOR_CANONICAL_FROZEN`,
+validating the successor **only** in the non-canonical staging environment
+(Section 2b) -- `.venv-real-execution` itself is untouched throughout
+E1-E8, including E8's promotion-completeness review. Stage E9 is the sole
+stage that transitions the state to
+`SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED` and performs the
+canonical mutation, gated on both E7's `PASS` and E8's `PASS`. Stage E10
+runs under that same in-progress state. Stage E11 alone transitions the
+state to `SUCCESSOR_CANONICAL_FROZEN`.
 
 ```
 E1  This successor-design exact-SHA GPT PASS.
@@ -281,7 +340,9 @@ E4  GPT reviews Phase A.
     AI_REAL_EXECUTION_RUNBOOK.md) requires it at that time; no authority
     from this document or from any prior V9 stage is reused. This
     authority covers staging-environment creation only -- it never covers
-    `.venv-real-execution` mutation, which remains gated behind E11.
+    `.venv-real-execution` mutation, which is gated on Stage E9's own
+    separate fresh point-of-use authority (never this one) and, before
+    that, on both E7's `PASS` and E8's `PASS`.
 
 E5  Phase B MINIMAL REAL ENVIRONMENT RESOLUTION (staging only):
     - create or reuse the collision-checked, non-canonical staging venv
@@ -332,9 +393,19 @@ E9  Separately authorized live canonical-promotion operation: only after
     fresh point-of-use authority (never reused from E4 or from this
     document) mutates `.venv-real-execution` from the reviewed successor
     lock (Section 4, artifact 2). This is the only stage in this entire
-    design permitted to touch the canonical environment.
+    design permitted to touch the canonical environment. At the instant
+    this mutation begins, `CANONICAL_ENVIRONMENT_STATE` transitions from
+    `PREDECESSOR_CANONICAL_FROZEN` to
+    `SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED` (Section 2a, State
+    2): the predecessor environment is no longer claimed unchanged/
+    frozen/canonical from this point, the successor is not yet claimed
+    canonical/frozen, and NO protected/private/research execution is
+    permitted under either environment's authority until State 3.
 
-E10 Post-mutation live validation:
+E10 Post-mutation live validation, performed entirely under
+    `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`
+    (Section 2a, State 2) -- the environment is still not canonical at
+    this point:
     - run the promoted canonical checker (the Section 6a-updated
       `scripts/check_real_execution_env.py`) against
       `.venv-real-execution`
@@ -345,15 +416,19 @@ E10 Post-mutation live validation:
       regression)
     - require the new synthetic PDF operational-readiness probe (Section
       5a) to pass against the now-live canonical interpreter
-    - preserve execution evidence in full; a failure is never hidden by
-      reset or retry (Section 6)
+    - preserve execution evidence in full; on failure there is NO
+      automatic rollback, reset, delete, recreate, or retry (Section 6)
+      -- the failure is preserved as durable evidence and control returns
+      to GPT/human authority, not silently resolved by this stage
 
-E11 GPT exact-SHA review of the live canonical successor environment
-    result. Only a `PASS` here promotes `.venv-real-execution` to
-    `CANONICAL_ENVIRONMENT_STATUS` for the successor package set. Only
-    after this `PASS` may V9_014 PDF calibration-runner Stage C (per
+E11 GPT exact-SHA review of the Stage E10 evidence. Only a `PASS` here
+    transitions `CANONICAL_ENVIRONMENT_STATE` to
+    `SUCCESSOR_CANONICAL_FROZEN` (Section 2a, State 3) and promotes
+    `.venv-real-execution` to `CANONICAL_ENVIRONMENT_STATUS` for the
+    successor package set. Only after this `PASS` may V9_014 PDF
+    calibration-runner Stage C (per
     `V9_014_SOURCE_B_PDF_STRUCTURAL_CALIBRATION_METHOD_CONTRACT.md`
-    Section 7) begin.
+    Section 7) begin, subject to that stage's own required authority.
 ```
 
 ### 5a. Operational pdfplumber probe
