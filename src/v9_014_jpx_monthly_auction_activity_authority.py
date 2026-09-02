@@ -15,17 +15,19 @@ final ``trading_dates`` sequence -- per the frozen design (Section 6.1 and
 Section 8), that subtraction is authority-driven and occurs only in a later
 reviewed implementation/execution stage after every frozen validation PASS.
 
-``evaluate_cross_source_relation`` mechanically enforces SOURCE_B date/table
-coverage closure: it requires an actual per-date :class:`DateClassification`
-(produced by :func:`classify_date`) for every scheduled-open date, not an
-opaque caller-asserted "proven active" list. A scheduled-open date whose
-required SOURCE_B date/table coverage is entirely absent, or whose
-classification is ``DQ``, can never yield ``RELATION_PASS`` -- even when the
-resulting left-set difference would otherwise coincidentally equal
-``EXPECTED_UNPROVEN_SET``. ``validate_source_b_object_collection`` separately
-proves, over the complete caller-supplied physical-object collection, that
-it covers exactly the 109 frozen logical months with exactly their required
-object parts and exactly 110 total physical objects.
+``evaluate_cross_source_relation`` mechanically enforces both SOURCE_B
+object-collection completeness and per-date table coverage closure. It
+requires the actual :class:`ObjectCollectionValidation` produced by
+:func:`validate_source_b_object_collection` (``RELATION_PASS`` is
+unreachable unless that collection is exactly ``SOURCE_B_OBJECT_COLLECTION_OK``)
+and an actual per-date :class:`DateClassification` (produced by
+:func:`classify_date`) for every scheduled-open date -- never an opaque
+caller-asserted "proven active" list or a bare boolean. A scheduled-open
+date whose required SOURCE_B date/table coverage is entirely absent, whose
+classification is ``DQ``, or whose status falls outside the closed
+``PROVEN_AUCTION_ACTIVE``/``NOT_PROVEN``/``DQ`` enum, can never yield
+``RELATION_PASS`` -- even when the resulting left-set difference would
+otherwise coincidentally equal ``EXPECTED_UNPROVEN_SET``.
 """
 
 from __future__ import annotations
@@ -133,6 +135,13 @@ DQ = "DQ"
 DEFINITELY_AUCTION_ACTIVE = "DEFINITELY_AUCTION_ACTIVE"
 NOT_PROVEN = "NOT_PROVEN"
 PROVEN_AUCTION_ACTIVE = "PROVEN_AUCTION_ACTIVE"
+
+# Closed set of valid DateClassification.status values consumed by the
+# cross-source relation. There is no PROVEN_INACTIVE or equivalent status;
+# an unknown, misspelled, synthetic, future, or otherwise invented status
+# must never count as valid coverage and must never silently behave like
+# NOT_PROVEN.
+VALID_DATE_CLASSIFICATION_STATUSES = frozenset({PROVEN_AUCTION_ACTIVE, NOT_PROVEN, DQ})
 
 # --- Frozen data-quality failure reason codes -------------------------------
 UNIT_ABSENT_FAILURE = "UNIT_ABSENT_DQ_FAILURE"
@@ -573,9 +582,11 @@ def source_c_confirmed_exception_set(
 @dataclass(frozen=True)
 class RelationEvaluation:
     status: str
+    object_collection_valid: bool
     coverage_complete: bool
     missing_coverage_dates: frozenset
     dq_coverage_dates: frozenset
+    invalid_status_dates: frozenset
     left_diff: frozenset
     right_diff: frozenset
     left_exact_expected: bool
@@ -589,9 +600,22 @@ def evaluate_cross_source_relation(
     scheduled_open_dates: Sequence[str],
     source_b_date_classifications: Mapping[str, DateClassification],
     source_c_exception_set: Sequence[str],
+    object_collection: ObjectCollectionValidation,
 ) -> RelationEvaluation:
     """Frozen cross-source exact-set/sentinel validation (design Section 6),
-    with mechanically enforced SOURCE_B date/table coverage closure.
+    with mechanically enforced SOURCE_B object-collection and date/table
+    coverage closure.
+
+    ``object_collection`` must be the actual :class:`ObjectCollectionValidation`
+    produced by :func:`validate_source_b_object_collection` for the complete
+    SOURCE_B physical-object collection. ``RELATION_PASS`` is unreachable
+    unless ``object_collection.status == SOURCE_B_OBJECT_COLLECTION_OK`` --
+    a caller cannot reach ``RELATION_PASS`` merely by supplying perfect
+    per-date evidence while the underlying physical-object collection
+    (missing month, unexpected month, duplicate month, a missing 2022-04
+    part, a duplicate/unexpected part, or a physical-count mismatch) is
+    invalid. This reuses the existing frozen collection validation; no new
+    collection methodology is introduced.
 
     ``source_b_date_classifications`` maps date to the actual
     :class:`DateClassification` produced by :func:`classify_date` for that
@@ -599,19 +623,24 @@ def evaluate_cross_source_relation(
     the gap where a date's required SOURCE_B date/table coverage could be
     entirely absent yet still be silently treated as unproven: a date that
     exists and was classified ``NOT_PROVEN`` is legitimately permitted, but
-    a date entirely missing from ``source_b_date_classifications``, or one
-    classified ``DQ``, is a coverage failure and can never yield
+    a date entirely missing from ``source_b_date_classifications``, one
+    classified ``DQ``, or one carrying any status outside the closed
+    :data:`VALID_DATE_CLASSIFICATION_STATUSES` enum (an unknown, misspelled,
+    synthetic, or invented status is never silently treated as
+    ``NOT_PROVEN``), is a coverage failure and can never yield
     ``RELATION_PASS`` -- even when the resulting left-set difference would
     otherwise coincidentally equal ``EXPECTED_UNPROVEN_SET``.
 
     Uses only caller-supplied synthetic scheduled-open evidence, SOURCE_B
-    per-date classification evidence, and a SOURCE_C confirmed exception
-    set. This function never materializes a final ``trading_dates``
-    sequence.
+    per-date classification evidence, a SOURCE_C confirmed exception set,
+    and the SOURCE_B object-collection validation result. This function
+    never materializes a final ``trading_dates`` sequence.
     """
 
     scheduled = frozenset(scheduled_open_dates)
     source_c = frozenset(source_c_exception_set)
+
+    object_collection_valid = object_collection.status == SOURCE_B_OBJECT_COLLECTION_OK
 
     missing_coverage_dates = frozenset(
         date for date in scheduled if date not in source_b_date_classifications
@@ -622,7 +651,15 @@ def evaluate_cross_source_relation(
         if date in source_b_date_classifications
         and source_b_date_classifications[date].status == DQ
     )
-    coverage_complete = not missing_coverage_dates and not dq_coverage_dates
+    invalid_status_dates = frozenset(
+        date
+        for date in scheduled
+        if date in source_b_date_classifications
+        and source_b_date_classifications[date].status not in VALID_DATE_CLASSIFICATION_STATUSES
+    )
+    coverage_complete = (
+        not missing_coverage_dates and not dq_coverage_dates and not invalid_status_dates
+    )
 
     proven_active = frozenset(
         date
@@ -640,7 +677,8 @@ def evaluate_cross_source_relation(
     sentinel_2 = SENTINEL_PROVEN_ACTIVE_DATES[1] in proven_active
 
     overall_pass = (
-        coverage_complete
+        object_collection_valid
+        and coverage_complete
         and left_exact_expected
         and right_empty
         and cross_source_consistent
@@ -651,9 +689,11 @@ def evaluate_cross_source_relation(
 
     return RelationEvaluation(
         status=status,
+        object_collection_valid=object_collection_valid,
         coverage_complete=coverage_complete,
         missing_coverage_dates=missing_coverage_dates,
         dq_coverage_dates=dq_coverage_dates,
+        invalid_status_dates=invalid_status_dates,
         left_diff=left_diff,
         right_diff=right_diff,
         left_exact_expected=left_exact_expected,

@@ -572,6 +572,10 @@ def _pre_era_segment_cells(date, active):
     return cells
 
 
+def _valid_object_collection():
+    return v9014.validate_source_b_object_collection(_complete_object_collection_entries())
+
+
 def test_relation_happy_path_with_explicit_complete_date_table_coverage_via_classify_date():
     # Real integration: every scheduled date is actually run through
     # classify_date, not stubbed, proving the coverage-closure fix wires
@@ -586,11 +590,15 @@ def test_relation_happy_path_with_explicit_complete_date_table_coverage_via_clas
             assert coverage[date].status == v9014.PROVEN_AUCTION_ACTIVE
 
     source_c = v9014.source_c_confirmed_exception_set(True, True)
-    result = v9014.evaluate_cross_source_relation(list(SCHEDULED_WINDOW), coverage, source_c)
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, _valid_object_collection()
+    )
     assert result.status == v9014.RELATION_PASS
+    assert result.object_collection_valid is True
     assert result.coverage_complete is True
     assert result.missing_coverage_dates == frozenset()
     assert result.dq_coverage_dates == frozenset()
+    assert result.invalid_status_dates == frozenset()
     assert result.left_diff == frozenset({"2020-10-01"})
     assert result.right_diff == frozenset()
     assert result.left_exact_expected is True
@@ -603,7 +611,9 @@ def test_relation_happy_path_with_explicit_complete_date_table_coverage_via_clas
 def test_relation_passes_when_2020_10_01_present_and_not_proven_with_source_c():
     coverage = _full_window_coverage()
     source_c = v9014.source_c_confirmed_exception_set(True, True)
-    result = v9014.evaluate_cross_source_relation(list(SCHEDULED_WINDOW), coverage, source_c)
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, _valid_object_collection()
+    )
     assert result.status == v9014.RELATION_PASS
 
 
@@ -611,7 +621,9 @@ def test_relation_fails_when_2020_10_01_source_b_table_completely_missing():
     coverage = _full_window_coverage()
     del coverage["2020-10-01"]
     source_c = v9014.source_c_confirmed_exception_set(True, True)
-    result = v9014.evaluate_cross_source_relation(list(SCHEDULED_WINDOW), coverage, source_c)
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, _valid_object_collection()
+    )
     # The left-set difference still coincidentally equals EXPECTED_UNPROVEN_SET
     # (the date is simply absent from proven_active either way), but missing
     # coverage must never be accepted merely because that diff looks right.
@@ -625,7 +637,9 @@ def test_relation_fails_when_another_scheduled_open_date_source_b_missing():
     coverage = _full_window_coverage()
     del coverage["2020-09-28"]
     source_c = v9014.source_c_confirmed_exception_set(True, True)
-    result = v9014.evaluate_cross_source_relation(list(SCHEDULED_WINDOW), coverage, source_c)
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, _valid_object_collection()
+    )
     assert result.coverage_complete is False
     assert result.missing_coverage_dates == frozenset({"2020-09-28"})
     assert result.status == v9014.RELATION_FAILURE
@@ -637,7 +651,9 @@ def test_relation_fails_when_a_covered_date_is_dq():
         status=v9014.DQ, reason=v9014.BLANK_REQUIRED_CELL_FAILURE, segment="1st Section"
     )
     source_c = v9014.source_c_confirmed_exception_set(True, True)
-    result = v9014.evaluate_cross_source_relation(list(SCHEDULED_WINDOW), coverage, source_c)
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, _valid_object_collection()
+    )
     assert result.coverage_complete is False
     assert result.dq_coverage_dates == frozenset({"2020-09-29"})
     assert result.status == v9014.RELATION_FAILURE
@@ -647,9 +663,10 @@ def test_relation_fails_when_source_c_not_confirmed():
     coverage = _full_window_coverage()
     unconfirmed_source_c = v9014.source_c_confirmed_exception_set(True, False)
     result = v9014.evaluate_cross_source_relation(
-        list(SCHEDULED_WINDOW), coverage, unconfirmed_source_c
+        list(SCHEDULED_WINDOW), coverage, unconfirmed_source_c, _valid_object_collection()
     )
     assert result.status == v9014.RELATION_FAILURE
+    assert result.object_collection_valid is True
     assert result.coverage_complete is True
     assert result.left_exact_expected is True
     assert result.cross_source_consistent is False
@@ -658,7 +675,9 @@ def test_relation_fails_when_source_c_not_confirmed():
 def test_relation_fails_on_extra_unproven_date_beyond_2020_10_01():
     coverage = _full_window_coverage(not_proven_dates=("2020-10-01", "2020-09-28"))
     source_c = v9014.source_c_confirmed_exception_set(True, True)
-    result = v9014.evaluate_cross_source_relation(list(SCHEDULED_WINDOW), coverage, source_c)
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, _valid_object_collection()
+    )
     assert result.status == v9014.RELATION_FAILURE
     assert result.coverage_complete is True
     assert result.left_exact_expected is False
@@ -670,7 +689,9 @@ def test_relation_fails_on_right_diff_extra_proven_date_not_scheduled():
         extra={"2020-10-99": v9014.DateClassification(status=v9014.PROVEN_AUCTION_ACTIVE)}
     )
     source_c = v9014.source_c_confirmed_exception_set(True, True)
-    result = v9014.evaluate_cross_source_relation(list(SCHEDULED_WINDOW), coverage, source_c)
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, _valid_object_collection()
+    )
     assert result.status == v9014.RELATION_FAILURE
     assert result.right_empty is False
 
@@ -685,7 +706,9 @@ def test_relation_fails_when_sentinel_missing_independent_of_diffs():
         not_proven=("2020-10-01",),
     )
     source_c = v9014.source_c_confirmed_exception_set(True, True)
-    result = v9014.evaluate_cross_source_relation(scheduled, coverage, source_c)
+    result = v9014.evaluate_cross_source_relation(
+        scheduled, coverage, source_c, _valid_object_collection()
+    )
     assert result.coverage_complete is True
     assert result.left_diff == frozenset({"2020-10-01"})
     assert result.right_diff == frozenset()
@@ -704,6 +727,134 @@ def test_relation_never_derives_trading_dates_attribute():
     # The relation result carries no materialized trading-dates output.
     coverage = _full_window_coverage()
     source_c = v9014.source_c_confirmed_exception_set(True, True)
-    result = v9014.evaluate_cross_source_relation(list(SCHEDULED_WINDOW), coverage, source_c)
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, _valid_object_collection()
+    )
     assert not hasattr(result, "trading_dates")
     assert not hasattr(v9014, "materialize_trading_dates")
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM_1 (round 2): object-collection PASS required for RELATION_PASS
+# ---------------------------------------------------------------------------
+
+def test_relation_passes_with_valid_object_collection_and_perfect_date_evidence():
+    coverage = _full_window_coverage()
+    source_c = v9014.source_c_confirmed_exception_set(True, True)
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, _valid_object_collection()
+    )
+    assert result.status == v9014.RELATION_PASS
+    assert result.object_collection_valid is True
+
+
+def test_relation_fails_when_object_collection_missing_normal_month_despite_perfect_dates():
+    coverage = _full_window_coverage()
+    source_c = v9014.source_c_confirmed_exception_set(True, True)
+    entries = [e for e in _complete_object_collection_entries() if e[0] != "2019-06"]
+    invalid_collection = v9014.validate_source_b_object_collection(entries)
+    assert invalid_collection.status == v9014.SOURCE_B_OBJECT_COLLECTION_MISSING_MONTH_FAILURE
+
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, invalid_collection
+    )
+    assert result.object_collection_valid is False
+    assert result.status == v9014.RELATION_FAILURE
+
+
+def test_relation_fails_when_object_collection_missing_april_2022_pre_object_despite_perfect_dates():
+    coverage = _full_window_coverage()
+    source_c = v9014.source_c_confirmed_exception_set(True, True)
+    entries = [
+        (month, (v9014.NORMAL_MONTHLY_REPORT2_OBJECT,)) if month == "2022-04" else (month, parts)
+        for month, parts in _complete_object_collection_entries()
+    ]
+    invalid_collection = v9014.validate_source_b_object_collection(entries)
+    assert invalid_collection.status == v9014.SOURCE_B_OBJECT_COLLECTION_MONTH_BUNDLE_FAILURE
+    assert invalid_collection.failing_month == "2022-04"
+
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, invalid_collection
+    )
+    assert result.object_collection_valid is False
+    assert result.status == v9014.RELATION_FAILURE
+
+
+def test_relation_fails_when_object_collection_has_duplicate_or_unexpected_part_despite_perfect_dates():
+    coverage = _full_window_coverage()
+    source_c = v9014.source_c_confirmed_exception_set(True, True)
+    entries = [
+        (month, parts + (v9014.NORMAL_MONTHLY_REPORT2_OBJECT,)) if month == "2019-06" else (month, parts)
+        for month, parts in _complete_object_collection_entries()
+    ]
+    invalid_collection = v9014.validate_source_b_object_collection(entries)
+    assert invalid_collection.status == v9014.SOURCE_B_OBJECT_COLLECTION_MONTH_BUNDLE_FAILURE
+
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, invalid_collection
+    )
+    assert result.object_collection_valid is False
+    assert result.status == v9014.RELATION_FAILURE
+
+
+def test_relation_cannot_be_reached_by_perfect_dates_alone_when_collection_invalid():
+    # Perfect per-date evidence (the same evidence that yields RELATION_PASS
+    # in test_relation_passes_with_valid_object_collection_and_perfect_date_evidence)
+    # must not be sufficient on its own; an invalid collection still blocks PASS.
+    coverage = _full_window_coverage()
+    source_c = v9014.source_c_confirmed_exception_set(True, True)
+    unknown_month_entries = _complete_object_collection_entries() + [
+        ("2016-12", (v9014.NORMAL_MONTHLY_REPORT2_OBJECT,))
+    ]
+    invalid_collection = v9014.validate_source_b_object_collection(unknown_month_entries)
+    assert invalid_collection.status == v9014.SOURCE_B_OBJECT_COLLECTION_UNEXPECTED_MONTH_FAILURE
+
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, invalid_collection
+    )
+    assert result.left_exact_expected is True
+    assert result.coverage_complete is True
+    assert result.object_collection_valid is False
+    assert result.status == v9014.RELATION_FAILURE
+
+
+# ---------------------------------------------------------------------------
+# MEDIUM_1 (round 2): closed DateClassification.status enum, fail closed
+# ---------------------------------------------------------------------------
+
+def test_relation_fails_on_unknown_date_classification_status():
+    coverage = _full_window_coverage()
+    coverage["2020-09-29"] = v9014.DateClassification(status="UNKNOWN")
+    source_c = v9014.source_c_confirmed_exception_set(True, True)
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, _valid_object_collection()
+    )
+    assert result.invalid_status_dates == frozenset({"2020-09-29"})
+    assert result.coverage_complete is False
+    assert result.status == v9014.RELATION_FAILURE
+
+
+def test_relation_unknown_status_never_silently_passes_via_left_diff():
+    # "2020-09-29" carries an unknown status and is therefore excluded from
+    # proven_active, so the left-set difference alone would look identical
+    # to a legitimate NOT_PROVEN date -- coverage_complete must still catch
+    # it via invalid_status_dates.
+    coverage = _full_window_coverage(not_proven_dates=("2020-10-01",))
+    coverage["2020-09-29"] = v9014.DateClassification(status="FUTURE_INVENTED_STATUS")
+    source_c = v9014.source_c_confirmed_exception_set(True, True)
+    result = v9014.evaluate_cross_source_relation(
+        list(SCHEDULED_WINDOW), coverage, source_c, _valid_object_collection()
+    )
+    assert result.left_diff == frozenset({"2020-10-01", "2020-09-29"})
+    assert result.left_exact_expected is False
+    assert result.invalid_status_dates == frozenset({"2020-09-29"})
+    assert result.status == v9014.RELATION_FAILURE
+
+
+def test_valid_statuses_retain_current_meaning_and_no_proven_inactive_exists():
+    assert v9014.VALID_DATE_CLASSIFICATION_STATUSES == frozenset(
+        {v9014.PROVEN_AUCTION_ACTIVE, v9014.NOT_PROVEN, v9014.DQ}
+    )
+    for status in v9014.VALID_DATE_CLASSIFICATION_STATUSES:
+        assert "INACTIVE" not in status
+    assert not hasattr(v9014, "PROVEN_INACTIVE")
