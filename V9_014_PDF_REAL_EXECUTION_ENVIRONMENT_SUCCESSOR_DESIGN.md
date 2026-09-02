@@ -131,14 +131,17 @@ promotion chain up to and including Stage E15's own review):
   `V9_014_PDF_ENVIRONMENT_SUCCESSOR_PROMOTED=true`;
 - **NO** protected/private/research execution of any kind is permitted
   under either the predecessor's or the successor's environment authority
-  while this state holds -- across E9, E10, E11, E12, E13, and E14 alike;
+  while this state holds -- across E9, E10, E11, E12, E13, E13.5, and E14
+  alike;
 - only the reviewed migration operation (Stage E9), its no-network
   live-validation operation (Stage E10), its evidence-commit-and-review
   checkpoint (Stage E11), its post-review freeze/promotion-record
   finalization (Stage E12), the freeze-record/tooling commit-and-review
-  checkpoint (Stage E13), and the final no-network live reverification of
-  that exact reviewed checkout (Stage E14) are permitted, each under its
-  own separate point-of-use authority (Section 5);
+  checkpoint (Stage E13), GPT's external connected-GitHub remote-head
+  precheck (Stage E13.5, Section 6b -- not a Windows-runner network
+  request), and the final strictly-no-network live reverification of that
+  exact reviewed checkout (Stage E14) are permitted, each under its own
+  separate point-of-use authority (Section 5);
 - **no automatic rollback, reset, delete, recreate, retry, or reinstall**
   occurs on failure at any point while this state holds (Section 6),
   including a Stage E11, E13, or E15 review `BLOCK`, or a Stage E14
@@ -345,15 +348,20 @@ E1-E8, including E8's promotion-completeness review. Stage E9 is the sole
 stage that transitions the state to
 `SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED` and performs the
 canonical mutation, gated on both E7's `PASS` and E8's `PASS`. Stages E10
-through E14 all run under that same in-progress state -- E10 produces
-live-validation evidence, E11 is the repo-writing checkpoint that commits
-and exact-SHA-reviews that evidence, E12 (only after E11's `PASS`)
-finalizes the freeze/promotion record, E13 commits that record (and any
-E12-authorized generic-authority updates) and obtains its own exact-SHA
-review that confers **only** `FINAL_PROMOTION_ARTIFACTS_AND_TOOLING_REVIEW=PASS`
--- never promotion itself -- and E14 (only after E13's `PASS`) performs a
-final no-network live reverification of that exact E13-reviewed checkout
-against the already-mutated `.venv-real-execution`, capturing the sixth
+through E14 (including the E13.5 orchestration precheck) all run under
+that same in-progress state -- E10 produces live-validation evidence, E11
+is the repo-writing checkpoint that commits and exact-SHA-reviews that
+evidence, E12 (only after E11's `PASS`) finalizes the freeze/promotion
+record, E13 commits that record (and any E12-authorized generic-authority
+updates) and obtains its own exact-SHA review that confers **only**
+`FINAL_PROMOTION_ARTIFACTS_AND_TOOLING_REVIEW=PASS` -- never promotion
+itself -- E13.5 is GPT's own external connected-GitHub precheck that the
+remote is still at that exact E13 SHA before E14 may be authorized
+(Section 6b), and E14 (only after E13's `PASS` and E13.5's precheck)
+performs a final, strictly no-network live reverification of that exact
+E13-reviewed checkout against the already-mutated `.venv-real-execution`,
+using local Git state only and never itself claiming to prove current
+remote currentness, capturing the sixth
 successor artifact. Stage E15 alone -- reviewing E14's evidence commit --
 transitions the state to `SUCCESSOR_CANONICAL_FROZEN`. No stage before E15
 may claim, set, or imply `V9_014_PDF_ENVIRONMENT_SUCCESSOR_PROMOTED=true`
@@ -550,22 +558,48 @@ E13 Commit the freeze/promotion record (Section 4, artifact 5) and any
     `SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`, no
     rollback/retry/re-execution.
 
+E13.5 GPT connected-GitHub remote-head precheck (external orchestration
+    precondition to E14, not a step the no-network Windows runner
+    performs). Immediately before GPT authorizes or issues the E14
+    Windows no-network block, GPT-5.6 Sol must use its own connected
+    GitHub access to verify that the authoritative GitHub remote `HEAD`
+    for the authoritative branch equals the exact Stage E13-reviewed SHA.
+    If it does not: **STOP** `EXPECTED_HEAD_MISMATCH`. E14 is not run.
+    This is GPT/orchestration provenance checking, not a SOURCE_B,
+    package-index, or protected-environment network request (Section 6b).
+    Safe evidence for this precheck binds
+    `E14_GPT_REMOTE_HEAD_PRECHECK_REQUIRED=true` and
+    `E14_GPT_REMOTE_HEAD_PRECHECK_SHA=<exact Stage E13 reviewed SHA>`, and
+    never fabricates a timestamp or currentness guarantee beyond what GPT
+    actually reviewed at that moment.
+
 E14 Final NO-NETWORK live verification, performed only after Stage E13's
-    `PASS`, still under
+    `PASS` **and** Stage E13.5's precheck, still under
     `CANONICAL_ENVIRONMENT_STATE=SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`.
     A separately reviewed Phase A/C-style verification, using **exactly**
-    the Stage E13-reviewed checkout:
+    the Stage E13-reviewed checkout, that remains **strictly NO-NETWORK**
+    on the Windows runner itself (Section 6b): no `git fetch`, no
+    `git ls-remote`, no package-index or other network call of any kind.
     - **NO** package install, **NO** environment mutation (staging or
-      canonical), **NO** network access, **NO** re-execution or rerun of
-      Stage E9's mutation, and **NO** re-execution or rerun of Stage E10's
-      validation merely to seek a `PASS` -- this stage only inspects and
-      verifies what already exists
-    - mechanically verify, before running anything else: repo/branch;
-      local `HEAD` equals the exact Stage E13 reviewed SHA; remote `HEAD`
-      equals that same SHA; a clean working tree; the frozen V9_014 design
-      provenance (Section 1); the final freeze record's and the live
-      canonical validation evidence's exact Git blobs; and the canonical
-      interpreter identity
+      canonical), **NO** network access of any kind, **NO** re-execution
+      or rerun of Stage E9's mutation, and **NO** re-execution or rerun of
+      Stage E10's validation merely to seek a `PASS` -- this stage only
+      inspects and verifies what already exists, using local Git state
+      only
+    - mechanically verify, before running anything else, using **local
+      Git state only**: repo/branch; local `HEAD` equals the exact Stage
+      E13 reviewed SHA; current branch equals the authoritative branch; a
+      clean working tree; the frozen V9_014 design provenance (Section
+      1); the final freeze record's and the live canonical validation
+      evidence's exact locally-committed Git blobs/provenance; and the
+      canonical interpreter/environment state
+    - E14 **MUST NOT**, and does not, claim that a local remote-tracking
+      ref (or any other local state) proves the *current* GitHub remote
+      `HEAD` -- that currentness guarantee comes exclusively from Stage
+      E13.5's GPT connected-GitHub precheck, performed immediately before
+      E14 is authorized, never from anything E14 itself executes; E14's
+      own evidence binds `E14_WINDOWS_REMOTE_NETWORK_CHECK_PERFORMED=false`
+      for exactly this reason
     - then invoke the **final, Stage E13-reviewed** canonical checker
       (the Section 6a-updated `scripts/check_real_execution_env.py`)
       against the existing, already-mutated `.venv-real-execution` --
@@ -580,19 +614,37 @@ E14 Final NO-NETWORK live verification, performed only after Stage E13's
       Python/platform fingerprint
     - capture the successor final freeze verification evidence artifact
       (Section 4, artifact 6; content requirements in Section 5c) --
-      captured here, but NOT YET committed or reviewed
+      captured here, but NOT YET committed or reviewed; that artifact
+      records `E14_GPT_REMOTE_HEAD_PRECHECK_REQUIRED=true`,
+      `E14_GPT_REMOTE_HEAD_PRECHECK_SHA`, and
+      `E14_WINDOWS_REMOTE_NETWORK_CHECK_PERFORMED=false` per Section 5c,
+      plus the Section 6b network-request breakdown
     - if verification fails in any respect: **STOP**. **NO**
       retry/reset/rollback/reinstall of any kind. State remains
       `SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED`; the failure is
       preserved as durable evidence and control returns to GPT/human
       authority
 
-E15 Commit **only** the successor final freeze verification evidence
-    (Section 4, artifact 6) captured at Stage E14, plus the minimum
-    authorized state/log recording needed for provenance -- **NO**
-    environment mutation and **NO** re-execution or rerun of any prior
-    stage occurs here. GPT independently reviews that exact commit.
-    **Only** a `PASS` on this exact commit transitions
+E15 Final remote guard, then commit. Before this repo-writing step, a
+    normal Git provenance fetch/check (the same kind of check performed
+    before every commit in this study, per the standard preflight-before-
+    push discipline -- not a Stage-E14-style no-network constraint, since
+    E15 is a Git-writing stage like E7/E11/E13, not a Windows-execution
+    stage) must again require that the authoritative remote is still at
+    the expected reviewed predecessor SHA for this specific repo-writing
+    step. A mismatch here is **STOP** `EXPECTED_HEAD_MISMATCH`: no
+    merge/rebase/cherry-pick/force-push is ever used to reconcile it, and
+    this step never proceeds to commit E14's evidence against a moved
+    remote. This closes the TOCTOU gap between Stage E13.5's precheck and
+    the actual write: a remote move after E13.5 does not authorize any
+    workaround and cannot silently reach an E15 `PASS`.
+
+    Only once that guard clears: commit **only** the successor final
+    freeze verification evidence (Section 4, artifact 6) captured at
+    Stage E14, plus the minimum authorized state/log recording needed for
+    provenance -- **NO** environment mutation and **NO** re-execution or
+    rerun of any prior stage occurs here. GPT independently reviews that
+    exact commit. **Only** a `PASS` on this exact commit transitions
     `CANONICAL_ENVIRONMENT_STATE` to `SUCCESSOR_CANONICAL_FROZEN` (Section
     2a, State 3) and promotes `.venv-real-execution` to
     `CANONICAL_ENVIRONMENT_STATUS` for the successor package set. **Only**
@@ -709,8 +761,20 @@ bind, at minimum:
 - the synthetic PDF operational probe result as actually observed at
   Stage E14 (Section 5a)
 - the Stage E14 verification process's exact exit code
-- explicit counts, each `0`: network requests, protected reads, private
-  reads, and source-acquisition operations performed by Stage E14
+- explicit, separately named `0` counts (Section 6b) --
+  `E14_WINDOWS_NETWORK_REQUESTS=0`,
+  `E14_RESEARCH_SOURCE_NETWORK_REQUESTS=0`,
+  `E14_PACKAGE_INDEX_NETWORK_REQUESTS=0`,
+  `E14_PROTECTED_NETWORK_REQUESTS=0` -- plus protected reads, private
+  reads, and source-acquisition operations performed by Stage E14, all
+  `0`
+- `E14_GPT_REMOTE_HEAD_PRECHECK_REQUIRED=true` and
+  `E14_GPT_REMOTE_HEAD_PRECHECK_SHA=<the exact Stage E13 reviewed SHA>`
+  (Stage E13.5), recorded as the external orchestration precondition that
+  established remote-`HEAD` currentness -- never fabricated by E14 itself
+- `E14_WINDOWS_REMOTE_NETWORK_CHECK_PERFORMED=false`, making explicit
+  that the Windows runner itself performed no remote query and is not the
+  source of any remote-currentness claim
 - an explicit statement that **no** profitability or `trading_dates`
   claim is made by this artifact
 
@@ -802,6 +866,59 @@ SHA/hash that does not yet exist at E8 time). Such evidence-dependent
 final field values are populated **only** at Stage E12, after Stage E11's
 `PASS`, strictly under the already-reviewed E8 plan -- never guessed,
 pre-filled, or placeholder-committed at E8 itself.
+
+### 6b. E14 no-network boundary and remote-currentness provenance
+
+Stage E14 is, and remains, **strictly NO-NETWORK on the Windows runner
+itself**: no `git fetch`, no `git ls-remote`, no package-index query, no
+source/network acquisition of any kind, no environment mutation or
+install, and no rerun of Stage E9 or E10 (Section 5, Stage E14). E14 may
+mechanically inspect **local** Git state only -- local `HEAD`, current
+branch, working-tree cleanliness, locally committed blobs/provenance, and
+canonical interpreter/environment state -- and it never claims that any of
+that local state proves the *current* authoritative GitHub remote `HEAD`.
+A local remote-tracking ref reflects only the last time this checkout's
+Git client happened to fetch; it is not, and is never treated as, live
+proof of the remote's present state.
+
+Proving remote-`HEAD` currentness at the moment E14 is authorized is
+instead an **external orchestration precondition**, performed by GPT-5.6
+Sol via its own connected GitHub access immediately before E14 is
+authorized or issued (Section 5, Stage E13.5) -- never by the no-network
+Windows runner. This is GPT/orchestration provenance checking, exactly
+like the `git fetch`/remote-verification step this study's executor
+already performs before every commit in this repository, and it is
+**not** a SOURCE_B, package-index, protected-source, or protected-
+environment network request of any kind; it does not touch
+`.venv-real-execution`, does not resolve or install any package, and does
+not read any protected/private source.
+
+Because a remote move could in principle occur between Stage E13.5's
+precheck and Stage E15's actual repo-write (a TOCTOU window), Stage E15
+repeats an ordinary Git provenance fetch/check immediately before its own
+commit, requiring the authoritative remote to still be at the expected
+reviewed SHA for that specific write; a mismatch there is `STOP
+EXPECTED_HEAD_MISMATCH` with no merge/rebase/cherry-pick/force-push used
+to reconcile it (Section 5, Stage E15). This is the same standard
+preflight-before-push discipline used by every other Git-writing stage in
+this study (E7, E11, E13); it is not itself an exception to E14's no-
+network boundary, since E15 is a Git-writing stage, not the E14 Windows-
+execution stage.
+
+The network-request counts recorded by the final freeze verification
+evidence artifact (Section 5c) are therefore kept explicitly separate
+rather than folded into one generic `NETWORK_REQUESTS=0`, which could be
+misread as also covering GPT's own connected-GitHub orchestration:
+
+```
+E14_WINDOWS_NETWORK_REQUESTS=0
+E14_RESEARCH_SOURCE_NETWORK_REQUESTS=0
+E14_PACKAGE_INDEX_NETWORK_REQUESTS=0
+E14_PROTECTED_NETWORK_REQUESTS=0
+```
+
+All four remain `0` for Stage E14 itself, regardless of Stage E13.5's
+separate, external, GPT-performed connected-GitHub precheck.
 
 ## 7. Authority
 
