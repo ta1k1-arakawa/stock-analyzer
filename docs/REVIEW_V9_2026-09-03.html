@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>V9 監査レビュー</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@400;600;700&family=IBM+Plex+Sans+JP:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  color-scheme: light;
+  --ground:#f6f8fa;
+  --surface:#ffffff;
+  --surface-sunk:#eef2f6;
+  --ink:#131820;
+  --ink-soft:#56616f;
+  --ink-faint:#8b95a3;
+  --rule:#dce2e9;
+  --rule-strong:#c3ccd7;
+  --accent:#1c5c70;
+  --accent-soft:#e2eef2;
+  --fail:#a32e39;
+  --fail-soft:#f7e7e8;
+  --warn:#8f5e0c;
+  --warn-soft:#faefdc;
+  --pass:#2c6942;
+  --pass-soft:#e4f0e8;
+  --shadow:0 1px 2px rgba(19,24,32,.05), 0 8px 24px -12px rgba(19,24,32,.12);
+  --serif:"Spectral", "Hiragino Mincho ProN", "Yu Mincho", serif;
+  --sans:"IBM Plex Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", system-ui, sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --ground:#0e1217;
+    --surface:#161b22;
+    --surface-sunk:#1c222b;
+    --ink:#e7ebf1;
+    --ink-soft:#9aa5b4;
+    --ink-faint:#6b7684;
+    --rule:#2a323d;
+    --rule-strong:#3a444f;
+    --accent:#6ec0d6;
+    --accent-soft:#17323b;
+    --fail:#e8737d;
+    --fail-soft:#3a1e22;
+    --warn:#dda447;
+    --warn-soft:#372a15;
+    --pass:#74c692;
+    --pass-soft:#1a2f22;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --ground:#0e1217;
+  --surface:#161b22;
+  --surface-sunk:#1c222b;
+  --ink:#e7ebf1;
+  --ink-soft:#9aa5b4;
+  --ink-faint:#6b7684;
+  --rule:#2a323d;
+  --rule-strong:#3a444f;
+  --accent:#6ec0d6;
+  --accent-soft:#17323b;
+  --fail:#e8737d;
+  --fail-soft:#3a1e22;
+  --warn:#dda447;
+  --warn-soft:#372a15;
+  --pass:#74c692;
+  --pass-soft:#1a2f22;
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  background:var(--ground);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:16px;
+  line-height:1.75;
+  font-feature-settings:"palt" 1;
+}
+img{max-width:100%}
+
+/* ---------- shell ---------- */
+.wrap{max-width:1080px;margin:0 auto;padding:0 28px 96px}
+.col{max-width:63ch}
+.wide{max-width:100%}
+
+/* ---------- masthead ---------- */
+.masthead{
+  border-bottom:2px solid var(--ink);
+  padding:44px 0 20px;
+  margin-bottom:8px;
+  display:flex;
+  align-items:flex-end;
+  justify-content:space-between;
+  gap:24px;
+  flex-wrap:wrap;
+}
+.masthead-main{flex:1 1 380px;min-width:0}
+.eyebrow{
+  font-family:var(--mono);
+  font-size:.6875rem;
+  font-weight:500;
+  letter-spacing:.16em;
+  text-transform:uppercase;
+  color:var(--accent);
+  margin:0 0 12px;
+}
+h1{
+  font-family:var(--serif);
+  font-weight:700;
+  font-size:clamp(2rem,5.2vw,3rem);
+  line-height:1.14;
+  letter-spacing:-.015em;
+  margin:0;
+  text-wrap:balance;
+}
+.dek{
+  font-size:1.0625rem;
+  color:var(--ink-soft);
+  margin:14px 0 0;
+  max-width:52ch;
+  text-wrap:pretty;
+}
+.slug{
+  font-family:var(--mono);
+  font-size:.75rem;
+  line-height:2;
+  color:var(--ink-faint);
+  flex:0 0 auto;
+  text-align:right;
+}
+.slug b{color:var(--ink-soft);font-weight:500}
+.themebtn{
+  font-family:var(--mono);font-size:.6875rem;letter-spacing:.08em;
+  background:var(--surface);color:var(--ink-soft);
+  border:1px solid var(--rule-strong);border-radius:2px;
+  padding:5px 10px;cursor:pointer;margin-top:8px;
+}
+.themebtn:hover{border-color:var(--accent);color:var(--accent)}
+.themebtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ---------- verdict banner ---------- */
+.verdict{
+  margin:28px 0 44px;
+  border-left:3px solid var(--fail);
+  background:var(--fail-soft);
+  padding:20px 24px;
+  max-width:74ch;
+}
+.verdict p{margin:0;font-size:1.0625rem;line-height:1.7}
+.verdict strong{font-weight:600}
+.verdict .tok{background:transparent}
+
+/* ---------- figures row ---------- */
+.figs{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px;
+  background:var(--rule);
+  border:1px solid var(--rule);
+  margin:0 0 56px;
+}
+.fig{background:var(--surface);padding:20px 22px}
+.fig dt{
+  font-family:var(--mono);font-size:.6875rem;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--ink-faint);margin:0 0 8px;
+}
+.fig dd{
+  margin:0;font-family:var(--serif);font-weight:600;
+  font-size:2rem;line-height:1;letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;
+}
+.fig dd small{font-size:.8125rem;font-family:var(--sans);font-weight:400;color:var(--ink-soft);letter-spacing:0}
+.fig.zero dd{color:var(--fail)}
+
+/* ---------- sections ---------- */
+section{margin:0 0 60px}
+h2{
+  font-family:var(--serif);
+  font-size:1.5rem;font-weight:600;line-height:1.3;
+  letter-spacing:-.01em;
+  margin:0 0 18px;
+  padding-top:22px;
+  border-top:1px solid var(--rule);
+  text-wrap:balance;
+  display:flex;gap:.6em;align-items:baseline;
+}
+h2 .num{
+  font-family:var(--mono);font-size:.75rem;font-weight:500;
+  color:var(--accent);flex:0 0 auto;padding-top:.35em;
+}
+h3{
+  font-family:var(--sans);font-size:1rem;font-weight:600;
+  margin:32px 0 10px;letter-spacing:.01em;
+}
+p{margin:0 0 16px;text-wrap:pretty}
+a{color:var(--accent)}
+strong{font-weight:600}
+.lead{font-size:1.0625rem}
+ul{margin:0 0 16px;padding-left:1.25em}
+li{margin:0 0 8px}
+li::marker{color:var(--ink-faint)}
+
+/* ---------- state tokens (the project's own vernacular) ---------- */
+.tok{
+  font-family:var(--mono);font-size:.8125em;font-weight:500;
+  background:var(--surface-sunk);padding:.1em .4em;border-radius:2px;
+  overflow-wrap:anywhere;
+}
+.tokblock{
+  font-family:var(--mono);font-size:.8125rem;line-height:1.95;
+  background:var(--surface);border:1px solid var(--rule);
+  border-left:3px solid var(--rule-strong);
+  padding:16px 20px;margin:0 0 20px;
+  overflow-x:auto;white-space:pre;
+}
+.tokblock.stopped{border-left-color:var(--fail)}
+.tokblock.rule{border-left-color:var(--accent)}
+.tokblock .k{color:var(--ink-soft)}
+.tokblock .v-fail{color:var(--fail);font-weight:600}
+.tokblock .v-warn{color:var(--warn);font-weight:600}
+.tokblock .v-pass{color:var(--pass);font-weight:600}
+.tokblock .c{color:var(--ink-faint)}
+
+/* ---------- tables ---------- */
+.tscroll{overflow-x:auto;margin:0 0 20px;border:1px solid var(--rule);background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.875rem}
+th,td{padding:11px 14px;text-align:left;border-bottom:1px solid var(--rule);vertical-align:top}
+thead th{
+  font-family:var(--mono);font-size:.6875rem;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--ink-faint);font-weight:500;
+  background:var(--surface-sunk);white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:none}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);white-space:nowrap}
+tfoot td{
+  border-top:2px solid var(--ink);border-bottom:none;
+  font-weight:600;background:var(--surface-sunk);
+}
+.stamp{
+  font-family:var(--mono);font-size:.6875rem;font-weight:600;
+  letter-spacing:.06em;padding:2px 7px;border-radius:2px;white-space:nowrap;
+  display:inline-block;
+}
+.stamp.f{background:var(--fail-soft);color:var(--fail)}
+.stamp.w{background:var(--warn-soft);color:var(--warn)}
+.stamp.p{background:var(--pass-soft);color:var(--pass)}
+
+/* ---------- cascade ledger ---------- */
+.cascade{margin:0 0 24px;border-left:2px solid var(--rule-strong);padding-left:0}
+.step{display:grid;grid-template-columns:auto 1fr auto;gap:0 18px;align-items:baseline;
+  padding:14px 0 14px 22px;border-bottom:1px solid var(--rule);position:relative}
+.step:last-child{border-bottom:none}
+.step::before{
+  content:"";position:absolute;left:-5px;top:22px;
+  width:8px;height:8px;border-radius:50%;
+  background:var(--fail);border:2px solid var(--ground);
+}
+.step.active::before{background:var(--warn)}
+.step-id{font-family:var(--mono);font-size:.8125rem;font-weight:600;color:var(--ink)}
+.step-what{color:var(--ink-soft);font-size:.9375rem;min-width:0}
+.step-what em{font-style:normal;font-family:var(--mono);font-size:.8125rem;color:var(--ink-faint);display:block}
+.step-right{text-align:right;white-space:nowrap}
+.step-loc{font-family:var(--mono);font-size:.75rem;color:var(--ink-faint);display:block;margin-bottom:4px;font-variant-numeric:tabular-nums}
+
+/* ---------- formula ---------- */
+.formula{
+  background:var(--accent-soft);border:1px solid var(--accent);
+  padding:20px 24px;margin:0 0 20px;
+  font-family:var(--mono);font-size:.875rem;line-height:1.9;
+  overflow-x:auto;white-space:pre;
+}
+.formula .hi{color:var(--fail);font-weight:600}
+
+/* ---------- dot grid (to scale) ---------- */
+.scalefig{
+  background:var(--surface);border:1px solid var(--rule);
+  padding:24px;margin:0 0 20px;
+}
+.scalefig figcaption{
+  font-family:var(--mono);font-size:.6875rem;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--ink-faint);margin:0 0 16px;
+}
+#dots{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,5px);
+  gap:3px;
+  justify-content:space-between;
+}
+.d{width:5px;height:5px;border-radius:50%;background:var(--rule-strong)}
+.d.hit{background:var(--fail);box-shadow:0 0 0 2.5px var(--fail-soft)}
+.scalekey{
+  display:flex;gap:24px;flex-wrap:wrap;margin-top:18px;
+  font-size:.8125rem;color:var(--ink-soft);
+}
+.scalekey span{display:flex;align-items:center;gap:8px}
+.swatch{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.swatch.a{background:var(--rule-strong)}
+.swatch.b{background:var(--fail)}
+.scalekey b{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
+
+/* ---------- code ---------- */
+pre.code{
+  font-family:var(--mono);font-size:.8125rem;line-height:1.85;
+  background:var(--surface);border:1px solid var(--rule);
+  padding:16px 20px;margin:0 0 20px;overflow-x:auto;
+}
+pre.code .cm{color:var(--ink-faint)}
+pre.code .kw{color:var(--accent);font-weight:600}
+code{
+  font-family:var(--mono);font-size:.8125em;
+  background:var(--surface-sunk);padding:.1em .35em;border-radius:2px;
+  overflow-wrap:anywhere;
+}
+blockquote code,.note code{background:transparent;padding:0}
+
+/* ---------- pull quote ---------- */
+blockquote{
+  margin:0 0 20px;padding:2px 0 2px 22px;
+  border-left:3px solid var(--accent);
+  font-family:var(--serif);font-size:1.0625rem;line-height:1.7;
+  color:var(--ink);
+}
+blockquote p{margin:0 0 10px}
+blockquote p:last-child{margin:0}
+blockquote cite{
+  display:block;font-family:var(--mono);font-style:normal;
+  font-size:.6875rem;letter-spacing:.06em;color:var(--ink-faint);margin-top:10px;
+}
+
+/* ---------- callout ---------- */
+.note{
+  background:var(--surface-sunk);border:1px solid var(--rule);
+  padding:16px 20px;margin:0 0 20px;font-size:.9375rem;
+}
+.note p:last-child{margin:0}
+.note-t{
+  font-family:var(--mono);font-size:.6875rem;letter-spacing:.09em;
+  text-transform:uppercase;color:var(--ink-faint);margin:0 0 8px;
+}
+
+/* ---------- action plan ---------- */
+.plan{list-style:none;margin:0 0 24px;padding:0;counter-reset:p}
+.plan > li{
+  counter-increment:p;position:relative;
+  padding:0 0 22px 46px;margin:0;
+  border-left:1px solid var(--rule);
+}
+.plan > li:last-child{border-left-color:transparent;padding-bottom:0}
+.plan > li::before{
+  content:counter(p);position:absolute;left:-13px;top:0;
+  width:26px;height:26px;border-radius:50%;
+  background:var(--accent);color:var(--surface);
+  font-family:var(--mono);font-size:.75rem;font-weight:600;
+  display:grid;place-items:center;
+}
+:root[data-theme="dark"] .plan > li::before{color:#0e1217}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .plan > li::before{color:#0e1217}}
+.plan h3{margin:0 0 8px;padding-top:1px}
+.plan p{margin:0 0 10px;font-size:.9375rem;color:var(--ink-soft)}
+.plan ul{margin:0;font-size:.9375rem;color:var(--ink-soft)}
+.fork{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+  gap:1px;background:var(--rule);border:1px solid var(--rule);margin:12px 0 0;
+}
+.fork > div{background:var(--surface);padding:16px 18px}
+.fork h4{
+  margin:0 0 8px;font-family:var(--mono);font-size:.75rem;letter-spacing:.08em;
+}
+.fork.a h4{color:var(--fail)}
+.fork.b h4{color:var(--pass)}
+.fork p{margin:0;font-size:.875rem}
+
+.dont{border:1px solid var(--rule);background:var(--surface);padding:20px 24px;margin:0}
+.dont .note-t{color:var(--fail)}
+.dont ul{margin:0;font-size:.9375rem;color:var(--ink-soft)}
+
+/* ---------- kicker ---------- */
+.kicker{
+  border-top:2px solid var(--ink);margin-top:8px;padding-top:32px;
+}
+.kicker p{
+  font-family:var(--serif);font-size:1.3125rem;line-height:1.6;
+  max-width:46ch;margin:0 0 14px;
+}
+.kicker p:last-child{margin:0}
+.kicker .big{font-weight:600;font-size:1.5rem;line-height:1.45}
+
+footer{
+  margin-top:64px;padding-top:20px;border-top:1px solid var(--rule);
+  font-family:var(--mono);font-size:.6875rem;color:var(--ink-faint);
+  display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+}
+
+@media (max-width:640px){
+  .wrap{padding:0 18px 64px}
+  .masthead{padding-top:32px}
+  .slug{text-align:left}
+  .step{grid-template-columns:1fr;gap:6px}
+  .step-right{text-align:left}
+  h2{flex-direction:column;gap:.2em}
+  h2 .num{padding-top:0}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media print{
+  body{background:#fff}
+  .themebtn{display:none}
+  section{break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <div class="masthead-main">
+    <p class="eyebrow">stock-analyzer / 監査レビュー</p>
+    <h1>測定なき1週間</h1>
+    <p class="dek">V9 は設計・レビュー・provenance 管理の水準が高い。にもかかわらず、利益に関する測定を一度も行っていない。</p>
+  </div>
+  <div class="slug">
+    <b>branch</b> v9-cross-sectional-<br>close-auction-design<br>
+    <b>range</b> 3c6873f … ad039e7<br>
+    <b>period</b> 2026-08-27 … 09-02<br>
+    <b>issued</b> 2026-09-03
+    <br><button class="themebtn" id="tt" type="button">◐ THEME</button>
+  </div>
+</header>
+
+<div class="verdict">
+  <p>1週間で <strong>38,227行</strong>を書いて、<strong>2020年10月1日が営業日だったか</strong>の確定に届かなかった。その1日は、走らせるべき判定に <strong>0.28%</strong> しか効かない。</p>
+</div>
+
+<dl class="figs">
+  <div class="fig"><dt>コミット</dt><dd>179</dd></div>
+  <div class="fig"><dt>変更行数</dt><dd>38,227<small> 行</small></dd></div>
+  <div class="fig"><dt>研究ステージ</dt><dd>5<small> 連続</small></dd></div>
+  <div class="fig zero"><dt>利益測定</dt><dd>0<small> 件</small></dd></div>
+  <div class="fig zero"><dt>T0 実行</dt><dd>0<small> 回</small></dd></div>
+</dl>
+
+<main>
+
+<section class="col">
+  <h2><span class="num">01</span>この1週間の実績</h2>
+  <p class="lead">膨大に動いています。設計・レビュー・provenance 管理の水準は非常に高い。問題は量ではなく、<strong>その 38,227 行が全部ひとつのことに向かっている</strong>点です。</p>
+  <div class="tscroll wide">
+    <table>
+      <thead><tr><th>指標</th><th class="n">値</th></tr></thead>
+      <tbody>
+        <tr><td>コミット数</td><td class="n">179</td></tr>
+        <tr><td>コード (py / ps1)</td><td class="n">25,514 行</td></tr>
+        <tr><td>ドキュメント (md / json / txt)</td><td class="n">12,644 行</td></tr>
+        <tr><td>その他</td><td class="n">69 行</td></tr>
+        <tr><td>実行された利益測定</td><td class="n">0</td></tr>
+        <tr><td>実注文</td><td class="n">0</td></tr>
+      </tbody>
+      <tfoot><tr><td>変更行数 合計</td><td class="n">38,227 行</td></tr></tfoot>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2><span class="num">02</span>1週間かけて追いかけていた対象</h2>
+    <p>コミットタイトルは locator / parser / PDF / reparse-point / PowerShell entrypoint が並びます。これを遡ると、5つの連続した successor study すべてが<strong>同じ1つの問い</strong>に収束します。</p>
+    <blockquote><p>2020年10月1日は東証の営業日だったか。</p><cite>2020-10-01 = arrowhead 障害による終日売買停止の日</cite></blockquote>
+  </div>
+
+  <div class="cascade wide">
+    <div class="step">
+      <span class="step-id">V9_010</span>
+      <span class="step-what">JPX公式サイトから履歴カレンダー取得<em>試行1: PowerShellがstderrを喪失 / 試行2: HTTP 404</em></span>
+      <span class="step-right"><span class="step-loc">764 行</span><span class="stamp f">FAIL</span></span>
+    </div>
+    <div class="step">
+      <span class="step-id">V9_011</span>
+      <span class="step-what">J-Quants API V2 Trading Calendar<em>SOURCE_SEMANTICS_INSUFFICIENT</em></span>
+      <span class="step-right"><span class="step-loc">991 行</span><span class="stamp f">FAIL_TERMINAL</span></span>
+    </div>
+    <div class="step">
+      <span class="step-id">V9_012</span>
+      <span class="step-what">TOPIX活動実績から実営業日を導出<em>ACTUAL_TRADING_DAY_AUTHORITY_FAILURE</em></span>
+      <span class="step-right"><span class="step-loc">1,160 行</span><span class="stamp f">FAIL_TERMINAL</span></span>
+    </div>
+    <div class="step">
+      <span class="step-id">V9_013</span>
+      <span class="step-what">V9_012 の失敗原因診断<em>EVIDENTIAL_CAPACITY=ZERO — 診断のみ</em></span>
+      <span class="step-right"><span class="step-loc">859 行</span><span class="stamp w">診断のみ</span></span>
+    </div>
+    <div class="step active">
+      <span class="step-id">V9_014</span>
+      <span class="step-what">JPX月次統計PDF 110本を pdfplumber で解析<em>進行中 — GPTレビュー待ち</em></span>
+      <span class="step-right"><span class="step-loc">6,217 行</span><span class="stamp w">IN_PROGRESS</span></span>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="tokblock stopped"><span class="c"># V9_013 の診断結果</span>
+<span class="k">V9_013_FAILURE_CAUSE</span>=<span class="v-fail">TOPIX_ACTIVITY_EVIDENCE_DOES_NOT_EXCLUDE_
+                     FROZEN_2020_10_01_FULL_DAY_TSE_OUTAGE</span></div>
+    <p>カレンダー系の実装は合計 <strong>約 9,991 行</strong>。すべて未解決です。</p>
+
+    <h3>答えは既に手元にあります</h3>
+    <p>V9_014 の設計書には、最終的な導出式がこう書かれています。</p>
+  </div>
+
+  <div class="formula wide">actual_trading_dates = scheduled_open_dates - source_c_confirmed_exception_set
+source_c_confirmed_exception_set == <span class="hi">{"2020-10-01"}</span></div>
+
+  <div class="col">
+    <p><code>SOURCE_C</code> は JPX の公式文書そのものです。</p>
+    <div class="tokblock"><span class="k">V9_014_SOURCE_C_DOCUMENT_DATE</span>=2020-10-01
+<span class="k">V9_014_SOURCE_C_DOCUMENT_TITLE</span>=TREATMENT_OF_TRADES_FOR_TODAY_AT_ARROWHEAD
+<span class="k">V9_014_SOURCE_C_CONFIRMED_EXCEPTION_SET</span>=2020-10-01</div>
+    <p>つまり<strong>答えは公式文書で既に確定しており、最終式も「2020-10-01 を1個引く」だけ</strong>です。それでも進まない理由は2つの設定です。</p>
+    <div class="tokblock stopped"><span class="k">V9_014_SOURCE_C_MANUAL_DATE_INJECTION_AUTHORIZED</span>=<span class="v-fail">false</span>   <span class="c">← 手で入れてはいけない</span>
+<span class="k">V9_014_SOURCE_B_CAN_PROVE_INACTIVITY</span>=<span class="v-fail">false</span>               <span class="c">← PDF側は非活動を証明できない</span></div>
+    <p><strong>6,217行のPDF解析装置は、自分では答えを出せないと設計書自身が宣言しているものを、既に判明している答えの傍証として組み上げている</strong>ことになります。</p>
+  </div>
+</section>
+
+<section class="col">
+  <h2><span class="num">03</span>最大の問題 — T0 が一度も走っていない</h2>
+  <p><code>PROJECT_STATE.md</code> を全ステージ通して検索すると、同じ行が並びます。</p>
+  <div class="tokblock stopped"><span class="k">T0_STATUS</span>=<span class="v-fail">NOT_RUN</span>
+<span class="k">V9_009_T0_STATUS</span>=<span class="v-fail">NOT_RUN</span>
+<span class="k">V9_010_T0_STATUS</span>=<span class="v-fail">NOT_RUN</span>
+<span class="k">V9_011_T0_STATUS</span>=<span class="v-fail">NOT_RUN</span>
+<span class="k">V9_012_T0_STATUS</span>=<span class="v-fail">NOT_RUN</span>
+<span class="k">V9_013_T0_STATUS</span>=<span class="v-fail">NOT_RUN</span>
+<span class="k">future_profitability_established</span>=<span class="v-fail">false</span></div>
+  <p>T0 は「この仮説に見込みがあるか」を判定する最初の関門 (kill screen) です。そして <strong>T0 は既に実装済み</strong> です —<br><code>src/v9_009_t0_top1_kill_screen.py</code> (1,140行)。</p>
+  <p>T0 自身の契約は、外部依存が無いことを明記しています。</p>
+  <div class="tokblock rule"><span class="k">role</span>=HYPOTHESIS_VIABILITY_KILL_SCREEN
+<span class="k">input</span>=<span class="v-pass">existing FIXED_V4_300 caches only</span>
+<span class="k">network_requests</span>=<span class="v-pass">0</span>
+<span class="k">T1_access</span>=<span class="v-pass">0</span>
+<span class="k">sealed_private_access</span>=<span class="v-pass">0</span>
+<span class="k">evaluation_signal_years</span>=2020..2025</div>
+  <p><strong>ネットワーク不要・J-Quants不要・有料データ不要。手元のキャッシュだけで走る設計です。</strong></p>
+
+  <h3>ロードマップが反転している</h3>
+  <p><code>V9_007_MEASUREMENT_FIRST_PREFREEZE_AMENDMENT.md</code>（GPTレビュー <span class="stamp p">PASS</span>）が定めた順序:</p>
+  <pre class="code">methodology amendment
+  -&gt; <span class="kw">existing-T0 binary kill screen</span>
+  -&gt; only if CONTINUE: early source/PIT/delisted feasibility decision
+  -&gt; only if the data path remains viable: resume F1/T/F2
+  -&gt; formal pre-T1 measurement/gate
+  -&gt; T1 once</pre>
+  <p><strong>「T0を先に走らせ、CONTINUE が出てからデータソースの実現性に着手する」</strong>と明記されています。実際に起きたのは正反対で、T0 は一度も走らないまま、本来 T0 の後に来るはずのデータソース作業に1週間・38,227行を投じています。</p>
+  <blockquote><p>If the T0 screen returns <code>CONTINUE</code>, the next priority is the existing V9_004 primary blocker: active plus delisted OHLCV coverage and point-in-time-universe feasibility, <strong>before more F2 work</strong>.</p><cite>V9_007_MEASUREMENT_FIRST_PREFREEZE_AMENDMENT.md</cite></blockquote>
+</section>
+
+<section>
+  <div class="col">
+    <h2><span class="num">04</span>なぜ止まったのか、そしてその厳格さは判定に影響しない</h2>
+    <p>T0 を止めているのは1件のレビュー所見です。</p>
+    <div class="tokblock stopped"><span class="k">V9_009_HIGH_2</span>=<span class="v-fail">FROZEN_JPX_CALENDAR_IS_NOT_MECHANICALLY_BOUND</span>
+              → <span class="v-fail">OPEN_REQUIRES_HISTORICAL_JPX_CALENDAR_BINDING</span></div>
+    <p>レビュー合格基準が <code>C=0/H=0/M=0</code> なので、HIGH が1件でも開いていると進めない。これが V9_010〜V9_014 のカスケード全体の起点です。手続きとしては筋が通っています。</p>
+    <p><strong>ただし、この厳格さが T0 の判定を動かす余地はありません。</strong></p>
+    <p>T0 の STOP 条件は実装上こうです。</p>
+    <pre class="code"><span class="cm"># v9_009_t0_top1_kill_screen.py:770-773</span>
+ridge_stop    = ridge[<span class="kw">"aggregate"</span>] &lt;= 0    <span class="kw">and</span> ridge[<span class="kw">"positive_years"</span>] &lt;= 3
+lightgbm_stop = lightgbm[<span class="kw">"aggregate"</span>] &lt;= 0 <span class="kw">and</span> lightgbm[<span class="kw">"positive_years"</span>] &lt;= 3
+<span class="kw">return</span> <span class="kw">"STOP"</span> <span class="kw">if</span> ridge_stop <span class="kw">and</span> lightgbm_stop <span class="kw">else</span> <span class="kw">"CONTINUE"</span></pre>
+    <p>判定は 2020〜2025 の<strong>全D0の等重量平均</strong>（<code>aggregate_top1_edge</code>）と、6年中の正の年数で決まります。</p>
+  </div>
+
+  <figure class="scalefig wide">
+    <figcaption>2020–2025 の営業日 — 1点 = 1営業日（実寸）</figcaption>
+    <div id="dots" role="img" aria-label="1,446個の点のうち4個が赤く示されている図。2020-10-01 とその D1–D3 窓が重なる D0 が全体の 0.28% にあたることを表す。"></div>
+    <div class="scalekey">
+      <span><i class="swatch a"></i>営業日 <b>1,446</b></span>
+      <span><i class="swatch b"></i>2020-10-01 の影響を受ける D0 <b>約 4</b></span>
+      <span>= <b>0.28%</b></span>
+    </div>
+  </figure>
+
+  <div class="col">
+    <ul>
+      <li>2020〜2025 の営業日は <strong>約 1,446 日</strong></li>
+      <li>2020-10-01 は<strong>そのうち1日 = 0.07%</strong></li>
+      <li>ターゲットが D1〜D3 なので、影響を受ける D0 を窓の重なりまで含めても <strong>約4日 = 0.28%</strong></li>
+    </ul>
+    <p><strong>1,446日中4日の扱いが、等重量平均の符号と「6年中4年以上プラス」を反転させることはありません。</strong>しかも T0 自身が <code>evidential_capacity=ZERO</code> と宣言する、STOP / CONTINUE の二値スクリーンです。判定に効かない精度のために、判定そのものが1週間止まっている状態です。</p>
+    <div class="note">
+      <p class="note-t">技術的な補足</p>
+      <p>T0 実装のカレンダーは引数注入（<code>calendar_dates: Sequence[object]</code>）です。コードは既に任意のカレンダーで走ります。<strong>HIGH_2 は provenance の要求であって、計算上の障害ではありません。</strong></p>
+    </div>
+  </div>
+</section>
+
+<section class="col">
+  <h2><span class="num">05</span>プロジェクト自身のルールが既に答えを出している</h2>
+  <p><code>V9_PREFREEZE_PROPORTIONAL_STRICTNESS_AND_F6_COVERAGE_AMENDMENT.md</code>（status = <code>HUMAN_AUTHORIZED</code>）にこうあります。</p>
+  <div class="tokblock rule"><span class="k">strictness</span>=<span class="v-pass">STRICT_ON_INFERENCE_PRAGMATIC_ON_PLUMBING</span>
+<span class="k">operating_rule</span>=<span class="v-pass">CLAIM_LEVEL_FAIL_CLOSED_PROJECT_LEVEL_GRACEFUL_DEGRADATION</span></div>
+  <blockquote><p>For public source/data plumbing and coverage, inability to mechanically prove a cell/year/month leaves that claim <code>MISSING</code>/<code>UNPROVEN</code>. <strong>It does not by itself terminate V9 unless the missing evidence is indispensable to a frozen downstream inference.</strong> Severity tracks inferential/statistical irreversibility.</p></blockquote>
+  <p><strong>推論には厳格、配管には実用的</strong> — これが人間承認済みの運用ルールです。取引カレンダーは配管 (plumbing) です。そして 1,446日中4日は、<code>evidential_capacity=ZERO</code> の二値スクリーンにとって <code>indispensable to a frozen downstream inference</code> ではありません。</p>
+  <div class="note">
+    <p><strong>つまり、2020-10-01 を <code>UNPROVEN</code> として落として T0 を走らせることは、プロセスを破ることではなく、このプロジェクトが既に自分で承認したルールを適用するだけです。</strong></p>
+  </div>
+</section>
+
+<section class="col">
+  <h2><span class="num">06</span>有料データの購入について</h2>
+  <p><code>PROJECT_RESEARCH_CONCLUSION.md</code>（2026-08-03）の結論は <code>paid_data_decision: DO_NOT_PURCHASE</code>。その理由は明確に書かれています。</p>
+  <blockquote><p>J-Quants Light または Standard を契約する前提条件は、<strong>無料プロトタイプで十分な技術的予測力が確認されること</strong>だった。（中略）データ品質の改善だけで、今回確認できなかった予測力が存在すると仮定する根拠はない。</p></blockquote>
+  <p>一方 <code>PROJECT_STATE.md</code> の記録:</p>
+  <div class="tokblock stopped"><span class="k">V9_011_PURCHASE_AUTHORIZED_PRICE</span>=3300_JPY_PER_MONTH
+<span class="k">V9_011_PURCHASE_COMPLETED</span>=<span class="v-warn">true</span>          <span class="c">（2026-09-01）</span>
+<span class="k">V9_011_RESULT</span>=<span class="v-fail">FAIL_TERMINAL</span></div>
+  <p>V9 は終了報告が認めた「別系列の新規研究」なので、購入自体が規約違反ではありません。ただし押さえておくべき点が3つあります。</p>
+  <div class="tscroll">
+    <table>
+      <thead><tr><th style="width:1%">#</th><th>論点</th></tr></thead>
+      <tbody>
+        <tr><td class="n">1</td><td><strong>前提条件は依然として未達。</strong>購入の前提は「予測力の確認」でしたが、V9 は <code>T0_STATUS=NOT_RUN</code> / <code>future_profitability_established=false</code> で、まだ何も測っていません。</td></tr>
+        <tr><td class="n">2</td><td><strong>用途が予測データではなくカレンダー。</strong>3,300円/月を払った対象は取引カレンダーであり、しかも <code>FAIL_TERMINAL</code> で目的を達成していません。</td></tr>
+        <tr><td class="n">3</td><td><strong>資金比で軽くない。</strong>3,300円/月 = 39,600円/年 は、運用資金30万円に対して<strong>年 13.2%</strong>。戦略が年13.2%を安定して超えない限り、データ費で負けます。</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2><span class="num">07</span>設計自体は正しい方向にある</h2>
+    <p>厳しく書きましたが、<strong>V9 の設計判断はこれまでの失敗を的確に吸収しています。</strong>ここは維持すべきです。</p>
+  </div>
+  <div class="tscroll wide">
+    <table>
+      <thead><tr><th>V9 の設計</th><th>解決している過去の問題</th></tr></thead>
+      <tbody>
+        <tr><td>SBI S株 / 1株単位・approximately equal-notional</td><td>単元株100株の制約（30万で三菱UFJが1単元も買えない問題）</td></tr>
+        <tr><td>30〜40万円の資金制約を目的関数に明記</td><td>予算を超えた評価</td></tr>
+        <tr><td><code>MAX_CONCURRENT_POSITIONS=1</code> / <code>BEST_ONE_OR_CASH</code></td><td>銘柄別に同じ資金を重複使用する評価</td></tr>
+        <tr><td>Pooled cross-sectional / ticker identity を特徴量から除外</td><td>銘柄別 raw probability が横断比較不能だった問題（<code>NOT_COMPARABLE</code>）</td></tr>
+        <tr><td>Ridge を必須ベースライン、TOPIX・等重量・random-K を必須比較</td><td>単純ホールドとの比較が無かった問題</td></tr>
+        <tr><td><code>No optimistic stop-price execution model</code></td><td>学習ラベルと実約定の不一致</td></tr>
+        <tr><td>measurement-first ロードマップ</td><td>測る前に作り込む癖</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <p><strong>過去の教訓は全部設計に入っています。入っていないのは「測る」という一手だけです。</strong></p>
+
+    <h3>ただし T0 が STOP を返す可能性は現実的に高い</h3>
+    <p>v3 無料プロトタイプは、既にプールしたクロスセクショナル回帰（300銘柄）を試しています。</p>
+  </div>
+  <div class="tscroll wide">
+    <table>
+      <thead><tr><th>指標</th><th class="n">結果</th><th class="n">判定</th></tr></thead>
+      <tbody>
+        <tr><td>OOF Spearman 相関</td><td class="n">0.0159</td><td class="n"><span class="stamp f">基準 &gt;0.02 未達</span></td></tr>
+        <tr><td>日次クロスセクショナル IC 平均</td><td class="n">0.0177</td><td class="n"></td></tr>
+        <tr><td>予測上位10%の平均実現収益率</td><td class="n">−0.0288%</td><td class="n"><span class="stamp f">全候補平均より悪い</span></td></tr>
+        <tr><td>全候補の平均実現収益率</td><td class="n">−0.0217%</td><td class="n"></td></tr>
+        <tr><td>実現純利益</td><td class="n">−51,797 円</td><td class="n"><span class="stamp f">30万 → 248,202円</span></td></tr>
+        <tr><td>最大ドローダウン</td><td class="n">31.05%</td><td class="n"><span class="stamp f">基準 25% 超</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <p><strong>モデルが「最も上がる」と選んだ上位10%が、全候補平均より悪い。</strong>ここが本質です。V9 の仮説はこれに近い領域にあり、T0 が STOP を返す確率は低くありません。</p>
+    <p>だからこそ<strong>先に測るべき</strong>です。STOP なら、いま作っている PDF 解析装置も J-Quants の月額も不要だったと1日で判明します。CONTINUE なら、カレンダー整備に投資する根拠が初めて手に入ります。<strong>どちらに転んでも先に測る方が得です。</strong></p>
+  </div>
+</section>
+
+<section class="col">
+  <h2><span class="num">08</span>進むべき方向</h2>
+  <p class="lead"><strong>カレンダーのカスケードを止めて、T0 を走らせる。</strong>いま必要なのは新しい successor study ではありません。<strong>1回の測定</strong>です。</p>
+
+  <ol class="plan">
+    <li>
+      <h3>V9_014 を凍結する</h3>
+      <p>破棄せず <code>PARKED</code> として記録に残す。6,217行は消さない。ただしこれ以上増やさない。</p>
+    </li>
+    <li>
+      <h3><code>V9_009_HIGH_2</code> を比例的厳格さで閉じる</h3>
+      <p><code>V9_PREFREEZE_PROPORTIONAL_STRICTNESS</code> を根拠に、次を事前登録してから実行する。</p>
+      <ul>
+        <li><code>2020-10-01</code> を <code>UNPROVEN</code> として記録（「非営業日と証明した」とは書かない）</li>
+        <li>D1〜D3 の窓が <code>2020-10-01</code> に重なる D0 を T0 の D0 グリッドから除外</li>
+        <li>除外した D0 数を成果物に明記（約4日 / 約1,446日 = 0.28%）</li>
+        <li>この扱いは <strong>T0 限定</strong>。T1・正式評価・配備判断には持ち込まない</li>
+        <li>落とした D0 数が判定を反転し得ないことを感度チェックとして併記</li>
+      </ul>
+    </li>
+    <li>
+      <h3>T0 を実行する</h3>
+      <p>ネットワーク 0、有料データ 0、手元のキャッシュのみ。出力は <code>STOP</code> / <code>CONTINUE</code> / <code>NO_VERDICT_DATA_INCOMPATIBLE</code> の3値。</p>
+    </li>
+    <li>
+      <h3>結果で分岐する</h3>
+      <div class="fork a">
+        <div>
+          <h4>STOP なら</h4>
+          <p>V9 のこの仮説を閉じる。カレンダー装置も J-Quants 月額も不要と確定。30万円のゴールに対しては、シグナル探索より「S株で買える価格帯の銘柄 × 単純ベースライン（等重量・ホールド）を上回れるか」という、より低い階段から組み直す。</p>
+        </div>
+        <div>
+          <h4 style="color:var(--pass)">CONTINUE なら</h4>
+          <p>ここで初めてカレンダーと PIT / 上場廃止銘柄の整備に投資する根拠が立つ。V9_007 のロードマップどおりの順序に戻る。</p>
+        </div>
+      </div>
+    </li>
+    <li>
+      <h3>J-Quants を一旦解約する</h3>
+      <p><code>V9_011_RESULT=FAIL_TERMINAL</code> で目的未達、T0 はこのデータを必要としない。年 13.2% のコストを、CONTINUE が出るまで止める。再契約は「CONTINUE が出て、かつ point-in-time データが本当に必要になった時点」。</p>
+    </li>
+  </ol>
+
+  <div class="dont">
+    <p class="note-t">やらないこと</p>
+    <ul>
+      <li>新しい successor study の設計（V9_015 …）— カスケードの延長になる</li>
+      <li><code>2020-10-01</code> を「SOURCE_B で非活動と証明済み」と記録すること — 設計書が禁じており、実際に不可能</li>
+      <li>T0 の結果を見てから特徴量・モデル・閾値を調整すること — <code>further_loop_on_same_data: PROHIBITED</code></li>
+      <li>設計方針（S株・単一ポジション・pooled cross-sectional・必須ベースライン）の変更 — ここは正しい</li>
+    </ul>
+  </div>
+</section>
+
+<section class="col kicker">
+  <p class="big">プロセスの質は高い。測定が1度も無いことだけが問題。</p>
+  <p>1週間で 38,227 行を書いて、2020年10月1日1日分の証明に届かなかった。その1日は、走らせるべき判定に 0.28% も効かない。</p>
+  <p><strong>次にやることは、コードを書くことではなく <code>T0</code> を1回実行することです。</strong></p>
+</section>
+
+</main>
+
+<footer>
+  <span>stock-analyzer — V9 監査レビュー</span>
+  <span>ad039e7 / 2026-09-03</span>
+</footer>
+
+</div>
+
+<script>
+(function(){
+  // To-scale grid: one dot per trading day, 2020-2025.
+  var TOTAL = 1446;
+  // 2020-10-01 is approximately the 182nd trading day of the window;
+  // the D1-D3 target window makes the four preceding D0s unusable.
+  var HIT_FROM = 178, HIT_TO = 181;
+  var host = document.getElementById('dots');
+  if (host) {
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < TOTAL; i++) {
+      var d = document.createElement('i');
+      d.className = (i >= HIT_FROM && i <= HIT_TO) ? 'd hit' : 'd';
+      frag.appendChild(d);
+    }
+    host.appendChild(frag);
+  }
+
+  // Theme toggle for the downloaded, standalone file.
+  var btn = document.getElementById('tt');
+  if (btn) {
+    btn.addEventListener('click', function () {
+      var root = document.documentElement;
+      var current = root.getAttribute('data-theme');
+      if (!current) {
+        var darkNow = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        current = darkNow ? 'dark' : 'light';
+      }
+      root.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+    });
+  }
+})();
+</script>
+</body>
+</html>
