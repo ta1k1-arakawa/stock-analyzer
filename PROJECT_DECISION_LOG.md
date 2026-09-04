@@ -1522,6 +1522,12 @@ transitions. This public log must not contain protected material.
 - The dedicated C1 probe implementation is complete and awaits GPT exact-SHA review. It is synthetic-only, uses no preserved-root bytes, filesystem, network, protected read, human gate, URL resolution, classification, relation, trading-date, or profitability path, and C2 remains `NOT_EXECUTED`. The targeted synthetic suite passed (`23 passed`).
 - V9_015 remains `INPUT_BINDING_ONLY` with zero profitability evidential capacity; V9_014 remains `FAIL_TERMINAL` with no Attempt 3, T0 remains `NOT_RUN`, and future profitability remains unestablished. No frozen design, methodology, real root, or external data was changed or accessed. Next action is `GPT_EXACT_SHA_INDEPENDENT_REVIEW`.
 
+## 2026-09-04 — V9_015 C1 HIGH_1 script/style candidate-text remediation
+
+- GPT exact-SHA review of `2edf34004969ecca99db4bb903134122fe71a480` returned `BLOCK` with `CRITICAL=0`, `HIGH=1`, `MEDIUM=1`, and `LOW=1`. HIGH_1 was `CANDIDATE_LABEL_ACCEPTS_SCRIPT_STYLE_NONVISIBLE_TEXT` and is recorded as `REMEDIATED_AWAITING_GPT_REVIEW`. MEDIUM_1, `DURABLE_REVIEW_CHRONOLOGY_AND_APPEND_ONLY_LOG_NOT_CURRENT`, remains `OPEN`; the inherited LOW remains `OPEN_SAFE_DEFERRED` and the frozen design is not modified.
+- C1 remediation excludes script/style-depth `handle_data` from anchor and option candidate labels while preserving visible post-script/style data, ordinary nested visible tags, exact normalization, and all frozen category/token/multiplicity mechanics. The synthetic targeted suite passed (`27 passed`); C1 remains synthetic-only and awaits GPT exact-SHA review.
+- Stage B PASS and its safe root baseline remain unchanged; no preserved real root or Attempt-2 raw payload was read, hashed, inspected, or used in this Codex task. Network requests, protected reads, and human-gate consumptions were `0`; C2 remains `NOT_EXECUTED`, T0 remains `NOT_RUN`, and future profitability remains unestablished. Next action is `GPT_EXACT_SHA_INDEPENDENT_REVIEW`.
+
 ## 2026-09-04 — V9_015 design HIGH_2 pre-real-root calibration-mechanics remediation
 
 - GPT exact-SHA review of `f583e4b44107e4177f9f32ff520574163b2fb827` returned `BLOCK` with `CRITICAL=0`, `HIGH=1`, `MEDIUM=0`, and `LOW=1`. HIGH_1, `PRESERVED_ROOT_BASELINE_NOT_EXACTLY_BOUND_TO_ATTEMPT_2_SAFE_EVIDENCE`, is recorded as `RESOLVED`. HIGH_2 is recorded as `REMEDIATED_AWAITING_GPT_REVIEW` with finding `REAL_ROOT_STRUCTURAL_INSPECTION_PRECEDES_REVIEWED_CALIBRATION_MECHANICS`; LOW_1 remains `OPEN_SAFE` for the stray markdown code fence.

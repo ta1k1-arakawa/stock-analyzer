@@ -163,6 +163,35 @@ def test_script_and_style_data_are_excluded_from_visible_text():
     assert result["required_year_visible_token_counts"]["2022"] == 1
 
 
+def test_script_text_inside_anchor_is_not_candidate_label_text():
+    result = probe_root_structure(b'<a href="secret"><script>2017</script></a>')
+    assert result["required_year_anchor_token_counts"]["2017"] == 0
+    assert result["required_year_anchor_multiplicity"]["2017"] == "ZERO"
+    assert result["all_required_years_deterministically_bindable"] is False
+
+
+def test_style_text_inside_anchor_is_not_candidate_label_text():
+    result = probe_root_structure(b'<a href="secret"><style>2020</style></a>')
+    assert result["required_year_anchor_token_counts"]["2020"] == 0
+    assert result["required_year_anchor_multiplicity"]["2020"] == "ZERO"
+
+
+def test_visible_text_after_script_still_contributes_to_candidate_label():
+    result = probe_root_structure(b'<a href="secret"><script>noise</script>2019</a>')
+    assert result["required_year_anchor_token_counts"]["2019"] == 1
+    assert result["required_year_anchor_nonempty_href_counts"]["2019"] == 1
+    assert result["required_year_anchor_multiplicity"]["2019"] == "ONE"
+
+
+def test_option_candidate_also_excludes_script_and_style_text():
+    result = probe_root_structure(
+        b'<option value="secret"><script>2017</script><style>2020</style>2022</option>'
+    )
+    assert result["required_year_option_token_counts"]["2017"] == 0
+    assert result["required_year_option_token_counts"]["2020"] == 0
+    assert result["required_year_option_token_counts"]["2022"] == 1
+
+
 def test_safe_output_contains_no_raw_candidate_attributes_html_or_arbitrary_text():
     raw = b'<a href="https://synthetic.invalid/SECRET-HREF">2017 SECRET-LABEL</a>'
     result = probe_root_structure(raw)

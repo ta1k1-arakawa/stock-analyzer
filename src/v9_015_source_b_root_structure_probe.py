@@ -138,7 +138,7 @@ class _StructuralParser(HTMLParser):
             self._script_style_depth -= 1
 
     def handle_data(self, data: str) -> None:
-        if self._active_candidate is not None:
+        if self._active_candidate is not None and self._script_style_depth == 0:
             self._active_candidate.text_parts.append(data)
         if self._script_style_depth == 0:
             normalized = " ".join(data.split())
