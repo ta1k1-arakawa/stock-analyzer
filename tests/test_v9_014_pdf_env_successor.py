@@ -319,36 +319,174 @@ def test_platform_evidence_wrong_platform_system_fails():
 
 def test_build_lock_candidate_payload_schema_valid():
     payload = env_successor.build_lock_candidate_payload(
-        direct_spec_sha256="deadbeef",
-        resolved_packages={"pdfplumber": "0.11.10"},
+        direct_spec_sha256="a" * 64,
+        resolved_packages={**env_successor.PREDECESSOR_PINS, "pdfplumber": "0.11.10"},
     )
     assert env_successor.validate_lock_candidate_schema(payload)
     assert payload["predecessor_pins_preserved"] == dict(sorted(env_successor.PREDECESSOR_PINS.items()))
     assert payload["new_direct_package"] == "pdfplumber==0.11.10"
 
 
-def test_build_windows_evidence_payload_schema_valid():
-    payload = env_successor.build_windows_evidence_payload(
+def _valid_windows_evidence_payload() -> dict[str, object]:
+    before = dict(env_successor.PREDECESSOR_PINS)
+    after = {**before, "pdfplumber": "0.11.10"}
+    return env_successor.build_windows_evidence_payload(
         platform_evidence=_valid_platform_payload(),
-        before_freeze={"numpy": "2.5.2"},
-        after_freeze={"numpy": "2.5.2", "pdfplumber": "0.11.10"},
+        before_freeze=before,
+        after_freeze=after,
         delta_status=env_successor.DELTA_OK,
+        successor_validation_status=env_successor.SUCCESSOR_OK,
+        direct_imports={
+            "pandas": {"status": "PASS", "version": "3.0.5"},
+            "xlrd": {"status": "PASS", "version": "2.0.2"},
+            "pdfplumber": {"status": "PASS", "version": "0.11.10"},
+        },
+        synthetic_pdf_probe={
+            "status": env_successor.PROBE_PASS,
+            "fixture_sha256": env_successor.PROBE_EXPECTED_FIXTURE_SHA256,
+            "pdfplumber_version": "0.11.10",
+            "page_count": 1,
+        },
+        process={
+            "successor_resolution_exit_code": 0,
+            "e6_runtime_inspection_exit_code": 0,
+            "e6_runtime_reinspection_result": "PASS",
+        },
+        evidence_hashes={
+            "before_freeze": "a" * 64,
+            "after_freeze": "b" * 64,
+            "successor_resolution_stdout": "c" * 64,
+            "successor_resolution_stderr": "d" * 64,
+            "direct_spec": "e" * 64,
+            "synthetic_pdf_fixture": "f" * 64,
+        },
+        provenance={
+            "e5_execution_source_git_sha": "a" * 40,
+            "e6_runtime_reinspection_git_sha": "b" * 40,
+            "probe_tool_git_blob_identity": "c" * 40,
+            "frozen_v9_014_design_git_sha": env_successor.FROZEN_V9_014_DESIGN_GIT_SHA,
+            "frozen_v9_014_design_blob_sha": env_successor.FROZEN_V9_014_DESIGN_BLOB_SHA,
+            "attempt_number": 2,
+        },
+        safety={
+            "e5_reruns": 0,
+            "network_requests": 0,
+            "package_installs": 0,
+            "jpx_requests": 0,
+            "protected_reads": 0,
+            "e6_staging_mutations": 0,
+            "e6_output_mutations": 0,
+            "human_gates_consumed_during_e6": 0,
+            "attempt_3_authorized": False,
+        },
+    )
+
+
+def test_build_windows_evidence_payload_schema_and_semantics_valid():
+    payload = _valid_windows_evidence_payload()
+    assert tuple(payload) == (
+        "schema_version", "platform", "before_freeze", "after_freeze", "delta_status",
+        "successor_validation_status", "direct_imports", "synthetic_pdf_probe", "process",
+        "evidence_hashes", "provenance", "safety",
     )
     assert env_successor.validate_windows_evidence_schema(payload)
 
 
+@pytest.mark.parametrize(
+    "category",
+    ("successor_validation_status", "direct_imports", "synthetic_pdf_probe", "process", "evidence_hashes", "provenance", "safety"),
+)
+def test_windows_evidence_rejects_missing_each_newly_mandatory_category(category: str):
+    payload = _valid_windows_evidence_payload()
+    del payload[category]
+    assert not env_successor.validate_windows_evidence_schema(payload)
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    (
+        lambda payload: payload["direct_imports"]["pandas"].__setitem__("extra", True),
+        lambda payload: payload["synthetic_pdf_probe"].__setitem__("extra", True),
+        lambda payload: payload["process"].__setitem__("extra", True),
+        lambda payload: payload["evidence_hashes"].__setitem__("extra", "a" * 64),
+        lambda payload: payload["provenance"].__setitem__("extra", True),
+        lambda payload: payload["safety"].__setitem__("extra", True),
+    ),
+)
+def test_windows_evidence_rejects_extra_nested_key(mutator):
+    payload = _valid_windows_evidence_payload()
+    mutator(payload)
+    assert not env_successor.validate_windows_evidence_schema(payload)
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    (
+        (("direct_imports", "pdfplumber", "version"), "0.10.0"),
+        (("direct_imports", "pdfplumber", "status"), "FAIL"),
+        (("synthetic_pdf_probe", "status"), "FAIL"),
+        (("synthetic_pdf_probe", "fixture_sha256"), "a" * 64),
+        (("synthetic_pdf_probe", "page_count"), 2),
+        (("process", "successor_resolution_exit_code"), 1),
+        (("process", "e6_runtime_inspection_exit_code"), 1),
+        (("after_freeze", "pandas"), "0.0.0"),
+        (("evidence_hashes", "before_freeze"), "not-a-hash"),
+        (("safety", "network_requests"), 1),
+        (("safety", "attempt_3_authorized"), True),
+    ),
+)
+def test_windows_evidence_semantic_negatives_fail(path: tuple[str, ...], value: object):
+    payload = _valid_windows_evidence_payload()
+    target = payload
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    assert not env_successor.validate_windows_evidence_schema(payload)
+
+
 def test_lock_candidate_schema_rejects_missing_key():
-    payload = env_successor.build_lock_candidate_payload(direct_spec_sha256="x", resolved_packages={})
+    payload = env_successor.build_lock_candidate_payload(
+        direct_spec_sha256="a" * 64,
+        resolved_packages={**env_successor.PREDECESSOR_PINS, "pdfplumber": "0.11.10"},
+    )
     del payload["schema_version"]
     assert not env_successor.validate_lock_candidate_schema(payload)
 
 
-def test_windows_evidence_schema_rejects_extra_key():
-    payload = env_successor.build_windows_evidence_payload(
-        platform_evidence=_valid_platform_payload(), before_freeze={}, after_freeze={}, delta_status="X"
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("direct_spec_sha256", "not-a-hash"),
+        ("predecessor_pins_preserved", {}),
+        ("new_direct_package", "pdfplumber==0.10.0"),
+    ),
+)
+def test_lock_candidate_semantic_negatives_fail(field: str, value: object):
+    payload = env_successor.build_lock_candidate_payload(
+        direct_spec_sha256="a" * 64,
+        resolved_packages={**env_successor.PREDECESSOR_PINS, "pdfplumber": "0.11.10"},
     )
+    payload[field] = value
+    assert not env_successor.validate_lock_candidate_schema(payload)
+
+
+def test_lock_candidate_rejects_predecessor_pin_drift():
+    resolved_packages = {**env_successor.PREDECESSOR_PINS, "pdfplumber": "0.11.10"}
+    resolved_packages["pandas"] = "0.0.0"
+    payload = env_successor.build_lock_candidate_payload(direct_spec_sha256="a" * 64, resolved_packages=resolved_packages)
+    assert not env_successor.validate_lock_candidate_schema(payload)
+
+
+def test_windows_evidence_schema_rejects_extra_key():
+    payload = _valid_windows_evidence_payload()
     payload["unexpected"] = True
     assert not env_successor.validate_windows_evidence_schema(payload)
+
+
+def test_canonical_json_bytes_is_compact_sorted_utf8_and_trailing_lf():
+    assert env_successor.canonical_json_bytes({"z": 1, "a": "x"}) == b'{"a":"x","z":1}\n'
+    with pytest.raises(ValueError):
+        env_successor.canonical_json_bytes({"bad": float("nan")})
 
 
 def test_stage_e2_does_not_write_future_artifacts_to_disk():

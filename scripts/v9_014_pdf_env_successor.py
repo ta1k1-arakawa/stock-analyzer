@@ -51,6 +51,7 @@ SOURCE_B PDF calibration acquisition, does not materialize
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sys
 from dataclasses import dataclass, field
@@ -79,6 +80,8 @@ assert len(PREDECESSOR_PINS) == PREDECESSOR_PIN_COUNT
 
 NEW_DIRECT_PACKAGE_NAME = "pdfplumber"
 NEW_DIRECT_PACKAGE_VERSION = "0.11.10"
+FROZEN_V9_014_DESIGN_GIT_SHA = "efee3d0efca368645c00aeed63cb8e0637cd3672"
+FROZEN_V9_014_DESIGN_BLOB_SHA = "2bbacbf37ab961d1cbf416b7fd476db18778c5b7"
 
 # --- Section 2: canonical/staging environment identity ----------------------
 CANONICAL_ENVIRONMENT_DIRECTORY_NAME = ".venv-real-execution"
@@ -453,8 +456,60 @@ _LOCK_CANDIDATE_REQUIRED_KEYS = frozenset(
     {"schema_version", "direct_spec_sha256", "resolved_packages", "predecessor_pins_preserved", "new_direct_package"}
 )
 _WINDOWS_EVIDENCE_REQUIRED_KEYS = frozenset(
-    {"schema_version", "platform", "before_freeze", "after_freeze", "delta_status"}
+    {
+        "schema_version",
+        "platform",
+        "before_freeze",
+        "after_freeze",
+        "delta_status",
+        "successor_validation_status",
+        "direct_imports",
+        "synthetic_pdf_probe",
+        "process",
+        "evidence_hashes",
+        "provenance",
+        "safety",
+    }
 )
+_DIRECT_IMPORT_PACKAGES = {"pandas": "3.0.5", "xlrd": "2.0.2", "pdfplumber": "0.11.10"}
+_DIRECT_IMPORT_ENTRY_KEYS = frozenset({"status", "version"})
+_SYNTHETIC_PDF_PROBE_KEYS = frozenset({"status", "fixture_sha256", "pdfplumber_version", "page_count"})
+_PROCESS_KEYS = frozenset({"successor_resolution_exit_code", "e6_runtime_inspection_exit_code", "e6_runtime_reinspection_result"})
+_EVIDENCE_HASH_KEYS = frozenset(
+    {
+        "before_freeze",
+        "after_freeze",
+        "successor_resolution_stdout",
+        "successor_resolution_stderr",
+        "direct_spec",
+        "synthetic_pdf_fixture",
+    }
+)
+_PROVENANCE_KEYS = frozenset(
+    {
+        "e5_execution_source_git_sha",
+        "e6_runtime_reinspection_git_sha",
+        "probe_tool_git_blob_identity",
+        "frozen_v9_014_design_git_sha",
+        "frozen_v9_014_design_blob_sha",
+        "attempt_number",
+    }
+)
+_SAFETY_KEYS = frozenset(
+    {
+        "e5_reruns",
+        "network_requests",
+        "package_installs",
+        "jpx_requests",
+        "protected_reads",
+        "e6_staging_mutations",
+        "e6_output_mutations",
+        "human_gates_consumed_during_e6",
+        "attempt_3_authorized",
+    }
+)
+_LOWERCASE_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_LOWERCASE_GIT_ID_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 def build_lock_candidate_payload(
@@ -481,6 +536,13 @@ def build_windows_evidence_payload(
     before_freeze: Mapping[str, str],
     after_freeze: Mapping[str, str],
     delta_status: str,
+    successor_validation_status: str,
+    direct_imports: Mapping[str, Mapping[str, object]],
+    synthetic_pdf_probe: Mapping[str, object],
+    process: Mapping[str, object],
+    evidence_hashes: Mapping[str, str],
+    provenance: Mapping[str, object],
+    safety: Mapping[str, object],
 ) -> dict[str, object]:
     """Deterministically construct the FUTURE Stage E7 Windows validation
     evidence payload shape. Pure function: no file I/O, no environment
@@ -492,21 +554,153 @@ def build_windows_evidence_payload(
         "before_freeze": dict(sorted(before_freeze.items())),
         "after_freeze": dict(sorted(after_freeze.items())),
         "delta_status": delta_status,
+        "successor_validation_status": successor_validation_status,
+        "direct_imports": {name: dict(values) for name, values in sorted(direct_imports.items())},
+        "synthetic_pdf_probe": dict(synthetic_pdf_probe),
+        "process": dict(process),
+        "evidence_hashes": dict(sorted(evidence_hashes.items())),
+        "provenance": dict(provenance),
+        "safety": dict(safety),
     }
 
 
 def validate_lock_candidate_schema(payload: Mapping[str, object]) -> bool:
-    """Exact key-set validation for a future Stage E7 lock-candidate
-    payload. Schema-only; does not verify semantic correctness of values.
+    """Fail-closed schema and semantic validation for a future Stage E7
+    lock candidate. This is pure validation; it never writes an artifact.
     """
-    return frozenset(payload.keys()) == _LOCK_CANDIDATE_REQUIRED_KEYS
+    if frozenset(payload.keys()) != _LOCK_CANDIDATE_REQUIRED_KEYS:
+        return False
+    if payload.get("schema_version") != 1:
+        return False
+    direct_spec_sha256 = payload.get("direct_spec_sha256")
+    if not _is_lowercase_sha256(direct_spec_sha256):
+        return False
+    resolved_packages = payload.get("resolved_packages")
+    if not _is_string_mapping(resolved_packages):
+        return False
+    if payload.get("predecessor_pins_preserved") != dict(sorted(PREDECESSOR_PINS.items())):
+        return False
+    if payload.get("new_direct_package") != f"{NEW_DIRECT_PACKAGE_NAME}=={NEW_DIRECT_PACKAGE_VERSION}":
+        return False
+    freeze_result = PipFreezeParseResult(packages=resolved_packages, invalid_lines=(), duplicate_lines=())
+    return validate_successor_after_resolution(freeze_result).status == SUCCESSOR_OK
 
 
 def validate_windows_evidence_schema(payload: Mapping[str, object]) -> bool:
-    """Exact key-set validation for a future Stage E7 Windows-evidence
-    payload. Schema-only; does not verify semantic correctness of values.
+    """Fail-closed schema and semantic validation for future Stage E7
+    Windows evidence. It verifies the complete frozen E6/E7 evidence
+    contract but performs no file or environment operation.
     """
-    return frozenset(payload.keys()) == _WINDOWS_EVIDENCE_REQUIRED_KEYS
+    if frozenset(payload.keys()) != _WINDOWS_EVIDENCE_REQUIRED_KEYS:
+        return False
+    if payload.get("schema_version") != 1:
+        return False
+    platform = payload.get("platform")
+    before_freeze = payload.get("before_freeze")
+    after_freeze = payload.get("after_freeze")
+    if not isinstance(platform, Mapping) or not _is_string_mapping(before_freeze) or not _is_string_mapping(after_freeze):
+        return False
+    if validate_platform_evidence(platform).status != PLATFORM_OK:
+        return False
+    before_result = PipFreezeParseResult(packages=before_freeze, invalid_lines=(), duplicate_lines=())
+    after_result = PipFreezeParseResult(packages=after_freeze, invalid_lines=(), duplicate_lines=())
+    if validate_predecessor_baseline(before_result).status != BASELINE_OK:
+        return False
+    if validate_successor_after_resolution(after_result).status != SUCCESSOR_OK:
+        return False
+    delta = compute_before_after_delta(before_freeze, after_freeze)
+    if payload.get("delta_status") != DELTA_OK or delta.status != DELTA_OK or delta.predecessor_pin_drift:
+        return False
+    if payload.get("successor_validation_status") != SUCCESSOR_OK:
+        return False
+    return (
+        _validate_direct_imports(payload.get("direct_imports"))
+        and _validate_synthetic_pdf_probe(payload.get("synthetic_pdf_probe"))
+        and _validate_process(payload.get("process"))
+        and _validate_evidence_hashes(payload.get("evidence_hashes"))
+        and _validate_provenance(payload.get("provenance"))
+        and _validate_safety(payload.get("safety"))
+    )
+
+
+def canonical_json_bytes(payload: Mapping[str, object]) -> bytes:
+    """Serialize a future artifact deterministically without writing it.
+
+    UTF-8, sorted keys, compact separators, NaN rejection, and exactly one
+    trailing LF are fixed for future E7 artifact creation.
+    """
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
+
+
+def _is_string_mapping(value: object) -> bool:
+    return isinstance(value, Mapping) and all(isinstance(key, str) and isinstance(item, str) for key, item in value.items())
+
+
+def _is_lowercase_sha256(value: object) -> bool:
+    return isinstance(value, str) and _LOWERCASE_SHA256_PATTERN.fullmatch(value) is not None
+
+
+def _is_lowercase_git_id(value: object) -> bool:
+    return isinstance(value, str) and _LOWERCASE_GIT_ID_PATTERN.fullmatch(value) is not None
+
+
+def _validate_direct_imports(value: object) -> bool:
+    if not isinstance(value, Mapping) or frozenset(value.keys()) != frozenset(_DIRECT_IMPORT_PACKAGES):
+        return False
+    return all(
+        isinstance(entry, Mapping)
+        and frozenset(entry.keys()) == _DIRECT_IMPORT_ENTRY_KEYS
+        and entry.get("status") == "PASS"
+        and entry.get("version") == expected_version
+        for package, expected_version in _DIRECT_IMPORT_PACKAGES.items()
+        for entry in (value[package],)
+    )
+
+
+def _validate_synthetic_pdf_probe(value: object) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and frozenset(value.keys()) == _SYNTHETIC_PDF_PROBE_KEYS
+        and value.get("status") == PROBE_PASS
+        and value.get("fixture_sha256") == PROBE_EXPECTED_FIXTURE_SHA256
+        and value.get("pdfplumber_version") == NEW_DIRECT_PACKAGE_VERSION
+        and value.get("page_count") == 1
+    )
+
+
+def _validate_process(value: object) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and frozenset(value.keys()) == _PROCESS_KEYS
+        and value.get("successor_resolution_exit_code") == 0
+        and value.get("e6_runtime_inspection_exit_code") == 0
+        and value.get("e6_runtime_reinspection_result") == "PASS"
+    )
+
+
+def _validate_evidence_hashes(value: object) -> bool:
+    return isinstance(value, Mapping) and frozenset(value.keys()) == _EVIDENCE_HASH_KEYS and all(
+        _is_lowercase_sha256(digest) for digest in value.values()
+    )
+
+
+def _validate_provenance(value: object) -> bool:
+    if not isinstance(value, Mapping) or frozenset(value.keys()) != _PROVENANCE_KEYS:
+        return False
+    return (
+        _is_lowercase_git_id(value.get("e5_execution_source_git_sha"))
+        and _is_lowercase_git_id(value.get("e6_runtime_reinspection_git_sha"))
+        and _is_lowercase_git_id(value.get("probe_tool_git_blob_identity"))
+        and value.get("frozen_v9_014_design_git_sha") == FROZEN_V9_014_DESIGN_GIT_SHA
+        and value.get("frozen_v9_014_design_blob_sha") == FROZEN_V9_014_DESIGN_BLOB_SHA
+        and value.get("attempt_number") == 2
+    )
+
+
+def _validate_safety(value: object) -> bool:
+    if not isinstance(value, Mapping) or frozenset(value.keys()) != _SAFETY_KEYS:
+        return False
+    return all(value.get(name) == 0 for name in _SAFETY_KEYS - {"attempt_3_authorized"}) and value.get("attempt_3_authorized") is False
 
 
 # =============================================================================
