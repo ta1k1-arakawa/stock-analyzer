@@ -319,7 +319,7 @@ def test_platform_evidence_wrong_platform_system_fails():
 
 def test_build_lock_candidate_payload_schema_valid():
     payload = env_successor.build_lock_candidate_payload(
-        direct_spec_sha256="a" * 64,
+        direct_spec_sha256=env_successor.CANONICAL_DIRECT_SPEC_SHA256,
         resolved_packages={**env_successor.PREDECESSOR_PINS, "pdfplumber": "0.11.10"},
     )
     assert env_successor.validate_lock_candidate_schema(payload)
@@ -357,8 +357,8 @@ def _valid_windows_evidence_payload() -> dict[str, object]:
             "after_freeze": "b" * 64,
             "successor_resolution_stdout": "c" * 64,
             "successor_resolution_stderr": "d" * 64,
-            "direct_spec": "e" * 64,
-            "synthetic_pdf_fixture": "f" * 64,
+            "direct_spec": env_successor.CANONICAL_DIRECT_SPEC_SHA256,
+            "synthetic_pdf_fixture": env_successor.PROBE_EXPECTED_FIXTURE_SHA256,
         },
         provenance={
             "e5_execution_source_git_sha": "a" * 40,
@@ -390,6 +390,72 @@ def test_build_windows_evidence_payload_schema_and_semantics_valid():
         "evidence_hashes", "provenance", "safety",
     )
     assert env_successor.validate_windows_evidence_schema(payload)
+
+
+def _valid_e7_candidate_bundle() -> tuple[dict[str, object], dict[str, object]]:
+    windows_evidence = _valid_windows_evidence_payload()
+    lock_candidate = env_successor.build_lock_candidate_payload(
+        direct_spec_sha256=env_successor.CANONICAL_DIRECT_SPEC_SHA256,
+        resolved_packages=windows_evidence["after_freeze"],
+    )
+    return lock_candidate, windows_evidence
+
+
+def test_e7_candidate_bundle_matching_closure_passes():
+    lock_candidate, windows_evidence = _valid_e7_candidate_bundle()
+    assert env_successor.validate_lock_candidate_schema(lock_candidate)
+    assert env_successor.validate_windows_evidence_schema(windows_evidence)
+    assert env_successor.validate_e7_candidate_bundle(lock_candidate, windows_evidence)
+
+
+def test_e7_candidate_bundle_rejects_lock_extra_transitive_package():
+    lock_candidate, windows_evidence = _valid_e7_candidate_bundle()
+    lock_candidate["resolved_packages"]["test-only-extra"] = "test-only-version"
+    assert env_successor.validate_lock_candidate_schema(lock_candidate)
+    assert env_successor.validate_windows_evidence_schema(windows_evidence)
+    assert not env_successor.validate_e7_candidate_bundle(lock_candidate, windows_evidence)
+
+
+def test_e7_candidate_bundle_rejects_evidence_extra_transitive_package():
+    lock_candidate, windows_evidence = _valid_e7_candidate_bundle()
+    windows_evidence["after_freeze"]["test-only-extra"] = "test-only-version"
+    assert env_successor.validate_lock_candidate_schema(lock_candidate)
+    assert env_successor.validate_windows_evidence_schema(windows_evidence)
+    assert not env_successor.validate_e7_candidate_bundle(lock_candidate, windows_evidence)
+
+
+def test_e7_candidate_bundle_rejects_different_transitive_package_version():
+    lock_candidate, windows_evidence = _valid_e7_candidate_bundle()
+    lock_candidate["resolved_packages"]["test-only-transitive"] = "one"
+    windows_evidence["after_freeze"]["test-only-transitive"] = "two"
+    assert env_successor.validate_lock_candidate_schema(lock_candidate)
+    assert env_successor.validate_windows_evidence_schema(windows_evidence)
+    assert not env_successor.validate_e7_candidate_bundle(lock_candidate, windows_evidence)
+
+
+def test_e7_candidate_bundle_rejects_different_direct_spec_hashes():
+    lock_candidate, windows_evidence = _valid_e7_candidate_bundle()
+    windows_evidence["evidence_hashes"]["direct_spec"] = "a" * 64
+    assert env_successor.validate_lock_candidate_schema(lock_candidate)
+    assert env_successor.validate_windows_evidence_schema(windows_evidence)
+    assert not env_successor.validate_e7_candidate_bundle(lock_candidate, windows_evidence)
+
+
+def test_e7_candidate_bundle_rejects_matching_noncanonical_direct_spec_hashes():
+    lock_candidate, windows_evidence = _valid_e7_candidate_bundle()
+    lock_candidate["direct_spec_sha256"] = "a" * 64
+    windows_evidence["evidence_hashes"]["direct_spec"] = "a" * 64
+    assert not env_successor.validate_lock_candidate_schema(lock_candidate)
+    assert env_successor.validate_windows_evidence_schema(windows_evidence)
+    assert not env_successor.validate_e7_candidate_bundle(lock_candidate, windows_evidence)
+
+
+def test_e7_candidate_bundle_rejects_different_synthetic_fixture_hashes():
+    lock_candidate, windows_evidence = _valid_e7_candidate_bundle()
+    windows_evidence["evidence_hashes"]["synthetic_pdf_fixture"] = "a" * 64
+    assert env_successor.validate_lock_candidate_schema(lock_candidate)
+    assert env_successor.validate_windows_evidence_schema(windows_evidence)
+    assert not env_successor.validate_e7_candidate_bundle(lock_candidate, windows_evidence)
 
 
 @pytest.mark.parametrize(
@@ -446,7 +512,7 @@ def test_windows_evidence_semantic_negatives_fail(path: tuple[str, ...], value: 
 
 def test_lock_candidate_schema_rejects_missing_key():
     payload = env_successor.build_lock_candidate_payload(
-        direct_spec_sha256="a" * 64,
+        direct_spec_sha256=env_successor.CANONICAL_DIRECT_SPEC_SHA256,
         resolved_packages={**env_successor.PREDECESSOR_PINS, "pdfplumber": "0.11.10"},
     )
     del payload["schema_version"]
@@ -457,13 +523,14 @@ def test_lock_candidate_schema_rejects_missing_key():
     "field,value",
     (
         ("direct_spec_sha256", "not-a-hash"),
+        ("direct_spec_sha256", "a" * 64),
         ("predecessor_pins_preserved", {}),
         ("new_direct_package", "pdfplumber==0.10.0"),
     ),
 )
 def test_lock_candidate_semantic_negatives_fail(field: str, value: object):
     payload = env_successor.build_lock_candidate_payload(
-        direct_spec_sha256="a" * 64,
+        direct_spec_sha256=env_successor.CANONICAL_DIRECT_SPEC_SHA256,
         resolved_packages={**env_successor.PREDECESSOR_PINS, "pdfplumber": "0.11.10"},
     )
     payload[field] = value
@@ -473,7 +540,10 @@ def test_lock_candidate_semantic_negatives_fail(field: str, value: object):
 def test_lock_candidate_rejects_predecessor_pin_drift():
     resolved_packages = {**env_successor.PREDECESSOR_PINS, "pdfplumber": "0.11.10"}
     resolved_packages["pandas"] = "0.0.0"
-    payload = env_successor.build_lock_candidate_payload(direct_spec_sha256="a" * 64, resolved_packages=resolved_packages)
+    payload = env_successor.build_lock_candidate_payload(
+        direct_spec_sha256=env_successor.CANONICAL_DIRECT_SPEC_SHA256,
+        resolved_packages=resolved_packages,
+    )
     assert not env_successor.validate_lock_candidate_schema(payload)
 
 

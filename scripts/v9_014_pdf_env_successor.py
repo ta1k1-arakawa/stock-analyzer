@@ -36,7 +36,8 @@ Frozen scope, per the reviewed design:
   - deterministic construction/validation helpers for the FUTURE Stage E7
     lock-candidate and Windows-evidence artifacts
     (`build_lock_candidate_payload`, `build_windows_evidence_payload`,
-    `validate_lock_candidate_schema`, `validate_windows_evidence_schema`)
+    `validate_lock_candidate_schema`, `validate_windows_evidence_schema`,
+    `validate_e7_candidate_bundle`)
     -- called only by a later, separately reviewed stage; E2 does not
     invoke them to write any artifact
   - staging-path validation (`validate_staging_path`)
@@ -63,6 +64,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # --- Section 3: successor direct dependency spec ----------------------------
 DIRECT_SPEC_PATH = REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_DIRECT_SPEC.txt"
 EXPECTED_DIRECT_SPEC_BYTES = b"pandas\nxlrd==2.0.2\npdfplumber==0.11.10\n"
+CANONICAL_DIRECT_SPEC_SHA256 = hashlib.sha256(EXPECTED_DIRECT_SPEC_BYTES).hexdigest()
 
 # --- Section 3a / Section 1: frozen predecessor pins (constraints, never
 # altered by successor resolution) and the sole new direct dependency ------
@@ -573,7 +575,7 @@ def validate_lock_candidate_schema(payload: Mapping[str, object]) -> bool:
     if payload.get("schema_version") != 1:
         return False
     direct_spec_sha256 = payload.get("direct_spec_sha256")
-    if not _is_lowercase_sha256(direct_spec_sha256):
+    if direct_spec_sha256 != CANONICAL_DIRECT_SPEC_SHA256:
         return False
     resolved_packages = payload.get("resolved_packages")
     if not _is_string_mapping(resolved_packages):
@@ -620,6 +622,33 @@ def validate_windows_evidence_schema(payload: Mapping[str, object]) -> bool:
         and _validate_evidence_hashes(payload.get("evidence_hashes"))
         and _validate_provenance(payload.get("provenance"))
         and _validate_safety(payload.get("safety"))
+    )
+
+
+def validate_e7_candidate_bundle(
+    lock_candidate: Mapping[str, object], windows_evidence: Mapping[str, object]
+) -> bool:
+    """Fail closed unless future E7 artifacts identify one E5/E6 closure.
+
+    This is pure validation: it only validates supplied candidate payloads
+    and never creates, reads, or changes durable evidence.
+    """
+    if not validate_lock_candidate_schema(lock_candidate):
+        return False
+    if not validate_windows_evidence_schema(windows_evidence):
+        return False
+    if lock_candidate["resolved_packages"] != windows_evidence["after_freeze"]:
+        return False
+    if not (
+        lock_candidate["direct_spec_sha256"]
+        == windows_evidence["evidence_hashes"]["direct_spec"]
+        == CANONICAL_DIRECT_SPEC_SHA256
+    ):
+        return False
+    return (
+        windows_evidence["synthetic_pdf_probe"]["fixture_sha256"]
+        == windows_evidence["evidence_hashes"]["synthetic_pdf_fixture"]
+        == PROBE_EXPECTED_FIXTURE_SHA256
     )
 
 
