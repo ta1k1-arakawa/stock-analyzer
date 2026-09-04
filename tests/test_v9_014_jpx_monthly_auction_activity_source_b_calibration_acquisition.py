@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -340,3 +343,40 @@ def test_default_transport_validates_url_and_equality_before_body_read(monkeypat
     with pytest.raises(acquisition.RedirectRejectedError):
         acquisition._default_transport(requested, 30)
     assert events == [("open", requested, 30), "geturl"]
+
+
+def _run_wrapper_without_pythonpath(*arguments):
+    environment = {key: value for key, value in os.environ.items() if key.upper() != "PYTHONPATH"}
+    return subprocess.run(
+        [sys.executable, "-B", "scripts/run_v9_014_source_b_calibration_acquisition.py", *arguments],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_wrapper_file_path_help_imports_without_pythonpath():
+    completed = _run_wrapper_without_pythonpath("--help")
+    assert completed.returncode == 0
+    assert "ModuleNotFoundError" not in completed.stderr
+    assert "usage:" in completed.stdout
+
+
+def test_wrapper_file_path_reaches_governance_guard_without_network_or_output_root(tmp_path):
+    output_root = tmp_path / "stage-d-not-created"
+    completed = _run_wrapper_without_pythonpath(
+        "--expected-git-sha", "a" * 40,
+        "--output-root", str(output_root),
+        "--confirmation", acquisition.CONFIRMATION_CONTRACT,
+    )
+    assert completed.returncode == 1
+    assert "ModuleNotFoundError" not in completed.stderr
+    receipt = json.loads(completed.stdout)
+    assert receipt == {
+        "failure_class": acquisition.GOVERNANCE_FAILURE,
+        "reason": "PRODUCTION_CONFIRMATION_FLAG_REQUIRED",
+        "status": acquisition.ACQUISITION_FAILURE,
+    }
+    assert not output_root.exists()
