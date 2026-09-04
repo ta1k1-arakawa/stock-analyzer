@@ -70,22 +70,23 @@ TABLE_ROWS: tuple[tuple[str, str], ...] = (
 )
 EXPECTED_TABLE: list[list[str]] = [list(TABLE_HEADER)] + [list(row) for row in TABLE_ROWS]
 
-# Page geometry (PDF points; origin bottom-left). A compact 200x120 page
-# with a 2-column x 3-row grid, 80pt-wide columns and 30pt-tall rows.
-PAGE_WIDTH = 200
+# Page geometry (PDF points; origin bottom-left). A 340x120 page with a
+# 2-column x 3-row grid, 150pt-wide columns and 30pt-tall rows. The wide
+# columns keep the fixed header strings inside their own cells.
+PAGE_WIDTH = 340
 PAGE_HEIGHT = 120
-GRID_X = (20, 100, 180)  # 3 vertical line positions -> 2 columns
+GRID_X = (20, 170, 320)  # 3 vertical line positions -> 2 columns
 GRID_Y = (20, 50, 80, 110)  # 4 horizontal line positions -> 3 rows
 FONT_SIZE = 10
 # Text baselines sit 7pt above each row's bottom grid line, comfortably
 # inside the row band and far from the ruled lines on every side.
 TEXT_CELLS: tuple[tuple[int, int, str], ...] = (
     (25, 87, TABLE_HEADER[0]),
-    (105, 87, TABLE_HEADER[1]),
+    (175, 87, TABLE_HEADER[1]),
     (25, 57, TABLE_ROWS[0][0]),
-    (105, 57, TABLE_ROWS[0][1]),
+    (175, 57, TABLE_ROWS[0][1]),
     (25, 27, TABLE_ROWS[1][0]),
-    (105, 27, TABLE_ROWS[1][1]),
+    (175, 27, TABLE_ROWS[1][1]),
 )
 
 # The predetermined text this fixture is designed to yield from
@@ -98,7 +99,7 @@ EXPECTED_TEXT = "SYNTHETIC_KEY SYNTHETIC_VALUE\nALPHA 11\nBETA 22"
 # timestamps, no randomness), `--check` treats a mismatch between a
 # freshly rebuilt PDF and these committed bytes as a hard failure, not
 # merely a report.
-EXPECTED_FIXTURE_SHA256 = "b02ac3773514eb749f031890c1d1fe449d1cf522d1e62af185b50e16516f5a23"
+EXPECTED_FIXTURE_SHA256 = "5eecb758a50e829af16bd42833f89a8329bfaaaa561aee209fbd2249b507b413"
 
 
 def _content_stream_bytes() -> bytes:

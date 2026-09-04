@@ -434,6 +434,37 @@ def test_synthetic_pdf_fixture_committed_hash_matches_expected():
     assert hashlib.sha256(committed).hexdigest() == env_successor.PROBE_EXPECTED_FIXTURE_SHA256
 
 
+def test_synthetic_pdf_geometry_and_logical_probe_contract_are_frozen():
+    assert pdf_generator.PAGE_WIDTH == 340
+    assert pdf_generator.PAGE_HEIGHT == 120
+    assert pdf_generator.GRID_X == (20, 170, 320)
+    assert pdf_generator.GRID_Y == (20, 50, 80, 110)
+    assert pdf_generator.FONT_SIZE == 10
+    assert pdf_generator.TEXT_CELLS == (
+        (25, 87, "SYNTHETIC_KEY"),
+        (175, 87, "SYNTHETIC_VALUE"),
+        (25, 57, "ALPHA"),
+        (175, 57, "11"),
+        (25, 27, "BETA"),
+        (175, 27, "22"),
+    )
+    expected_text = "SYNTHETIC_KEY SYNTHETIC_VALUE\nALPHA 11\nBETA 22"
+    expected_table = [["SYNTHETIC_KEY", "SYNTHETIC_VALUE"], ["ALPHA", "11"], ["BETA", "22"]]
+    assert pdf_generator.EXPECTED_TEXT == expected_text
+    assert env_successor.PROBE_EXPECTED_TEXT == expected_text
+    assert pdf_generator.EXPECTED_TABLE == expected_table
+    assert env_successor.PROBE_EXPECTED_TABLE == expected_table
+    assert env_successor.PROBE_TEXT_EXTRACTION_TOLERANCES == {"x_tolerance": 3, "y_tolerance": 3}
+    assert env_successor.PROBE_TABLE_SETTINGS == {
+        "vertical_strategy": "lines",
+        "horizontal_strategy": "lines",
+        "snap_tolerance": 3,
+        "join_tolerance": 3,
+        "intersection_tolerance": 3,
+    }
+    assert pdf_generator.EXPECTED_FIXTURE_SHA256 == env_successor.PROBE_EXPECTED_FIXTURE_SHA256
+
+
 def test_synthetic_pdf_generator_rebuild_is_byte_identical_to_committed():
     committed = pdf_generator.FIXTURE_PATH.read_bytes()
     rebuilt = pdf_generator.build_pdf_bytes()

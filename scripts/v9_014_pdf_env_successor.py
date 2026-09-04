@@ -725,7 +725,7 @@ def validate_output_path(
 # =============================================================================
 
 PROBE_FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "v9_014_synthetic_pdf_env_probe.pdf"
-PROBE_EXPECTED_FIXTURE_SHA256 = "b02ac3773514eb749f031890c1d1fe449d1cf522d1e62af185b50e16516f5a23"
+PROBE_EXPECTED_FIXTURE_SHA256 = "5eecb758a50e829af16bd42833f89a8329bfaaaa561aee209fbd2249b507b413"
 PROBE_REQUIRED_PDFPLUMBER_VERSION = "0.11.10"
 PROBE_EXPECTED_PAGE_COUNT = 1
 PROBE_EXPECTED_TEXT = "SYNTHETIC_KEY SYNTHETIC_VALUE\nALPHA 11\nBETA 22"
