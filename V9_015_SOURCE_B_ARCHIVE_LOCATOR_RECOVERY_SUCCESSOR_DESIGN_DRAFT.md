@@ -112,16 +112,70 @@ GPT must independently review this exact design and return PASS. Until then,
 the design remains `DRAFT_AWAITING_GPT_REVIEW` and no successor execution is
 authorized.
 
-### B — hash-only preserved-root input binding
+### B — exact hash-only preserved-root input binding
 
 After Stage A PASS, perform a no-network binding check against the preserved
-Attempt-2 root payload only. The check may establish the payload SHA-256,
-byte count, exact frozen root identity, and safe provenance status. It may
-not emit or commit raw bytes, HTML, hrefs, arbitrary URLs, or local paths.
+Attempt-2 root payload only. The caller must privately supply the pre-existing
+Attempt-2 durable artifact and capture locations at execution time. Those
+locations are inputs to the check only: they must never be committed or
+printed, and no environment variable or path is recorded in safe output.
 
-The binding must prove that the exact preserved payload is the one being
-carried forward. A missing, unreadable, changed, or mismatched payload is a
-terminal V9_015 failure. Root refetch remains zero.
+The binding is ordered and fail-closed. Before reading or hash-validating any
+raw root payload, mechanically verify the supplied safe Attempt-2 capture
+against this frozen evidence:
+
+1. The stdout capture has exactly `918` bytes and SHA-256
+   `eea4a352087d6a0438e8384449a01eea1934bf9d925b9a771fafdb9a4f27fb30`.
+2. The stderr capture SHA-256 is
+   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+3. The captured process exit code is `1`.
+4. The attempt artifact SHA-256 is
+   `e044431beb62c42e28d571ee3516d7b1123312839e071fe2fb5fe5a69791e0ac`.
+5. The failure artifact SHA-256 is
+   `c7f6dbcd74a8b4b7560d1e6d0ded8999d25f1bbe83d88f0900322f7740123bf`.
+
+Only after the stdout capture size and hash match may it be parsed as the
+reviewed safe `AcquisitionResult` JSON. Its closed fields must then match:
+
+```text
+status=CALIBRATION_ACQUISITION_FAILURE
+failure_class=DATA_QUALITY_FAILURE
+reason=ROOT_LOCATOR_FAILURE
+unique_complete_payload_count=1
+year_page_count=0
+calibration_pdf_count=0
+probe_invocations=0
+```
+
+The parsed `locked_payloads` value must contain exactly one entry, with no
+duplicates or alternate entries, and that entry must be exactly the root
+record shape below:
+
+```text
+role=root
+relative_path=raw/archive_root.html
+identity=null
+sha256=<exact 64 lowercase hexadecimal characters>
+byte_count=<nonnegative integer>
+```
+
+No year-page or PDF lock is accepted in this record, and every required field
+must be present. The `sha256` and `byte_count` extracted from this already
+bound safe stdout record become the only expected root baseline. They must not
+be recomputed from later bytes, inferred from the attempt/failure artifacts,
+or replaced by a current-file value.
+
+Only after all preceding capture, JSON, field, and lock-record checks pass may
+Stage B read/hash metadata of the caller-supplied preserved raw root. Its
+SHA-256 and byte count must equal the bound baseline exactly. Missing,
+malformed, inaccessible, or mismatched safe captures, artifacts, lock record,
+raw root, hash, or byte count is a terminal input-binding/governance failure;
+there is no refetch, replacement, repair, recomputation, or blessing of
+current bytes. Root refetch remains zero.
+
+Stage-B output may expose only the approved hashes, counts, booleans, and
+closed status. It must never expose raw HTML, hrefs, arbitrary URLs, local
+paths, unmasked text, or exception text.
 
 ### C — structural calibration of the same root only
 
