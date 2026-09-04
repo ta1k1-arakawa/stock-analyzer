@@ -105,12 +105,13 @@ def test_generic_freeze_record_matches_on_disk_file_exactly():
     assert checker._type_strict_semantic_equal(freeze_record, checker.REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT)
 
 
-def test_generic_lock_file_sha256_and_package_count_are_fifteen():
-    lock_bytes = checker.LOCK_FILE_PATH.read_bytes()
+def test_canonical_lock_git_blob_sha256_and_package_closure_are_fifteen():
+    lock_bytes = checker._git_blob_bytes(REPO_ROOT, checker.REVIEWED_LOCK_GIT_BLOB_SHA1)
+    assert lock_bytes is not None
     assert hashlib.sha256(lock_bytes).hexdigest() == checker.REVIEWED_LOCK_SHA256
     assert checker.REVIEWED_PACKAGE_COUNT == 15
     packages = checker._parse_pinned_lock_lines(lock_bytes.decode("utf-8"))
-    assert len(packages) == 15
+    assert packages == checker.REVIEWED_LOCK_PACKAGE_MAP
 
 
 def test_source_requirements_blob_provenance_resolves_and_matches():
@@ -161,6 +162,19 @@ def test_environment_lock_and_freeze_record_pass_under_simulated_canonical_envir
     assert freeze["status"] == "PASS"
     assert freeze["detail"]["e11_live_evidence_binding"]["status"] == "PASS"
     assert freeze["detail"]["candidate_git_semantic_match"] is True
+
+
+def test_crlf_working_tree_lock_is_semantically_equivalent_to_canonical_git_blob(tmp_path, monkeypatch):
+    crlf_lock = tmp_path / "requirements-real-execution.lock.txt"
+    crlf_lock.write_bytes(checker.LOCK_FILE_PATH.read_bytes().replace(b"\n", b"\r\n"))
+    monkeypatch.setattr(checker, "LOCK_FILE_PATH", crlf_lock)
+
+    lock, _freeze = _run_lock_and_freeze_checks()
+
+    assert lock["status"] == "PASS"
+    assert lock["detail"]["canonical_lock_git_blob_sha1"] == checker.REVIEWED_LOCK_GIT_BLOB_SHA1
+    assert lock["detail"]["canonical_lock_package_authority_match"] is True
+    assert lock["detail"]["working_lock_semantic_match"] is True
 
 
 def test_e11_live_evidence_binding_passes_on_the_real_committed_artifact():
@@ -259,17 +273,65 @@ def test_wrong_generic_lock_package_version_fails_environment_lock_check():
     assert "pandas" in lock["detail"]["version_mismatched_packages"]
 
 
-def test_wrong_generic_lock_sha256_is_detected(tmp_path, monkeypatch):
-    tampered = checker.LOCK_FILE_PATH.read_text(encoding="utf-8") + "\n"
-    monkeypatch.setattr(checker, "LOCK_FILE_PATH", tmp_path / "requirements-real-execution.lock.txt")
-    checker.LOCK_FILE_PATH.write_text(tampered, encoding="utf-8")
+@pytest.mark.parametrize(
+    ("replacement", "expected_reason"),
+    [
+        ("pandas==2.0.0", "LOCK_WORKING_TREE_SEMANTIC_MISMATCH"),
+        ("", "LOCK_WORKING_TREE_SEMANTIC_MISMATCH"),
+        ("extra-package==1.0.0\n", "LOCK_WORKING_TREE_SEMANTIC_MISMATCH"),
+        ("not-a-pinned-package", "LOCK_WORKING_TREE_SEMANTIC_MISMATCH"),
+    ],
+)
+def test_working_tree_lock_semantic_drift_is_rejected(tmp_path, monkeypatch, replacement, expected_reason):
+    working_lock = tmp_path / "requirements-real-execution.lock.txt"
+    source = checker.LOCK_FILE_PATH.read_text(encoding="utf-8")
+    if replacement:
+        tampered = source.replace("pandas==3.0.5", replacement)
+    else:
+        tampered = source.replace("pdfplumber==0.11.10\n", "")
+    if replacement.startswith("extra-package"):
+        tampered = source + replacement
+    working_lock.write_text(tampered, encoding="utf-8")
+    monkeypatch.setattr(checker, "LOCK_FILE_PATH", working_lock)
+
+    lock, _freeze = _run_lock_and_freeze_checks()
+
+    assert lock["status"] == "FAIL"
+    assert lock["reason"] == expected_reason
+
+
+def test_wrong_canonical_lock_sha256_is_detected(monkeypatch):
+    monkeypatch.setattr(checker, "REVIEWED_LOCK_SHA256", "0" * 64)
     fake_interpreter = dict(checker.check_interpreter_identity())
-    fake_interpreter["interpreter_match"] = True
-    fake_interpreter["python_patch_match"] = True
-    with _canonical_platform_mocks()[0], _canonical_platform_mocks()[1]:
-        result = checker.check_environment_lock(fake_interpreter)
+    result = checker.check_environment_lock(fake_interpreter)
     assert result["status"] == "FAIL"
-    assert result["reason"] == "LOCK_SHA256_MISMATCH"
+    assert result["reason"] == "LOCK_GIT_PROVENANCE_MISMATCH"
+
+
+def test_wrong_canonical_lock_git_blob_is_detected(monkeypatch):
+    monkeypatch.setattr(checker, "REVIEWED_LOCK_GIT_BLOB_SHA1", "0" * 40)
+    fake_interpreter = dict(checker.check_interpreter_identity())
+    result = checker.check_environment_lock(fake_interpreter)
+    assert result["status"] == "FAIL"
+    assert result["reason"] == "LOCK_GIT_PROVENANCE_UNAVAILABLE"
+
+
+def test_malformed_canonical_lock_package_authority_is_detected(monkeypatch):
+    malformed = checker._git_blob_bytes(REPO_ROOT, checker.REVIEWED_LOCK_GIT_BLOB_SHA1)
+    assert malformed is not None
+    malformed += b"not-a-pinned-package\n"
+    real_git_blob_bytes = checker._git_blob_bytes
+
+    def fake_git_blob_bytes(repo_root, git_ref):
+        if git_ref == checker.REVIEWED_LOCK_GIT_BLOB_SHA1:
+            return malformed
+        return real_git_blob_bytes(repo_root, git_ref)
+
+    monkeypatch.setattr(checker, "_git_blob_bytes", fake_git_blob_bytes)
+    monkeypatch.setattr(checker, "REVIEWED_LOCK_SHA256", hashlib.sha256(malformed).hexdigest())
+    result = checker.check_environment_lock(dict(checker.check_interpreter_identity()))
+    assert result["status"] == "FAIL"
+    assert result["reason"] == "LOCK_GIT_CANONICAL_PACKAGE_AUTHORITY_INVALID"
 
 
 def test_wrong_e11_evidence_sha256_constant_is_rejected(monkeypatch):

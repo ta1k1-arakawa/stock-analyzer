@@ -234,9 +234,17 @@ from whatever the mutable candidate/lock files currently say on disk:
 
 - the reviewed lock candidate manifest is structurally valid and its
   self-reported fields exactly match the reviewed binding (including
-  `artifact_status == "CANDIDATE_NOT_FROZEN"`, `package_count == 7`);
-- the on-disk lock file's independently recomputed SHA-256 matches the
-  reviewed lock hash;
+  `artifact_status == "CANDIDATE_NOT_FROZEN"`, `package_count == 15`);
+- the reviewed lock's canonical Git blob
+  (`5e9d15caa822bd39e751a49cd0758db6eaf04bdf`) is resolved locally with
+  `git cat-file blob`, and those exact canonical bytes independently hash to
+  the reviewed lock SHA-256
+  (`ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7`);
+  raw working-tree bytes are never lock provenance authority;
+- the working-tree lock is independently parsed with line-ending-insensitive
+  `splitlines()` semantics and its package map must exactly equal the
+  reviewed canonical Git-blob package map, so equivalent LF/CRLF checkouts
+  pass but missing, extra, or version-drifted packages fail;
 - the source requirements file's independently recomputed **canonical Git
   object bytes** (`git cat-file blob <sha>:<path>`, captured via a raw
   byte stream, never a checked-out working-tree copy or PowerShell's

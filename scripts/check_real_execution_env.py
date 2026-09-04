@@ -41,7 +41,7 @@ reviewed for, protected real execution.
 `.venv` is never accepted for protected execution, even when it happens to
 be Python 3.12 with pandas/xlrd installed and every other probe would
 otherwise pass: `check_interpreter_identity` rejects any interpreter that
-is not the exact resolved `.venv-real-execution\Scripts\python.exe` path,
+is not the exact resolved `.venv-real-execution\\Scripts\\python.exe` path,
 and reports `interpreter_failure_class="PRE_GATE_WRONG_PYTHON_ENVIRONMENT"`
 whenever a Windows run resolves to a different interpreter -- including,
 explicitly, the general `.venv`.
@@ -58,9 +58,11 @@ fabricated, and it does not by itself make the overall environment ready.
 mechanical environment-lock check that `REAL_EXECUTION_ENVIRONMENT_READY`
 requires to PASS. It binds to hardcoded REVIEWED_* constants (the reviewed
 `REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json` candidate, the reviewed
-`requirements-real-execution.lock.txt` lock hash, and the reviewed source
+lock's canonical Git-blob identity/SHA-256, and the reviewed source
 requirements' canonical Git object SHA-256) rather than merely trusting
-whatever those mutable files currently say, then further requires the live
+whatever those mutable files currently say. The working-tree lock is only a
+line-ending-insensitive semantic consistency check against that Git authority.
+It then further requires the live
 interpreter, the live platform (exact CPython 3.12.10 / Windows / AMD64 /
 win-amd64), and the live `python -m pip freeze --all` package set to match
 exactly -- no extra package, no missing package, no version drift, and
@@ -152,6 +154,9 @@ LOCK_FILE_PATH = REPO_ROOT / "requirements-real-execution.lock.txt"
 REVIEWED_LOCK_CANDIDATE_GIT_SHA = "0c09e504d23f5e74f4c9a689fe1639d56219bc86"
 REVIEWED_SOURCE_GIT_SHA = "50e8e3d42137adf0d90342080b98b55e719f5f39"
 REVIEWED_SOURCE_REQUIREMENTS_GIT_BLOB_SHA1 = "366ddf1bcb08056d8db10c2ebffd9774b0fd1c3a"
+# The lock's exact reviewed authority is this content-addressed Git blob,
+# never the raw bytes of a platform-specific working-tree checkout.
+REVIEWED_LOCK_GIT_BLOB_SHA1 = "5e9d15caa822bd39e751a49cd0758db6eaf04bdf"
 REVIEWED_LOCK_SHA256 = "ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7"
 REVIEWED_SOURCE_REQUIREMENTS_GIT_SHA256 = "c2892446dd6412f33d5f2823a2487673337776df01ab381833f387c2e346b689"
 REVIEWED_FIXTURE_SHA256 = "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7"
@@ -160,6 +165,23 @@ REVIEWED_PDF_FIXTURE_PAGE_COUNT = 1
 REVIEWED_PDFPLUMBER_VERSION = "0.11.10"
 REVIEWED_PACKAGE_COUNT = 15
 REVIEWED_ARTIFACT_STATUS = "CANDIDATE_NOT_FROZEN"
+REVIEWED_LOCK_PACKAGE_MAP: dict[str, str] = {
+    "cffi": "2.1.1",
+    "charset-normalizer": "3.5.1",
+    "cryptography": "50.0.1",
+    "numpy": "2.5.2",
+    "pandas": "3.0.5",
+    "pdfminer-six": "20260107",
+    "pdfplumber": "0.11.10",
+    "pillow": "12.3.0",
+    "pip": "25.0.1",
+    "pycparser": "3.0",
+    "pypdfium2": "5.13.0",
+    "python-dateutil": "2.9.0.post0",
+    "six": "1.17.0",
+    "tzdata": "2026.3",
+    "xlrd": "2.0.2",
+}
 
 # V9_014 successor provenance shared by the generic-authority semantic-
 # content constants below -- bound once here so the lock-candidate and
@@ -992,9 +1014,9 @@ def _normalize_package_name(name: str) -> str:
 
 
 def _parse_pinned_lock_lines(text: str) -> dict[str, str]:
-    """Parse `name==version` lines out of the REVIEWED lock file into
+    r"""Parse `name==version` lines out of the reviewed lock file into
     {normalized_name: exact_version}. Handles both LF and CRLF line
-    endings via `splitlines()`, and strips any stray `\\r`.
+    endings via `splitlines()`, and strips any stray `\r`.
 
     This lenient parser (silently skipping any non-`==` line) is safe ONLY
     because it is applied exclusively to `requirements-real-execution.lock.txt`,
@@ -1083,10 +1105,11 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
          required field present, no unexpected extra field);
       3. the candidate's complete semantic content recursively matches the
          reviewed candidate binding with exact JSON types and values;
-      4. the on-disk lock file's independently recomputed SHA-256 matches
-         the reviewed lock hash;
-      5. the on-disk lock file parses to exactly the reviewed package
-         count;
+      4. canonical lock bytes resolved from the reviewed local Git blob
+         independently recompute to the reviewed lock SHA-256 and exact
+         fifteen-package authority;
+      5. the working-tree lock parses with line-ending-insensitive
+         `splitlines()` semantics to exactly the canonical package map;
       6. the source requirements file's canonical Git blob bytes (via
          `git cat-file blob <blob-sha>`, never a checked-out working-tree
          copy) independently hash to the reviewed source-requirements
@@ -1148,20 +1171,64 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
     if not candidate_semantic_match:
         return {"status": "FAIL", "reason": "LOCK_CANDIDATE_DOES_NOT_MATCH_REVIEWED_BINDING", "detail": detail}
 
-    # Independently recompute the on-disk lock file's SHA-256 -- never
-    # trust the candidate JSON's self-reported hash alone.
-    lock_bytes = LOCK_FILE_PATH.read_bytes()
-    lock_sha256_recomputed = hashlib.sha256(lock_bytes).hexdigest()
-    detail["lock_sha256_recomputed"] = lock_sha256_recomputed
-    lock_sha256_match = lock_sha256_recomputed == REVIEWED_LOCK_SHA256
+    # Canonical lock provenance is the exact reviewed Git blob, never raw
+    # working-tree bytes. This remains stable across Windows CRLF checkout
+    # conversion while failing closed if the reviewed blob/hash is wrong.
+    canonical_lock_bytes = _git_blob_bytes(REPO_ROOT, REVIEWED_LOCK_GIT_BLOB_SHA1)
+    if canonical_lock_bytes is None:
+        return {"status": "FAIL", "reason": "LOCK_GIT_PROVENANCE_UNAVAILABLE", "detail": detail}
+    canonical_lock_sha256 = hashlib.sha256(canonical_lock_bytes).hexdigest()
+    detail["canonical_lock_git_blob_sha1"] = REVIEWED_LOCK_GIT_BLOB_SHA1
+    detail["canonical_lock_sha256_recomputed"] = canonical_lock_sha256
+    # Preserve this externally consumed detail field. It now means the
+    # canonical Git-blob hash, not a raw working-tree-byte hash.
+    detail["lock_sha256_recomputed"] = canonical_lock_sha256
+    lock_sha256_match = canonical_lock_sha256 == REVIEWED_LOCK_SHA256
     detail["lock_sha256_match"] = lock_sha256_match
     if not lock_sha256_match:
-        return {"status": "FAIL", "reason": "LOCK_SHA256_MISMATCH", "detail": detail}
+        return {"status": "FAIL", "reason": "LOCK_GIT_PROVENANCE_MISMATCH", "detail": detail}
 
-    lock_packages = _parse_pinned_lock_lines(lock_bytes.decode("utf-8"))
-    detail["lock_package_count_recomputed"] = len(lock_packages)
-    if len(lock_packages) != REVIEWED_PACKAGE_COUNT:
-        return {"status": "FAIL", "reason": "LOCK_PACKAGE_COUNT_UNEXPECTED", "detail": detail}
+    try:
+        canonical_lock_text = canonical_lock_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        return {"status": "FAIL", "reason": "LOCK_GIT_CANONICAL_BYTES_INVALID", "error": str(error), "detail": detail}
+    canonical_lock_packages, canonical_lock_invalid_lines, canonical_lock_duplicate_lines = _parse_exact_pinned_freeze_lines(
+        canonical_lock_text
+    )
+    detail["canonical_lock_package_count"] = len(canonical_lock_packages)
+    detail["lock_package_count_recomputed"] = len(canonical_lock_packages)
+    detail["canonical_lock_invalid_lines"] = canonical_lock_invalid_lines
+    detail["canonical_lock_duplicate_lines"] = canonical_lock_duplicate_lines
+    canonical_package_authority_match = (
+        len(canonical_lock_packages) == REVIEWED_PACKAGE_COUNT
+        and canonical_lock_packages == REVIEWED_LOCK_PACKAGE_MAP
+        and not canonical_lock_invalid_lines
+        and not canonical_lock_duplicate_lines
+    )
+    detail["canonical_lock_package_authority_match"] = canonical_package_authority_match
+    if not canonical_package_authority_match:
+        return {"status": "FAIL", "reason": "LOCK_GIT_CANONICAL_PACKAGE_AUTHORITY_INVALID", "detail": detail}
+
+    # The checkout is not provenance authority. It must nevertheless be a
+    # semantic equivalent of the canonical Git blob, so missing, extra, or
+    # version-drifted packages cannot hide behind line-ending portability.
+    try:
+        working_lock_packages, working_lock_invalid_lines, working_lock_duplicate_lines = _parse_exact_pinned_freeze_lines(
+            LOCK_FILE_PATH.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError) as error:
+        return {"status": "FAIL", "reason": "LOCK_WORKING_TREE_UNREADABLE", "error": str(error), "detail": detail}
+    working_lock_semantic_match = (
+        working_lock_packages == canonical_lock_packages
+        and not working_lock_invalid_lines
+        and not working_lock_duplicate_lines
+    )
+    detail["working_lock_package_count"] = len(working_lock_packages)
+    detail["working_lock_invalid_lines"] = working_lock_invalid_lines
+    detail["working_lock_duplicate_lines"] = working_lock_duplicate_lines
+    detail["working_lock_semantic_match"] = working_lock_semantic_match
+    if not working_lock_semantic_match:
+        return {"status": "FAIL", "reason": "LOCK_WORKING_TREE_SEMANTIC_MISMATCH", "detail": detail}
 
     # Independently recompute canonical Git object bytes for the source
     # requirements file, addressed by its own content-addressed blob SHA-1
@@ -1244,10 +1311,12 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
     live_packages, invalid_freeze_lines, duplicate_freeze_lines = _parse_exact_pinned_freeze_lines(
         freeze_result.stdout
     )
-    extra_packages = sorted(set(live_packages) - set(lock_packages))
-    missing_packages = sorted(set(lock_packages) - set(live_packages))
+    extra_packages = sorted(set(live_packages) - set(canonical_lock_packages))
+    missing_packages = sorted(set(canonical_lock_packages) - set(live_packages))
     version_mismatched_packages = sorted(
-        name for name in (set(lock_packages) & set(live_packages)) if lock_packages[name] != live_packages[name]
+        name
+        for name in (set(canonical_lock_packages) & set(live_packages))
+        if canonical_lock_packages[name] != live_packages[name]
     )
     package_set_match = (
         not extra_packages
