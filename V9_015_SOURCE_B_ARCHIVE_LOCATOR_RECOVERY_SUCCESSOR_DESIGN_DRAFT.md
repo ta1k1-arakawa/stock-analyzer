@@ -177,20 +177,88 @@ Stage-B output may expose only the approved hashes, counts, booleans, and
 closed status. It must never expose raw HTML, hrefs, arbitrary URLs, local
 paths, unmasked text, or exception text.
 
-### C — structural calibration of the same root only
+### C1 — offline structural probe implementation and synthetic GPT PASS
 
-After Stage B PASS, inspect only the same preserved root with a dedicated
-offline structural calibration. This stage is not a new acquisition and
-does not resolve a child URL. It must use a deterministic, fail-closed HTML
-structure pass and persist only the preregistered safe aggregates in Section
-6. No raw root content is printed, committed, or placed in a safe receipt.
+Before any preserved-root structural read, implement and independently review
+the dedicated V9_015 structural probe using synthetic fixtures only. C1 takes
+bytes as its only document input and freezes these mechanics:
+
+1. Decode the input strictly as UTF-8. A decode failure is a closed
+   `IMPLEMENTATION_FAILURE` or `DATA_QUALITY_FAILURE`, as determined by the
+   implementation's closed input-validation boundary; no alternate encoding
+   detection or fallback is allowed.
+2. Use exactly Python stdlib
+   `html.parser.HTMLParser(convert_charrefs=True)`. BeautifulSoup, lxml,
+   browsers, regex parsers, fallback parsers, and parser shopping are
+   prohibited.
+3. Candidate-bearing structural categories are closed to `ANCHOR_HREF`
+   (`<a>` inner visible text plus its `href` attribute) and `OPTION_VALUE`
+   (`<option>` inner visible text plus its `value` attribute). No other tag or
+   category can become a locator candidate without a new study/methodology
+   decision.
+4. `VISIBLE_TEXT` is diagnostic-only. It can never supply a child URL,
+   satisfy deterministic binding, or be promoted to a candidate after the
+   real root is observed.
+5. For anchor and option candidates, accumulate only contained text from the
+   deterministic parser event stream and normalize it exactly as
+   `" ".join(raw_text.split())`. No lower/casefold, NFKC/NFC, fuzzy or
+   substring matching, year-from-URL repair, punctuation repair, or other
+   normalization is permitted.
+6. Required year labels are exactly `2017`, `2019`, `2020`, `2022`, and
+   `2026`. A candidate is eligible only when its normalized inner text equals
+   one exact required token and its candidate attribute exists as a nonempty
+   string. Attribute content is never emitted in C1/C2 safe evidence.
+7. Preserve multiplicity and never select first or last. For every required
+   year and each candidate category, classify multiplicity exactly as
+   `ZERO`, `ONE`, or `MANY`.
+8. Malformed relevant nesting or state, duplicate relevant attributes,
+   impossible parser state, non-bytes input, unsafe output, and schema
+   violations fail closed. No malformed HTML is silently repaired.
+
+The deterministic category-selection rule is frozen before C2. One category
+is admissible only if the same category has multiplicity `ONE` for every one
+of the five required years and the other candidate-bearing category has
+multiplicity `ZERO` for every required year. If neither category satisfies
+this rule, or if both or mixed categories supply candidates, deterministic
+archive-year binding is not established. There is no post-observation
+category choice, precedence, merge, or fallback. Raw href/value strings are
+never emitted; URL resolution and validation remain later under the reviewed
+locator mechanics.
+
+The separate C1 implementation task must use synthetic fixtures only and must
+complete targeted tests for: unique all-five-year anchor candidates; unique
+all-five-year option candidates; a missing year; duplicate/MANY candidates;
+mixed anchor and option candidates; both categories complete; required year
+only in `VISIBLE_TEXT`; empty or missing href/value; near or nonexact labels;
+malformed relevant structure; and output-free raw href/value/HTML/arbitrary
+text. It must perform no preserved-root read, hash, or content access, no
+network, no protected read, no child URL resolution, and no real locator
+execution. GPT exact-SHA independent PASS is required before C2.
+
+### C2 — no-network execution on the exact Stage-B-bound root
+
+Only after C1 implementation and its GPT exact-SHA PASS, and only after Stage
+B PASS, run that exact reviewed probe once against the exact Stage-B-bound
+preserved root bytes. C2 must bind the reviewed C1 implementation SHA/blob,
+prove that the root SHA-256 and byte count still equal the Stage-B baseline,
+and emit only the closed category-specific schema in Section 6. C2 performs
+zero network requests, zero root refetches, zero child URL resolution or
+fetches, and never emits raw HTML, href/value strings, arbitrary text, local
+paths, or exception text.
+
+The C2 result is safe structural evidence only. It cannot select a category
+after observation; Stage D may freeze archive-year mechanics only if the
+result is consistent with the preregistered category rule above. A failed
+Stage-B binding, missing reviewed C1 binding, root baseline mismatch, probe
+failure, or unsafe receipt is terminal and cannot trigger a refetch or a
+different probe.
 
 ### D — GPT freeze of archive-year mechanics
 
-After Stage C PASS, GPT must freeze the deterministic navigation mechanics
-that are supported by the safe structural evidence. A Stage D freeze may
-select only a predeclared structural category and exact-token rule; it may
-not be inferred from an arbitrary href pattern or from a hidden/raw root
+After C2 PASS, GPT must freeze the deterministic navigation mechanics that
+are supported by the safe structural evidence. A Stage D freeze may select
+only the predeclared category-selection rule and exact-token rule; it may not
+be inferred from an arbitrary href pattern or from a hidden/raw root
 inspection. The freeze must state the accepted category, exact multiplicity
 rule, URL-binding rule, and closed failure behavior.
 
@@ -244,7 +312,7 @@ or any SOURCE_C action outside its inherited role.
 
 ## 6. Safe structural calibration contract
 
-The Stage C output is a bounded input-binding diagnostic, not research data.
+The C2 output is a bounded input-binding diagnostic, not research data.
 Its complete allowed observation schema is:
 
 ```text
@@ -258,10 +326,16 @@ anchor_count=<nonnegative integer>
 option_count=<nonnegative integer>
 visible_text_node_count=<nonnegative integer>
 required_year_anchor_token_counts={2017,2019,2020,2022,2026}
+required_year_anchor_nonempty_href_counts={2017,2019,2020,2022,2026}
+required_year_anchor_multiplicity={2017,2019,2020,2022,2026}
 required_year_option_token_counts={2017,2019,2020,2022,2026}
+required_year_option_nonempty_value_counts={2017,2019,2020,2022,2026}
+required_year_option_multiplicity={2017,2019,2020,2022,2026}
 required_year_visible_token_counts={2017,2019,2020,2022,2026}
-required_year_nonempty_href_counts={2017,2019,2020,2022,2026}
-required_year_candidate_multiplicity={2017,2019,2020,2022,2026}
+anchor_category_complete_unique=<true|false>
+option_category_complete_unique=<true|false>
+other_candidate_category_all_zero=<true|false>
+deterministic_candidate_category=<ANCHOR_HREF|OPTION_VALUE|null>
 all_required_years_deterministically_bindable=<true|false>
 safe_calibration_status=<PASS|FAIL_TERMINAL>
 ```
@@ -272,17 +346,21 @@ raw text, arbitrary labels, href strings, URL strings, HTML fragments, or
 exception messages. Numeric values in this schema are counts/metadata only;
 they are never trading values, units, or classification inputs.
 
-The structural pass may observe exact parser tag/category membership,
+The C1/C2 structural pass may observe exact parser tag/category membership,
 whether a required year token occurs in each allowed category, whether the
-corresponding structural candidate has a nonempty href, and whether the
-candidate multiplicity is zero/one/many. It may not normalize arbitrary
-text, lowercase/case-fold, fuzzy-match, repair punctuation, infer a year
-from a URL, or choose among multiple candidates.
+corresponding structural candidate has a nonempty href/value, and whether
+the candidate multiplicity is zero/one/many. The five-year category fields
+are never merged. `required_year_visible_token_counts` is diagnostic only
+and cannot provide a candidate. The probe may not normalize arbitrary text,
+lowercase/case-fold, fuzzy-match, repair punctuation, infer a year from a
+URL, or choose among multiple candidates.
 
 The only acceptable deterministic binding is one exact required-year token
-with one eligible structural candidate, whose href is resolved and validated
-by the reviewed mechanics at the later Stage D/E boundary. Structural
-calibration alone never exposes that href and never accepts a URL.
+with one eligible structural candidate in the same admissible category for
+all five years, while the other candidate category is zero for all five. Its
+href/value is resolved and validated only by the reviewed mechanics at the
+later Stage D/E boundary. Structural calibration alone never exposes that
+attribute or accepts a URL.
 
 ## 7. Failure and evidence policy
 
