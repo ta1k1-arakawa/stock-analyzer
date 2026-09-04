@@ -1516,6 +1516,12 @@ transitions. This public log must not contain protected material.
 - The V9_015 design is frozen as `PASS_FROZEN` at Git SHA `6fff63c2bb280cb4746c16e227b9aacf9cdab0be` and design blob `79531a1245573f161cd212943b45af84080b5b63`. This freeze does not authorize modification of the frozen design or any stage execution. Stage A is `PASS`; Stage B, C1, and C2 remain unexecuted, and the next state is `V9_015_DESIGN_PASS_FROZEN_AWAITING_STAGE_B`.
 - V9_014 remains `FAIL_TERMINAL` with no Attempt 3. Root refetch remains `false`, locked-root content was not inspected, T0 remains `NOT_RUN`, and future profitability remains unestablished. This documentation-only task performed no network request, protected read, human-gate consumption, root read/hash, or methodology/code/test change. Next action is `GPT_EXACT_SHA_INDEPENDENT_REVIEW`.
 
+## 2026-09-04 — V9_015 Stage B PASS and C1 synthetic probe implementation
+
+- Stage B is adjudicated `PASS` from safe evidence only: evidence bound `true`, preserved-root SHA-256 `2e839c60bfb9d6edb59a903a590a505130124b8380b096ae84b06e4b0972098c`, byte count `75185`, and root baseline match `true`. Preserved-root semantic content was not inspected; root refetches, child URL resolutions, and child fetches were `0`.
+- The dedicated C1 probe implementation is complete and awaits GPT exact-SHA review. It is synthetic-only, uses no preserved-root bytes, filesystem, network, protected read, human gate, URL resolution, classification, relation, trading-date, or profitability path, and C2 remains `NOT_EXECUTED`. The targeted synthetic suite passed (`23 passed`).
+- V9_015 remains `INPUT_BINDING_ONLY` with zero profitability evidential capacity; V9_014 remains `FAIL_TERMINAL` with no Attempt 3, T0 remains `NOT_RUN`, and future profitability remains unestablished. No frozen design, methodology, real root, or external data was changed or accessed. Next action is `GPT_EXACT_SHA_INDEPENDENT_REVIEW`.
+
 ## 2026-09-04 — V9_015 design HIGH_2 pre-real-root calibration-mechanics remediation
 
 - GPT exact-SHA review of `f583e4b44107e4177f9f32ff520574163b2fb827` returned `BLOCK` with `CRITICAL=0`, `HIGH=1`, `MEDIUM=0`, and `LOW=1`. HIGH_1, `PRESERVED_ROOT_BASELINE_NOT_EXACTLY_BOUND_TO_ATTEMPT_2_SAFE_EVIDENCE`, is recorded as `RESOLVED`. HIGH_2 is recorded as `REMEDIATED_AWAITING_GPT_REVIEW` with finding `REAL_ROOT_STRUCTURAL_INSPECTION_PRECEDES_REVIEWED_CALIBRATION_MECHANICS`; LOW_1 remains `OPEN_SAFE` for the stray markdown code fence.
