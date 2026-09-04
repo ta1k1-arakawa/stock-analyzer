@@ -342,6 +342,34 @@ REVIEWED_WINDOWS_VALIDATION_EVIDENCE_CANONICAL_GIT_SHA256 = (
 )
 REVIEWED_FREEZE_ARTIFACT_STATUS = "REAL_EXECUTION_ENVIRONMENT_FROZEN"
 
+# E13 MEDIUM_1 remediation (FINAL_GENERIC_AUTHORITY_PROVENANCE_CLOSURE_
+# INCOMPLETE): the freeze record must independently content-bind the FINAL
+# generic REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json bytes -- not merely
+# reuse REVIEWED_LOCK_CANDIDATE_GIT_SHA (Stage E7's commit, which reviewed
+# the *successor* candidate artifact, never the rewritten generic file's own
+# bytes). Bound by exact content-addressed blob SHA-1, exactly as already
+# done for the generic Windows validation evidence artifact above.
+REVIEWED_GENERIC_LOCK_CANDIDATE_GIT_BLOB_SHA1 = "19e3bfc72fbb66886701434a296c90817fb3cbd7"
+REVIEWED_GENERIC_LOCK_CANDIDATE_CANONICAL_GIT_SHA256 = (
+    "d98a113613c8804290ac6c77fa79f805686fc8325fb58eb5bfeebd21605623e8"
+)
+
+# E13 MEDIUM_1 remediation: fail-closed binding to Stage E11's committed,
+# GPT exact-SHA reviewed live canonical validation evidence artifact,
+# mechanically verified as part of the final readiness/freeze chain (see
+# check_e11_live_evidence_binding below). This is content-addressed by blob
+# SHA-1, independent of any future commit identity.
+V9_014_E11_LIVE_EVIDENCE_GIT_BLOB_SHA1 = "81b046a3203b2f04aa512c3eb6f9939fd89bfec2"
+V9_014_E11_LIVE_EVIDENCE_SHA256 = "6986bf4f00bee4766fb2f47e9fa5e9326d0ad524a9877873c58b81112955009d"
+V9_014_E11_REQUIRED_PLATFORM: dict[str, Any] = {
+    "implementation": "CPython",
+    "os_name": "nt",
+    "platform_machine": "AMD64",
+    "platform_system": "Windows",
+    "sysconfig_platform": "win-amd64",
+    "version": [3, 12, 10],
+}
+
 # Complete semantic content of the reviewed freeze record. As with
 # REVIEWED_LOCK_CANDIDATE_SEMANTIC_CONTENT, this is an exhaustive nested
 # object compared with _type_strict_semantic_equal after the exact-schema
@@ -386,6 +414,11 @@ REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT: dict[str, Any] = {
         "path": "requirements-real-execution.lock.txt",
         "sha256": "ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7",
     },
+    "reviewed_lock_candidate": {
+        "canonical_git_sha256": REVIEWED_GENERIC_LOCK_CANDIDATE_CANONICAL_GIT_SHA256,
+        "git_blob_sha1": REVIEWED_GENERIC_LOCK_CANDIDATE_GIT_BLOB_SHA1,
+        "path": "REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json",
+    },
     "reviewed_lock_candidate_git_sha": "0c09e504d23f5e74f4c9a689fe1639d56219bc86",
     "reviewed_windows_validation_evidence": {
         "canonical_git_sha256": REVIEWED_WINDOWS_VALIDATION_EVIDENCE_CANONICAL_GIT_SHA256,
@@ -424,6 +457,7 @@ _FREEZE_RECORD_TOP_LEVEL_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONT
 _FREEZE_RECORD_PYTHON_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["python"])
 _FREEZE_RECORD_RESOLVED_LOCK_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["resolved_lock"])
 _FREEZE_RECORD_EVIDENCE_REF_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["reviewed_windows_validation_evidence"])
+_FREEZE_RECORD_CANDIDATE_REF_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["reviewed_lock_candidate"])
 _FREEZE_RECORD_SAFETY_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["safety"])
 _FREEZE_RECORD_SOURCE_REQUIREMENTS_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["source_requirements"])
 _FREEZE_RECORD_FIXTURE_FIELDS = frozenset(REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT["synthetic_xls_fixture"])
@@ -1329,6 +1363,118 @@ def _check_evidence_content(evidence: dict[str, Any], detail: dict[str, Any]) ->
     return None
 
 
+def check_e11_live_evidence_binding(evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Fail-closed Stage E11 live-canonical-validation-evidence binding
+    (E13 MEDIUM_1 remediation), required as part of the final readiness/
+    freeze chain (`check_freeze_record`).
+
+    When `evidence` is omitted, independently resolves the reviewed
+    `V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LIVE_CANONICAL_
+    VALIDATION_EVIDENCE.json` via its exact content-addressed Git blob SHA-1
+    (`V9_014_E11_LIVE_EVIDENCE_GIT_BLOB_SHA1`, never a checked-out working-
+    tree copy or a fabricated future commit SHA), recomputes its SHA-256
+    against `V9_014_E11_LIVE_EVIDENCE_SHA256`, and parses it as JSON.
+    Passing `evidence` directly (a parsed dict) bypasses the Git-blob fetch
+    entirely, for targeted offline testing of the semantic checks below
+    without needing to mutate any committed Git object.
+
+    Mechanically requires, in order:
+      1. the evidence's own committed Git blob bytes hash to the reviewed
+         SHA-256 (skipped when `evidence` is injected directly);
+      2. `canonical_environment_state == SUCCESSOR_MIGRATION_IN_PROGRESS_
+         NOT_AUTHORIZED` and `successor_promoted is False` and
+         `future_protected_execution_authorized is False` -- this evidence
+         must never itself claim promotion before Stage E15;
+      3. the observed successor package set has exactly 15 entries and its
+         `sha256(canonical_sorted_pep503_name==version_lf)` fingerprint
+         equals the reviewed generic lock SHA-256;
+      4. the observed platform is exactly CPython 3.12.10 / Windows / AMD64
+         / win-amd64;
+      5. the reviewed Stage E7 lock-candidate and Windows-validation-
+         evidence identities this evidence itself claims to have been
+         mutated from exactly match the hardcoded reviewed E7 constants;
+      6. the synthetic XLS probe reports `PASS` against the reviewed XLS
+         fixture SHA-256;
+      7. the synthetic PDF probe reports `SYNTHETIC_PDF_PROBE_PASS` against
+         the reviewed PDF fixture SHA-256, `pdfplumber` version, and page
+         count;
+      8. every `non_claims` field (profitability, source acquisition,
+         protected execution, trading-dates materialization) is `False`.
+
+    Any single failing sub-check is reported by name in
+    `detail["failing_checks"]` rather than silently passing on partial
+    agreement.
+    """
+    detail: dict[str, Any] = {}
+
+    if evidence is None:
+        git_blob = _git_blob_bytes(REPO_ROOT, V9_014_E11_LIVE_EVIDENCE_GIT_BLOB_SHA1)
+        if git_blob is None:
+            return {"status": "FAIL", "reason": "E11_LIVE_EVIDENCE_GIT_PROVENANCE_UNAVAILABLE", "detail": detail}
+        recomputed_sha256 = hashlib.sha256(git_blob).hexdigest()
+        detail["recomputed_sha256"] = recomputed_sha256
+        if recomputed_sha256 != V9_014_E11_LIVE_EVIDENCE_SHA256:
+            return {"status": "FAIL", "reason": "E11_LIVE_EVIDENCE_SHA256_MISMATCH", "detail": detail}
+        try:
+            evidence = json.loads(git_blob.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            return {"status": "FAIL", "reason": "E11_LIVE_EVIDENCE_INVALID_JSON", "error": str(error), "detail": detail}
+
+    if not isinstance(evidence, dict):
+        return {"status": "FAIL", "reason": "E11_LIVE_EVIDENCE_NOT_AN_OBJECT", "detail": detail}
+
+    observed_environment = evidence.get("observed_environment")
+    package_set = (observed_environment or {}).get("package_set") if isinstance(observed_environment, dict) else None
+    platform_block = (observed_environment or {}).get("platform") if isinstance(observed_environment, dict) else None
+    reviewed_successor = evidence.get("reviewed_successor")
+    synthetic_probes = evidence.get("synthetic_probes")
+    xls_probe = (synthetic_probes or {}).get("xls") if isinstance(synthetic_probes, dict) else None
+    pdf_probe = (synthetic_probes or {}).get("pdf") if isinstance(synthetic_probes, dict) else None
+    non_claims = evidence.get("non_claims")
+
+    checks: dict[str, bool] = {
+        "canonical_environment_state": evidence.get("canonical_environment_state")
+        == "SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED",
+        "successor_promoted_false": evidence.get("successor_promoted") is False,
+        "future_protected_execution_authorized_false": evidence.get("future_protected_execution_authorized") is False,
+        "package_set_count": isinstance(package_set, dict) and package_set.get("count") == 15,
+        "package_set_sha256": isinstance(package_set, dict) and package_set.get("sha256") == REVIEWED_LOCK_SHA256,
+        "platform": platform_block == V9_014_E11_REQUIRED_PLATFORM,
+        "e7_reviewed_git_sha": isinstance(reviewed_successor, dict)
+        and reviewed_successor.get("e7_reviewed_git_sha") == REVIEWED_LOCK_CANDIDATE_GIT_SHA,
+        "e7_lock_candidate_sha256": isinstance(reviewed_successor, dict)
+        and (reviewed_successor.get("lock_candidate") or {}).get("sha256") == V9_014_E7_LOCK_CANDIDATE_SHA256,
+        "e7_windows_validation_evidence_sha256": isinstance(reviewed_successor, dict)
+        and (reviewed_successor.get("windows_validation_evidence") or {}).get("sha256") == V9_014_E7_WINDOWS_EVIDENCE_SHA256,
+        "xls_probe_status": isinstance(xls_probe, dict) and xls_probe.get("status") == "PASS",
+        "xls_probe_fixture_sha256": isinstance(xls_probe, dict) and xls_probe.get("fixture_sha256") == REVIEWED_FIXTURE_SHA256,
+        "pdf_probe_status": isinstance(pdf_probe, dict) and pdf_probe.get("status") == "SYNTHETIC_PDF_PROBE_PASS",
+        "pdf_probe_fixture_sha256": isinstance(pdf_probe, dict)
+        and pdf_probe.get("fixture_sha256") == REVIEWED_PDF_FIXTURE_SHA256,
+        "pdf_probe_pdfplumber_version": isinstance(pdf_probe, dict)
+        and pdf_probe.get("pdfplumber_version") == REVIEWED_PDFPLUMBER_VERSION,
+        "pdf_probe_page_count": isinstance(pdf_probe, dict) and pdf_probe.get("page_count") == REVIEWED_PDF_FIXTURE_PAGE_COUNT,
+        "non_claims_all_false": isinstance(non_claims, dict)
+        and all(
+            non_claims.get(key) is False
+            for key in (
+                "future_profitability_established",
+                "profitability_evaluated",
+                "protected_execution_performed",
+                "source_acquisition_performed",
+                "trading_dates_materialized",
+            )
+        ),
+    }
+    detail.update(checks)
+    failing_checks = sorted(name for name, ok in checks.items() if not ok)
+    if failing_checks:
+        detail["failing_checks"] = failing_checks
+        return {"status": "FAIL", "reason": "E11_LIVE_EVIDENCE_SEMANTIC_MISMATCH", "detail": detail}
+
+    return {"status": "PASS", "detail": detail}
+
+
 def check_freeze_record(interpreter: dict[str, Any], lock_check: dict[str, Any]) -> dict[str, Any]:
     """Mechanical freeze-record check
     (REAL_EXECUTION_ENVIRONMENT_FREEZE_PROMOTION).
@@ -1384,6 +1530,7 @@ def check_freeze_record(interpreter: dict[str, Any], lock_check: dict[str, Any])
         return {"status": "FAIL", "reason": "FREEZE_RECORD_SCHEMA_INVALID", "detail": detail}
     python_block = freeze_record.get("python")
     resolved_lock_block = freeze_record.get("resolved_lock")
+    candidate_ref_block = freeze_record.get("reviewed_lock_candidate")
     evidence_ref_block = freeze_record.get("reviewed_windows_validation_evidence")
     safety_block = freeze_record.get("safety")
     source_requirements_block = freeze_record.get("source_requirements")
@@ -1395,6 +1542,8 @@ def check_freeze_record(interpreter: dict[str, Any], lock_check: dict[str, Any])
         or set(python_block) != _FREEZE_RECORD_PYTHON_FIELDS
         or not isinstance(resolved_lock_block, dict)
         or set(resolved_lock_block) != _FREEZE_RECORD_RESOLVED_LOCK_FIELDS
+        or not isinstance(candidate_ref_block, dict)
+        or set(candidate_ref_block) != _FREEZE_RECORD_CANDIDATE_REF_FIELDS
         or not isinstance(evidence_ref_block, dict)
         or set(evidence_ref_block) != _FREEZE_RECORD_EVIDENCE_REF_FIELDS
         or not isinstance(safety_block, dict)
@@ -1439,6 +1588,8 @@ def check_freeze_record(interpreter: dict[str, Any], lock_check: dict[str, Any])
         and freeze_record["reviewed_windows_validation_evidence_git_sha"]
         == REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA
         and freeze_record["tested_implementation_git_sha"] == REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA
+        and candidate_ref_block["git_blob_sha1"] == REVIEWED_GENERIC_LOCK_CANDIDATE_GIT_BLOB_SHA1
+        and candidate_ref_block["canonical_git_sha256"] == REVIEWED_GENERIC_LOCK_CANDIDATE_CANONICAL_GIT_SHA256
     )
     detail["cross_check_against_lock_check_constants_match"] = cross_check_match
     if not cross_check_match:
@@ -1514,10 +1665,58 @@ def check_freeze_record(interpreter: dict[str, Any], lock_check: dict[str, Any])
         if not working_tree_matches_git_blob:
             return {"status": "FAIL", "reason": "WINDOWS_VALIDATION_EVIDENCE_WORKING_TREE_DRIFTED", "detail": detail}
 
+    # E13 MEDIUM_1 remediation: independently resolve the FINAL generic
+    # REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json via its own exact
+    # content-addressed blob SHA-1 (never merely trusting Stage E7's
+    # reviewed commit, which reviewed the *successor* candidate artifact,
+    # not this rewritten generic file's own bytes), recompute its SHA-256,
+    # parse its exact JSON, and require complete type-strict semantic
+    # equality with REVIEWED_LOCK_CANDIDATE_SEMANTIC_CONTENT -- the SAME
+    # binding check_environment_lock itself uses.
+    candidate_git_blob = _git_blob_bytes(REPO_ROOT, REVIEWED_GENERIC_LOCK_CANDIDATE_GIT_BLOB_SHA1)
+    if candidate_git_blob is None:
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_GIT_PROVENANCE_UNAVAILABLE", "detail": detail}
+    candidate_git_sha256_recomputed = hashlib.sha256(candidate_git_blob).hexdigest()
+    detail["candidate_git_sha256_recomputed"] = candidate_git_sha256_recomputed
+    candidate_git_sha256_match = candidate_git_sha256_recomputed == REVIEWED_GENERIC_LOCK_CANDIDATE_CANONICAL_GIT_SHA256
+    detail["candidate_git_sha256_match"] = candidate_git_sha256_match
+    if not candidate_git_sha256_match:
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_GIT_PROVENANCE_MISMATCH", "detail": detail}
+
+    try:
+        candidate_from_git = json.loads(candidate_git_blob.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_INVALID_JSON", "error": str(error), "detail": detail}
+    candidate_git_semantic_match = _type_strict_semantic_equal(candidate_from_git, REVIEWED_LOCK_CANDIDATE_SEMANTIC_CONTENT)
+    detail["candidate_git_semantic_match"] = candidate_git_semantic_match
+    if not candidate_git_semantic_match:
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_GIT_DOES_NOT_MATCH_REVIEWED_BINDING", "detail": detail}
+
+    # Defense-in-depth: the working-tree copy must equal those exact blob
+    # bytes/semantics -- never merely the freeze record's own claim.
+    if not LOCK_CANDIDATE_PATH.exists():
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_MISSING", "detail": detail}
+    try:
+        candidate_working_tree = json.loads(LOCK_CANDIDATE_PATH.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_WORKING_TREE_INVALID_JSON", "error": str(error), "detail": detail}
+    candidate_working_tree_matches_git_blob = _type_strict_semantic_equal(candidate_working_tree, candidate_from_git)
+    detail["candidate_working_tree_matches_git_blob"] = candidate_working_tree_matches_git_blob
+    if not candidate_working_tree_matches_git_blob:
+        return {"status": "FAIL", "reason": "LOCK_CANDIDATE_WORKING_TREE_DRIFTED", "detail": detail}
+
+    # E13 MEDIUM_1 remediation: fail-closed Stage E11 live-evidence binding,
+    # required as part of the final readiness/freeze chain.
+    e11_binding = check_e11_live_evidence_binding()
+    detail["e11_live_evidence_binding"] = e11_binding
+    if e11_binding["status"] != "PASS":
+        return {"status": "FAIL", "reason": "E11_LIVE_EVIDENCE_BINDING_NOT_PASSING", "detail": detail}
+
     return {
         "status": "PASS",
         "reviewed_windows_validation_evidence_git_sha": REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA,
         "tested_implementation_git_sha": REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA,
+        "reviewed_lock_candidate_git_blob_sha1": REVIEWED_GENERIC_LOCK_CANDIDATE_GIT_BLOB_SHA1,
         "detail": detail,
     }
 
@@ -1760,6 +1959,8 @@ def run_readiness_checks() -> dict[str, Any]:
         "ENVIRONMENT_FREEZE_CHECK": freeze_check["status"],
         "ENVIRONMENT_FREEZE_CHECK_DETAIL": freeze_check,
         "ENVIRONMENT_FREEZE_EVIDENCE_GIT_SHA256_MATCH": freeze_detail.get("evidence_git_sha256_match"),
+        "GENERIC_LOCK_CANDIDATE_GIT_SHA256_MATCH": freeze_detail.get("candidate_git_sha256_match"),
+        "E11_LIVE_EVIDENCE_BINDING": (freeze_detail.get("e11_live_evidence_binding") or {}).get("status"),
         "REAL_EXECUTION_ENVIRONMENT_FROZEN": frozen,
         "REAL_NETWORK_REQUESTS": 0,
         "PRIVATE_READS": 0,

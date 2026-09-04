@@ -36,6 +36,11 @@
     "path": "requirements-real-execution.lock.txt",
     "sha256": "ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7"
   },
+  "reviewed_lock_candidate": {
+    "canonical_git_sha256": "d98a113613c8804290ac6c77fa79f805686fc8325fb58eb5bfeebd21605623e8",
+    "git_blob_sha1": "19e3bfc72fbb66886701434a296c90817fb3cbd7",
+    "path": "REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json"
+  },
   "reviewed_lock_candidate_git_sha": "0c09e504d23f5e74f4c9a689fe1639d56219bc86",
   "reviewed_windows_validation_evidence": {
     "canonical_git_sha256": "9291d8f65e25ada9a3dc36f2db8ed03695d5e19f087854ae44655bf44e1adbea",

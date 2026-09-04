@@ -3,6 +3,12 @@
 predecessor V8-lineage 7-package closure to the reviewed V9_014 PDF
 successor's 15-package closure.
 
+E13 MEDIUM_2 remediation (E12_TARGETED_TEST_EVIDENCE_NOT_FULLY_EFFECTIVE_OR_
+SCOPE_COMPLIANT): every negative test below genuinely perturbs an input or
+identity and calls the real validator/checker function, asserting a specific
+FAIL status/reason -- never a bare "differs from an all-zero placeholder"
+assertion, and never a `status in ("PASS", "FAIL")` non-assertion.
+
 Offline and no-network throughout: no environment mutation, no `pip
 install`, no real/staging environment creation, no rerun of Stage E5/E6/E9/
 E10. `check_environment_lock`/`check_freeze_record` are exercised under a
@@ -21,13 +27,30 @@ import subprocess
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 import scripts.check_real_execution_env as checker
 
 REPO_ROOT = checker.REPO_ROOT
+V9_014_LIVE_EVIDENCE_PATH = (
+    REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LIVE_CANONICAL_VALIDATION_EVIDENCE.json"
+)
+V9_014_FREEZE_RECORD_PATH = REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FREEZE_RECORD.json"
 
 
 def _load_json(path: Path) -> dict:
     return json.loads(path.read_bytes().decode("utf-8"))
+
+
+def _real_e11_evidence() -> dict:
+    """The genuine, unmodified E11 live evidence, fetched via its real
+    reviewed Git blob SHA-1 -- the exact same path `check_e11_live_evidence_
+    binding()` itself uses when `evidence` is not injected. Callers mutate a
+    *copy* of this dict to build a real negative-test perturbation.
+    """
+    git_blob = checker._git_blob_bytes(REPO_ROOT, checker.V9_014_E11_LIVE_EVIDENCE_GIT_BLOB_SHA1)
+    assert git_blob is not None
+    return json.loads(git_blob.decode("utf-8"))
 
 
 def _canonical_platform_mocks():
@@ -102,6 +125,31 @@ def test_windows_validation_evidence_blob_provenance_resolves_and_matches():
     assert hashlib.sha256(git_blob).hexdigest() == checker.REVIEWED_WINDOWS_VALIDATION_EVIDENCE_CANONICAL_GIT_SHA256
 
 
+def test_generic_candidate_blob_provenance_resolves_and_matches():
+    """E13 MEDIUM_1: the FINAL generic candidate is now bound by its own
+    exact blob SHA-1, independently of Stage E7's reviewed commit."""
+    git_blob = checker._git_blob_bytes(REPO_ROOT, checker.REVIEWED_GENERIC_LOCK_CANDIDATE_GIT_BLOB_SHA1)
+    assert git_blob is not None
+    assert hashlib.sha256(git_blob).hexdigest() == checker.REVIEWED_GENERIC_LOCK_CANDIDATE_CANONICAL_GIT_SHA256
+    candidate = json.loads(git_blob.decode("utf-8"))
+    assert checker._type_strict_semantic_equal(candidate, checker.REVIEWED_LOCK_CANDIDATE_SEMANTIC_CONTENT)
+
+
+def test_freeze_record_reviewed_lock_candidate_block_matches_working_tree_candidate():
+    freeze_record = _load_json(checker.FREEZE_RECORD_PATH)
+    ref = freeze_record["reviewed_lock_candidate"]
+    assert ref["git_blob_sha1"] == checker.REVIEWED_GENERIC_LOCK_CANDIDATE_GIT_BLOB_SHA1
+    assert ref["canonical_git_sha256"] == checker.REVIEWED_GENERIC_LOCK_CANDIDATE_CANONICAL_GIT_SHA256
+    working_tree_bytes = checker.LOCK_CANDIDATE_PATH.read_bytes()
+    result = subprocess.run(
+        ["git", "hash-object", "--stdin"],
+        input=working_tree_bytes,
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout.decode("ascii").strip() == ref["git_blob_sha1"]
+
+
 def test_pdf_and_xls_fixture_hashes_match_reviewed_constants():
     assert hashlib.sha256(checker.SYNTHETIC_XLS_FIXTURE_PATH.read_bytes()).hexdigest() == checker.REVIEWED_FIXTURE_SHA256
     assert hashlib.sha256(checker.SYNTHETIC_PDF_FIXTURE_PATH.read_bytes()).hexdigest() == checker.REVIEWED_PDF_FIXTURE_SHA256
@@ -111,18 +159,21 @@ def test_environment_lock_and_freeze_record_pass_under_simulated_canonical_envir
     lock, freeze = _run_lock_and_freeze_checks()
     assert lock["status"] == "PASS"
     assert freeze["status"] == "PASS"
+    assert freeze["detail"]["e11_live_evidence_binding"]["status"] == "PASS"
+    assert freeze["detail"]["candidate_git_semantic_match"] is True
 
 
-def test_e11_evidence_binding_matches_v9_014_successor_provenance():
-    evidence_path = REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LIVE_CANONICAL_VALIDATION_EVIDENCE.json"
-    evidence_bytes = evidence_path.read_bytes()
-    provenance = checker.V9_014_SUCCESSOR_PROVENANCE_SEMANTIC_CONTENT
-    assert hashlib.sha256(evidence_bytes).hexdigest() == provenance["e11_live_canonical_validation_evidence_sha256"]
-    assert checker.REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA == provenance["e11_reviewed_git_sha"]
+def test_e11_live_evidence_binding_passes_on_the_real_committed_artifact():
+    """Real, non-injected exercise of check_e11_live_evidence_binding():
+    fetches the actual reviewed Git blob and validates every mechanical
+    sub-check against it."""
+    result = checker.check_e11_live_evidence_binding()
+    assert result["status"] == "PASS"
+    assert all(result["detail"].values())
 
 
 def test_v9_014_freeze_record_e7_bindings_match_checker_constants():
-    freeze_record = _load_json(REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FREEZE_RECORD.json")
+    freeze_record = _load_json(V9_014_FREEZE_RECORD_PATH)
     assert freeze_record["e7"]["reviewed_git_sha"] == checker.REVIEWED_LOCK_CANDIDATE_GIT_SHA
     assert freeze_record["e7"]["lock_candidate"]["sha256"] == checker.V9_014_E7_LOCK_CANDIDATE_SHA256
     assert freeze_record["e7"]["windows_validation_evidence"]["sha256"] == checker.V9_014_E7_WINDOWS_EVIDENCE_SHA256
@@ -135,7 +186,7 @@ def test_no_generic_or_v9_014_artifact_claims_promotion_or_future_authorization(
         checker.LOCK_CANDIDATE_PATH,
         checker.WINDOWS_VALIDATION_EVIDENCE_PATH,
         checker.FREEZE_RECORD_PATH,
-        REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FREEZE_RECORD.json",
+        V9_014_FREEZE_RECORD_PATH,
     ):
         data = _load_json(path)
         assert data.get("future_protected_execution_authorized") is False, path
@@ -149,10 +200,7 @@ def test_no_generic_or_v9_014_artifact_claims_promotion_or_future_authorization(
 
 
 def test_no_fabricated_future_e13_e14_e15_sha_in_v9_014_freeze_record():
-    freeze_text = (REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FREEZE_RECORD.json").read_text(
-        encoding="utf-8"
-    )
-    parsed = json.loads(freeze_text)
+    parsed = _load_json(V9_014_FREEZE_RECORD_PATH)
     assert set(parsed) == {
         "artifact_status",
         "canonical_environment_state",
@@ -174,20 +222,41 @@ def test_no_fabricated_future_e13_e14_e15_sha_in_v9_014_freeze_record():
 
 
 # =============================================================================
-# Negatives
+# Negatives -- every case below genuinely perturbs an input/identity and
+# calls the real validator/checker, asserting a specific FAIL status/reason.
 # =============================================================================
 
 
-def test_stale_seven_package_candidate_is_rejected():
+def test_stale_seven_package_generic_candidate_is_rejected():
     stale = json.loads(checker.LOCK_CANDIDATE_PATH.read_text(encoding="utf-8"))
     stale["resolved_lock"]["package_count"] = 7
     assert not checker._type_strict_semantic_equal(stale, checker.REVIEWED_LOCK_CANDIDATE_SEMANTIC_CONTENT)
 
 
-def test_wrong_lock_package_count_fails_environment_lock_check():
-    lock_text = checker.LOCK_FILE_PATH.read_text(encoding="utf-8") + "extra-package==1.0.0\n"
+def test_stale_seven_package_e11_evidence_is_rejected():
+    tampered = dict(_real_e11_evidence())
+    tampered["observed_environment"] = dict(tampered["observed_environment"])
+    tampered["observed_environment"]["package_set"] = dict(tampered["observed_environment"]["package_set"])
+    tampered["observed_environment"]["package_set"]["count"] = 7
+    result = checker.check_e11_live_evidence_binding(evidence=tampered)
+    assert result["status"] == "FAIL"
+    assert result["reason"] == "E11_LIVE_EVIDENCE_SEMANTIC_MISMATCH"
+    assert "package_set_count" in result["detail"]["failing_checks"]
+
+
+def test_wrong_generic_lock_missing_package_fails_environment_lock_check():
     lock, _freeze = _run_lock_and_freeze_checks(live_lock_text="numpy==2.5.2\npandas==3.0.5\n")
     assert lock["status"] == "FAIL"
+    assert lock["reason"] == "PIP_FREEZE_PACKAGE_SET_MISMATCH"
+    assert set(lock["detail"]["missing_packages"]) >= {"pdfplumber", "xlrd"}
+
+
+def test_wrong_generic_lock_package_version_fails_environment_lock_check():
+    live_lock_text = checker.LOCK_FILE_PATH.read_text(encoding="utf-8").replace("pandas==3.0.5", "pandas==2.0.0")
+    lock, _freeze = _run_lock_and_freeze_checks(live_lock_text=live_lock_text)
+    assert lock["status"] == "FAIL"
+    assert lock["reason"] == "PIP_FREEZE_PACKAGE_SET_MISMATCH"
+    assert "pandas" in lock["detail"]["version_mismatched_packages"]
 
 
 def test_wrong_generic_lock_sha256_is_detected(tmp_path, monkeypatch):
@@ -203,35 +272,128 @@ def test_wrong_generic_lock_sha256_is_detected(tmp_path, monkeypatch):
     assert result["reason"] == "LOCK_SHA256_MISMATCH"
 
 
-def test_wrong_e11_evidence_hash_is_rejected():
-    provenance = checker.V9_014_SUCCESSOR_PROVENANCE_SEMANTIC_CONTENT
-    assert provenance["e11_live_canonical_validation_evidence_sha256"] != "0" * 64
-    assert provenance["e11_live_canonical_validation_evidence_git_blob_sha1"] != "0" * 40
+def test_wrong_e11_evidence_sha256_constant_is_rejected(monkeypatch):
+    monkeypatch.setattr(checker, "V9_014_E11_LIVE_EVIDENCE_SHA256", "0" * 64)
+    result = checker.check_e11_live_evidence_binding()
+    assert result["status"] == "FAIL"
+    assert result["reason"] == "E11_LIVE_EVIDENCE_SHA256_MISMATCH"
 
 
-def test_wrong_e7_binding_is_rejected(monkeypatch):
+def test_wrong_e11_evidence_git_blob_constant_is_rejected(monkeypatch):
+    monkeypatch.setattr(checker, "V9_014_E11_LIVE_EVIDENCE_GIT_BLOB_SHA1", "0" * 40)
+    result = checker.check_e11_live_evidence_binding()
+    assert result["status"] == "FAIL"
+    assert result["reason"] == "E11_LIVE_EVIDENCE_GIT_PROVENANCE_UNAVAILABLE"
+
+
+def test_wrong_e11_package_set_sha256_is_rejected():
+    tampered = dict(_real_e11_evidence())
+    tampered["observed_environment"] = dict(tampered["observed_environment"])
+    tampered["observed_environment"]["package_set"] = dict(tampered["observed_environment"]["package_set"])
+    tampered["observed_environment"]["package_set"]["sha256"] = "0" * 64
+    result = checker.check_e11_live_evidence_binding(evidence=tampered)
+    assert result["status"] == "FAIL"
+    assert "package_set_sha256" in result["detail"]["failing_checks"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("fixture_sha256", "0" * 64),
+        ("status", "FAIL"),
+    ],
+)
+def test_wrong_e11_xls_fixture_hash_or_status_is_rejected(field, value):
+    tampered = dict(_real_e11_evidence())
+    tampered["synthetic_probes"] = dict(tampered["synthetic_probes"])
+    tampered["synthetic_probes"]["xls"] = dict(tampered["synthetic_probes"]["xls"])
+    tampered["synthetic_probes"]["xls"][field] = value
+    result = checker.check_e11_live_evidence_binding(evidence=tampered)
+    assert result["status"] == "FAIL"
+    expected_check = "xls_probe_fixture_sha256" if field == "fixture_sha256" else "xls_probe_status"
+    assert expected_check in result["detail"]["failing_checks"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_check"),
+    [
+        ("fixture_sha256", "0" * 64, "pdf_probe_fixture_sha256"),
+        ("pdfplumber_version", "0.11.9", "pdf_probe_pdfplumber_version"),
+        ("status", "SYNTHETIC_PDF_PROBE_FIXTURE_HASH_MISMATCH_FAILURE", "pdf_probe_status"),
+        ("page_count", 2, "pdf_probe_page_count"),
+    ],
+)
+def test_wrong_e11_pdf_fixture_version_status_or_page_count_is_rejected(field, value, expected_check):
+    tampered = dict(_real_e11_evidence())
+    tampered["synthetic_probes"] = dict(tampered["synthetic_probes"])
+    tampered["synthetic_probes"]["pdf"] = dict(tampered["synthetic_probes"]["pdf"])
+    tampered["synthetic_probes"]["pdf"][field] = value
+    result = checker.check_e11_live_evidence_binding(evidence=tampered)
+    assert result["status"] == "FAIL"
+    assert expected_check in result["detail"]["failing_checks"]
+
+
+def test_wrong_e7_binding_in_e11_evidence_is_rejected():
+    tampered = dict(_real_e11_evidence())
+    tampered["reviewed_successor"] = dict(tampered["reviewed_successor"])
+    tampered["reviewed_successor"]["lock_candidate"] = dict(tampered["reviewed_successor"]["lock_candidate"])
+    tampered["reviewed_successor"]["lock_candidate"]["sha256"] = "0" * 64
+    result = checker.check_e11_live_evidence_binding(evidence=tampered)
+    assert result["status"] == "FAIL"
+    assert "e7_lock_candidate_sha256" in result["detail"]["failing_checks"]
+
+
+def test_wrong_e7_binding_in_v9_014_e7_bundle_is_rejected(monkeypatch):
     monkeypatch.setattr(checker, "V9_014_E7_LOCK_CANDIDATE_SHA256", "0" * 64)
     result = checker.check_v9_014_e7_bundle()
     assert result["status"] == "FAIL"
     assert result["reason"] == "V9_014_E7_LOCK_CANDIDATE_HASH_MISMATCH"
 
 
-def test_wrong_package_set_hash_fails_environment_lock_check():
-    _lock, freeze = _run_lock_and_freeze_checks(live_lock_text="pandas==0.0.1\n")
-    assert freeze["reason"] == "ENVIRONMENT_LOCK_CHECK_NOT_PASSING"
+def test_wrong_generic_candidate_blob_in_freeze_record_is_rejected(monkeypatch):
+    """E13 MEDIUM_1: a tampered/stale generic-candidate blob binding
+    (whether in the REVIEWED_* constant or the freeze record's own claimed
+    field) must fail check_freeze_record's independent blob re-derivation,
+    not merely be trusted."""
+    monkeypatch.setattr(checker, "REVIEWED_GENERIC_LOCK_CANDIDATE_GIT_BLOB_SHA1", "0" * 40)
+    _lock, freeze = _run_lock_and_freeze_checks()
+    assert freeze["status"] == "FAIL"
+    assert freeze["reason"] == "FREEZE_RECORD_CROSS_CHECK_MISMATCH"
 
 
-def test_wrong_xls_fixture_identity_fails_probe():
+def test_wrong_generic_candidate_hash_in_freeze_record_is_rejected(monkeypatch):
+    monkeypatch.setattr(checker, "REVIEWED_GENERIC_LOCK_CANDIDATE_CANONICAL_GIT_SHA256", "0" * 64)
+    _lock, freeze = _run_lock_and_freeze_checks()
+    assert freeze["status"] == "FAIL"
+    assert freeze["reason"] == "FREEZE_RECORD_CROSS_CHECK_MISMATCH"
+
+
+def test_xls_fixture_identity_tamper_fails_probe_with_exact_reason(tmp_path, monkeypatch):
+    """Real perturbation: point the probe at a fixture with the WRONG bytes
+    and require the specific FIXTURE_SHA256_MISMATCH FAIL -- not a bare
+    `status in ("PASS", "FAIL")` non-assertion."""
+    wrong_fixture = tmp_path / "wrong_synthetic_jpx_source_snapshot.xls"
+    wrong_fixture.write_bytes(b"not the reviewed synthetic fixture bytes")
+    monkeypatch.setattr(checker, "SYNTHETIC_XLS_FIXTURE_PATH", wrong_fixture)
     result = checker.check_jpx_xls_parser_synthetic_probe()
-    # This session has no pandas installed; either a genuine PASS (if pandas
-    # happens to be present) or a safe, non-crashing FAIL is acceptable, but
-    # a wrong fixture hash must never be silently accepted as PASS.
-    fixture_bytes = checker.SYNTHETIC_XLS_FIXTURE_PATH.read_bytes()
-    assert hashlib.sha256(fixture_bytes).hexdigest() == checker.REVIEWED_FIXTURE_SHA256
-    assert result["status"] in ("PASS", "FAIL")
+    assert result["status"] == "FAIL"
+    assert result["reason"] == "FIXTURE_SHA256_MISMATCH"
 
 
-def test_wrong_pdf_probe_result_is_rejected():
+def test_pdf_fixture_identity_tamper_fails_environment_lock_check(tmp_path, monkeypatch):
+    # PDF_FIXTURE_SHA256_MISMATCH is raised before the interpreter/platform
+    # checks are reached (see check_environment_lock's documented ordering),
+    # so no interpreter/platform simulation is needed for this negative.
+    wrong_fixture = tmp_path / "wrong_v9_014_synthetic_pdf_env_probe.pdf"
+    wrong_fixture.write_bytes(b"not the reviewed synthetic pdf fixture bytes")
+    monkeypatch.setattr(checker, "SYNTHETIC_PDF_FIXTURE_PATH", wrong_fixture)
+    fake_interpreter = dict(checker.check_interpreter_identity())
+    result = checker.check_environment_lock(fake_interpreter)
+    assert result["status"] == "FAIL"
+    assert result["reason"] == "PDF_FIXTURE_SHA256_MISMATCH"
+
+
+def test_wrong_pdf_probe_result_rejected_by_v9_014_successor_promotion_validator():
     result = checker.check_v9_014_successor_promotion(
         checker.V9_014_SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED,
         live_packages=dict(checker.check_v9_014_e7_bundle()["lock_candidate"]["resolved_packages"]),
@@ -256,12 +418,49 @@ def test_wrong_pdf_probe_result_is_rejected():
     assert result["reason"] == "V9_014_SUCCESSOR_PDF_PROBE_FAILED"
 
 
-def test_promotion_true_and_protected_authority_true_are_never_asserted():
+def test_e11_evidence_promotion_true_before_e15_is_rejected():
+    tampered = dict(_real_e11_evidence())
+    tampered["successor_promoted"] = True
+    result = checker.check_e11_live_evidence_binding(evidence=tampered)
+    assert result["status"] == "FAIL"
+    assert "successor_promoted_false" in result["detail"]["failing_checks"]
+
+
+def test_e11_evidence_canonical_state_frozen_before_e15_is_rejected():
+    tampered = dict(_real_e11_evidence())
+    tampered["canonical_environment_state"] = "SUCCESSOR_CANONICAL_FROZEN"
+    result = checker.check_e11_live_evidence_binding(evidence=tampered)
+    assert result["status"] == "FAIL"
+    assert "canonical_environment_state" in result["detail"]["failing_checks"]
+
+
+def test_e11_evidence_future_protected_execution_authorized_true_is_rejected():
+    tampered = dict(_real_e11_evidence())
+    tampered["future_protected_execution_authorized"] = True
+    result = checker.check_e11_live_evidence_binding(evidence=tampered)
+    assert result["status"] == "FAIL"
+    assert "future_protected_execution_authorized_false" in result["detail"]["failing_checks"]
+
+
+def test_freeze_record_promotion_true_is_rejected_by_semantic_equality():
+    tampered = _load_json(checker.FREEZE_RECORD_PATH)
+    tampered["v9_014_successor_provenance"] = dict(tampered["v9_014_successor_provenance"])
+    tampered["v9_014_successor_provenance"]["v9_014_pdf_environment_successor_promoted"] = True
+    assert not checker._type_strict_semantic_equal(tampered, checker.REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT)
+
+
+def test_freeze_record_future_protected_execution_authorized_true_is_rejected_by_semantic_equality():
+    tampered = _load_json(checker.FREEZE_RECORD_PATH)
+    tampered["future_protected_execution_authorized"] = True
+    assert not checker._type_strict_semantic_equal(tampered, checker.REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT)
+
+
+def test_promotion_true_and_protected_authority_true_never_appear_literally_in_any_artifact():
     for path in (
         checker.LOCK_CANDIDATE_PATH,
         checker.WINDOWS_VALIDATION_EVIDENCE_PATH,
         checker.FREEZE_RECORD_PATH,
-        REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FREEZE_RECORD.json",
+        V9_014_FREEZE_RECORD_PATH,
     ):
         text = path.read_text(encoding="utf-8")
         assert '"future_protected_execution_authorized": true' not in text
