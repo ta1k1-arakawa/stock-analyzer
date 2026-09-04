@@ -26,6 +26,7 @@ import scripts.generate_v9_014_synthetic_pdf_probe as pdf_generator
 
 REPO_ROOT = env_successor.REPO_ROOT
 STAGING_RUNNER_PATH = REPO_ROOT / "scripts" / "v9_014_pdf_env_successor_staging_runner.ps1"
+ATTRIBUTES_PATH = REPO_ROOT / ".gitattributes"
 
 
 # =============================================================================
@@ -416,6 +417,12 @@ def test_staging_path_symlink_collision_fails(tmp_path: Path):
 # =============================================================================
 # Synthetic PDF fixture: committed hash and generator --check
 # =============================================================================
+
+
+def test_v9_014_exact_checkout_provenance_attributes_are_narrow():
+    rules = ATTRIBUTES_PATH.read_text(encoding="utf-8").splitlines()
+    assert "tests/fixtures/v9_014_synthetic_pdf_env_probe.pdf binary" in rules
+    assert "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_DIRECT_SPEC.txt text eol=lf" in rules
 
 
 def test_synthetic_pdf_fixture_committed_hash_matches_expected():

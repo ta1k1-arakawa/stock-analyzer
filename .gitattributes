@@ -5,3 +5,5 @@ config.yaml text eol=lf
 *.json text eol=lf
 *.md text eol=lf
 data/v7_jpx_calendar_source_2026_2027.html -text
+tests/fixtures/v9_014_synthetic_pdf_env_probe.pdf binary
+V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_DIRECT_SPEC.txt text eol=lf
