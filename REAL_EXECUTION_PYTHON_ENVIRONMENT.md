@@ -476,6 +476,86 @@ study-specific human gates, exactly as before: a frozen environment is a
 necessary precondition for a future gated attempt, never a substitute for
 its own separate, study-specific human authorization.
 
+## 7a. V9_014 PDF successor generic-authority promotion (E12/E13) -- FROZEN, migration-in-progress
+
+```text
+finding_resolved                 = "V9_014_PDF_ENV_SUCCESSOR_E12_E13_GENERIC_AUTHORITY_FINALIZATION"
+canonical_environment_state      = "SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED"
+v9_014_pdf_environment_successor_promoted = false
+package_count                    = 15
+lock_sha256                      = "ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7"
+e7_reviewed_git_sha              = "0c09e504d23f5e74f4c9a689fe1639d56219bc86"
+e8_reviewed_git_sha              = "50e8e3d42137adf0d90342080b98b55e719f5f39"
+e9_mutation_git_sha              = "50e8e3d42137adf0d90342080b98b55e719f5f39"
+e10_validation_git_sha           = "50e8e3d42137adf0d90342080b98b55e719f5f39"
+e11_reviewed_git_sha             = "7bc1ac6a792779eed62c90d8f659b010dc525648"
+```
+
+Stages E9 (canonical `.venv-real-execution` mutation) and E10 (post-mutation
+live validation) were executed and their evidence (`V9_014_PDF_REAL_
+EXECUTION_ENVIRONMENT_SUCCESSOR_LIVE_CANONICAL_VALIDATION_EVIDENCE.json`,
+blob `81b046a3203b2f04aa512c3eb6f9939fd89bfec2`, SHA-256
+`6986bf4f00bee4766fb2f47e9fa5e9326d0ad524a9877873c58b81112955009d`) was
+committed and independently GPT exact-SHA reviewed at Stage E11
+(`7bc1ac6a792779eed62c90d8f659b010dc525648`, `CRITICAL=0 HIGH=0 MEDIUM=0
+RESULT=PASS`). This Stage E12/E13 finalization updates the generic
+canonical-authority artifacts to reflect that reviewed live state:
+
+- `requirements-real-execution.txt` now specifies `pandas`, `xlrd==2.0.2`,
+  and `pdfplumber==0.11.10`;
+- `requirements-real-execution.lock.txt` now pins exactly 15 packages
+  (PEP 503-normalized-name sorted): `cffi`, `charset-normalizer`,
+  `cryptography`, `numpy`, `pandas`, `pdfminer-six`, `pdfplumber`, `pillow`,
+  `pip`, `pycparser`, `pypdfium2`, `python-dateutil`, `six`, `tzdata`,
+  `xlrd`;
+- `REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json`,
+  `REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json`, and
+  `REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json` were updated (schema
+  evolved minimally: `schema_version` 1 -> 2, plus a new
+  `synthetic_pdf_fixture` block and a new `v9_014_successor_provenance`
+  block binding the E7/E8/E9/E10/E11 chain above) to bind this exact
+  15-package closure, never a fabricated future commit SHA;
+- `scripts/check_real_execution_env.py`'s hardcoded `REVIEWED_*` constants
+  were promoted in lockstep to this same 15-package closure, and now also
+  require an operational `pdfplumber==0.11.10` probe (`check_pdf_parser_
+  synthetic_probe`, reusing `scripts.v9_014_pdf_env_successor.run_
+  synthetic_pdf_operational_probe` against the committed synthetic PDF
+  fixture, `tests/fixtures/v9_014_synthetic_pdf_env_probe.pdf`, SHA-256
+  `5eecb758a50e829af16bd42833f89a8329bfaaaa561aee209fbd2249b507b413`) to
+  PASS before `REAL_EXECUTION_ENVIRONMENT_READY` can be `true`.
+
+Because the source-requirements file and all three generic JSON artifacts
+were rewritten in this same finalization commit, their Git provenance is
+bound by exact content-addressed blob SHA-1 (`git cat-file blob
+<blob-sha>`) rather than a historical `<commit>:<path>` pair -- this needs
+no prior distinct "reviewed at commit X" identity for bytes that did not
+exist before this commit, and never fabricates a future commit SHA to
+satisfy the binding.
+
+**`REAL_EXECUTION_ENVIRONMENT_READY=true` / `REAL_EXECUTION_ENVIRONMENT_
+FROZEN=true` under this binding are mechanical-freeze-readiness signals
+only** -- proof that a genuinely Windows-grounded run inside the exact
+canonical `.venv-real-execution` matches this exact reviewed 15-package
+closure. They do **not** by themselves imply `V9_014_PDF_ENVIRONMENT_
+SUCCESSOR_PROMOTED=true`. Per `V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_
+SUCCESSOR_DESIGN.md` §2a, `CANONICAL_ENVIRONMENT_STATE` remains
+`SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED` throughout E9-E14; only
+Stage E15's own exact-SHA review of Stage E14's final no-network live
+reverification may transition it to `SUCCESSOR_CANONICAL_FROZEN` and set
+`V9_014_PDF_ENVIRONMENT_SUCCESSOR_PROMOTED=true`. No protected/private/
+research execution is authorized under either environment's authority
+while this state holds. `future_protected_execution_authorized` remains
+`false` in every one of these artifacts.
+
+`V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FREEZE_RECORD.json`
+(Stage E12, this same commit) is the distinct V9_014-specific successor
+freeze/promotion record (design §4, artifact 5): it binds the E7/E8/E9/E10/
+E11 chain, the frozen V9_014 design provenance
+(`efee3d0efca368645c00aeed63cb8e0637cd3672`), and the Stage E10 observed
+package-set/platform identity, and is itself reviewed for artifact/tooling
+correctness only at Stage E13 -- never promotion, which remains Stage E15's
+sole authority.
+
 ## 8. Authorization ordering
 
 No real human authorization may be requested or accepted before environment

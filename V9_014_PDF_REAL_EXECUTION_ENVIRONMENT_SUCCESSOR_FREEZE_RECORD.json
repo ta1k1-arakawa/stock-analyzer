@@ -1,0 +1,76 @@
+{
+  "artifact_status": "V9_014_SUCCESSOR_FREEZE_RECORD_FINALIZED_PENDING_E15_PROMOTION",
+  "canonical_environment_state": "SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED",
+  "e7": {
+    "direct_spec_sha256": "cd7404f268a9f776b8ac3f19faa95efa03d401e2cf3211de6f454f4fec0a2653",
+    "lock_candidate": {
+      "path": "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json",
+      "sha256": "b7c30ccded8009a6df122fd51889e5ac2deb3a8db9b1d49d7dccd528a87c633e"
+    },
+    "reviewed_git_sha": "0c09e504d23f5e74f4c9a689fe1639d56219bc86",
+    "windows_validation_evidence": {
+      "path": "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_WINDOWS_VALIDATION_EVIDENCE.json",
+      "sha256": "6d201a5a33e696e92fb76341fbe1b91b578f136d81ba26d7e0056a0015f0fe86"
+    }
+  },
+  "e8": {
+    "promotion_completeness_record_path": "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_PROMOTION_COMPLETENESS.md",
+    "reviewed_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39"
+  },
+  "e9": {
+    "human_authority_consumed": true,
+    "human_authority_reused_for_e10": false,
+    "mutation_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39",
+    "process_exit_code": 0,
+    "retry_allowed": false,
+    "rollback_performed": false,
+    "runner_executions": 1
+  },
+  "e10": {
+    "checker_git_blob": "cbd5bf3c51fe14a855b0c361dc3ed72e1be86174",
+    "pdf_successor_tool_git_blob": "0f60c6ad8519f89c51984231c6248d28e785271e",
+    "process_exit_code": 0,
+    "validation_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39"
+  },
+  "e11": {
+    "live_canonical_validation_evidence": {
+      "git_blob_sha1": "81b046a3203b2f04aa512c3eb6f9939fd89bfec2",
+      "path": "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LIVE_CANONICAL_VALIDATION_EVIDENCE.json",
+      "sha256": "6986bf4f00bee4766fb2f47e9fa5e9326d0ad524a9877873c58b81112955009d"
+    },
+    "reviewed_git_sha": "7bc1ac6a792779eed62c90d8f659b010dc525648"
+  },
+  "frozen_design": {
+    "blob_sha": "2bbacbf37ab961d1cbf416b7fd476db18778c5b7",
+    "git_sha": "efee3d0efca368645c00aeed63cb8e0637cd3672"
+  },
+  "future_protected_execution_authorized": false,
+  "non_claims": {
+    "future_profitability_established": false,
+    "profitability_evaluated": false,
+    "protected_execution_performed": false,
+    "source_acquisition_performed": false,
+    "trading_dates_materialized": false
+  },
+  "observed_environment": {
+    "canonical_interpreter": ".venv-real-execution\\Scripts\\python.exe",
+    "interpreter_match": true,
+    "package_set": {
+      "count": 15,
+      "exact_e7_lock_match": true,
+      "fingerprint_method": "sha256(canonical_sorted_pep503_name==version_lf)",
+      "sha256": "ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7"
+    },
+    "platform": {
+      "implementation": "CPython",
+      "os_name": "nt",
+      "platform_machine": "AMD64",
+      "platform_system": "Windows",
+      "sysconfig_platform": "win-amd64",
+      "version": [3, 12, 10]
+    }
+  },
+  "schema_version": 1,
+  "study_id": "V9_014_JPX_MONTHLY_AUCTION_ACTIVITY_AUTHORITY_SUCCESSOR",
+  "v9_014_pdf_environment_successor_promoted": false
+}

@@ -7,6 +7,14 @@
 # pathlib, typing, urllib.request/parse/error, ctypes, tempfile, argparse,
 # sys) -- see REAL_EXECUTION_PYTHON_ENVIRONMENT.md §4 for the full closure.
 #
+# V9_014 PDF real-execution environment successor (E12/E13, generic-
+# authority finalization): this direct-dependency specification now also
+# covers the V9_014 SOURCE_B PDF structural-calibration path, which adds
+# exactly one new direct dependency, pdfplumber==0.11.10 (see
+# V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_DESIGN.md §3 and
+# V9_014_SOURCE_B_PDF_STRUCTURAL_CALIBRATION_METHOD_CONTRACT.md §1). No
+# other new direct dependency is added by that successor path.
+#
 # This file is intentionally narrower than the top-level requirement.txt,
 # which also serves the unrelated daily automated trading bot (lightgbm,
 # scikit-learn, scipy, joblib, PyYAML, requests, python-dotenv, pytest).
@@ -39,3 +47,12 @@ pandas
 # xlrd installed to read it). This exact pin is reused verbatim from this
 # repository's own existing requirement.txt -- it is not invented here.
 xlrd==2.0.2
+
+# pdfplumber is the sole PDF engine for the V9_014 SOURCE_B PDF structural-
+# calibration path (V9_014_SOURCE_B_PDF_STRUCTURAL_CALIBRATION_METHOD_
+# CONTRACT.md SS1) -- no parser substitution is permitted. Reused verbatim
+# from the reviewed V9_014 successor direct-spec candidate
+# (V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_DIRECT_SPEC.txt, Stage
+# E7 reviewed at commit 0c09e504d23f5e74f4c9a689fe1639d56219bc86), not
+# invented here.
+pdfplumber==0.11.10

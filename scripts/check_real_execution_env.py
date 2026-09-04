@@ -112,8 +112,9 @@ GENERAL_PROJECT_VENV_DIR = REPO_ROOT / ".venv"
 REQUIREMENTS_REAL_EXECUTION_FILE = REPO_ROOT / "requirements-real-execution.txt"
 CANONICAL_PYTHON_MAJOR_MINOR = (3, 12)  # .github/workflows/daily_ai_trade.yml: python-version: '3.12'
 SYNTHETIC_XLS_FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "synthetic_jpx_source_snapshot.xls"
+SYNTHETIC_PDF_FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "v9_014_synthetic_pdf_env_probe.pdf"
 
-_REQUIRED_DIRECT_DEPENDENCIES = ("pandas", "xlrd")
+_REQUIRED_DIRECT_DEPENDENCIES = ("pandas", "xlrd", "pdfplumber")
 
 # ---------------------------------------------------------------------------
 # Environment-lock check (REAL_EXECUTION_ENVIRONMENT_LOCK_ENFORCEMENT):
@@ -128,13 +129,60 @@ _REQUIRED_DIRECT_DEPENDENCIES = ("pandas", "xlrd")
 LOCK_CANDIDATE_PATH = REPO_ROOT / "REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json"
 LOCK_FILE_PATH = REPO_ROOT / "requirements-real-execution.lock.txt"
 
-REVIEWED_LOCK_CANDIDATE_GIT_SHA = "107430894723c2bdc2f8493cb12c467fccd8665e"
-REVIEWED_SOURCE_GIT_SHA = "b74e0f787599475cd9fe719d254202dc9bfc14d5"
-REVIEWED_LOCK_SHA256 = "b5c063a1cca585fa100fdc0027d6cdbf4ef33ef5a7fe614230599fb882b51f96"
-REVIEWED_SOURCE_REQUIREMENTS_GIT_SHA256 = "2cdcfd7a87023c4e9c3ec463cf16f77d88f72ccc8d1f0e5de242e6c68b0cf601"
+# V9_014 E12/E13 GENERIC_AUTHORITY_FINALIZATION: these REVIEWED_* constants
+# were promoted from the predecessor V8-lineage 7-package closure to the
+# reviewed V9_014 PDF successor's 15-package closure (pandas, xlrd==2.0.2,
+# pdfplumber==0.11.10, plus the mechanically resolved transitive closure),
+# exactly as authorized by Stage E7 (0c09e504d23f5e74f4c9a689fe1639d56219bc86),
+# Stage E8 (50e8e3d42137adf0d90342080b98b55e719f5f39), and Stage E11
+# (7bc1ac6a792779eed62c90d8f659b010dc525648). Provenance for the freshly
+# rewritten `requirements-real-execution.txt` and the three
+# REAL_EXECUTION_ENVIRONMENT_*.json generic-authority artifacts (all
+# committed together in this same Stage E13 commit, so no prior distinct
+# "reviewed at commit X" identity exists for their own bytes yet) is bound
+# by exact Git BLOB SHA-1 -- content-addressed and independent of which
+# commit(s) later reference it -- rather than a `<commit>:<path>` pair,
+# so no future commit SHA is ever fabricated to satisfy this binding
+# (`git cat-file blob <blob-sha>` resolves a bare blob SHA identically to a
+# `<commit>:<path>` ref). `REAL_EXECUTION_ENVIRONMENT_FROZEN=true` under
+# this binding is mechanical-freeze-readiness only: it does NOT by itself
+# imply `V9_014_PDF_ENVIRONMENT_SUCCESSOR_PROMOTED=true`, which remains
+# gated on Stage E15 alone (see V9_014_SUCCESSOR_PROVENANCE below and
+# `scripts.check_v9_014_successor_promotion`).
+REVIEWED_LOCK_CANDIDATE_GIT_SHA = "0c09e504d23f5e74f4c9a689fe1639d56219bc86"
+REVIEWED_SOURCE_GIT_SHA = "50e8e3d42137adf0d90342080b98b55e719f5f39"
+REVIEWED_SOURCE_REQUIREMENTS_GIT_BLOB_SHA1 = "366ddf1bcb08056d8db10c2ebffd9774b0fd1c3a"
+REVIEWED_LOCK_SHA256 = "ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7"
+REVIEWED_SOURCE_REQUIREMENTS_GIT_SHA256 = "c2892446dd6412f33d5f2823a2487673337776df01ab381833f387c2e346b689"
 REVIEWED_FIXTURE_SHA256 = "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7"
-REVIEWED_PACKAGE_COUNT = 7
+REVIEWED_PDF_FIXTURE_SHA256 = "5eecb758a50e829af16bd42833f89a8329bfaaaa561aee209fbd2249b507b413"
+REVIEWED_PDF_FIXTURE_PAGE_COUNT = 1
+REVIEWED_PDFPLUMBER_VERSION = "0.11.10"
+REVIEWED_PACKAGE_COUNT = 15
 REVIEWED_ARTIFACT_STATUS = "CANDIDATE_NOT_FROZEN"
+
+# V9_014 successor provenance shared by the generic-authority semantic-
+# content constants below -- bound once here so the lock-candidate and
+# freeze-record bindings cannot silently drift apart from each other.
+V9_014_SUCCESSOR_PROVENANCE_SEMANTIC_CONTENT: dict[str, Any] = {
+    "canonical_environment_state": "SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED",
+    "e7_reviewed_git_sha": "0c09e504d23f5e74f4c9a689fe1639d56219bc86",
+    "e8_reviewed_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39",
+    "e9_mutation_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39",
+    "e10_validation_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39",
+    "e11_live_canonical_validation_evidence_git_blob_sha1": "81b046a3203b2f04aa512c3eb6f9939fd89bfec2",
+    "e11_live_canonical_validation_evidence_path": (
+        "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LIVE_CANONICAL_VALIDATION_EVIDENCE.json"
+    ),
+    "e11_live_canonical_validation_evidence_sha256": (
+        "6986bf4f00bee4766fb2f47e9fa5e9326d0ad524a9877873c58b81112955009d"
+    ),
+    "e11_reviewed_git_sha": "7bc1ac6a792779eed62c90d8f659b010dc525648",
+    "frozen_design_blob_sha": "2bbacbf37ab961d1cbf416b7fd476db18778c5b7",
+    "frozen_design_git_sha": "efee3d0efca368645c00aeed63cb8e0637cd3672",
+    "study_id": "V9_014_JPX_MONTHLY_AUCTION_ACTIVITY_AUTHORITY_SUCCESSOR",
+    "v9_014_pdf_environment_successor_promoted": False,
+}
 
 # ---------------------------------------------------------------------------
 # V9_014 successor promotion preparation (E8): these identities bind the
@@ -184,22 +232,30 @@ REVIEWED_LOCK_CANDIDATE_SEMANTIC_CONTENT: dict[str, Any] = {
     "real_execution_environment_ready_observed": True,
     "real_network_requests_to_protected_hosts": 0,
     "requirements_real_execution": {
+        "git_blob_sha1": "366ddf1bcb08056d8db10c2ebffd9774b0fd1c3a",
         "path": "requirements-real-execution.txt",
-        "sha256": "2cdcfd7a87023c4e9c3ec463cf16f77d88f72ccc8d1f0e5de242e6c68b0cf601",
+        "sha256": "c2892446dd6412f33d5f2823a2487673337776df01ab381833f387c2e346b689",
     },
     "research_gates_consumed": 0,
     "resolved_lock": {
         "generated_from": ".venv-real-execution\\Scripts\\python.exe -m pip freeze --all",
-        "package_count": 7,
+        "git_blob_sha1": "5e9d15caa822bd39e751a49cd0758db6eaf04bdf",
+        "package_count": 15,
         "path": "requirements-real-execution.lock.txt",
-        "sha256": "b5c063a1cca585fa100fdc0027d6cdbf4ef33ef5a7fe614230599fb882b51f96",
+        "sha256": "ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7",
     },
-    "schema_version": 1,
-    "source_git_sha": "b74e0f787599475cd9fe719d254202dc9bfc14d5",
+    "schema_version": 2,
+    "source_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39",
+    "synthetic_pdf_fixture": {
+        "page_count": 1,
+        "path": "tests/fixtures/v9_014_synthetic_pdf_env_probe.pdf",
+        "sha256": "5eecb758a50e829af16bd42833f89a8329bfaaaa561aee209fbd2249b507b413",
+    },
     "synthetic_xls_fixture": {
         "path": "tests/fixtures/synthetic_jpx_source_snapshot.xls",
         "sha256": "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7",
     },
+    "v9_014_successor_provenance": V9_014_SUCCESSOR_PROVENANCE_SEMANTIC_CONTENT,
     "windows_grounded": True,
 }
 
@@ -233,7 +289,9 @@ _CANDIDATE_TOP_LEVEL_FIELDS = frozenset(
         "resolved_lock",
         "schema_version",
         "source_git_sha",
+        "synthetic_pdf_fixture",
         "synthetic_xls_fixture",
+        "v9_014_successor_provenance",
         "windows_grounded",
     }
 )
@@ -248,9 +306,11 @@ _CANDIDATE_PYTHON_FIELDS = frozenset(
         "version",
     }
 )
-_CANDIDATE_REQUIREMENTS_FIELDS = frozenset({"path", "sha256"})
-_CANDIDATE_RESOLVED_LOCK_FIELDS = frozenset({"generated_from", "package_count", "path", "sha256"})
+_CANDIDATE_REQUIREMENTS_FIELDS = frozenset({"git_blob_sha1", "path", "sha256"})
+_CANDIDATE_RESOLVED_LOCK_FIELDS = frozenset({"generated_from", "git_blob_sha1", "package_count", "path", "sha256"})
 _CANDIDATE_FIXTURE_FIELDS = frozenset({"path", "sha256"})
+_CANDIDATE_PDF_FIXTURE_FIELDS = frozenset({"page_count", "path", "sha256"})
+_CANDIDATE_V9_014_PROVENANCE_FIELDS = frozenset(V9_014_SUCCESSOR_PROVENANCE_SEMANTIC_CONTENT)
 
 # ---------------------------------------------------------------------------
 # Freeze-record check (REAL_EXECUTION_ENVIRONMENT_FREEZE_PROMOTION):
@@ -268,10 +328,17 @@ _CANDIDATE_FIXTURE_FIELDS = frozenset({"path", "sha256"})
 FREEZE_RECORD_PATH = REPO_ROOT / "REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json"
 WINDOWS_VALIDATION_EVIDENCE_PATH = REPO_ROOT / "REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json"
 
-REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA = "84d4512d800b18b858b6f129be9a4ba0ea73d4ca"
-REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA = "f52f31ab6305e321cd9e8e9855d6efd83238f552"
+REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA = "50e8e3d42137adf0d90342080b98b55e719f5f39"
+# Commit-level identity: the Stage E11 exact-SHA review that legitimizes the
+# live canonical validation evidence this freeze binds transitively (this is
+# distinct from REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_BLOB_SHA1 below,
+# which is the content-addressed blob identity of this same-commit generic
+# artifact's own bytes -- see the GENERIC_AUTHORITY_FINALIZATION note above
+# REVIEWED_LOCK_CANDIDATE_GIT_SHA for why blob addressing is used here).
+REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA = "7bc1ac6a792779eed62c90d8f659b010dc525648"
+REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_BLOB_SHA1 = "4d4f4bed38ac1e3577cc3326fd1eea3cd31668db"
 REVIEWED_WINDOWS_VALIDATION_EVIDENCE_CANONICAL_GIT_SHA256 = (
-    "c0c54866a54cd4901d029b9cc2a8eaed65d51f342c94858b144637b89956afe4"
+    "9291d8f65e25ada9a3dc36f2db8ed03695d5e19f087854ae44655bf44e1adbea"
 )
 REVIEWED_FREEZE_ARTIFACT_STATUS = "REAL_EXECUTION_ENVIRONMENT_FROZEN"
 
@@ -288,9 +355,17 @@ REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT: dict[str, Any] = {
     "future_protected_execution_authorized": False,
     "gpt_exact_sha_independent_review_required": True,
     "package_set": [
+        "cffi==2.1.1",
+        "charset-normalizer==3.5.1",
+        "cryptography==50.0.1",
         "numpy==2.5.2",
         "pandas==3.0.5",
+        "pdfminer-six==20260107",
+        "pdfplumber==0.11.10",
+        "pillow==12.3.0",
         "pip==25.0.1",
+        "pycparser==3.0",
+        "pypdfium2==5.13.0",
         "python-dateutil==2.9.0.post0",
         "six==1.17.0",
         "tzdata==2026.3",
@@ -307,13 +382,14 @@ REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT: dict[str, Any] = {
     "real_execution_environment_frozen": True,
     "real_execution_environment_ready": True,
     "resolved_lock": {
-        "package_count": 7,
+        "package_count": 15,
         "path": "requirements-real-execution.lock.txt",
-        "sha256": "b5c063a1cca585fa100fdc0027d6cdbf4ef33ef5a7fe614230599fb882b51f96",
+        "sha256": "ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7",
     },
-    "reviewed_lock_candidate_git_sha": "107430894723c2bdc2f8493cb12c467fccd8665e",
+    "reviewed_lock_candidate_git_sha": "0c09e504d23f5e74f4c9a689fe1639d56219bc86",
     "reviewed_windows_validation_evidence": {
         "canonical_git_sha256": REVIEWED_WINDOWS_VALIDATION_EVIDENCE_CANONICAL_GIT_SHA256,
+        "git_blob_sha1": REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_BLOB_SHA1,
         "path": "REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json",
     },
     "reviewed_windows_validation_evidence_git_sha": REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA,
@@ -324,16 +400,23 @@ REVIEWED_FREEZE_RECORD_SEMANTIC_CONTENT: dict[str, Any] = {
         "research_gates_consumed": 0,
         "yahoo_requests": 0,
     },
-    "schema_version": 1,
-    "source_git_sha": "b74e0f787599475cd9fe719d254202dc9bfc14d5",
+    "schema_version": 2,
+    "source_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39",
     "source_requirements": {
-        "canonical_git_sha256": "2cdcfd7a87023c4e9c3ec463cf16f77d88f72ccc8d1f0e5de242e6c68b0cf601",
+        "canonical_git_sha256": "c2892446dd6412f33d5f2823a2487673337776df01ab381833f387c2e346b689",
+        "git_blob_sha1": "366ddf1bcb08056d8db10c2ebffd9774b0fd1c3a",
         "path": "requirements-real-execution.txt",
+    },
+    "synthetic_pdf_fixture": {
+        "page_count": 1,
+        "path": "tests/fixtures/v9_014_synthetic_pdf_env_probe.pdf",
+        "sha256": "5eecb758a50e829af16bd42833f89a8329bfaaaa561aee209fbd2249b507b413",
     },
     "synthetic_xls_fixture": {
         "path": "tests/fixtures/synthetic_jpx_source_snapshot.xls",
         "sha256": "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7",
     },
+    "v9_014_successor_provenance": V9_014_SUCCESSOR_PROVENANCE_SEMANTIC_CONTENT,
     "tested_implementation_git_sha": REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA,
 }
 
@@ -638,6 +721,74 @@ def check_jpx_xls_parser_synthetic_probe() -> dict[str, Any]:
     }
 
 
+def check_pdf_parser_synthetic_probe() -> dict[str, Any]:
+    """Operational (not merely `import pdfplumber`) probe for the reviewed
+    V9_014 PDF successor's `pdfplumber==0.11.10` engine, added to the
+    generic canonical-authority readiness closure at E12/E13.
+
+    Reuses the real Stage E2 probe tooling
+    (`scripts.v9_014_pdf_env_successor.run_synthetic_pdf_operational_probe`)
+    against the committed, wholly synthetic fixture
+    `tests/fixtures/v9_014_synthetic_pdf_env_probe.pdf` -- never a
+    reimplementation of the probe, and never any of the 8 real SOURCE_B
+    calibration PDFs. `pdfplumber` is imported lazily inside that tooling,
+    only when this function is actually called; on a platform where
+    `pdfplumber` is not installed (including this repository's own Claude
+    Code Cloud / Linux sessions), the resulting `ImportError` is caught and
+    reported as a safe `FAIL`, never allowed to crash this checker.
+    """
+    try:
+        from scripts.v9_014_pdf_env_successor import run_synthetic_pdf_operational_probe
+    except ImportError as error:
+        return {"status": "FAIL", "reason": "PDF_PROBE_TOOLING_IMPORT_FAILED", "error": str(error)}
+
+    try:
+        result = run_synthetic_pdf_operational_probe()
+    except ImportError as error:
+        return {"status": "FAIL", "reason": "PDFPLUMBER_UNAVAILABLE", "error": str(error)}
+    except Exception as error:  # noqa: BLE001 -- any probe failure is a safe FAIL, not a crash
+        return {"status": "FAIL", "reason": "SYNTHETIC_PDF_PROBE_UNEXPECTED_ERROR", "error": str(error)}
+
+    status = getattr(result, "status", None)
+    observed_fixture_sha256 = getattr(result, "observed_fixture_sha256", None)
+    observed_pdfplumber_version = getattr(result, "observed_pdfplumber_version", None)
+    observed_page_count = getattr(result, "observed_page_count", None)
+
+    if status != "SYNTHETIC_PDF_PROBE_PASS":
+        return {
+            "status": "FAIL",
+            "reason": status or "SYNTHETIC_PDF_PROBE_FAILED",
+            "observed_fixture_sha256": observed_fixture_sha256,
+        }
+    if observed_fixture_sha256 != REVIEWED_PDF_FIXTURE_SHA256:
+        return {
+            "status": "FAIL",
+            "reason": "PDF_PROBE_FIXTURE_IDENTITY_MISMATCH",
+            "observed_fixture_sha256": observed_fixture_sha256,
+        }
+    if observed_pdfplumber_version != REVIEWED_PDFPLUMBER_VERSION:
+        return {
+            "status": "FAIL",
+            "reason": "PDF_PROBE_VERSION_MISMATCH",
+            "observed_pdfplumber_version": observed_pdfplumber_version,
+        }
+    if observed_page_count != REVIEWED_PDF_FIXTURE_PAGE_COUNT:
+        return {
+            "status": "FAIL",
+            "reason": "PDF_PROBE_PAGE_COUNT_MISMATCH",
+            "observed_page_count": observed_page_count,
+        }
+
+    return {
+        "status": "PASS",
+        "fixture_path": str(SYNTHETIC_PDF_FIXTURE_PATH),
+        "fixture_sha256": observed_fixture_sha256,
+        "fixture_sha256_verified_against_canonical": True,
+        "pdfplumber_version": observed_pdfplumber_version,
+        "page_count": observed_page_count,
+    }
+
+
 def check_tls_stdlib_initialization() -> dict[str, Any]:
     try:
         context = ssl.create_default_context()
@@ -902,18 +1053,18 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
          the reviewed lock hash;
       5. the on-disk lock file parses to exactly the reviewed package
          count;
-      6. the source requirements file's canonical Git object bytes at the
-         reviewed source commit (via `git cat-file blob`, never a
-         checked-out working-tree copy) independently hash to the reviewed
-         source-requirements SHA-256;
-      7. the committed fixture's raw bytes independently hash to the
-         reviewed fixture SHA-256;
+      6. the source requirements file's canonical Git blob bytes (via
+         `git cat-file blob <blob-sha>`, never a checked-out working-tree
+         copy) independently hash to the reviewed source-requirements
+         SHA-256;
+      7. the committed XLS and PDF fixtures' raw bytes independently hash to
+         their reviewed fixture SHA-256 values;
       8. the live interpreter is the exact canonical
          `.venv-real-execution\\Scripts\\python.exe`;
       9. the live platform is exactly CPython 3.12.10 / Windows / AMD64 /
          win-amd64;
       10. the live `python -m pip freeze --all` package set exactly equals
-          the reviewed seven entries -- no extra package, no missing
+          the reviewed fifteen entries -- no extra package, no missing
           package, no version drift.
     """
     detail: dict[str, Any] = {}
@@ -934,6 +1085,8 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
     resolved_lock_block = candidate.get("resolved_lock")
     requirements_block = candidate.get("requirements_real_execution")
     fixture_block = candidate.get("synthetic_xls_fixture")
+    pdf_fixture_block = candidate.get("synthetic_pdf_fixture")
+    provenance_block = candidate.get("v9_014_successor_provenance")
     if (
         not isinstance(python_block, dict)
         or set(python_block) != _CANDIDATE_PYTHON_FIELDS
@@ -943,6 +1096,10 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
         or set(requirements_block) != _CANDIDATE_REQUIREMENTS_FIELDS
         or not isinstance(fixture_block, dict)
         or set(fixture_block) != _CANDIDATE_FIXTURE_FIELDS
+        or not isinstance(pdf_fixture_block, dict)
+        or set(pdf_fixture_block) != _CANDIDATE_PDF_FIXTURE_FIELDS
+        or not isinstance(provenance_block, dict)
+        or set(provenance_block) != _CANDIDATE_V9_014_PROVENANCE_FIELDS
     ):
         return {"status": "FAIL", "reason": "LOCK_CANDIDATE_SCHEMA_INVALID", "detail": detail}
     detail["candidate_structurally_valid"] = True
@@ -973,8 +1130,13 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
         return {"status": "FAIL", "reason": "LOCK_PACKAGE_COUNT_UNEXPECTED", "detail": detail}
 
     # Independently recompute canonical Git object bytes for the source
-    # requirements file at the reviewed source commit -- CRLF-independent.
-    git_blob = _git_blob_bytes(REPO_ROOT, f"{REVIEWED_SOURCE_GIT_SHA}:requirements-real-execution.txt")
+    # requirements file, addressed by its own content-addressed blob SHA-1
+    # (`git cat-file blob <blob-sha>`) rather than `<commit>:<path>` --
+    # CRLF-independent either way, but blob addressing needs no historical
+    # commit identity for an artifact rewritten in the same commit that
+    # reviews it (see the GENERIC_AUTHORITY_FINALIZATION note above
+    # REVIEWED_LOCK_CANDIDATE_GIT_SHA).
+    git_blob = _git_blob_bytes(REPO_ROOT, REVIEWED_SOURCE_REQUIREMENTS_GIT_BLOB_SHA1)
     if git_blob is None:
         return {"status": "FAIL", "reason": "SOURCE_REQUIREMENTS_GIT_PROVENANCE_UNAVAILABLE", "detail": detail}
     source_requirements_git_sha256 = hashlib.sha256(git_blob).hexdigest()
@@ -984,7 +1146,7 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
     if not source_requirements_provenance_match:
         return {"status": "FAIL", "reason": "SOURCE_REQUIREMENTS_GIT_PROVENANCE_MISMATCH", "detail": detail}
 
-    # Independently recompute the fixture's raw-byte SHA-256.
+    # Independently recompute the XLS fixture's raw-byte SHA-256.
     if not SYNTHETIC_XLS_FIXTURE_PATH.exists():
         return {"status": "FAIL", "reason": "SYNTHETIC_XLS_FIXTURE_MISSING", "detail": detail}
     fixture_sha256_recomputed = hashlib.sha256(SYNTHETIC_XLS_FIXTURE_PATH.read_bytes()).hexdigest()
@@ -993,6 +1155,16 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
     detail["fixture_sha256_match"] = fixture_sha256_match
     if not fixture_sha256_match:
         return {"status": "FAIL", "reason": "FIXTURE_SHA256_MISMATCH", "detail": detail}
+
+    # Independently recompute the PDF fixture's raw-byte SHA-256.
+    if not SYNTHETIC_PDF_FIXTURE_PATH.exists():
+        return {"status": "FAIL", "reason": "SYNTHETIC_PDF_FIXTURE_MISSING", "detail": detail}
+    pdf_fixture_sha256_recomputed = hashlib.sha256(SYNTHETIC_PDF_FIXTURE_PATH.read_bytes()).hexdigest()
+    detail["pdf_fixture_sha256_recomputed"] = pdf_fixture_sha256_recomputed
+    pdf_fixture_sha256_match = pdf_fixture_sha256_recomputed == REVIEWED_PDF_FIXTURE_SHA256
+    detail["pdf_fixture_sha256_match"] = pdf_fixture_sha256_match
+    if not pdf_fixture_sha256_match:
+        return {"status": "FAIL", "reason": "PDF_FIXTURE_SHA256_MISMATCH", "detail": detail}
 
     # Live interpreter identity: exact canonical .venv-real-execution path.
     detail["interpreter_match"] = interpreter["interpreter_match"]
@@ -1016,7 +1188,7 @@ def check_environment_lock(interpreter: dict[str, Any]) -> dict[str, Any]:
     if not platform_binding_match:
         return {"status": "FAIL", "reason": "PLATFORM_BINDING_MISMATCH", "detail": detail}
 
-    # Live `pip freeze --all` must contain EXACTLY the reviewed seven
+    # Live `pip freeze --all` must contain EXACTLY the reviewed fifteen
     # entries: no extra package, no missing package, no version drift, and
     # -- per PIP_FREEZE_EXACT_SET_CHECK_IGNORES_NON_EQUALS_ENTRIES -- every
     # single non-empty line must itself be a valid exact `name==version`
@@ -1086,8 +1258,10 @@ def _validate_evidence_schema(evidence: Any) -> bool:
         "schema_version",
         "source_git_sha",
         "source_requirements",
+        "synthetic_pdf_fixture",
         "synthetic_xls_fixture",
         "tested_git_sha",
+        "v9_014_successor_provenance",
         "validation",
     }
     if set(evidence) != top_fields:
@@ -1181,11 +1355,11 @@ def check_freeze_record(interpreter: dict[str, Any], lock_check: dict[str, Any])
          parsed, matches the on-disk reviewed lock file's independently
          parsed package set exactly;
       6. the reviewed Windows validation evidence artifact's canonical Git
-         object bytes at `REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA`
-         (via `git cat-file blob`, never a checked-out working-tree copy)
-         independently hash to `REVIEWED_WINDOWS_VALIDATION_EVIDENCE_
-         CANONICAL_GIT_SHA256` -- never trusting the freeze record's own
-         claimed hash alone;
+         object bytes, addressed by `REVIEWED_WINDOWS_VALIDATION_EVIDENCE_
+         GIT_BLOB_SHA1` (via `git cat-file blob`, never a checked-out
+         working-tree copy) independently hash to `REVIEWED_WINDOWS_
+         VALIDATION_EVIDENCE_CANONICAL_GIT_SHA256` -- never trusting the
+         freeze record's own claimed hash alone;
       7. that same canonical Git blob, parsed as JSON, has
          `tested_git_sha == REVIEWED_TESTED_IMPLEMENTATION_GIT_SHA`,
          reports checker/bootstrap PASS with exit code 0,
@@ -1214,6 +1388,8 @@ def check_freeze_record(interpreter: dict[str, Any], lock_check: dict[str, Any])
     safety_block = freeze_record.get("safety")
     source_requirements_block = freeze_record.get("source_requirements")
     fixture_block = freeze_record.get("synthetic_xls_fixture")
+    pdf_fixture_block = freeze_record.get("synthetic_pdf_fixture")
+    provenance_block = freeze_record.get("v9_014_successor_provenance")
     if (
         not isinstance(python_block, dict)
         or set(python_block) != _FREEZE_RECORD_PYTHON_FIELDS
@@ -1227,6 +1403,10 @@ def check_freeze_record(interpreter: dict[str, Any], lock_check: dict[str, Any])
         or set(source_requirements_block) != _FREEZE_RECORD_SOURCE_REQUIREMENTS_FIELDS
         or not isinstance(fixture_block, dict)
         or set(fixture_block) != _FREEZE_RECORD_FIXTURE_FIELDS
+        or not isinstance(pdf_fixture_block, dict)
+        or set(pdf_fixture_block) != _CANDIDATE_PDF_FIXTURE_FIELDS
+        or not isinstance(provenance_block, dict)
+        or set(provenance_block) != _CANDIDATE_V9_014_PROVENANCE_FIELDS
         or not isinstance(freeze_record.get("package_set"), list)
     ):
         return {"status": "FAIL", "reason": "FREEZE_RECORD_SCHEMA_INVALID", "detail": detail}
@@ -1287,10 +1467,13 @@ def check_freeze_record(interpreter: dict[str, Any], lock_check: dict[str, Any])
     # Independently recompute the canonical Git blob SHA-256 of the
     # reviewed Windows validation evidence artifact -- never trust the
     # freeze record's or the working-tree copy's self-reported hash alone.
-    evidence_git_blob = _git_blob_bytes(
-        REPO_ROOT,
-        f"{REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_SHA}:REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json",
-    )
+    # Addressed by its own content-addressed blob SHA-1, not
+    # `<commit>:<path>` (see the GENERIC_AUTHORITY_FINALIZATION note above
+    # REVIEWED_LOCK_CANDIDATE_GIT_SHA); REVIEWED_WINDOWS_VALIDATION_EVIDENCE_
+    # GIT_SHA remains the separate, commit-level Stage E11 review identity
+    # cross-checked against the freeze record's own
+    # `reviewed_windows_validation_evidence_git_sha` field below.
+    evidence_git_blob = _git_blob_bytes(REPO_ROOT, REVIEWED_WINDOWS_VALIDATION_EVIDENCE_GIT_BLOB_SHA1)
     if evidence_git_blob is None:
         return {"status": "FAIL", "reason": "WINDOWS_VALIDATION_EVIDENCE_GIT_PROVENANCE_UNAVAILABLE", "detail": detail}
     evidence_git_sha256_recomputed = hashlib.sha256(evidence_git_blob).hexdigest()
@@ -1511,6 +1694,7 @@ def run_readiness_checks() -> dict[str, Any]:
     interpreter = check_interpreter_identity()
     dependencies = check_dependency_readiness()
     xls_probe = check_jpx_xls_parser_synthetic_probe()
+    pdf_probe = check_pdf_parser_synthetic_probe()
     tls_probe = check_tls_stdlib_initialization()
     trusted_host_probe = check_trusted_host_request_construction()
     filesystem_probe = check_filesystem_durable_publication_probe()
@@ -1523,6 +1707,7 @@ def run_readiness_checks() -> dict[str, Any]:
         and interpreter["python_patch_match"] is True
         and dependencies["status"] == "PASS"
         and xls_probe["status"] == "PASS"
+        and pdf_probe["status"] == "PASS"
         and tls_probe["status"] == "PASS"
         and trusted_host_probe["status"] == "PASS"
         and filesystem_probe["status"] == "PASS"
@@ -1552,6 +1737,8 @@ def run_readiness_checks() -> dict[str, Any]:
         "DEPENDENCY_DETAIL": dependencies["packages"],
         "JPX_XLS_PARSER_SYNTHETIC_PROBE": xls_probe["status"],
         "JPX_XLS_PARSER_SYNTHETIC_PROBE_DETAIL": xls_probe,
+        "PDF_PARSER_SYNTHETIC_PROBE": pdf_probe["status"],
+        "PDF_PARSER_SYNTHETIC_PROBE_DETAIL": pdf_probe,
         "TLS_STDLIB_PROBE": tls_probe["status"],
         "TRUSTED_HOST_REQUEST_CONSTRUCTION_PROBE": trusted_host_probe["status"],
         "FILESYSTEM_PROBE": filesystem_probe["status"],

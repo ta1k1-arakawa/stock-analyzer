@@ -19,21 +19,43 @@
   "real_execution_environment_ready_observed": true,
   "real_network_requests_to_protected_hosts": 0,
   "requirements_real_execution": {
+    "git_blob_sha1": "366ddf1bcb08056d8db10c2ebffd9774b0fd1c3a",
     "path": "requirements-real-execution.txt",
-    "sha256": "2cdcfd7a87023c4e9c3ec463cf16f77d88f72ccc8d1f0e5de242e6c68b0cf601"
+    "sha256": "c2892446dd6412f33d5f2823a2487673337776df01ab381833f387c2e346b689"
   },
   "research_gates_consumed": 0,
   "resolved_lock": {
     "generated_from": ".venv-real-execution\\Scripts\\python.exe -m pip freeze --all",
-    "package_count": 7,
+    "git_blob_sha1": "5e9d15caa822bd39e751a49cd0758db6eaf04bdf",
+    "package_count": 15,
     "path": "requirements-real-execution.lock.txt",
-    "sha256": "b5c063a1cca585fa100fdc0027d6cdbf4ef33ef5a7fe614230599fb882b51f96"
+    "sha256": "ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7"
   },
-  "schema_version": 1,
-  "source_git_sha": "b74e0f787599475cd9fe719d254202dc9bfc14d5",
+  "schema_version": 2,
+  "source_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39",
+  "synthetic_pdf_fixture": {
+    "page_count": 1,
+    "path": "tests/fixtures/v9_014_synthetic_pdf_env_probe.pdf",
+    "sha256": "5eecb758a50e829af16bd42833f89a8329bfaaaa561aee209fbd2249b507b413"
+  },
   "synthetic_xls_fixture": {
     "path": "tests/fixtures/synthetic_jpx_source_snapshot.xls",
     "sha256": "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7"
+  },
+  "v9_014_successor_provenance": {
+    "canonical_environment_state": "SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED",
+    "e7_reviewed_git_sha": "0c09e504d23f5e74f4c9a689fe1639d56219bc86",
+    "e8_reviewed_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39",
+    "e9_mutation_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39",
+    "e10_validation_git_sha": "50e8e3d42137adf0d90342080b98b55e719f5f39",
+    "e11_live_canonical_validation_evidence_git_blob_sha1": "81b046a3203b2f04aa512c3eb6f9939fd89bfec2",
+    "e11_live_canonical_validation_evidence_path": "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LIVE_CANONICAL_VALIDATION_EVIDENCE.json",
+    "e11_live_canonical_validation_evidence_sha256": "6986bf4f00bee4766fb2f47e9fa5e9326d0ad524a9877873c58b81112955009d",
+    "e11_reviewed_git_sha": "7bc1ac6a792779eed62c90d8f659b010dc525648",
+    "frozen_design_blob_sha": "2bbacbf37ab961d1cbf416b7fd476db18778c5b7",
+    "frozen_design_git_sha": "efee3d0efca368645c00aeed63cb8e0637cd3672",
+    "study_id": "V9_014_JPX_MONTHLY_AUCTION_ACTIVITY_AUTHORITY_SUCCESSOR",
+    "v9_014_pdf_environment_successor_promoted": false
   },
   "windows_grounded": true
 }
