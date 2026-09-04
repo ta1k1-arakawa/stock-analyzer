@@ -10,7 +10,13 @@ only at the later, separately reviewed Stage E6/E10/E14 checkpoints.
 
 from __future__ import annotations
 
+import base64
+import os
 import re
+import shutil
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -643,7 +649,7 @@ def test_staging_runner_no_loop_construct_wraps_successor_resolution(staging_run
     # line that captures its exit code) and assert no loop keyword
     # appears inside that slice.
     start_marker = "# E5 step 4:"
-    end_marker = "$successorResolutionExitCode = $LASTEXITCODE"
+    end_marker = "$successorResolutionExitCode = Invoke-NativeProcessRawCapture"
     start = staging_runner_source.index(start_marker)
     end = staging_runner_source.index(end_marker, start) + len(end_marker)
     successor_resolution_region = staging_runner_source[start:end]
@@ -651,6 +657,109 @@ def test_staging_runner_no_loop_construct_wraps_successor_resolution(staging_run
     assert "for (" not in successor_resolution_region
     assert "do {" not in successor_resolution_region
     assert "foreach (" not in successor_resolution_region
+
+
+def test_staging_runner_captures_successor_streams_at_process_level(staging_runner_source: str):
+    """The E5 resolver must bypass PowerShell 5.1 native stderr handling."""
+    helper_start = staging_runner_source.index("function Invoke-NativeProcessRawCapture")
+    e5_start = staging_runner_source.index("# E5 step 4:")
+    helper_block = staging_runner_source[helper_start:e5_start]
+    e5_end = staging_runner_source.index("$successorResolutionExitCode =", e5_start)
+    e5_block = staging_runner_source[e5_start:e5_end]
+
+    assert "System.Diagnostics.ProcessStartInfo" in helper_block
+    assert "System.Diagnostics.Process" in helper_block
+    assert "$processStartInfo.RedirectStandardOutput = $true" in helper_block
+    assert "$processStartInfo.RedirectStandardError = $true" in helper_block
+    assert helper_block.count("BaseStream.CopyToAsync") == 2
+    assert "[System.Threading.Tasks.Task]::WaitAll" in helper_block
+    assert "[System.IO.FileMode]::CreateNew" in helper_block
+    assert "$capturedNativeExitCode = $nativeProcess.ExitCode" in helper_block
+    assert "$successorResolutionExitCode = Invoke-NativeProcessRawCapture" in staging_runner_source
+    assert "1>" not in e5_block
+    assert "2>" not in e5_block
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell 5.1 regression only")
+def test_windows_powershell_native_stderr_is_captured_without_abort(tmp_path: Path):
+    """A wholly synthetic native child proves the process-level contract."""
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("Windows PowerShell executable unavailable")
+
+    stdout_path = tmp_path / "synthetic-stdout.bin"
+    stderr_path = tmp_path / "synthetic-stderr.bin"
+    exit_code_path = tmp_path / "synthetic-exit-code.txt"
+    powershell_code = textwrap.dedent(
+        r'''
+        $ErrorActionPreference = "Stop"
+        $processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processStartInfo.FileName = $env:ComSpec
+        $processStartInfo.Arguments = '/c "echo synthetic-stdout&echo synthetic-stderr 1>&2&exit /b 23"'
+        $processStartInfo.RedirectStandardOutput = $true
+        $processStartInfo.RedirectStandardError = $true
+        $processStartInfo.UseShellExecute = $false
+        $processStartInfo.CreateNoWindow = $true
+        $nativeProcess = New-Object System.Diagnostics.Process
+        $nativeProcess.StartInfo = $processStartInfo
+        $stdoutFileStream = New-Object System.IO.FileStream(
+            $env:SYNTHETIC_STDOUT_PATH,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        $stderrFileStream = New-Object System.IO.FileStream(
+            $env:SYNTHETIC_STDERR_PATH,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        try {
+            if (-not $nativeProcess.Start()) { throw "synthetic child did not start" }
+            $stdoutCopyTask = $nativeProcess.StandardOutput.BaseStream.CopyToAsync($stdoutFileStream)
+            $stderrCopyTask = $nativeProcess.StandardError.BaseStream.CopyToAsync($stderrFileStream)
+            $nativeProcess.WaitForExit()
+            $capturedNativeExitCode = $nativeProcess.ExitCode
+            $copyTasks = [System.Threading.Tasks.Task[]]@($stdoutCopyTask, $stderrCopyTask)
+            [System.Threading.Tasks.Task]::WaitAll($copyTasks)
+            $stdoutFileStream.Flush()
+            $stderrFileStream.Flush()
+        }
+        finally {
+            $stdoutFileStream.Dispose()
+            $stderrFileStream.Dispose()
+            $nativeProcess.Dispose()
+        }
+        [System.IO.File]::WriteAllText($env:SYNTHETIC_EXIT_CODE_PATH, [string]$capturedNativeExitCode)
+        Write-Output "captured=$capturedNativeExitCode"
+        '''
+    )
+    encoded_code = base64.b64encode(powershell_code.encode("utf-16le")).decode("ascii")
+    test_env = os.environ.copy()
+    test_env.update(
+        {
+            "SYNTHETIC_STDOUT_PATH": str(stdout_path),
+            "SYNTHETIC_STDERR_PATH": str(stderr_path),
+            "SYNTHETIC_EXIT_CODE_PATH": str(exit_code_path),
+        }
+    )
+    result = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_code],
+        env=test_env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "NativeCommandError" not in result.stdout + result.stderr
+    assert result.stdout.count("captured=23") == 1
+    assert stdout_path.read_bytes() == b"synthetic-stdout\r\n"
+    # cmd.exe retains the separator before the stderr redirection as part
+    # of this deterministic echo payload; preservation includes that byte.
+    assert stderr_path.read_bytes() == b"synthetic-stderr \r\n"
+    assert exit_code_path.read_text(encoding="utf-8") == "23"
 
 
 def test_staging_runner_canonical_and_general_environments_never_write_targets(staging_runner_source: str):
@@ -681,13 +790,9 @@ def test_staging_runner_venv_creation_targets_staging_root_only(staging_runner_s
 
 
 def test_staging_runner_exactly_one_successor_resolution_invocation(staging_runner_source: str):
-    # Count invocations that reference BOTH the predecessor lock as a
-    # constraint (-c ...) and the direct spec as the requirement (-r ...)
-    # in the same pip install call -- the successor-resolution shape.
-    successor_calls = re.findall(
-        r"pip install `\s*\n\s*-c \$predecessorLockRelativePath `\s*\n\s*-r \$directSpecRelativePath",
-        staging_runner_source,
-    )
+    # The one successor-resolution process invocation carries the exact
+    # pip arguments in its single explicit Arguments assignment above it.
+    successor_calls = re.findall(r"\$successorResolutionExitCode = Invoke-NativeProcessRawCapture", staging_runner_source)
     assert len(successor_calls) == 1
 
 
@@ -1027,7 +1132,7 @@ def test_staging_runner_still_never_calls_remove_item_after_output_root_remediat
 
 def test_staging_runner_still_exactly_one_successor_resolution_invocation_after_remediation(staging_runner_source: str):
     successor_calls = re.findall(
-        r"pip install `\s*\n\s*-c \$predecessorLockRelativePath `\s*\n\s*-r \$directSpecRelativePath",
+        r"\$successorResolutionExitCode = Invoke-NativeProcessRawCapture",
         staging_runner_source,
     )
     assert len(successor_calls) == 1
@@ -1127,7 +1232,7 @@ def test_staging_runner_baseline_exact7_ordering_preserved_after_high2_remediati
 def test_staging_runner_single_successor_resolution_preserved_after_high2_remediation(staging_runner_source: str):
     # Test 10: exactly one successor-resolution invocation remains.
     successor_calls = re.findall(
-        r"pip install `\s*\n\s*-c \$predecessorLockRelativePath `\s*\n\s*-r \$directSpecRelativePath",
+        r"\$successorResolutionExitCode = Invoke-NativeProcessRawCapture",
         staging_runner_source,
     )
     assert len(successor_calls) == 1

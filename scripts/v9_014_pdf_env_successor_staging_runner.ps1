@@ -349,6 +349,83 @@ param(
 
     Write-Host "All preflight checks passed, including StagingRoot and OutputRoot real-path fail-closed validation. Proceeding with the frozen, single-attempt E5 sequence."
 
+    # ------------------------------------------------------------------
+    # Native process capture helper: Windows PowerShell 5.1 can turn
+    # native stderr records from `&` into a terminating NativeCommandError
+    # while $ErrorActionPreference is Stop, even when the caller intends
+    # to preserve the stream and inspect the process exit code. Invoke the
+    # successor resolver through System.Diagnostics.Process instead. Both
+    # redirected BaseStreams are drained concurrently so a verbose child
+    # cannot deadlock on a full stdout or stderr pipe; the byte streams are
+    # copied directly to their evidence files without PowerShell decoding
+    # or rewriting them.
+    # ------------------------------------------------------------------
+    function Invoke-NativeProcessRawCapture {
+        param(
+            [Parameter(Mandatory = $true)][string]$FileName,
+            [Parameter(Mandatory = $true)][string]$Arguments,
+            [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+            [Parameter(Mandatory = $true)][string]$StdoutPath,
+            [Parameter(Mandatory = $true)][string]$StderrPath
+        )
+
+        $processStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processStartInfo.FileName = $FileName
+        $processStartInfo.Arguments = $Arguments
+        $processStartInfo.WorkingDirectory = $WorkingDirectory
+        $processStartInfo.RedirectStandardOutput = $true
+        $processStartInfo.RedirectStandardError = $true
+        $processStartInfo.UseShellExecute = $false
+        $processStartInfo.CreateNoWindow = $true
+
+        $nativeProcess = New-Object System.Diagnostics.Process
+        $nativeProcess.StartInfo = $processStartInfo
+        $stdoutFileStream = $null
+        $stderrFileStream = $null
+        try {
+            # OutputRoot was created only after its no-overwrite preflight;
+            # CreateNew preserves that collision discipline for the two
+            # stream evidence files as well.
+            $stdoutFileStream = New-Object System.IO.FileStream(
+                $StdoutPath,
+                [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::None
+            )
+            $stderrFileStream = New-Object System.IO.FileStream(
+                $StderrPath,
+                [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::None
+            )
+
+            if (-not $nativeProcess.Start()) {
+                throw "E5_STEP4_SUCCESSOR_PROCESS_START_FAILED: native successor process did not start."
+            }
+
+            # Start both copies before waiting for the process. Sequentially
+            # draining stdout then stderr can deadlock when either pipe fills.
+            $stdoutCopyTask = $nativeProcess.StandardOutput.BaseStream.CopyToAsync($stdoutFileStream)
+            $stderrCopyTask = $nativeProcess.StandardError.BaseStream.CopyToAsync($stderrFileStream)
+            $nativeProcess.WaitForExit()
+            $capturedNativeExitCode = $nativeProcess.ExitCode
+            $copyTasks = [System.Threading.Tasks.Task[]]@($stdoutCopyTask, $stderrCopyTask)
+            [System.Threading.Tasks.Task]::WaitAll($copyTasks)
+            $stdoutFileStream.Flush()
+            $stderrFileStream.Flush()
+            return $capturedNativeExitCode
+        }
+        finally {
+            if ($null -ne $stdoutFileStream) {
+                $stdoutFileStream.Dispose()
+            }
+            if ($null -ne $stderrFileStream) {
+                $stderrFileStream.Dispose()
+            }
+            $nativeProcess.Dispose()
+        }
+    }
+
     # ==================================================================
     # Frozen Stage E5 sequence (Section 5, Stage E5). Fixed in source;
     # never reordered, retried, or repaired at execution time.
@@ -408,11 +485,13 @@ param(
     # anywhere else in this file.
     $successorStdoutPath = Join-Path $OutputRoot "successor_resolution_stdout.txt"
     $successorStderrPath = Join-Path $OutputRoot "successor_resolution_stderr.txt"
-    & $stagingInterpreter -m pip install `
-        -c $predecessorLockRelativePath `
-        -r $directSpecRelativePath `
-        1> $successorStdoutPath 2> $successorStderrPath
-    $successorResolutionExitCode = $LASTEXITCODE
+    $successorResolutionArguments = "-m pip install -c `"$predecessorLockRelativePath`" -r `"$directSpecRelativePath`""
+    $successorResolutionExitCode = Invoke-NativeProcessRawCapture `
+        -FileName $stagingInterpreter `
+        -Arguments $successorResolutionArguments `
+        -WorkingDirectory ((Get-Location).Path) `
+        -StdoutPath $successorStdoutPath `
+        -StderrPath $successorStderrPath
 
     # E5 step 5: exit code is captured and preserved -- a nonzero exit is
     # NOT retried and NOT repaired; it proceeds directly to step 6/7 with
