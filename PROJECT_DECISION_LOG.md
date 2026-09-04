@@ -1446,3 +1446,9 @@ transitions. This public log must not contain protected material.
 - GPT exact-SHA review of `021bd1ff24e9af68a2fe42b67b716773ecb43ff8` is recorded as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=1`. The prior E15 `MEDIUM_1` finding is resolved; E15 overall is `PASS`.
 - The canonical environment transitions to `SUCCESSOR_CANONICAL_FROZEN`, with `V9_014_SUCCESSOR_PROMOTED=true`. Protected/private/network research authority remains `false`, and `V9_014_T0_STATUS=NOT_RUN` remains unchanged. Future profitability remains unestablished.
 - LOW_1 cleanup is state-hygiene only: E14 Attempt 2 authorization is recorded as point-of-use `GRANTED` and non-reusable, and its next action is `COMPLETE_NO_RERUN`. No E9, E10, or E14 rerun occurred; no methodology or environment change occurred.
+
+## 2026-09-04 — V9_014 E15 promotion-record MEDIUM_1 review-result provenance remediation
+
+- GPT exact-SHA review of `d676c5a494bc9f2217026406dad2325690a7df03` is recorded as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`. The exact finding is `GPT_REVIEW_RESULT_PROVENANCE_SELF_CONTRADICTION`: the prior `021bd1ff24e9af68a2fe42b67b716773ecb43ff8` E15 review was `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, `LOW=1`, but the state record incorrectly included `MEDIUM=1`.
+- This remediation corrects the historical `021bd1ff` review-result provenance, records the `d676c5a` BLOCK under task-specific provenance, and leaves the underlying `021bd1ff` E15 `PASS` and promotion adjudication unchanged. Calendar-authority continuation is blocked until this remediation receives GPT exact-SHA `PASS`.
+- No E9, E10, or E14 rerun occurred; no checker/probe execution, network/private/protected access, package/environment mutation, T0/backtest/model execution, or methodology change occurred.
