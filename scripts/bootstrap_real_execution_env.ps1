@@ -42,6 +42,16 @@
 # reviewed `.ps1` file"). Do not paste its body as independent line-by-line
 # snippets.
 
+[CmdletBinding()]
+param(
+    [ValidateSet(
+        "PREDECESSOR_CANONICAL_FROZEN",
+        "SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED",
+        "SUCCESSOR_CANONICAL_FROZEN"
+    )]
+    [string]$V9014PromotionState = "PREDECESSOR_CANONICAL_FROZEN"
+)
+
 & {
     $ErrorActionPreference = "Stop"
 
@@ -60,6 +70,8 @@
     $realExecutionLockPath = Join-Path (Get-Location) "requirements-real-execution.lock.txt"
     $lockCandidatePath = Join-Path (Get-Location) "REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json"
     $readinessCheckerPath = Join-Path (Get-Location) "scripts\check_real_execution_env.py"
+    $successorLockCandidatePath = Join-Path (Get-Location) "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json"
+    $successorWindowsEvidencePath = Join-Path (Get-Location) "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_WINDOWS_VALIDATION_EVIDENCE.json"
 
     # Reviewed binding (REAL_EXECUTION_ENVIRONMENT_LOCK_ENFORCEMENT task) --
     # hardcoded here, not merely trusted from the mutable candidate/lock
@@ -69,6 +81,67 @@
     $reviewedSourceGitSha = "b74e0f787599475cd9fe719d254202dc9bfc14d5"
     $reviewedLockSha256 = "b5c063a1cca585fa100fdc0027d6cdbf4ef33ef5a7fe614230599fb882b51f96"
     $reviewedSourceRequirementsGitSha256 = "2cdcfd7a87023c4e9c3ec463cf16f77d88f72ccc8d1f0e5de242e6c68b0cf601"
+
+    # V9_014 E8 prepares this explicit later-E9 path. It is never selected
+    # by default and cannot claim final frozen state before E15 review.
+    if ($V9014PromotionState -eq "SUCCESSOR_CANONICAL_FROZEN") {
+        throw "PRE_GATE_ENVIRONMENT_BLOCK: SUCCESSOR_CANONICAL_FROZEN requires Stage E15 exact-SHA review and cannot be selected by bootstrap tooling."
+    }
+    if ($V9014PromotionState -eq "SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED") {
+        if (-not (Test-Path -LiteralPath $canonicalInterpreterPath -PathType Leaf)) {
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: canonical interpreter is missing; E9 must mutate the existing predecessor canonical environment, never create a replacement."
+        }
+        if (-not (Test-Path -LiteralPath $successorLockCandidatePath -PathType Leaf) -or -not (Test-Path -LiteralPath $successorWindowsEvidencePath -PathType Leaf)) {
+            throw "PRE_GATE_ENVIRONMENT_BLOCK: reviewed V9_014 E7 candidate/evidence artifacts are missing."
+        }
+
+        $temporarySuccessorLockPath = [System.IO.Path]::GetTempFileName()
+        try {
+            $successorLockBuildCode = @'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+from scripts import v9_014_pdf_env_successor as successor
+
+lock_path = Path(sys.argv[1])
+evidence_path = Path(sys.argv[2])
+temporary_lock_path = Path(sys.argv[3])
+lock_bytes = lock_path.read_bytes()
+evidence_bytes = evidence_path.read_bytes()
+if hashlib.sha256(lock_bytes).hexdigest() != "b7c30ccded8009a6df122fd51889e5ac2deb3a8db9b1d49d7dccd528a87c633e":
+    raise SystemExit(2)
+if hashlib.sha256(evidence_bytes).hexdigest() != "6d201a5a33e696e92fb76341fbe1b91b578f136d81ba26d7e0056a0015f0fe86":
+    raise SystemExit(2)
+lock_candidate = json.loads(lock_bytes.decode("utf-8"))
+windows_evidence = json.loads(evidence_bytes.decode("utf-8"))
+if not successor.validate_lock_candidate_schema(lock_candidate):
+    raise SystemExit(2)
+if not successor.validate_windows_evidence_schema(windows_evidence):
+    raise SystemExit(2)
+if not successor.validate_e7_candidate_bundle(lock_candidate, windows_evidence):
+    raise SystemExit(2)
+temporary_lock_path.write_bytes(
+    ("\n".join(f"{name}=={version}" for name, version in sorted(lock_candidate["resolved_packages"].items())) + "\n").encode("utf-8")
+)
+'@
+            $successorLockBuildCode | & $canonicalInterpreterPath - $successorLockCandidatePath $successorWindowsEvidencePath $temporarySuccessorLockPath
+            if ($LASTEXITCODE -ne 0) {
+                throw "PRE_GATE_ENVIRONMENT_BLOCK: V9_014 E7 candidate/evidence validation failed; refusing successor package mutation."
+            }
+            Write-Host "V9_014 E7 candidate/evidence closure verified; installing only its exact 15-package set with --no-deps."
+            & $canonicalInterpreterPath -m pip install --no-deps -r $temporarySuccessorLockPath
+            if ($LASTEXITCODE -ne 0) {
+                throw "PRE_GATE_ENVIRONMENT_BLOCK: reviewed V9_014 successor lock installation failed. No retry, repair, reset, or replacement is performed."
+            }
+            Write-Host "V9_014 successor package mutation completed; E10 must separately invoke scripts/check_real_execution_env.py --v9-014-promotion-state SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED."
+            return
+        }
+        finally {
+            Remove-Item -LiteralPath $temporarySuccessorLockPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 
     Write-Host "== Real-execution environment bootstrap (environment setup stage only) =="
     Write-Host "Target: CANONICAL_PROTECTED_REAL_EXECUTION_ENVIRONMENT = .venv-real-execution"

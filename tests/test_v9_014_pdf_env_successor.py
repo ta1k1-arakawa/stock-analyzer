@@ -11,6 +11,7 @@ only at the later, separately reviewed Stage E6/E10/E14 checkpoints.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
 import shutil
@@ -559,10 +560,14 @@ def test_canonical_json_bytes_is_compact_sorted_utf8_and_trailing_lf():
         env_successor.canonical_json_bytes({"bad": float("nan")})
 
 
-def test_stage_e2_does_not_write_future_artifacts_to_disk():
-    # Stage E2 must not create the future E7 artifacts at all.
-    assert not (REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json").exists()
-    assert not (REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_WINDOWS_VALIDATION_EVIDENCE.json").exists()
+def test_e7_artifacts_are_present_only_as_reviewed_canonical_payloads():
+    lock_path = REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json"
+    evidence_path = REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_WINDOWS_VALIDATION_EVIDENCE.json"
+    lock_payload = json.loads(lock_path.read_bytes())
+    evidence_payload = json.loads(evidence_path.read_bytes())
+    assert env_successor.canonical_json_bytes(lock_payload) == lock_path.read_bytes()
+    assert env_successor.canonical_json_bytes(evidence_payload) == evidence_path.read_bytes()
+    assert env_successor.validate_e7_candidate_bundle(lock_payload, evidence_payload)
 
 
 # =============================================================================

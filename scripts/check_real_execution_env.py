@@ -81,6 +81,7 @@ otherwise, always before any protected boundary.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -134,6 +135,27 @@ REVIEWED_SOURCE_REQUIREMENTS_GIT_SHA256 = "2cdcfd7a87023c4e9c3ec463cf16f77d88f72
 REVIEWED_FIXTURE_SHA256 = "ca47744896a286e1c56d4d0c09260775772c7df0c01b80d81b7e9a515e6d6aa7"
 REVIEWED_PACKAGE_COUNT = 7
 REVIEWED_ARTIFACT_STATUS = "CANDIDATE_NOT_FROZEN"
+
+# ---------------------------------------------------------------------------
+# V9_014 successor promotion preparation (E8): these identities bind the
+# reviewed E7 candidate/evidence closure.  They do not assert that the live
+# canonical environment has changed; live validation is permitted only in
+# SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED at later E10.
+# ---------------------------------------------------------------------------
+V9_014_E7_LOCK_CANDIDATE_PATH = REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json"
+V9_014_E7_WINDOWS_EVIDENCE_PATH = REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_WINDOWS_VALIDATION_EVIDENCE.json"
+V9_014_E7_LOCK_CANDIDATE_SHA256 = "b7c30ccded8009a6df122fd51889e5ac2deb3a8db9b1d49d7dccd528a87c633e"
+V9_014_E7_WINDOWS_EVIDENCE_SHA256 = "6d201a5a33e696e92fb76341fbe1b91b578f136d81ba26d7e0056a0015f0fe86"
+V9_014_PREDECESSOR_CANONICAL_FROZEN = "PREDECESSOR_CANONICAL_FROZEN"
+V9_014_SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED = "SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED"
+V9_014_SUCCESSOR_CANONICAL_FROZEN = "SUCCESSOR_CANONICAL_FROZEN"
+V9_014_PROMOTION_STATES = frozenset(
+    {
+        V9_014_PREDECESSOR_CANONICAL_FROZEN,
+        V9_014_SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED,
+        V9_014_SUCCESSOR_CANONICAL_FROZEN,
+    }
+)
 
 # Complete semantic content of the reviewed candidate at
 # REVIEWED_LOCK_CANDIDATE_GIT_SHA.  This is deliberately an exhaustive,
@@ -1317,6 +1339,174 @@ def check_freeze_record(interpreter: dict[str, Any], lock_check: dict[str, Any])
     }
 
 
+def check_v9_014_e7_bundle() -> dict[str, Any]:
+    """Validate the reviewed E7 closure without touching an environment.
+
+    The result is an input gate for future E9/E10 tooling, not evidence that
+    the canonical interpreter has been mutated or validated.
+    """
+    detail: dict[str, Any] = {}
+    try:
+        lock_bytes = V9_014_E7_LOCK_CANDIDATE_PATH.read_bytes()
+        evidence_bytes = V9_014_E7_WINDOWS_EVIDENCE_PATH.read_bytes()
+    except OSError as error:
+        return {"status": "FAIL", "reason": "V9_014_E7_ARTIFACT_MISSING", "error": str(error), "detail": detail}
+
+    detail["lock_candidate_sha256"] = hashlib.sha256(lock_bytes).hexdigest()
+    detail["windows_evidence_sha256"] = hashlib.sha256(evidence_bytes).hexdigest()
+    if detail["lock_candidate_sha256"] != V9_014_E7_LOCK_CANDIDATE_SHA256:
+        return {"status": "FAIL", "reason": "V9_014_E7_LOCK_CANDIDATE_HASH_MISMATCH", "detail": detail}
+    if detail["windows_evidence_sha256"] != V9_014_E7_WINDOWS_EVIDENCE_SHA256:
+        return {"status": "FAIL", "reason": "V9_014_E7_WINDOWS_EVIDENCE_HASH_MISMATCH", "detail": detail}
+
+    try:
+        from scripts import v9_014_pdf_env_successor as successor
+
+        lock_candidate = json.loads(lock_bytes.decode("utf-8"))
+        windows_evidence = json.loads(evidence_bytes.decode("utf-8"))
+    except (ImportError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        return {"status": "FAIL", "reason": "V9_014_E7_ARTIFACT_INVALID", "error": str(error), "detail": detail}
+
+    if not successor.validate_lock_candidate_schema(lock_candidate):
+        return {"status": "FAIL", "reason": "V9_014_E7_LOCK_CANDIDATE_INVALID", "detail": detail}
+    if not successor.validate_windows_evidence_schema(windows_evidence):
+        return {"status": "FAIL", "reason": "V9_014_E7_WINDOWS_EVIDENCE_INVALID", "detail": detail}
+    if not successor.validate_e7_candidate_bundle(lock_candidate, windows_evidence):
+        return {"status": "FAIL", "reason": "V9_014_E7_BUNDLE_IDENTITY_MISMATCH", "detail": detail}
+    detail["resolved_package_count"] = len(lock_candidate["resolved_packages"])
+    detail["predecessor_package_count"] = len(windows_evidence["before_freeze"])
+    return {
+        "status": "PASS",
+        "detail": detail,
+        "lock_candidate": lock_candidate,
+        "windows_evidence": windows_evidence,
+    }
+
+
+def _v9_014_probe_status(probe: Any) -> str | None:
+    if isinstance(probe, dict):
+        return probe.get("status")
+    return getattr(probe, "status", None)
+
+
+def _v9_014_probe_field(probe: Any, field: str) -> Any:
+    if isinstance(probe, dict):
+        return probe.get(field)
+    return getattr(probe, field, None)
+
+
+def check_v9_014_successor_promotion(
+    promotion_state: str,
+    *,
+    live_packages: dict[str, str] | None = None,
+    platform_evidence: dict[str, Any] | None = None,
+    xls_probe: dict[str, Any] | None = None,
+    pdf_probe: Any = None,
+) -> dict[str, Any]:
+    """Fail-closed future-E9/E10 checker for the reviewed successor closure.
+
+    E8 uses this only as offline tooling.  The migration-state branch is
+    deliberately the sole branch that can assess a live successor package
+    set; the final frozen state remains unavailable until Stage E15 review.
+    """
+    if promotion_state not in V9_014_PROMOTION_STATES:
+        return {"status": "FAIL", "reason": "V9_014_PROMOTION_STATE_INVALID", "promotion_state": promotion_state}
+
+    bundle = check_v9_014_e7_bundle()
+    if bundle["status"] != "PASS":
+        return {"status": "FAIL", "reason": bundle["reason"], "promotion_state": promotion_state, "bundle": bundle}
+
+    if promotion_state == V9_014_PREDECESSOR_CANONICAL_FROZEN:
+        return {
+            "status": "PASS",
+            "promotion_state": promotion_state,
+            "canonical_environment_mutation_authorized": False,
+            "successor_live_validation": "NOT_RUN_PREDECESSOR_STATE",
+            "bundle": bundle["detail"],
+        }
+    if promotion_state == V9_014_SUCCESSOR_CANONICAL_FROZEN:
+        return {
+            "status": "FAIL",
+            "reason": "V9_014_SUCCESSOR_FROZEN_REQUIRES_E15_REVIEW",
+            "promotion_state": promotion_state,
+            "bundle": bundle["detail"],
+        }
+
+    expected_packages = bundle["lock_candidate"]["resolved_packages"]
+    if live_packages is None:
+        try:
+            freeze_result = subprocess.run(
+                [sys.executable, "-m", "pip", "freeze", "--all"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            return {"status": "FAIL", "reason": "V9_014_SUCCESSOR_PIP_FREEZE_UNAVAILABLE", "error": str(error)}
+        if freeze_result.returncode != 0:
+            return {"status": "FAIL", "reason": "V9_014_SUCCESSOR_PIP_FREEZE_FAILED"}
+        live_packages, invalid_lines, duplicate_lines = _parse_exact_pinned_freeze_lines(freeze_result.stdout)
+        if invalid_lines or duplicate_lines:
+            return {
+                "status": "FAIL",
+                "reason": "V9_014_SUCCESSOR_PIP_FREEZE_NOT_EXACT",
+                "invalid_lines": invalid_lines,
+                "duplicate_lines": duplicate_lines,
+            }
+    if live_packages != expected_packages:
+        return {
+            "status": "FAIL",
+            "reason": "V9_014_SUCCESSOR_PACKAGE_SET_MISMATCH",
+            "expected_package_count": len(expected_packages),
+            "actual_package_count": len(live_packages),
+        }
+
+    if platform_evidence is None:
+        interpreter = check_interpreter_identity()
+        platform_evidence = {
+            "implementation": platform.python_implementation(),
+            "version": list(sys.version_info[:3]),
+            "os_name": os.name,
+            "platform_system": platform.system(),
+            "platform_machine": platform.machine(),
+            "sysconfig_platform": sysconfig.get_platform(),
+            "interpreter_match": interpreter["interpreter_match"],
+        }
+    expected_platform = dict(bundle["windows_evidence"]["platform"])
+    actual_platform = {key: platform_evidence.get(key) for key in expected_platform}
+    if actual_platform != expected_platform or platform_evidence.get("interpreter_match") is not True:
+        return {"status": "FAIL", "reason": "V9_014_SUCCESSOR_PLATFORM_BINDING_MISMATCH"}
+
+    if xls_probe is None:
+        xls_probe = check_jpx_xls_parser_synthetic_probe()
+    if _v9_014_probe_status(xls_probe) != "PASS":
+        return {"status": "FAIL", "reason": "V9_014_SUCCESSOR_XLS_PROBE_FAILED"}
+
+    if pdf_probe is None:
+        from scripts.v9_014_pdf_env_successor import run_synthetic_pdf_operational_probe
+
+        pdf_probe = run_synthetic_pdf_operational_probe()
+    expected_pdf_probe = bundle["windows_evidence"]["synthetic_pdf_probe"]
+    if (
+        _v9_014_probe_status(pdf_probe) != "SYNTHETIC_PDF_PROBE_PASS"
+        or _v9_014_probe_field(pdf_probe, "observed_fixture_sha256") != expected_pdf_probe["fixture_sha256"]
+        or _v9_014_probe_field(pdf_probe, "observed_pdfplumber_version") != expected_pdf_probe["pdfplumber_version"]
+        or _v9_014_probe_field(pdf_probe, "observed_page_count") != expected_pdf_probe["page_count"]
+    ):
+        return {"status": "FAIL", "reason": "V9_014_SUCCESSOR_PDF_PROBE_FAILED"}
+
+    return {
+        "status": "PASS",
+        "promotion_state": promotion_state,
+        "canonical_environment_mutation_authorized": False,
+        "successor_package_count": len(expected_packages),
+        "predecessor_package_count": len(bundle["windows_evidence"]["before_freeze"]),
+        "e7_bundle": bundle["detail"],
+        "safety": bundle["windows_evidence"]["safety"],
+    }
+
+
 def run_readiness_checks() -> dict[str, Any]:
     interpreter = check_interpreter_identity()
     dependencies = check_dependency_readiness()
@@ -1391,6 +1581,17 @@ def run_readiness_checks() -> dict[str, Any]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="No-network canonical environment readiness checker")
+    parser.add_argument(
+        "--v9-014-promotion-state",
+        choices=sorted(V9_014_PROMOTION_STATES),
+        help="Run the future E9/E10 successor validator in the declared lifecycle state.",
+    )
+    args = parser.parse_args()
+    if args.v9_014_promotion_state is not None:
+        result = check_v9_014_successor_promotion(args.v9_014_promotion_state)
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
+        return 0 if result["status"] == "PASS" else 1
     result = run_readiness_checks()
     print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
     return 0 if result["REAL_EXECUTION_ENVIRONMENT_READY"] else 1
