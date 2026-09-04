@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -244,4 +245,98 @@ def test_static_surface_has_no_semantic_or_alternate_parser_path():
     forbidden = ("extract_text", "extract_table", "extract_tables", "find_tables", "classify_date", "trading_dates", "evaluate_relation", "pypdf", "PyMuPDF", "fitz", "ocr")
     assert not any(token in source for token in forbidden)
     assert "validate_jpx_url" in source
-    assert "urlopen" in source
+    assert "NO_REDIRECT_OPENER" in source
+
+
+@pytest.mark.parametrize("status", sorted(acquisition.REDIRECT_STATUS_CODES))
+def test_no_redirect_handler_rejects_all_frozen_redirect_statuses(status):
+    handler = acquisition.NoRedirectHandler()
+    request = urllib.request.Request("https://www.jpx.co.jp/synthetic/request")
+    with pytest.raises(acquisition.RedirectRejectedError):
+        getattr(handler, f"http_error_{status}")(request, object(), status, "redirect", {})
+    with pytest.raises(acquisition.RedirectRejectedError):
+        handler.redirect_request(request, object(), status, "redirect", {"Location": "https://www.jpx.co.jp/synthetic/target"}, "https://www.jpx.co.jp/synthetic/target")
+
+
+def test_redirect_is_nonretryable_and_target_is_never_requested(tmp_path):
+    requested = "https://www.jpx.co.jp/synthetic/request.pdf"
+    target = "https://www.jpx.co.jp/synthetic/target.pdf"
+    calls = []
+
+    def transport(url, timeout):
+        calls.append(url)
+        raise acquisition.RedirectRejectedError()
+
+    locked, failure = acquisition.fetch_and_lock_payload(
+        acquisition._RunContext(tmp_path), requested, role="calibration_pdf",
+        relative_path="raw/calibration_pdfs/01.pdf", transport=transport,
+    )
+    assert locked is None
+    assert failure == (acquisition.DATA_QUALITY_FAILURE, "HTTP_REDIRECT_REJECTED")
+    assert calls == [requested]
+    assert target not in calls
+
+
+def test_mismatched_resolved_url_fails_closed_without_raw_lock(tmp_path):
+    requested = "https://www.jpx.co.jp/synthetic/request.pdf"
+    mismatched = "https://www.jpx.co.jp/synthetic/other.pdf"
+    calls = []
+
+    def transport(url, timeout):
+        calls.append(url)
+        return acquisition.TransportResponse(200, b"unlocked-body-4821", mismatched)
+
+    locked, failure = acquisition.fetch_and_lock_payload(
+        acquisition._RunContext(tmp_path), requested, role="calibration_pdf",
+        relative_path="raw/calibration_pdfs/01.pdf", transport=transport,
+    )
+    assert locked is None
+    assert failure == (acquisition.DATA_QUALITY_FAILURE, "RESOLVED_URL_MISMATCH")
+    assert calls == [requested]
+    assert not (tmp_path / "raw").exists()
+
+
+class _FakeResponse:
+    def __init__(self, resolved_url, events):
+        self._resolved_url = resolved_url
+        self._events = events
+        self.status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def geturl(self):
+        self._events.append("geturl")
+        return self._resolved_url
+
+    def read(self):
+        self._events.append("read")
+        return b"validated-body"
+
+
+class _FakeOpener:
+    def __init__(self, response, events):
+        self.response = response
+        self.events = events
+
+    def open(self, request, timeout):
+        self.events.append(("open", request.full_url, timeout))
+        return self.response
+
+
+def test_default_transport_validates_url_and_equality_before_body_read(monkeypatch):
+    requested = "https://www.jpx.co.jp/synthetic/request.pdf"
+    events = []
+    monkeypatch.setattr(acquisition, "NO_REDIRECT_OPENER", _FakeOpener(_FakeResponse(requested, events), events))
+    result = acquisition._default_transport(requested, 30)
+    assert result.body == b"validated-body"
+    assert events == [("open", requested, 30), "geturl", "read"]
+
+    events = []
+    monkeypatch.setattr(acquisition, "NO_REDIRECT_OPENER", _FakeOpener(_FakeResponse("https://www.jpx.co.jp/synthetic/target.pdf", events), events))
+    with pytest.raises(acquisition.RedirectRejectedError):
+        acquisition._default_transport(requested, 30)
+    assert events == [("open", requested, 30), "geturl"]

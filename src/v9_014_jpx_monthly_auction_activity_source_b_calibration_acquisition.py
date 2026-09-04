@@ -50,6 +50,11 @@ from src.v9_005_stage_a_jpx_probe import V9005StageABlocked, validate_jpx_url
 REQUEST_TIMEOUT_SECONDS = 30
 MAX_PRE_COMPLETE_ATTEMPTS_PER_URL = 3
 RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+REDIRECT_STATUS_CODES = frozenset({301, 302, 303, 307, 308})
+V9_014_STAGE_D_REDIRECT_POLICY = "REJECT_ALL_HTTP_REDIRECTS"
+ALLOWED_REDIRECT_COUNT = 0
+REQUESTED_URL_MUST_EQUAL_RESOLVED_URL = True
+REDIRECT_IS_RETRYABLE = False
 CALIBRATION_YEARS = (2017, 2019, 2020, 2022, 2026)
 EXPECTED_PAYLOAD_COUNT = 1 + len(CALIBRATION_YEARS) + CALIBRATION_OBJECT_COUNT
 CONFIRMATION_CONTRACT = "V9_014_STAGE_D_FIXED_8_CALIBRATION_ACQUISITION"
@@ -65,6 +70,44 @@ CHATGPT_DECISION_REQUIRED = "CHATGPT_DECISION_REQUIRED"
 ROOT_LOCK_RELATIVE_PATH = "raw/archive_root.html"
 YEAR_LOCK_DIRECTORY = "raw/year_pages"
 PDF_LOCK_DIRECTORY = "raw/calibration_pdfs"
+
+
+class RedirectRejectedError(Exception):
+    """Internal safe signal for a redirect rejected before target access."""
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject every redirect status handled by urllib's redirect machinery."""
+
+    @staticmethod
+    def _reject(*_args: object, **_kwargs: object) -> None:
+        raise RedirectRejectedError()
+
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        return self._reject(*args, **kwargs)
+
+    def http_error_301(self, *args: object, **kwargs: object) -> None:
+        return self._reject(*args, **kwargs)
+
+    def http_error_302(self, *args: object, **kwargs: object) -> None:
+        return self._reject(*args, **kwargs)
+
+    def http_error_303(self, *args: object, **kwargs: object) -> None:
+        return self._reject(*args, **kwargs)
+
+    def http_error_307(self, *args: object, **kwargs: object) -> None:
+        return self._reject(*args, **kwargs)
+
+    def http_error_308(self, *args: object, **kwargs: object) -> None:
+        return self._reject(*args, **kwargs)
+
+    def http_error_default(self, request: object, response: object, code: int, message: object, headers: object) -> None:
+        if isinstance(code, int) and 300 <= code < 400:
+            return self._reject(request, response, code, message, headers)
+        return super().http_error_default(request, response, code, message, headers)
+
+
+NO_REDIRECT_OPENER = urllib.request.build_opener(NoRedirectHandler())
 
 
 @dataclass(frozen=True)
@@ -233,9 +276,15 @@ def fetch_and_lock_payload(
         try:
             response = transport(url, REQUEST_TIMEOUT_SECONDS)
         except urllib.error.HTTPError as error:
+            if error.code in REDIRECT_STATUS_CODES:
+                return None, (DATA_QUALITY_FAILURE, "HTTP_REDIRECT_REJECTED")
             if error.code in RETRYABLE_HTTP_STATUSES:
                 continue
             return None, (DATA_QUALITY_FAILURE, "NONRETRYABLE_HTTP_STATUS")
+        except RedirectRejectedError:
+            if REDIRECT_IS_RETRYABLE:
+                continue
+            return None, (DATA_QUALITY_FAILURE, "HTTP_REDIRECT_REJECTED")
         except V9005StageABlocked:
             return None, (DATA_QUALITY_FAILURE, "OFFICIAL_TRANSPORT_VALIDATION_FAILURE")
         except (urllib.error.URLError, TimeoutError, OSError):
@@ -251,6 +300,8 @@ def fetch_and_lock_payload(
                     validate_jpx_url(resolved_url, reason="OFF_DOMAIN_REDIRECT_REJECTED")
                 except V9005StageABlocked:
                     return None, (DATA_QUALITY_FAILURE, "OFF_DOMAIN_REDIRECT_REJECTED")
+                if REQUESTED_URL_MUST_EQUAL_RESOLVED_URL and resolved_url != url:
+                    return None, (DATA_QUALITY_FAILURE, "RESOLVED_URL_MISMATCH")
             body = _response_body(response)
             if not isinstance(body, bytes):
                 return None, (IMPLEMENTATION_FAILURE, "TRANSPORT_BODY_TYPE_FAILURE")
@@ -265,6 +316,8 @@ def fetch_and_lock_payload(
             context.payload_bytes[url] = body
             context.locked.append(locked)
             return locked, None
+        if status in REDIRECT_STATUS_CODES:
+            return None, (DATA_QUALITY_FAILURE, "HTTP_REDIRECT_REJECTED")
         if status in RETRYABLE_HTTP_STATUSES:
             continue
         return None, (DATA_QUALITY_FAILURE, "NONRETRYABLE_HTTP_STATUS")
@@ -272,15 +325,17 @@ def fetch_and_lock_payload(
 
 
 def _default_transport(url: str, timeout: int) -> TransportResponse:
-    """Later real-mode transport; no redirect policy is added here."""
+    """Later real-mode transport with all HTTP redirects rejected."""
 
     validate_jpx_url(url)
     request = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with NO_REDIRECT_OPENER.open(request, timeout=timeout) as response:
+        resolved_url = response.geturl()
+        validate_jpx_url(resolved_url, reason="OFF_DOMAIN_REDIRECT_REJECTED")
+        if REQUESTED_URL_MUST_EQUAL_RESOLVED_URL and resolved_url != url:
+            raise RedirectRejectedError()
         status = response.status if isinstance(response.status, int) else response.getcode()
         body = response.read() if status == 200 else b""
-    resolved_url = response.geturl()
-    validate_jpx_url(resolved_url, reason="OFF_DOMAIN_REDIRECT_REJECTED")
     return TransportResponse(status, body, resolved_url)
 
 
@@ -472,5 +527,8 @@ __all__ = [
     "MAX_PRE_COMPLETE_ATTEMPTS_PER_URL", "PLUMBING_FAILURE_RETRIABLE",
     "REQUIRED_CALIBRATION_IDENTITIES", "RETRYABLE_HTTP_STATUSES",
     "ROOT_LOCK_RELATIVE_PATH", "TransportResponse", "AcquisitionResult",
+    "NoRedirectHandler", "RedirectRejectedError", "REDIRECT_STATUS_CODES",
+    "V9_014_STAGE_D_REDIRECT_POLICY", "ALLOWED_REDIRECT_COUNT",
+    "REQUESTED_URL_MUST_EQUAL_RESOLVED_URL", "REDIRECT_IS_RETRYABLE",
     "fetch_and_lock_payload", "run_fixed_eight_calibration_acquisition", "main",
 ]
