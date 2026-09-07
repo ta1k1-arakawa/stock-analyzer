@@ -1546,3 +1546,9 @@ transitions. This public log must not contain protected material.
 - The canonical exact review chronology, with each SHA and result kept separate, is: `6fff63c2bb280cb4746c16e227b9aacf9cdab0be` design `PASS` `C0/H0/M0/L1`; `a8518c677403fd415bd4c6909b51c2c51651dbe3` freeze-record `PASS`; `2edf34004969ecca99db4bb903134122fe71a480` C1 `BLOCK` `C0/H1/M1/L1`; `6628df475fa8fb2eb2a7b12adc5f8ff76e0a6120` C1 `BLOCK` `C0/H0/M1/L1`; `7a539f76da7f26b2cc432c55506f7f739559f7e2` remediation review `BLOCK` `C0/H0/M1/L1`.
 - C1 `HIGH_1` is `RESOLVED`; design `HIGH_1` and `HIGH_2` remain `RESOLVED`; `MEDIUM_1` is `REMEDIATED_AWAITING_GPT_REVIEW` for `DURABLE_REVIEW_CHRONOLOGY_AND_EXACT_SHA_MAPPING_STILL_INCOMPLETE`.
 - C2 remains `NOT_EXECUTED` and T0 remains `NOT_RUN`. Stage B remains `PASS`; the safe root baseline, byte count, C1 synthetic-only status, preserved-root read count, zero network/protected-read/human-gate counts, future-profitability-unestablished status, and frozen design remain unchanged.
+
+## 2026-09-07 — V9_015 C1 final PASS record
+
+- GPT exact-SHA review of `fe1cd902cea9f0b7a3d5bfea2fdefb8b56415cf2` returned `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=1`. The prior chronology correction is accepted; C1 `HIGH_1` and `MEDIUM_1` are `RESOLVED`.
+- The C1 implementation is recorded as `PASS` with source blob SHA `7b371a9ebca6e6b9e060872c8e37ed26a122c93c` and test blob SHA `8b158a11804c431b7b9b6351a66b4bfa1a44e628`. Stage C1 is `PASS`; design `HIGH_1` and `HIGH_2` remain `RESOLVED`, and `LOW_1` remains `OPEN_SAFE_DEFERRED`.
+- Stage C2 remains `NOT_EXECUTED`; the next action is C2 no-network execution under the frozen design. This record contains no raw path, payload, or human identity. T0 remains `NOT_RUN` and future profitability remains unestablished.
