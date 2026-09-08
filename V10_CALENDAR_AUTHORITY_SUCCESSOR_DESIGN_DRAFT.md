@@ -3,7 +3,7 @@
 ```text
 study_id=V10_CALENDAR_AUTHORITY_SUCCESSOR
 predecessor=V9_CROSS_SECTIONAL_CLOSE_AUCTION
-design_status=DRAFT_AWAITING_GPT_METHODOLOGY_REVIEW
+design_status=FREEZE_CANDIDATE_AWAITING_GPT_EXACT_SHA_REVIEW
 evidence_role=INPUT_BINDING_ONLY
 profitability_evidential_capacity=ZERO
 execution_authorized=false
@@ -82,9 +82,9 @@ not change:
   reproducibility, and no profitability claim before the later authorized
   evaluation stages.
 
-The V9 design and charter remain the authority for every item above. If any
-non-calendar item cannot be inherited unambiguously, the correct state is
-`CHATGPT_DECISION_REQUIRED`; this draft does not choose it.
+The V9 design and charter remain the authority for every item above. This
+draft does not alter any non-calendar item. Any future ambiguity outside the
+closed calendar mechanism must stop for a separate methodology decision.
 
 ## 4. The single changed component
 
@@ -100,45 +100,50 @@ hypothesis, target, data partitions, evaluation period, labels, thresholds,
 cost/slippage assumptions, position sizing, universe, search space, or
 profitability criteria.
 
-## 5. Authority and source policy proposed for GPT review
+## 5. Authority and source policy
 
-The proposed acceptable authority class is limited to a source published by
-the exchange or an exchange-designated official body that directly declares
-or mechanically identifies historical TSE cash-equity trading-session/date
-eligibility. The source must be capable of answering the frozen V9 question
-for the required date range; a generic weekday/business-day calendar or an
-index-price observation is insufficient by itself.
-
-The following are not acceptable authority classes for V10:
-
-- Yahoo, Stooq, broker calendars, vendor-derived calendars, OS/locale
-  calendars, generic weekday logic, or `pd.bdate_range`;
-- a source selected only because its dates make a later outcome result more
-  favorable;
-- any source whose historical publication/version identity, coverage, or
-  session semantics cannot be bound before acquisition; or
-- any new source introduced after observing a missing date, disagreement, or
-  evaluation result.
-
-This draft intentionally does not select a concrete provider, endpoint,
-publication, API, document series, or source version. Those are
-methodological choices that GPT must freeze before acquisition:
+The frozen deterministic calendar generator is:
 
 ```text
-V10_CONCRETE_SOURCE_IDENTITY=CHATGPT_DECISION_REQUIRED
-V10_ACCEPTED_SOURCE_CLASS_EXACT_FORM=CHATGPT_DECISION_REQUIRED
-V10_SOURCE_COUNT_AND_PRIORITY=CHATGPT_DECISION_REQUIRED_IF_MORE_THAN_ONE
-V10_SOURCE_PUBLICATION_VERSION_BINDING=CHATGPT_DECISION_REQUIRED
+V10_CONCRETE_SOURCE_IDENTITY=PANDAS_MARKET_CALENDARS_JPX_5_4_0
+V10_ACCEPTED_SOURCE_CLASS_EXACT_FORM=FROZEN_DERIVED_JPX_SESSION_CALENDAR_WITH_OFFICIAL_JPX_TSE_PROVENANCE
+V10_SOURCE_COUNT_AND_PRIORITY=ONE_CANONICAL_GENERATOR_NO_FALLBACK
+calendar_generator=pandas_market_calendars
+package=pandas_market_calendars==5.4.0
+calendar_name=JPX
+calendar_alias_selection_is_not_caller_configurable=true
 ```
 
-Until those fields are frozen, V10 has no acquisition authority. The draft
-proposal is one predeclared official-authority envelope, not permission to
-probe candidates or to promote a source.
+`pandas_market_calendars` is third-party deterministic code and is not an
+official JPX product. Official JPX/TSE publications provide provenance for
+the relevant market rules and exceptional-session facts. The pinned package
+and calendar name are the sole generator inputs; Yahoo, Stooq, broker
+calendars, vendor calendars, OS/locale calendars, generic weekday logic,
+`pd.bdate_range`, J-Quants calendars, and JPX monthly PDFs are not fallback
+or repair sources.
 
-Fallback is not permitted in this draft. If GPT later authorizes more than
-one source, the exact source order, relation, and disagreement rule must be
-frozen before acquisition; a later source may not be tried merely because it
-produces a more favorable calendar.
+The exact upstream provenance is frozen as follows:
+
+```text
+upstream_repo=rsheftel/pandas_market_calendars
+upstream_commit=ce73d50c85d773f96b1b712b6b16dd94b0e028b3
+calendar_source_file=pandas_market_calendars/calendars/jpx.py
+calendar_source_blob=0c2041b1300d1dbbd505202b00ac0ada38c712e1
+holiday_source_file=pandas_market_calendars/holidays/jp.py
+holiday_source_blob=4c34214d06862e02ac22e946757463f748074fde
+```
+
+The supplied methodology evidence establishes that the pinned JPX calendar
+contains the `EquityTradingSystemFailure` exclusion for 2020-10-01, that its
+upstream source cites the official JPX/TSE system-failure publication, that
+the upstream JPX tests expect 2020-10-01 as a trading-system-failure holiday,
+and that the calendar contains the 2024-11-05 close-time transition. These
+facts are methodology evidence supplied for this freeze candidate; this task
+does not reconfirm them by network or package execution.
+
+The source order is a single canonical generator. No second source is
+permitted, no source priority can be selected after observation, and no
+fallback or favorable-calendar selection exists.
 
 ## 6. Coverage and exact session/date semantics
 
@@ -167,21 +172,34 @@ date may be inferred from weekdays, neighboring dates, price absence, or a
 favorable later result.
 
 The accepted calendar must support the inherited first-session-of-month
-cutoff and the D0/D1/D2/D3 lookup. The treatment of partial, shortened, or
-otherwise nonstandard sessions is not specified by the supplied V9
-authority and therefore remains an explicit pre-freeze decision:
+cutoff and the D0/D1/D2/D3 lookup. A shortened, early, or partial session is
+still eligible when the pinned calendar emits a valid session label and the
+generated schedule has a valid `market_close`. There is no separate
+discretionary normal-session filter:
 
 ```text
-V10_PARTIAL_SESSION_ELIGIBILITY=CHATGPT_DECISION_REQUIRED
+V10_PARTIAL_SESSION_ELIGIBILITY=VALID_EMITTED_SESSION_WITH_VALID_MARKET_CLOSE
 ```
-
-GPT must resolve that item using an exact source-defined rule before design
-PASS. No implementation may silently decide it from observed source content.
 
 Structural requirements are exact: dates are unique, valid, within coverage,
 and emitted in deterministic ascending order. A source record that contains
 duplicate, malformed, contradictory, or incompletely scoped date/session
 records fails closed.
+
+The following two pre-outcome regression anchors are checked against the
+generator output and are not local calendar patches:
+
+```text
+2020-10-01=INELIGIBLE
+2020-10-02=ELIGIBLE
+V10_LOCAL_DATE_PATCH_ALLOWED=false
+```
+
+The first anchor is supported by the official TSE system-failure evidence
+and the pinned generator's corresponding `EquityTradingSystemFailure`
+holiday; the second is supported by the official resumption notice. If
+either anchor fails, feasibility is terminal and no repair is permitted. No
+additional anchors may be added from later observations.
 
 ## 7. Provenance and public evidence boundary
 
@@ -204,7 +222,44 @@ identities, prices, outcomes, or exception text.
 
 No source bytes or semantic labels are inspected by this design task.
 
-## 8. Outcome-blind feasibility gate
+## 8. Canonical generator and artifact contract
+
+The later implementation must use exactly the pinned package/version and
+`calendar_name="JPX"`, generate only the fixed coverage, and persist one
+reviewed canonical artifact rather than silently regenerating under a newer
+library. The artifact contains at minimum:
+
+```text
+schema_version
+calendar_method
+calendar_package
+calendar_package_version
+upstream_commit
+calendar_source_blob
+holiday_source_blob
+calendar_name
+coverage_start
+coverage_end
+trading_dates
+trading_date_count
+python_version
+pandas_version
+canonical_calendar_sha256
+generator_implementation_git_sha
+```
+
+`trading_dates` is the sorted unique `YYYY-MM-DD` session-label sequence.
+Every emitted session must have a valid `market_close`; generation failure,
+duplicate or malformed session labels, out-of-coverage labels, invalid
+close values, or noncanonical serialization is unresolved and fails closed.
+The canonical JSON bytes are UTF-8 with `ensure_ascii=false`,
+`sort_keys=true`, `separators=(',', ':')`, `allow_nan=false`, and exactly one
+final LF. `canonical_calendar_sha256` is calculated over the canonical object
+with that field excluded, then recorded in the artifact. The exact Python
+and pandas versions used are recorded as provenance; they are not selected
+from observed calendar output.
+
+## 9. Outcome-blind feasibility gate
 
 Calendar feasibility must complete before any operation that can expose or
 calculate an outcome:
@@ -221,7 +276,7 @@ model inputs, target values, trading outcomes, or profitability metrics. It
 must not choose a calendar by comparing outcome results or by selecting the
 calendar with the most eligible dates.
 
-## 9. Bounded feasibility process and stopping rule
+## 10. Bounded feasibility process and stopping rule
 
 The infrastructure budget is finite and preregistered:
 
@@ -247,8 +302,8 @@ implemented, and independently reviewed is:
    discipline may be reused only if GPT binds it to the selected source:
    maximum three attempts per exact request, retryable statuses limited to
    `{408,429,500,502,503,504}`, and no retry after a complete payload. A
-   transport policy not covered by that inherited rule is
-   `CHATGPT_DECISION_REQUIRED` before design PASS.
+   transport policy not covered by that inherited rule is a freeze blocker
+   before any acquisition.
 4. Offline processing uses only the exact locked objects. A parser, schema,
    missing-date, duplicate, disagreement, or eligibility failure is terminal
    and never authorizes refetch or source substitution.
@@ -257,8 +312,8 @@ implemented, and independently reviewed is:
 
 The single feasibility budget is consumed when the bound source bytes first
 enter semantic session/date processing. A pre-semantic operational failure
-does not create an automatic rerun; it stops and requires
-`CHATGPT_DECISION_REQUIRED`. A post-boundary failure never restores a gate,
+does not create an automatic rerun; it stops for methodology authority. A
+post-boundary failure never restores a gate,
 permits a refetch, or permits a new source under V10.
 
 If the one execution cannot establish the full required coverage and exact
@@ -273,7 +328,7 @@ HISTORICAL_EVALUATION=NOT_PERFORMED
 The archive/source remediation route then stops. No unbounded PDF, locator,
 label, calendar, or provider loop is allowed.
 
-## 10. Missing, disagreement, duplicate, and malformed handling
+## 11. Missing, disagreement, duplicate, and malformed handling
 
 The following are terminal feasibility failures:
 
@@ -294,7 +349,7 @@ independent authority roles, their exact relation and disagreement result
 must be specified before design PASS; unresolved disagreement remains
 terminal.
 
-## 11. Later authority and execution requirements
+## 12. Later authority and execution requirements
 
 This draft grants no authority. Before any later source access, all of the
 following are required:
@@ -310,11 +365,22 @@ following are required:
    final design. No V9 authorization is reusable.
 6. One bounded execution and one safe no-network receipt inspection.
 
-No human gate is consumed by this draft. A future public source must still
+Calendar generation itself requires no historical calendar-data acquisition
+or private calendar access:
+
+```text
+V10_CALENDAR_NETWORK_DATA_ACQUISITION_REQUIRED=false
+V10_PRIVATE_OR_SEALED_CALENDAR_ACCESS_REQUIRED=false
+V10_CALENDAR_HUMAN_GATE_REQUIRED=false
+```
+
+If package provisioning is needed later, it is software provisioning only and
+must follow repository/environment governance; it does not authorize research
+data access. No human gate is consumed by this draft. A future public source must still
 obey the final approved source, content-lock, retry, redirect, and stopping
 contract; public transport plumbing does not authorize a methodology change.
 
-## 12. Explicit non-actions and prohibitions
+## 13. Explicit non-actions and prohibitions
 
 This task performs zero network requests, zero source acquisition, zero
 private/sealed reads, zero protected Source-A reads, and zero semantic
@@ -330,14 +396,13 @@ recommendation. It does not change the V9 evaluation period, holdout,
 labels/targets, costs, slippage, search space, stopping criteria, or
 profitability gates.
 
-## 13. Design-freeze PASS criteria and next stage
+## 14. Design-freeze PASS criteria and next stage
 
 GPT may mark this design `PASS_FROZEN` only when the exact source authority
 class and identity, coverage, session/partial-session semantics, manifest
 and publication/version binding, source order, missing/duplicate/disagreement
 rules, fallback policy, retry policy, failure codes, one-shot budget, safe
 receipt schema, and later authority sequence are all mechanically closed.
-No `CHATGPT_DECISION_REQUIRED` item may remain unresolved.
 
 If GPT passes and freezes this draft, the next stage is a synthetic-only
 implementation of the frozen minimal calendar/session-binding runner,
@@ -350,7 +415,7 @@ not establish profitability and would not itself authorize T0, historical
 evaluation, model fitting, outcome access, or strategy promotion.
 
 ```text
-V10_STATUS=DRAFT_AWAITING_GPT_METHODOLOGY_REVIEW
+V10_STATUS=FREEZE_CANDIDATE_AWAITING_GPT_EXACT_SHA_REVIEW
 V10_EXECUTION_AUTHORIZED=false
 T0=NOT_RUN
 HISTORICAL_EVALUATION=NOT_PERFORMED
