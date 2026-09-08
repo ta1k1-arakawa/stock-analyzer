@@ -1,6 +1,8 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -421,3 +423,66 @@ def test_production_constants_and_wrapper_have_no_selection_or_network_path() ->
     assert "category" not in source.lower()
     assert "report-label" not in source.lower()
     assert "month-grammar" not in source.lower()
+
+
+def test_direct_script_external_cwd_without_execute_is_safe(tmp_path: Path) -> None:
+    external_cwd = tmp_path / "external-cwd"
+    external_cwd.mkdir()
+    output_root = tmp_path / "output"
+    missing_page = tmp_path / "missing-placeholder.html"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(Path(runner.__file__).resolve()),
+            "--year-page",
+            str(missing_page),
+            "--output-root",
+            str(output_root),
+            "--expected-git-sha",
+            "0" * 40,
+            "--confirmation",
+            runner.CONFIRMATION_CONTRACT,
+        ],
+        cwd=external_cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert completed.stderr == ""
+    safe_result = json.loads(completed.stdout)
+    assert safe_result["reason"] == "EXECUTE_DISCOVERY_REQUIRED"
+    assert safe_result["semantic_discovery_invocations"] == 0
+    assert not output_root.exists()
+
+
+def test_direct_script_external_cwd_invalid_sha_is_safe(tmp_path: Path) -> None:
+    external_cwd = tmp_path / "external-cwd"
+    external_cwd.mkdir()
+    output_root = tmp_path / "output"
+    missing_page = tmp_path / "missing-placeholder.html"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(Path(runner.__file__).resolve()),
+            "--year-page",
+            str(missing_page),
+            "--output-root",
+            str(output_root),
+            "--expected-git-sha",
+            "invalid-sha",
+            "--confirmation",
+            runner.CONFIRMATION_CONTRACT,
+            "--execute-discovery",
+        ],
+        cwd=external_cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert completed.stderr == ""
+    safe_result = json.loads(completed.stdout)
+    assert safe_result["reason"] == "EXPECTED_GIT_SHA_INVALID"
+    assert safe_result["semantic_discovery_invocations"] == 0
+    assert not output_root.exists()

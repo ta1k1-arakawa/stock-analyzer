@@ -16,6 +16,15 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+if __package__ in {None, ""}:
+    _script_directory = os.path.normcase(str(Path(__file__).resolve().parent))
+    sys.path[:] = [
+        entry
+        for entry in sys.path
+        if os.path.normcase(os.path.abspath(entry or os.curdir)) != _script_directory
+    ]
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from src.v9_005_stage_a_jpx_probe import _parse_monthly_statistics_html
 
 
