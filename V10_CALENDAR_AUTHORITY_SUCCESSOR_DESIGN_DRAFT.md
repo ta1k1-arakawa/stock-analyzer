@@ -211,7 +211,71 @@ additional anchors may be added from later observations.
 
 ## 7. Runtime provenance and public evidence boundary
 
-The later implementation must complete a no-network runtime provenance
+All durable V10 Python execution is bound to the repository's canonical
+protected real-execution environment, not to a V10-specific virtual
+environment:
+
+```text
+V10_PROTECTED_RUNTIME_ENVIRONMENT=.venv-real-execution
+V10_PROTECTED_RUNTIME_INTERPRETER=.venv-real-execution\Scripts\python.exe
+V10_RUNTIME_ENVIRONMENT_AUTHORITY=REPOSITORY_CANONICAL_PROTECTED_ENVIRONMENT
+V10_ALTERNATE_VIRTUALENV_ALLOWED=false
+V10_INSTALL_OUTSIDE_PROTECTED_LOCK_ALLOWED=false
+```
+
+The protected installation/runtime authority is the reviewed
+`requirements-real-execution.lock.txt` together with the applicable
+`AI_REAL_EXECUTION_RUNBOOK.md` and `REAL_EXECUTION_PYTHON_ENVIRONMENT.md`
+environment freeze and validation contract. The explicit interpreter above
+must be used and its resolved identity must be verified before any protected
+V10 boundary.
+
+The study-specific `V10_RUNTIME_ENVIRONMENT_LOCK.json` is an additional V10
+provenance snapshot only. It is not an installation authority and does not
+authorize a separate virtual environment or interpreter:
+
+```text
+V10_RUNTIME_LOCK_ROLE=ADDITIONAL_PROVENANCE_SNAPSHOT_NOT_INSTALLATION_AUTHORITY
+V10_RUNTIME_LOCK_INSTALLATION_AUTHORITY=false
+V10_RUNTIME_LOCK_SEPARATE_INTERPRETER_AUTHORITY=false
+```
+
+The current reviewed `requirements-real-execution.lock.txt` does not contain
+the V10-required `pandas-market-calendars` / `exchange-calendars` stack.
+Therefore the V10 runtime-lock creation and semantic calendar generation
+are currently not environment-ready:
+
+```text
+V10_CURRENT_CANONICAL_ENVIRONMENT_V10_READY=false
+V10_RUNTIME_LOCK_CREATION_READY=false
+V10_SEMANTIC_GENERATION_READY=false
+```
+
+Before `V10_RUNTIME_ENVIRONMENT_LOCK.json` can be created, a separate future
+canonical-environment-extension stage is required under
+`AI_REAL_EXECUTION_RUNBOOK.md` and `REAL_EXECUTION_PYTHON_ENVIRONMENT.md`.
+That stage must operate only on `.venv-real-execution` through its explicit
+interpreter, establish an exact-pinned reviewed package authority containing
+the V10 stack, preserve all existing protected-environment readiness
+requirements, and receive the required Windows-grounded validation,
+environment-freeze promotion, and GPT exact-SHA review before V10 continues.
+While selecting, provisioning, or locking dependencies, it must not import
+or run the JPX generator, generate or inspect calendar dates, inspect
+research data, or perform historical-price, private/sealed, T0, model,
+backtest, or profitability operations. Any real software acquisition needed
+by repository governance requires separate point-of-use authority. No
+alternate V10 virtual environment is permitted, and no installation outside
+the reviewed canonical protected lock is permitted.
+
+If the canonical environment cannot be extended while preserving
+`pandas_market_calendars==5.4.0`, `calendar_name=JPX`, the frozen source blob
+identities, and repository protected-environment readiness, the process must
+stop as `CHATGPT_DECISION_REQUIRED` before runtime-lock creation or
+generator execution.
+
+Only after that future canonical environment extension has passed its
+Windows validation/environment-freeze promotion and GPT exact-SHA review
+may the later implementation complete a no-network runtime provenance
 preflight before calendar generation. It must mechanically verify all of the
 following against the frozen values:
 
@@ -243,13 +307,14 @@ V10_DIRECT_RUNTIME_MAPPING_ALTERNATIVE=false
 ```
 
 Before the one calendar feasibility execution, a separate
-`V10_RUNTIME_ENVIRONMENT_LOCK.json` must be created in the dedicated V10
-calendar runtime environment. This software-provisioning/runtime-lock stage
-may install or provision software when mechanically necessary, but it must
-not import or run the JPX generator, generate or inspect calendar dates, or
-inspect prices, returns, outcomes, or other research data. The runtime lock
-stage requires its own GPT exact-SHA/provenance review before the one
-semantic calendar generation.
+`V10_RUNTIME_ENVIRONMENT_LOCK.json` must be created as a provenance
+snapshot from that already reviewed canonical protected environment. Its
+creation is not an installation step and it must not select a different
+interpreter or environment. The runtime-lock stage must not import or run
+the JPX generator, generate or inspect calendar dates, or inspect prices,
+returns, outcomes, or other research data. The runtime lock stage requires
+its own GPT exact-SHA/provenance review before the one semantic calendar
+generation.
 
 The runtime-lock JSON has exactly this required contract:
 
@@ -268,8 +333,9 @@ runtime_distribution_count
 The fixed values are `calendar_distribution_name=pandas_market_calendars`,
 `calendar_distribution_version=5.4.0`, `calendar_name=JPX`, and the two
 frozen source blobs above. `runtime_distributions` is the complete installed
-Python distribution set in the dedicated V10 calendar runtime environment at
-lock time, represented as an array of objects with exactly `name` and
+Python distribution set in the repository's canonical protected real-execution
+environment at lock time, represented as an array of objects with exactly
+`name` and
 `version` fields. For each installed metadata name, lower-case it and replace
 each maximal run of `-`, `_`, or `.` with `-`; reject empty normalized names
 and duplicate normalized names. Sort the array lexicographically by
@@ -521,33 +587,43 @@ V10_FALLBACK_ALLOWED=false
 The only later execution sequence permitted after this design is frozen,
 implemented, and independently reviewed is:
 
-1. If mechanically necessary, software/environment provisioning occurs
-   before feasibility execution under repository/environment governance. It
-   is not research-data acquisition and cannot select a calendar version from
-   generated output.
-2. The dedicated runtime-lock stage creates the canonical
-   `V10_RUNTIME_ENVIRONMENT_LOCK.json` without importing or running the JPX
-   generator and without generating or inspecting calendar dates.
-3. GPT reviews and binds the exact runtime-lock provenance before the one
+1. A separate canonical-environment-extension stage operates only on
+   `.venv-real-execution` through
+   `.venv-real-execution\Scripts\python.exe`, under repository environment
+   governance, if the V10 stack is not already present. It performs no JPX
+   generator import, date generation/inspection, research-data operation, or
+   outcome operation.
+2. That canonical environment extension must establish an exact-pinned
+   reviewed package authority, preserve all existing readiness requirements,
+   pass Windows-grounded validation and environment-freeze promotion, and
+   receive GPT exact-SHA review before V10 continues. If it cannot preserve
+   the frozen V10 package/version, `JPX` name, source blobs, and protected
+   readiness contract, stop with `CHATGPT_DECISION_REQUIRED`.
+3. The V10 runtime-lock stage creates the canonical
+   `V10_RUNTIME_ENVIRONMENT_LOCK.json` as an additional provenance snapshot
+   from the reviewed canonical environment, without importing or running
+   the JPX generator and without generating or inspecting calendar dates.
+4. GPT reviews and binds the exact runtime-lock provenance before the one
    semantic calendar generation.
-4. Synthetic-only implementation and targeted tests are completed.
-5. GPT performs the exact-SHA implementation review. If repository
+5. Synthetic-only implementation and targeted tests are completed.
+6. GPT performs the exact-SHA implementation review. If repository
    governance requires this implementation review before runtime-lock
    creation, that stricter ordering is retained; the lock must still be
    reviewed before generation.
-6. Phase A no-network provenance preflight verifies the exact reviewed
+7. Phase A no-network provenance preflight verifies the exact reviewed
    runtime lock, its canonical SHA-256, the frozen design, reviewed
-   implementation, clean state, pinned package/version, fixed `JPX` name,
-   exact Git-blob identities, and exact runtime distribution mapping.
-7. Exactly one offline feasibility execution invokes only the pinned
+   implementation, clean state, canonical protected interpreter identity,
+   pinned package/version, fixed `JPX` name, exact Git-blob identities, and
+   exact runtime distribution mapping.
+8. Exactly one offline feasibility execution invokes only the pinned
    generator over the fixed coverage. It reads no historical calendar
    payload, performs no HTTP request, and has no source discovery, candidate
    expansion, fallback, or second execution.
-8. The execution durably persists one canonical calendar artifact and one
+9. The execution durably persists one canonical calendar artifact and one
    safe receipt containing the same runtime-lock SHA-256, bound provenance,
    canonical sorted session labels, and closed failure/result fields.
-9. A safe receipt is inspected without network.
-10. GPT adjudicates only the bounded generator evidence and does not use any
+10. A safe receipt is inspected without network.
+11. GPT adjudicates only the bounded generator evidence and does not use any
     outcome information.
 
 The single feasibility budget is consumed when the pinned generator first
