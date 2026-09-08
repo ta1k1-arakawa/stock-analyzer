@@ -186,16 +186,10 @@ single exact row anchor and deterministic month-header grammar may be frozen.
 No post-observation category, label, fallback, or grammar invention is
 allowed.
 
-If discovery succeeds, any subsequent work requires this sequence:
-
-```text
-V9_017 design GPT exact-SHA PASS
-  -> one bounded discovery execution
-  -> GPT methodology judgment and explicit freeze
-  -> separate implementation and targeted tests
-  -> GPT exact-SHA implementation review
-  -> separately authorized execution as required
-```
+If discovery succeeds, all subsequent work follows the sole authoritative
+stage ordering in Section 3. This section adds no abbreviated or alternate
+ordering and does not place real discovery before reviewed runner
+implementation.
 
 No later implementation, application to other years, PDF acquisition, or
 network operation is authorized by this design draft.
