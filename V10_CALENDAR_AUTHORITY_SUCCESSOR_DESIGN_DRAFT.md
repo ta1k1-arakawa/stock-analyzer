@@ -234,9 +234,59 @@ repair, version comparison, or reinstall-and-retry after feasibility
 generation begins. Dependency versions are not selected by inspecting
 generated dates.
 
-The canonical artifact and safe receipt bind this runtime mapping or a
-separately persisted canonical runtime-environment receipt by its exact
-SHA-256, with the relationship explicit before design freeze. Public safe
+The sole runtime provenance mechanism is:
+
+```text
+V10_RUNTIME_PROVENANCE_MECHANISM=SEPARATE_CANONICAL_RUNTIME_ENVIRONMENT_LOCK
+V10_RUNTIME_LOCK_FILENAME=V10_RUNTIME_ENVIRONMENT_LOCK.json
+V10_DIRECT_RUNTIME_MAPPING_ALTERNATIVE=false
+```
+
+Before the one calendar feasibility execution, a separate
+`V10_RUNTIME_ENVIRONMENT_LOCK.json` must be created in the dedicated V10
+calendar runtime environment. This software-provisioning/runtime-lock stage
+may install or provision software when mechanically necessary, but it must
+not import or run the JPX generator, generate or inspect calendar dates, or
+inspect prices, returns, outcomes, or other research data. The runtime lock
+stage requires its own GPT exact-SHA/provenance review before the one
+semantic calendar generation.
+
+The runtime-lock JSON has exactly this required contract:
+
+```text
+schema_version
+python_version
+calendar_distribution_name
+calendar_distribution_version
+calendar_name
+calendar_source_blob
+holiday_source_blob
+runtime_distributions
+runtime_distribution_count
+```
+
+The fixed values are `calendar_distribution_name=pandas_market_calendars`,
+`calendar_distribution_version=5.4.0`, `calendar_name=JPX`, and the two
+frozen source blobs above. `runtime_distributions` is the complete installed
+Python distribution set in the dedicated V10 calendar runtime environment at
+lock time, represented as an array of objects with exactly `name` and
+`version` fields. For each installed metadata name, lower-case it and replace
+each maximal run of `-`, `_`, or `.` with `-`; reject empty normalized names
+and duplicate normalized names. Sort the array lexicographically by
+normalized `name`, and require `runtime_distribution_count` to equal its
+length. The set must include at least `pandas-market-calendars`, `pandas`,
+and `exchange-calendars`, plus every other installed distribution.
+
+The canonical runtime-lock bytes are UTF-8 with `ensure_ascii=false`,
+`sort_keys=true`, `separators=(',', ':')`, `allow_nan=false`, and exactly one
+final LF. The lock JSON contains no self-hash. The later safe receipt and
+canonical calendar artifact record:
+
+```text
+runtime_environment_lock_sha256=SHA256(exact canonical V10_RUNTIME_ENVIRONMENT_LOCK.json bytes)
+```
+
+There is no direct runtime-mapping embedding alternative. Public safe
 receipts may expose only approved hashes, counts, coverage, booleans, closed
 failure codes, and reviewed provenance SHAs. They must not expose raw
 payloads, private paths, credentials, URLs, ticker identities, prices,
@@ -261,6 +311,7 @@ upstream_commit
 calendar_source_blob
 holiday_source_blob
 calendar_name
+runtime_environment_lock_sha256
 coverage_start
 coverage_end
 trading_dates
@@ -271,7 +322,12 @@ canonical_calendar_sha256
 generator_implementation_git_sha
 ```
 
-`trading_dates` is the sorted unique `YYYY-MM-DD` session-label sequence.
+`runtime_environment_lock_sha256` must equal the SHA-256 of the exact
+reviewed canonical runtime-lock bytes; the complete runtime distribution
+mapping is bound only through that separate lock. `python_version` and
+`pandas_version` remain required scalar provenance fields and must equal the
+reviewed lock. `trading_dates` is the sorted unique `YYYY-MM-DD`
+session-label sequence.
 Every emitted session must have a valid `market_close`; generation failure,
 duplicate or malformed session labels, out-of-coverage labels, invalid
 close values, or noncanonical serialization is unresolved and fails closed.
@@ -288,7 +344,7 @@ Calendar feasibility must complete before any operation that can expose or
 calculate an outcome:
 
 ```text
-source binding and session eligibility
+runtime binding and session eligibility
     -> safe no-network inspection and GPT adjudication
     -> only if PASS, later V10 input-binding acceptance
     -> only after separately authorized later stages, T0/outcome/model work
@@ -318,25 +374,36 @@ implemented, and independently reviewed is:
    before feasibility execution under repository/environment governance. It
    is not research-data acquisition and cannot select a calendar version from
    generated output.
-2. A no-network provenance preflight verifies the exact repository,
-   frozen-design SHA, reviewed implementation SHA, clean state, pinned
-   package/version, fixed `JPX` calendar name, exact Git-blob identities, and
-   deterministic runtime dependency/version mapping.
-3. Exactly one offline feasibility execution invokes only the pinned
+2. The dedicated runtime-lock stage creates the canonical
+   `V10_RUNTIME_ENVIRONMENT_LOCK.json` without importing or running the JPX
+   generator and without generating or inspecting calendar dates.
+3. GPT reviews and binds the exact runtime-lock provenance before the one
+   semantic calendar generation.
+4. Synthetic-only implementation and targeted tests are completed.
+5. GPT performs the exact-SHA implementation review. If repository
+   governance requires this implementation review before runtime-lock
+   creation, that stricter ordering is retained; the lock must still be
+   reviewed before generation.
+6. Phase A no-network provenance preflight verifies the exact reviewed
+   runtime lock, its canonical SHA-256, the frozen design, reviewed
+   implementation, clean state, pinned package/version, fixed `JPX` name,
+   exact Git-blob identities, and exact runtime distribution mapping.
+7. Exactly one offline feasibility execution invokes only the pinned
    generator over the fixed coverage. It reads no historical calendar
    payload, performs no HTTP request, and has no source discovery, candidate
    expansion, fallback, or second execution.
-4. The execution durably persists one canonical calendar artifact and one
-   safe receipt containing the bound provenance, canonical sorted session
-   labels, and closed failure/result fields.
-5. A safe receipt is inspected without network. GPT adjudicates only the
-   bounded generator evidence and does not use any outcome information.
+8. The execution durably persists one canonical calendar artifact and one
+   safe receipt containing the same runtime-lock SHA-256, bound provenance,
+   canonical sorted session labels, and closed failure/result fields.
+9. A safe receipt is inspected without network.
+10. GPT adjudicates only the bounded generator evidence and does not use any
+    outcome information.
 
 The single feasibility budget is consumed when the pinned generator first
 begins the one feasibility execution. A pre-generation operational failure
 does not create an automatic rerun; it stops for methodology authority. A
-post-boundary failure never restores a gate, permits a retry, or permits a
-new source under V10.
+post-boundary failure never restores a gate, permits a retry, a second lock,
+environment repair, or a new source under V10.
 
 If the one execution cannot establish the full required coverage and exact
 session semantics, V10 is:
@@ -371,17 +438,15 @@ single `market_close` rule.
 
 ## 12. Later authority and execution requirements
 
-This draft grants no authority. Before any later calendar generation, all of
-the following are required:
-
-1. GPT methodology PASS on this exact design and a frozen exact Git SHA.
-2. Synthetic-only implementation and targeted tests for the selected
-   source-binding/eligibility contract.
-3. GPT exact-SHA PASS on that implementation.
-4. A no-network provenance preflight proving the exact frozen design,
-   implementation, pinned runtime provenance, and clean repository state.
-5. One offline pinned-generator execution and one safe no-network receipt
-   inspection. No historical calendar payload is acquired or read.
+This draft grants no authority. The ten-step sequence in Section 10 is the
+sole later execution order. GPT methodology PASS on this exact design and a
+frozen exact Git SHA is its prerequisite; the sequence then requires
+software/environment provisioning if mechanically necessary, creation and
+GPT review of the exact canonical `V10_RUNTIME_ENVIRONMENT_LOCK.json`,
+synthetic implementation/tests and GPT implementation review, Phase A
+no-network preflight, exactly one offline pinned-generator execution,
+durable artifact/receipt, no-network inspection, and GPT adjudication. No
+historical calendar payload is acquired or read.
 
 Calendar generation itself requires no historical calendar-data acquisition
 or private calendar access:
@@ -396,7 +461,7 @@ If package provisioning is needed later, it is software provisioning only and
 must follow repository/environment governance; it does not authorize research
 data access. No human gate is consumed by this draft. The pinned generator
 must be used exactly as frozen, and provisioning cannot change its version,
-calendar name, source blobs, or methodology based on output.
+calendar name, source blobs, runtime lock, or methodology based on output.
 
 ## 13. Explicit non-actions and prohibitions
 
@@ -417,12 +482,13 @@ profitability gates.
 ## 14. Design-freeze PASS criteria and next stage
 
 GPT may mark this design `PASS_FROZEN` only when the exact source authority
-class and identity, coverage, session/partial-session semantics, runtime
-package/version and Git-blob provenance, dependency-version receipt binding,
-duplicate/malformed/out-of-coverage/market-close/anchor/canonicalization
-rules, non-emission semantics, fallback policy, no-retry policy, failure
-codes, one-shot budget, safe receipt schema, and later offline execution
-sequence are all mechanically closed.
+class and identity, coverage, session/partial-session semantics, the separate
+runtime-lock schema/canonical bytes/GPT binding, package/version and Git-blob
+provenance, exact dependency-set binding, duplicate/malformed/out-of-coverage/
+market-close/anchor/canonicalization rules, non-emission semantics, fallback
+policy, no-retry/no-repair policy, failure codes, one-shot budget, safe
+receipt schema, and later offline execution sequence are all mechanically
+closed.
 
 If GPT passes and freezes this draft, the next stage is a synthetic-only
 implementation of the frozen minimal calendar/session-binding runner,
