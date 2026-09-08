@@ -1,0 +1,115 @@
+{
+  "schema_version": "V9_017_DISCOVERY_ADJUDICATION_AND_LOCATOR_CONTRACT_FREEZE_V1",
+  "study_id": "V9_017_SOURCE_B_2017_PUBLIC_SCHEMA_DISCOVERY_SUCCESSOR",
+  "implementation_review": {
+    "reviewed_sha": "6aac007744ef4ec1a7046aa60065ef349824306a",
+    "parent_sha": "f59c6362fa08034b6d6dbf65c95bda82355b9919",
+    "remote_head": "6aac007744ef4ec1a7046aa60065ef349824306a",
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 1,
+    "result": "PASS",
+    "high_1": "RESOLVED",
+    "low_1": "EMPTY_NORMALIZED_FIRST_CELL_EXPLICIT_REGRESSION_TEST_NOT_SEPARATELY_COVERED_SAFE_DEFERRED",
+    "discovery_runner_blob": "a02495c13c67e96504475737e15f78d73c202c49",
+    "discovery_runner_test_blob": "1497e5bff0c61b6e84b71b54573d363b294c12f0"
+  },
+  "execution": {
+    "phase_a2": "PASS",
+    "phase_b2_process_exit_code": 0,
+    "phase_c2": "PASS",
+    "attempt_json_sha256": "1a7efee60eff05075aaa65739abd1ebdb4425313caa0a7c57287d4f4f7450316",
+    "result_json_sha256": "6ab33223d41c8ceeb359ba2e08beab2972a4e562ac0dccd2b891c2c2070c7808",
+    "complete_json_sha256": "eb79dc77b34ec0c415e73d41e16f1c3510c7f0cea46baf5c1c48fee1cb68cb69",
+    "input_year": 2017,
+    "input_byte_count": 98936,
+    "input_sha256": "1dc982e97b1d4ce7d52bc25631ddc46a219d22f82b393881f40e5d2478177821",
+    "semantic_2017_reads": 1,
+    "semantic_discovery_invocations": 1,
+    "discovery_budget_consumed": true,
+    "second_discovery_execution_allowed": false,
+    "table_count": 1,
+    "observation_count": 34,
+    "network_data_requests": 0,
+    "protected_source_a_reads": 0,
+    "human_gate_consumed": 0
+  },
+  "adjudication": {
+    "schema_evidence": "SUFFICIENT",
+    "source_b_route": "CONTINUE",
+    "normalization": "\" \".join(raw_text.split())",
+    "report_row_anchor": {
+      "exact_text": "2 Stock Trading Volume & Value",
+      "global_page_multiplicity": "ONE",
+      "alias_allowed": false,
+      "leading_numeric_prefix_removal_allowed": false,
+      "substring_fuzzy_casefold_punctuation_repair_allowed": false
+    },
+    "month_token_mapping": {
+      "01": "Jan.",
+      "03": "Mar.",
+      "04": "Apr.",
+      "05": "May",
+      "12": "Dec."
+    },
+    "month_mapping_rules": {
+      "header_column": "M - 1",
+      "report_data_column": "M",
+      "report_data_offset_from_header": 1,
+      "immutable_after_observation": true,
+      "alternate_abbreviations_allowed": false,
+      "locale_lookup_allowed": false,
+      "fallback_allowed": false,
+      "per_year_or_month_switching_allowed": false,
+      "category_selection": "NONE"
+    },
+    "normal_identities": [
+      "2017-01 NORMAL_MONTHLY_REPORT2_OBJECT",
+      "2019-12 NORMAL_MONTHLY_REPORT2_OBJECT",
+      "2020-01 NORMAL_MONTHLY_REPORT2_OBJECT",
+      "2022-03 NORMAL_MONTHLY_REPORT2_OBJECT",
+      "2022-04 NORMAL_MONTHLY_REPORT2_OBJECT",
+      "2022-05 NORMAL_MONTHLY_REPORT2_OBJECT",
+      "2026-01 NORMAL_MONTHLY_REPORT2_OBJECT"
+    ],
+    "normal_locator_contract": {
+      "bound_year_page_only": true,
+      "inherited_parser_only": true,
+      "exact_column_zero_anchor_required": true,
+      "exactly_one_report_row_required": true,
+      "containing_table_only": true,
+      "exactly_one_target_header_cell_required": true,
+      "target_header_column": "M - 1",
+      "target_header_tag": "th",
+      "selected_report_data_column": "M",
+      "selected_cell_href_multiplicity": "ONE",
+      "zero_many_ambiguity_or_mismatch": "FAIL_TERMINAL",
+      "guessed_url_refetch_and_post_observation_repair_allowed": false
+    },
+    "special_identity": {
+      "identity": "2022-04 PRE_APRIL_1_REFERENCE_OBJECT",
+      "part_of_normal_month_grammar": false,
+      "mechanics": [
+        "extract_april_pre_candidates",
+        "resolve_source_b_april_pre_object",
+        "APRIL_1_2022_REFERENCE_LABEL"
+      ],
+      "v9_017_authority_added": false
+    }
+  },
+  "state": {
+    "v9_017": "PASS",
+    "execution_authorized": false,
+    "fixed_eight_application_authorized": false,
+    "t0": "NOT_RUN",
+    "future_profitability": "UNESTABLISHED",
+    "next_stage": "IMPLEMENT_FROZEN_LOCATOR_CONTRACT_WITH_SYNTHETIC_TESTS",
+    "next_action": "GPT_EXACT_SHA_INDEPENDENT_REVIEW"
+  },
+  "non_claims": [
+    "No additional semantic read is authorized by this record.",
+    "No PDF or network acquisition occurred in this task.",
+    "No profitability, T0, model, backtest, or outcome evidence was produced."
+  ]
+}
