@@ -1,0 +1,121 @@
+{
+  "schema_version": "V9_016_C2_TERMINAL_ADJUDICATION_V1",
+  "study": "V9_016_SOURCE_B_2017_MONTH_HEADER_LOCATOR_RECOVERY_SUCCESSOR",
+  "execution_sha": "eac9f5b44a2336d07a3e579eef3ff7e7462e12d1",
+  "phase_a": "PASS",
+  "phase_b": {
+    "process_exit_code": 0,
+    "stdout_bytes": 1901,
+    "stdout_sha256": "d64f2fff1d2a1ea6fcab13cff89964e8b18af8396177830959c18ffd8ddd3ae7",
+    "stderr_bytes": 0,
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "phase_c": "PASS",
+  "execution_integrity": "PASS",
+  "research_result": "FAIL_TERMINAL",
+  "failure_class": "DATA_QUALITY_FAILURE",
+  "safe_reason": "EXACT_SOURCE_B_REPORT_ROW_NOT_ESTABLISHED",
+  "probe_result": {
+    "parser_success": true,
+    "table_count": 1,
+    "report_cell_count": 0,
+    "report_row_count": 0,
+    "legacy_candidate_count": 0,
+    "categories": {
+      "LOGICAL_YYYY_MM": {
+        "th": 0,
+        "same_table_th": 0,
+        "pairs": 0,
+        "in_bounds": 0,
+        "out_of_bounds": 0,
+        "href_count": 0,
+        "href_multiplicity": "ZERO"
+      },
+      "EN_MONTH_ABBR_DOT": {
+        "th": 1,
+        "same_table_th": 0,
+        "pairs": 0,
+        "in_bounds": 0,
+        "out_of_bounds": 0,
+        "href_count": 0,
+        "href_multiplicity": "ZERO"
+      },
+      "EN_MONTH_ABBR": {
+        "th": 0,
+        "same_table_th": 0,
+        "pairs": 0,
+        "in_bounds": 0,
+        "out_of_bounds": 0,
+        "href_count": 0,
+        "href_multiplicity": "ZERO"
+      },
+      "EN_MONTH_FULL": {
+        "th": 0,
+        "same_table_th": 0,
+        "pairs": 0,
+        "in_bounds": 0,
+        "out_of_bounds": 0,
+        "href_count": 0,
+        "href_multiplicity": "ZERO"
+      },
+      "NUMERIC_MONTH": {
+        "th": 0,
+        "same_table_th": 0,
+        "pairs": 0,
+        "in_bounds": 0,
+        "out_of_bounds": 0,
+        "href_count": 0,
+        "href_multiplicity": "ZERO"
+      },
+      "NUMERIC_MONTH_ZERO_PADDED": {
+        "th": 0,
+        "same_table_th": 0,
+        "pairs": 0,
+        "in_bounds": 0,
+        "out_of_bounds": 0,
+        "href_count": 0,
+        "href_multiplicity": "ZERO"
+      }
+    }
+  },
+  "admissible_category_count": 0,
+  "category_selection": "NONE",
+  "year_2017_binding_verified": true,
+  "semantic_2017_year_page_reads": 1,
+  "other_year_semantic_reads": 0,
+  "probe_invocations": 1,
+  "network_data_requests": 0,
+  "protected_source_a_reads": 0,
+  "human_gate_consumed": 0,
+  "c2_rerun_allowed": false,
+  "stage_d": "NOT_REACHED",
+  "stage_e": "NOT_REACHED",
+  "t0": "NOT_RUN",
+  "future_profitability": "UNESTABLISHED",
+  "v9_016": "FAIL_TERMINAL",
+  "result": "BLOCK_TERMINAL",
+  "implementation_provenance": {
+    "runner_source_blob_sha": "7a09233bf76993919d36b58b2188088bd65e321d",
+    "c1_source_blob_sha": "2e6867d1e5f78d61e17d375debaa8133f1f2a3c4"
+  },
+  "non_claims": {
+    "en_month_abbr_dot_selected": false,
+    "th_one_is_insufficient_without_report_row": true,
+    "alternative_report_label_observed_or_established": false,
+    "jpx_label_change_claimed": false,
+    "unseen_raw_cell_text_inferred": false,
+    "raw_html_text_hrefs_and_urls_recorded": false,
+    "failure_is_transport_failure": false,
+    "failure_is_implementation_failure": false,
+    "failure_is_strategy_failure": false,
+    "failure_is_profitability_failure": false
+  },
+  "successor_boundary": {
+    "v9_017_created": false,
+    "new_report_label_candidates_recorded": false,
+    "next_study_methodology": "CHATGPT_DECISION_REQUIRED",
+    "additional_2017_semantic_inspection": false,
+    "additional_other_year_semantic_inspection": false,
+    "network_refetch_or_fallback": false
+  }
+}
