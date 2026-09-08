@@ -4,7 +4,7 @@
 study_id=V9_016_SOURCE_B_2017_MONTH_HEADER_LOCATOR_RECOVERY_SUCCESSOR
 evidence_role=INPUT_BINDING_ONLY
 profitability_evidential_capacity=ZERO
-design_status=DRAFT_AWAITING_GPT_REVIEW
+design_status=DRAFT_REMEDIATED_AWAITING_GPT_REVIEW
 automatic_retry=false
 ```
 
@@ -55,12 +55,59 @@ matching, regex repair, punctuation repair, arbitrary-text output, or
 year/month inference from a URL is allowed. No first/last selection is
 allowed.
 
+### Fixed-eight identity and month-token derivation
+
+The fixed-eight calibration identities remain unchanged. The seven NORMAL
+identities use the single month-header category frozen by D, with the exact
+token mapping below. The special identity does not use this mapping.
+
+```text
+2017-01 NORMAL_MONTHLY_REPORT2_OBJECT
+2019-12 NORMAL_MONTHLY_REPORT2_OBJECT
+2020-01 NORMAL_MONTHLY_REPORT2_OBJECT
+2022-03 NORMAL_MONTHLY_REPORT2_OBJECT
+2022-04 NORMAL_MONTHLY_REPORT2_OBJECT
+2022-05 NORMAL_MONTHLY_REPORT2_OBJECT
+2026-01 NORMAL_MONTHLY_REPORT2_OBJECT
+
+2022-04 PRE_APRIL_1_REFERENCE_OBJECT
+```
+
+For logical month `YYYY-MM`, let `Y` be the four-digit year and `M` be the
+two-digit month number. Only the following month numbers are required by the
+fixed-seven NORMAL identities in this study:
+
+| Candidate category | 01 | 03 | 04 | 05 | 12 |
+| --- | --- | --- | --- | --- | --- |
+| `LOGICAL_YYYY_MM` | `Y-01` | `Y-03` | `Y-04` | `Y-05` | `Y-12` |
+| `EN_MONTH_ABBR_DOT` | `Jan.` | `Mar.` | `Apr.` | `May.` | `Dec.` |
+| `EN_MONTH_ABBR` | `Jan` | `Mar` | `Apr` | `May` | `Dec` |
+| `EN_MONTH_FULL` | `January` | `March` | `April` | `May` | `December` |
+| `NUMERIC_MONTH` | `1` | `3` | `4` | `5` | `12` |
+| `NUMERIC_MONTH_ZERO_PADDED` | `01` | `03` | `04` | `05` | `12` |
+
+For `LOGICAL_YYYY_MM`, the exact token is the four-digit `Y`, a hyphen, and
+the zero-padded two-digit `M`; the table's `Y-..` notation is only the
+mechanical year-parameterized form of that exact token. No speculative
+mappings for other months are part of this study.
+
+The `2022-04 PRE_APRIL_1_REFERENCE_OBJECT` identity must not use the
+month-header recovery mapping. It continues to use the inherited unchanged
+`extract_april_pre_candidates` and `resolve_source_b_april_pre_object`
+mechanics and the exact inherited `APRIL_1_2022_REFERENCE_LABEL`.
+
+The mapping is deterministic and global to the later fixed-eight validation:
+there is no alternate abbreviation, `Sept`/`Sep` choice, locale lookup,
+Python locale/calendar-dependent runtime choice, per-year or per-month
+category switching, category fallback, fuzzy matching, case folding,
+punctuation repair, substring matching, or first/last selection.
+
 ## 3. Preregistered stages
 
 ### A — design GPT exact-SHA review
 
 GPT must independently review this exact design and return PASS. Until that
-review, the design remains `DRAFT_AWAITING_GPT_REVIEW` and no V9_016
+review, the design remains `DRAFT_REMEDIATED_AWAITING_GPT_REVIEW` and no V9_016
 execution or implementation is authorized.
 
 ### B — hash-only binding of preserved V9_015 year locks
@@ -132,6 +179,14 @@ Only after D PASS may a later implementation task implement the frozen rule.
 Only after that implementation receives GPT exact-SHA PASS may a separately
 authorized no-network stage apply it to the exact five preserved year pages
 for the fixed eight identities.
+
+That later fixed-eight validation must apply the one D-frozen category and the
+exact mapping above to all seven NORMAL identities, while applying only the
+inherited special-reference mechanics to `2022-04 PRE_APRIL_1_REFERENCE_OBJECT`.
+It must require exactly one candidate for every required identity. `ZERO` or
+`MANY` for any identity is `FAIL_TERMINAL`; another category must not be tried
+as fallback for a failed month, mixed category success is prohibited, and no
+category may be invented or changed after C2 observation.
 
 Any later PDF network acquisition requires a fresh point-of-use human
 authorization. The consumed V9_015 authorization is not reusable.
