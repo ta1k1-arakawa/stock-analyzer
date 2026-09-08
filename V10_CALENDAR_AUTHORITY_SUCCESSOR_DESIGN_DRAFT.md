@@ -338,6 +338,113 @@ with that field excluded, then recorded in the artifact. The exact Python
 and pandas versions used are recorded as provenance; they are not selected
 from observed calendar output.
 
+The sole safe receipt schema is:
+
+```text
+V10_SAFE_RECEIPT_FILENAME=V10_CALENDAR_FEASIBILITY_SAFE_RECEIPT.json
+V10_SAFE_RECEIPT_SCHEMA=V10_CALENDAR_FEASIBILITY_SAFE_RECEIPT_V1
+```
+
+Its exact top-level fields are:
+
+```text
+schema_version
+status
+failure_code
+design_git_sha
+generator_implementation_git_sha
+runtime_environment_lock_sha256
+calendar_name
+coverage_start
+coverage_end
+calendar_artifact_created
+canonical_calendar_sha256
+trading_date_count
+anchor_2020_10_01
+anchor_2020_10_02
+research_data_network_requests
+historical_calendar_data_acquisition
+private_or_sealed_reads
+human_gate_consumed
+t0_run
+```
+
+The exact semantic constraints are:
+
+```text
+calendar_name=JPX
+coverage_start=2017-01-01
+coverage_end=2026-01-31
+```
+
+`status` is exactly `PASS` or `FAIL`. `failure_code` is exactly one of:
+
+```text
+NONE
+RUNTIME_CALENDAR_PROVENANCE_MISMATCH
+CALENDAR_GENERATOR_FAILURE
+DUPLICATE_SESSION_LABEL
+MALFORMED_SESSION_LABEL
+OUT_OF_COVERAGE_SESSION_LABEL
+INVALID_MARKET_CLOSE
+ANCHOR_2020_10_01_FAILURE
+ANCHOR_2020_10_02_FAILURE
+CANONICALIZATION_FAILURE
+DURABLE_ARTIFACT_WRITE_FAILURE
+```
+
+There is exactly one receipt schema and no alternate receipt mechanism. A
+`PASS` receipt requires `failure_code=NONE`,
+`calendar_artifact_created=true`, a lower-case 64-hex
+`canonical_calendar_sha256`, an integer `trading_date_count` greater than
+zero, `anchor_2020_10_01=INELIGIBLE`, and
+`anchor_2020_10_02=ELIGIBLE`. A `FAIL` receipt requires
+`failure_code` not equal to `NONE`.
+
+If failure occurs before valid canonical calendar artifact bytes exist,
+`calendar_artifact_created=false`,
+`canonical_calendar_sha256=null`, and `trading_date_count=null` are required.
+If canonical artifact bytes were fully and validly created before a later
+durable receipt/artifact-handling failure, the mechanically known artifact
+fields are preserved rather than replaced with fabricated nulls. Such a
+durable failure uses the closed `DURABLE_ARTIFACT_WRITE_FAILURE` code.
+
+`design_git_sha` and `generator_implementation_git_sha` are exact lower-case
+40-hex reviewed Git SHAs. `runtime_environment_lock_sha256` is an exact
+lower-case 64-hex SHA-256 and equals the reviewed canonical runtime-lock
+SHA-256. The operation-status fields are fixed:
+
+```text
+research_data_network_requests=0
+historical_calendar_data_acquisition=0
+private_or_sealed_reads=0
+human_gate_consumed=0
+t0_run=NOT_RUN
+```
+
+The receipt contains no raw paths, package metadata dump, prices, ticker
+identities, outcomes, or profitability fields. Its canonical JSON bytes are
+UTF-8 with `ensure_ascii=false`, `sort_keys=true`,
+`separators=(',', ':')`, `allow_nan=false`, and exactly one final LF.
+
+When more than one failure is mechanically observable, the receipt records
+only the highest-precedence applicable code in this exact order:
+
+```text
+1. RUNTIME_CALENDAR_PROVENANCE_MISMATCH
+2. CALENDAR_GENERATOR_FAILURE
+3. DUPLICATE_SESSION_LABEL
+4. MALFORMED_SESSION_LABEL
+5. OUT_OF_COVERAGE_SESSION_LABEL
+6. INVALID_MARKET_CLOSE
+7. ANCHOR_2020_10_01_FAILURE
+8. ANCHOR_2020_10_02_FAILURE
+9. CANONICALIZATION_FAILURE
+10. DURABLE_ARTIFACT_WRITE_FAILURE
+```
+
+No failure code authorizes retry or repair.
+
 ## 9. Outcome-blind feasibility gate
 
 Calendar feasibility must complete before any operation that can expose or
