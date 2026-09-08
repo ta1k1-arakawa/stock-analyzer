@@ -143,6 +143,7 @@ def test_verified_inputs_reach_application_with_exact_eight_order(tmp_path: Path
 
     assert result["status"] == "PASS"
     assert len(calls) == 1
+    assert result["fixed_eight_invocations"] == 1
     assert result["fixed_eight_result"]["resolved_identity_count"] == 8
     assert result["fixed_eight_result"]["identity_results"] == [
         {
@@ -152,6 +153,26 @@ def test_verified_inputs_reach_application_with_exact_eight_order(tmp_path: Path
         }
         for identity in REQUIRED_CALIBRATION_IDENTITIES
     ]
+
+
+def test_attempt_metadata_uses_target_before_application_boundary(tmp_path: Path) -> None:
+    pages = _year_pages()
+    expected = _expected_bindings(pages)
+    expected[2017] = (expected[2017][0], "e" * 64)
+    calls: list[tuple[dict[int, bytes], dict[int, str]]] = []
+    result = _run_synthetic(
+        tmp_path,
+        pages=pages,
+        expected_bindings=expected,
+        application=_fake_success_application(calls),
+    )
+
+    attempt = json.loads((tmp_path / "output" / "attempt.json").read_text(encoding="utf-8"))
+    assert attempt["target_fixed_eight_invocations"] == 1
+    assert "fixed_eight_invocations" not in attempt
+    assert result["reason"] == "YEAR_PAGE_SHA256_MISMATCH"
+    assert result["fixed_eight_invocations"] == 0
+    assert calls == []
 
 
 @pytest.mark.parametrize("years", [(2017, 2019, 2020, 2022), (2017, 2019, 2020, 2022, 2022, 2026)])

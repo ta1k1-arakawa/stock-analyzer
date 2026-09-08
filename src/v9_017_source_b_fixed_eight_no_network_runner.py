@@ -177,7 +177,7 @@ def _attempt_metadata(expected_git_sha: str) -> dict[str, Any]:
         "target_years": list(REQUIRED_YEARS),
         "target_year_page_count": YEAR_PAGE_TARGET_COUNT,
         "fixed_identity_count": FIXED_IDENTITY_COUNT,
-        "fixed_eight_invocations": 1,
+        "target_fixed_eight_invocations": 1,
     }
 
 
