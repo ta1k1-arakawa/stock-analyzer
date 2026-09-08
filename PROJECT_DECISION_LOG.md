@@ -1699,3 +1699,9 @@ transitions. This public log must not contain protected material.
 - GPT exact-SHA review of `338dcd39d17a54428a7463fee14cd4567ab7d334` returned `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=1`. `MEDIUM_1` is `PROJECT_STATE_V9_017_CURRENT_STATUS_BLOCK_CONTAINS_STALE_AND_CONFLICTING_PRE_REVIEW_FIELDS`; `LOW_1` remains safely deferred.
 - The terminal adjudication JSON and execution-incident record are substantively correct and remain byte-identical. Only the current `PROJECT_STATE` block was normalized: the locator application and no-network runner now have current `PASS` statuses, the latest runner review is `58e3fe9c7a2538102deb18f43166f3c0aabe6149` with `PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_1`, and the prior `0182413b8256029dfe89cd0d23c72d7325090443` BLOCK is explicitly historical.
 - The current state retains one `V9_017_FIXED_EIGHT_RUNNER_MEDIUM_1=RESOLVED` assignment and preserves the terminal real-application result unchanged. No methodology, runner, data, network, private/gate, or T0 execution occurred in this normalization task. Next action is `GPT_EXACT_SHA_INDEPENDENT_REVIEW`.
+
+## 2026-09-08 — V9_017 terminal record MEDIUM_1 canonical-header remediation
+
+- GPT exact-SHA review of `608aeb9a883a37002756bd5e5e3e102473555ff6` returned `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=1`. The remaining `MEDIUM_1` was `PROJECT_STATE_CANONICAL_HEADER_STILL_POINTS_TO_PRE_NORMALIZATION_REVIEW_STATE`; `LOW_1` remains safely deferred.
+- The V9_017 current body normalization and terminal adjudication remain correct. Only the canonical `PROJECT_STATE` header was corrected to the remediation stage and this review SHA/result; no methodology or terminal result changed.
+- No runner, data, network, private, human-gate, or T0 execution occurred. Next action is `GPT_EXACT_SHA_INDEPENDENT_REVIEW`.
