@@ -254,7 +254,7 @@ semantic calendar generation.
 The runtime-lock JSON has exactly this required contract:
 
 ```text
-schema_version
+schema_version=V10_RUNTIME_ENVIRONMENT_LOCK_V1
 python_version
 calendar_distribution_name
 calendar_distribution_version
@@ -276,6 +276,10 @@ and duplicate normalized names. Sort the array lexicographically by
 normalized `name`, and require `runtime_distribution_count` to equal its
 length. The set must include at least `pandas-market-calendars`, `pandas`,
 and `exchange-calendars`, plus every other installed distribution.
+
+`python_version` is exactly the string
+`f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"`.
+No other Python-version representation is permitted.
 
 The canonical runtime-lock bytes are UTF-8 with `ensure_ascii=false`,
 `sort_keys=true`, `separators=(',', ':')`, `allow_nan=false`, and exactly one
@@ -300,20 +304,21 @@ design task.
 The later implementation must use exactly the pinned package/version and
 `calendar_name="JPX"`, generate only the fixed coverage, and persist one
 reviewed canonical artifact rather than silently regenerating under a newer
-library. The artifact contains at minimum:
+library. The artifact has exactly the following top-level fields and no
+extras:
 
 ```text
-schema_version
-calendar_method
-calendar_package
-calendar_package_version
+schema_version=V10_CANONICAL_CALENDAR_V1
+calendar_method=PANDAS_MARKET_CALENDARS_JPX_5_4_0
+calendar_package=pandas_market_calendars
+calendar_package_version=5.4.0
 upstream_commit
 calendar_source_blob
 holiday_source_blob
-calendar_name
+calendar_name=JPX
 runtime_environment_lock_sha256
-coverage_start
-coverage_end
+coverage_start=2017-01-01
+coverage_end=2026-01-31
 trading_dates
 trading_date_count
 python_version
@@ -334,9 +339,31 @@ close values, or noncanonical serialization is unresolved and fails closed.
 The canonical JSON bytes are UTF-8 with `ensure_ascii=false`,
 `sort_keys=true`, `separators=(',', ':')`, `allow_nan=false`, and exactly one
 final LF. `canonical_calendar_sha256` is calculated over the canonical object
-with that field excluded, then recorded in the artifact. The exact Python
-and pandas versions used are recorded as provenance; they are not selected
-from observed calendar output.
+with that field excluded, then recorded in the artifact. `pandas_version`
+equals the exact version for normalized distribution name `pandas` in the
+reviewed runtime lock. `python_version` equals the reviewed runtime lock's
+exact `python_version`; no alternate representation is permitted. The exact
+artifact field set above admits no additional fields.
+
+Session-label canonicalization is mechanical for every schedule index label:
+
+1. Convert the label with `pandas.Timestamp(label)`; conversion failure is
+   `MALFORMED_SESSION_LABEL`.
+2. Require `tzinfo is None`, `hour=0`, `minute=0`, `second=0`,
+   `microsecond=0`, and `nanosecond=0`; any violation is
+   `MALFORMED_SESSION_LABEL`.
+3. Canonicalize as `timestamp.date().isoformat()` and require the resulting
+   string to be exact `YYYY-MM-DD`.
+4. Classify duplicate canonical labels as `DUPLICATE_SESSION_LABEL` and
+   labels outside the inclusive frozen coverage as
+   `OUT_OF_COVERAGE_SESSION_LABEL`.
+
+No timezone shift, neighboring-date correction, or other date repair is
+permitted. For every emitted schedule row, `market_close` is valid only when
+`pandas.Timestamp(value)` succeeds, the result is not `NaT`, and its
+`tzinfo` is not `None`; otherwise the failure code is
+`INVALID_MARKET_CLOSE`. The time of `market_close` is not used to add or
+remove an otherwise emitted session.
 
 The sole safe receipt schema is:
 
@@ -372,6 +399,7 @@ t0_run
 The exact semantic constraints are:
 
 ```text
+schema_version=V10_CALENDAR_FEASIBILITY_SAFE_RECEIPT_V1
 calendar_name=JPX
 coverage_start=2017-01-01
 coverage_end=2026-01-31
@@ -401,13 +429,29 @@ zero, `anchor_2020_10_01=INELIGIBLE`, and
 `anchor_2020_10_02=ELIGIBLE`. A `FAIL` receipt requires
 `failure_code` not equal to `NONE`.
 
+Both anchor fields are exactly one of `INELIGIBLE`, `ELIGIBLE`, or
+`NOT_CHECKED`. They record the observed generator classification only when
+that anchor has actually been checked; an execution that fails before a
+check records `NOT_CHECKED`. Anchor checks occur only in this order:
+
+1. `2020-10-01`
+2. `2020-10-02`
+
+No additional anchor is permitted. A checked mismatch at the first anchor
+uses `ANCHOR_2020_10_01_FAILURE`. A checked mismatch at the second anchor,
+after the first passed, uses `ANCHOR_2020_10_02_FAILURE`.
+
 If failure occurs before valid canonical calendar artifact bytes exist,
 `calendar_artifact_created=false`,
 `canonical_calendar_sha256=null`, and `trading_date_count=null` are required.
 If canonical artifact bytes were fully and validly created before a later
-durable receipt/artifact-handling failure, the mechanically known artifact
-fields are preserved rather than replaced with fabricated nulls. Such a
-durable failure uses the closed `DURABLE_ARTIFACT_WRITE_FAILURE` code.
+durable artifact-handling failure, the mechanically known artifact fields
+are preserved rather than replaced with fabricated nulls. The closed
+`DURABLE_ARTIFACT_WRITE_FAILURE` code refers only to failure to durably
+create the canonical calendar artifact after canonical bytes were prepared.
+A failure to durably write the safe receipt cannot be represented inside a
+receipt that does not exist; it is an execution/orchestration observability
+incident for Phase-C inspection and does not authorize retry.
 
 `design_git_sha` and `generator_implementation_git_sha` are exact lower-case
 40-hex reviewed Git SHAs. `runtime_environment_lock_sha256` is an exact
