@@ -159,17 +159,24 @@ produce one mechanically bound state for the actual TSE cash-equity session
 relevant to the frozen close-auction schedule:
 
 ```text
-ELIGIBLE = an actual TSE cash-equity trading session is established
-           by the frozen authority for that date
-INELIGIBLE = the authority establishes that no such session occurred
-UNRESOLVED = the authority does not establish exactly one of the above
+ELIGIBLE = the pinned JPX generator emits the date exactly once as a session
+           label AND that emitted session has a valid market_close
+INELIGIBLE = the pinned JPX generator emits no session label for the date
+UNRESOLVED_FAIL_TERMINAL = generator failure, duplicate emitted session label,
+           malformed emitted session label, emitted label outside coverage,
+           invalid/missing market_close, runtime provenance mismatch, anchor
+           failure, or canonicalization failure
 ```
 
 Only `ELIGIBLE` dates may enter the V9 signal calendar. `INELIGIBLE` dates
-must not enter it. `UNRESOLVED`, a missing date, an out-of-range date, or a
-date whose session scope is ambiguous is a terminal feasibility failure. No
-date may be inferred from weekdays, neighboring dates, price absence, or a
-favorable later result.
+must not enter it. An ordinary date that the pinned generator does not emit
+is `INELIGIBLE`, not a missing-source failure. `UNRESOLVED_FAIL_TERMINAL` is
+reserved for
+generator failure, duplicate or malformed emitted labels, emitted labels
+outside coverage, invalid or missing `market_close`, runtime provenance
+mismatch, anchor failure, or canonicalization failure. No date may be
+inferred from weekdays, neighboring dates, price absence, or a favorable
+later result.
 
 The accepted calendar must support the inherited first-session-of-month
 cutoff and the D0/D1/D2/D3 lookup. A shortened, early, or partial session is
@@ -181,10 +188,11 @@ discretionary normal-session filter:
 V10_PARTIAL_SESSION_ELIGIBILITY=VALID_EMITTED_SESSION_WITH_VALID_MARKET_CLOSE
 ```
 
-Structural requirements are exact: dates are unique, valid, within coverage,
-and emitted in deterministic ascending order. A source record that contains
-duplicate, malformed, contradictory, or incompletely scoped date/session
-records fails closed.
+Structural requirements are exact: the generator's emitted session labels are
+unique, valid, within coverage, and canonicalized into deterministic
+ascending order. A duplicate, malformed, contradictory, or incompletely
+scoped emitted session record fails closed. Non-emission remains the exact
+`INELIGIBLE` result above.
 
 The following two pre-outcome regression anchors are checked against the
 generator output and are not local calendar patches:
@@ -201,26 +209,41 @@ holiday; the second is supported by the official resumption notice. If
 either anchor fails, feasibility is terminal and no repair is permitted. No
 additional anchors may be added from later observations.
 
-## 7. Provenance and public evidence boundary
+## 7. Runtime provenance and public evidence boundary
 
-Before any source acquisition, the later frozen design must bind an exact
-finite source manifest or an exact deterministic manifest-generation rule.
-The binding must include, as applicable:
+The later implementation must complete a no-network runtime provenance
+preflight before calendar generation. It must mechanically verify all of the
+following against the frozen values:
 
-- source authority class, provider/endpoint or publication identity, version
-  or effective date, coverage, and the exact source-object order;
-- a canonical manifest digest and exact design/implementation Git SHAs;
-- for every locked source object, its role/slot, status, byte count, payload
-  SHA-256, and source-object identity; and
-- the exact parser/schema version used for offline eligibility extraction.
+- installed distribution name is exactly `pandas_market_calendars`;
+- installed distribution version is exactly `5.4.0`;
+- the only calendar name is exactly `JPX` and is not caller configurable;
+- the installed `pandas_market_calendars/calendars/jpx.py` bytes have Git
+  blob identity `0c2041b1300d1dbbd505202b00ac0ada38c712e1`;
+- the installed `pandas_market_calendars/holidays/jp.py` bytes have Git blob
+  identity `4c34214d06862e02ac22e946757463f748074fde`; and
+- the exact Python version, `pandas_market_calendars` version, pandas
+  version, `exchange-calendars` version, and every other runtime distribution
+  mechanically required by the installed calendar stack are recorded in one
+  deterministic sorted distribution/version mapping with a SHA-256 digest.
 
-Raw source bytes remain protected evidence. Public safe receipts may expose
-only approved hashes, counts, coverage, booleans, closed failure codes, and
-reviewed provenance SHAs. They must not expose raw payloads, private paths,
-credentials, URLs when the approved artifact contract excludes them, ticker
-identities, prices, outcomes, or exception text.
+Git-blob identity means standard Git blob hashing over the exact file bytes,
+not a plain-file SHA-1 relabeled as a Git blob. A mismatch is
+`RUNTIME_CALENDAR_PROVENANCE_MISMATCH` and is `FAIL_TERMINAL`; there is no
+repair, version comparison, or reinstall-and-retry after feasibility
+generation begins. Dependency versions are not selected by inspecting
+generated dates.
 
-No source bytes or semantic labels are inspected by this design task.
+The canonical artifact and safe receipt bind this runtime mapping or a
+separately persisted canonical runtime-environment receipt by its exact
+SHA-256, with the relationship explicit before design freeze. Public safe
+receipts may expose only approved hashes, counts, coverage, booleans, closed
+failure codes, and reviewed provenance SHAs. They must not expose raw
+payloads, private paths, credentials, URLs, ticker identities, prices,
+outcomes, or exception text.
+
+No package is installed or executed, and no calendar is generated, by this
+design task.
 
 ## 8. Canonical generator and artifact contract
 
@@ -291,30 +314,29 @@ V10_FALLBACK_ALLOWED=false
 The only later execution sequence permitted after this design is frozen,
 implemented, and independently reviewed is:
 
-1. A no-network provenance preflight verifies the exact repository,
-   frozen-design SHA, reviewed implementation SHA, clean state, and exact
-   source-manifest/input authority prerequisites.
-2. One bounded feasibility execution acquires or reads only the exact
-   predeclared authority objects. There is no source discovery, candidate
-   expansion, or second execution.
-3. Each complete public object is content-locked before semantic inspection.
-   For public transport, the inherited V9 bounded pre-complete plumbing
-   discipline may be reused only if GPT binds it to the selected source:
-   maximum three attempts per exact request, retryable statuses limited to
-   `{408,429,500,502,503,504}`, and no retry after a complete payload. A
-   transport policy not covered by that inherited rule is a freeze blocker
-   before any acquisition.
-4. Offline processing uses only the exact locked objects. A parser, schema,
-   missing-date, duplicate, disagreement, or eligibility failure is terminal
-   and never authorizes refetch or source substitution.
+1. If mechanically necessary, software/environment provisioning occurs
+   before feasibility execution under repository/environment governance. It
+   is not research-data acquisition and cannot select a calendar version from
+   generated output.
+2. A no-network provenance preflight verifies the exact repository,
+   frozen-design SHA, reviewed implementation SHA, clean state, pinned
+   package/version, fixed `JPX` calendar name, exact Git-blob identities, and
+   deterministic runtime dependency/version mapping.
+3. Exactly one offline feasibility execution invokes only the pinned
+   generator over the fixed coverage. It reads no historical calendar
+   payload, performs no HTTP request, and has no source discovery, candidate
+   expansion, fallback, or second execution.
+4. The execution durably persists one canonical calendar artifact and one
+   safe receipt containing the bound provenance, canonical sorted session
+   labels, and closed failure/result fields.
 5. A safe receipt is inspected without network. GPT adjudicates only the
-   bounded authority evidence and does not use any outcome information.
+   bounded generator evidence and does not use any outcome information.
 
-The single feasibility budget is consumed when the bound source bytes first
-enter semantic session/date processing. A pre-semantic operational failure
+The single feasibility budget is consumed when the pinned generator first
+begins the one feasibility execution. A pre-generation operational failure
 does not create an automatic rerun; it stops for methodology authority. A
-post-boundary failure never restores a gate,
-permits a refetch, or permits a new source under V10.
+post-boundary failure never restores a gate, permits a retry, or permits a
+new source under V10.
 
 If the one execution cannot establish the full required coverage and exact
 session semantics, V10 is:
@@ -325,45 +347,41 @@ T0=NOT_RUN
 HISTORICAL_EVALUATION=NOT_PERFORMED
 ```
 
-The archive/source remediation route then stops. No unbounded PDF, locator,
-label, calendar, or provider loop is allowed.
+The calendar feasibility route then stops. No unbounded PDF, locator, label,
+calendar, provider, or dependency-version loop is allowed.
 
 ## 11. Missing, disagreement, duplicate, and malformed handling
 
 The following are terminal feasibility failures:
 
-- any required date absent from the bound source coverage;
-- more than one record for a required date without a pre-frozen exact
-  deduplication identity;
-- conflicting eligibility/session states for a date;
-- malformed dates, invalid coverage, incomplete source pages, or a source
-  object whose publication/version identity cannot be verified; and
-- inability to distinguish an actual TSE cash-equity session from a generic
-  business-day or unrelated market/event record.
+- generator failure;
+- duplicate emitted session labels;
+- malformed emitted session labels or labels outside requested coverage;
+- missing or invalid `market_close` for an emitted session;
+- runtime provenance mismatch; or
+- failure of either frozen regression anchor or canonicalization.
 
-No missing date is imputed. No duplicate is resolved by first/last choice.
-No disagreement is resolved in favor of a larger or more favorable eligible
-set. No fallback source, alternate endpoint, alias, neighboring date, or
-post-observation repair is permitted. If GPT later authorizes multiple
-independent authority roles, their exact relation and disagreement result
-must be specified before design PASS; unresolved disagreement remains
-terminal.
+An ordinary date not emitted by the pinned generator is exactly
+`INELIGIBLE`; it is not a missing-date failure and is not imputed from any
+other rule. No duplicate is resolved by first/last choice. There is no
+second source, disagreement resolution, alternate endpoint, alias,
+neighboring-date inference, fallback, or post-observation repair. A valid
+emitted shortened, early, or partial session remains `ELIGIBLE` under the
+single `market_close` rule.
 
 ## 12. Later authority and execution requirements
 
-This draft grants no authority. Before any later source access, all of the
-following are required:
+This draft grants no authority. Before any later calendar generation, all of
+the following are required:
 
 1. GPT methodology PASS on this exact design and a frozen exact Git SHA.
 2. Synthetic-only implementation and targeted tests for the selected
    source-binding/eligibility contract.
 3. GPT exact-SHA PASS on that implementation.
-4. A no-network preflight proving the exact frozen design, implementation,
-   source manifest, and clean repository state.
-5. A fresh point-of-use human authorization for any real network, private,
-   sealed, credential, or protected durable-state boundary required by the
-   final design. No V9 authorization is reusable.
-6. One bounded execution and one safe no-network receipt inspection.
+4. A no-network provenance preflight proving the exact frozen design,
+   implementation, pinned runtime provenance, and clean repository state.
+5. One offline pinned-generator execution and one safe no-network receipt
+   inspection. No historical calendar payload is acquired or read.
 
 Calendar generation itself requires no historical calendar-data acquisition
 or private calendar access:
@@ -376,9 +394,9 @@ V10_CALENDAR_HUMAN_GATE_REQUIRED=false
 
 If package provisioning is needed later, it is software provisioning only and
 must follow repository/environment governance; it does not authorize research
-data access. No human gate is consumed by this draft. A future public source must still
-obey the final approved source, content-lock, retry, redirect, and stopping
-contract; public transport plumbing does not authorize a methodology change.
+data access. No human gate is consumed by this draft. The pinned generator
+must be used exactly as frozen, and provisioning cannot change its version,
+calendar name, source blobs, or methodology based on output.
 
 ## 13. Explicit non-actions and prohibitions
 
@@ -399,10 +417,12 @@ profitability gates.
 ## 14. Design-freeze PASS criteria and next stage
 
 GPT may mark this design `PASS_FROZEN` only when the exact source authority
-class and identity, coverage, session/partial-session semantics, manifest
-and publication/version binding, source order, missing/duplicate/disagreement
-rules, fallback policy, retry policy, failure codes, one-shot budget, safe
-receipt schema, and later authority sequence are all mechanically closed.
+class and identity, coverage, session/partial-session semantics, runtime
+package/version and Git-blob provenance, dependency-version receipt binding,
+duplicate/malformed/out-of-coverage/market-close/anchor/canonicalization
+rules, non-emission semantics, fallback policy, no-retry policy, failure
+codes, one-shot budget, safe receipt schema, and later offline execution
+sequence are all mechanically closed.
 
 If GPT passes and freezes this draft, the next stage is a synthetic-only
 implementation of the frozen minimal calendar/session-binding runner,
