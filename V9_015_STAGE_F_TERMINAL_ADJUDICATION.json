@@ -1,0 +1,78 @@
+{
+  "schema_version": "V9_015_STAGE_F_TERMINAL_ADJUDICATION_V1",
+  "study_id": "V9_015_SOURCE_B_ARCHIVE_LOCATOR_RECOVERY_SUCCESSOR",
+  "implementation_gpt_review": {
+    "reviewed_sha": "f2e36255a962d018af2cff5505a527d05d8e44d8",
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "result": "PASS"
+  },
+  "real_stage_f": {
+    "phase_a": "PASS",
+    "phase_b": {
+      "runner_launched": true,
+      "exit_code": 1,
+      "stdout_bytes": 1413,
+      "stdout_sha256": "ba97d56ab596c967424a8bac8ae509833bec6aca09e53828f5ca434966f953b0",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "phase_c": "PASS",
+    "terminal_outcome": {
+      "status": "STAGE_F_CHILD_ACQUISITION_FAILURE",
+      "failure_class": "DATA_QUALITY_FAILURE",
+      "reason": "PDF_LOCATOR_FAILURE",
+      "preserved_root_binding_verified": true,
+      "root_network_requests": 0,
+      "child_network_requests": 5,
+      "year_page_lock_count": 5,
+      "calibration_pdf_lock_count": 0,
+      "child_lock_count": 5,
+      "probe_invocations": 0,
+      "human_authorization_consumed": true,
+      "authorization_reusable": false,
+      "automatic_retry_allowed": false,
+      "root_refetch_allowed": false,
+      "stage_g": "NOT_REACHED",
+      "stage_h": "NOT_REACHED",
+      "t0": "NOT_RUN",
+      "future_profitability": "UNESTABLISHED"
+    }
+  },
+  "preserved_safe_year_lock_metadata": {
+    "2017": {
+      "role": "year_page",
+      "relative_path": "raw/year_pages/2017.html",
+      "byte_count": 98936,
+      "sha256": "1dc982e97b1d4ce7d52bc25631ddc46a219d22f82b393881f40e5d2478177821"
+    },
+    "2019": {
+      "byte_count": 98954,
+      "sha256": "039814a2a90c47825ecc132b87c6e013943c02e21d607ac4725c58e66971471f"
+    },
+    "2020": {
+      "byte_count": 98990,
+      "sha256": "4f47da1c8be1a58cbd8998aca0261ec958ccf6212dc450863c47ab930a74f40a"
+    },
+    "2022": {
+      "byte_count": 98976,
+      "sha256": "89f715d5e63fd2486cdddde69ea481065c9b97ec3daef6db615dda508471ee4f"
+    },
+    "2026": {
+      "byte_count": 75185,
+      "sha256": "2e839c60bfb9d6edb59a903a590a505130124b8380b096ae84b06e4b0972098c"
+    }
+  },
+  "adjudication": {
+    "v9_015_status": "FAIL_TERMINAL",
+    "no_retry": true,
+    "no_automatic_successor": true,
+    "stage_f_real_execution": "TERMINAL_FAILURE",
+    "stage_g": "NOT_REACHED",
+    "stage_h": "NOT_REACHED",
+    "t0": "NOT_RUN",
+    "future_profitability": "UNESTABLISHED"
+  }
+}
