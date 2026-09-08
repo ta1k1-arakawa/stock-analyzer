@@ -4,7 +4,7 @@
 study_id=V9_017_SOURCE_B_2017_PUBLIC_SCHEMA_DISCOVERY_SUCCESSOR
 evidence_role=INPUT_BINDING_ONLY
 profitability_evidential_capacity=ZERO
-design_status=DRAFT_AWAITING_GPT_REVIEW
+design_status=REMEDIATED_AWAITING_GPT_REVIEW
 execution_authorized=false
 discovery_execution_limit=1
 automatic_successor=false
@@ -50,7 +50,36 @@ zero human gates. The V9_016 authorization is not reusable. If governance
 requires point-of-use authorization for the later observation, it must be a
 fresh authorization for V9_017.
 
-## 3. Prohibited scope
+## 3. Implementation-before-observation sequence
+
+The V9_017 stage ordering is frozen as follows:
+
+1. V9_017 design receives GPT exact-SHA `PASS_FROZEN`.
+2. A synthetic-only discovery runner is implemented.
+3. Targeted synthetic tests pass.
+4. The implementation is committed and pushed.
+5. GPT exact-SHA review of the implementation returns `PASS`.
+6. A no-network preflight verifies the exact repository, frozen-design
+   provenance, and exact bound input provenance.
+7. Exactly one real preserved-2017 semantic discovery execution occurs.
+8. The safe result is inspected without network access.
+9. GPT makes the methodology judgment.
+10. Only if the evidence is sufficient, GPT separately freezes the exact
+    report-row anchor and deterministic month-header grammar.
+11. Any later production locator implementation/application is a separate
+    implementation, targeted-test, and GPT exact-SHA review stage.
+
+The real preserved 2017 input must not be semantically read during design,
+runner implementation, or synthetic tests. This design task therefore has
+zero real semantic reads.
+
+The one-shot discovery budget is consumed when the real bound 2017 bytes
+first enter semantic parsing or structural observation. After that point
+there is no rerun, retry, alternate parser, additional observation, or
+expanded output. A pre-semantic-read operational or preflight failure does
+not authorize an automatic rerun; it is `STOP=CHATGPT_DECISION_REQUIRED`.
+
+## 4. Prohibited scope
 
 V9_017 must not perform or authorize:
 
@@ -74,7 +103,7 @@ No case-folding, lowercasing, NFC/NFKC normalization, fuzzy matching,
 substring matching, regex repair, punctuation repair, first/last choice, or
 fallback is permitted.
 
-## 4. Bounded safe structural evidence
+## 5. Deterministic bounded structural evidence universe
 
 The future discovery runner may emit only a bounded safe result containing
 closed status/failure fields, the verified input hash and byte count, and
@@ -85,20 +114,60 @@ types are:
 - table, row, and column coordinates;
 - table dimensions and row cell counts;
 - normalized `TH` texts;
-- normalized first-cell or row-label texts; and
+- normalized first-cell texts; and
 - bounded counts and multiplicities.
 
-The structural observation must preserve coordinates so that GPT can
-distinguish table-local and row-local relationships. Text output is limited
-to the permitted normalized `TH`, first-cell, and row-label observations;
-the runner must not emit arbitrary cell dumps.
+The extraction universe is deterministic and exhaustive within those
+structural roles:
+
+- process tables in inherited-parser/document order;
+- process rows in each table in row order;
+- represent every column with its exact zero-based coordinate;
+- emit every table dimension and every row cell count;
+- emit every `TH` structural cell with its exact table, row, and column
+  coordinate;
+- for every nonempty row, emit the cell at exact column zero as the row's
+  first-cell observation, including when that cell has empty normalized text;
+- emit the first-cell observation and the `TH` observation separately when
+  the same cell satisfies both roles; and
+- order observations deterministically by table index, row index, column
+  index, and role order `FIRST_CELL` before `TH` at an equal coordinate.
+
+No content-based selection determines which `TH` or first-cell values are
+exposed. There is no arbitrary additional cell dump, first-N/last-N
+truncation, or silent omission. An empty row has no first-cell observation,
+because it has no cell at column zero, while its zero row-cell count remains
+emitted.
+
+Normalization for all emitted structural text is exactly
+`" ".join(raw_text.split())`. Structural role is the sole inclusion rule;
+the runner performs no content filter, numeric parsing, or outcome
+calculation. Thus any emitted value is a bounded structural text observation,
+not market/trading numeric outcome data.
 
 The safe result must never contain hrefs, URLs, raw HTML, filesystem paths,
 exception text, PDF bytes or text, market/trading numeric outcome data,
 protected/private data, or human identity. The runner must not select or
 freeze a new report label. It reports observations only.
 
-## 5. Hard stopping rule and later authority
+## 6. Required identity set
+
+The deterministic month-header grammar judged after discovery must be
+sufficient for exactly this inherited NORMAL identity set:
+
+1. `2017-01 NORMAL_MONTHLY_REPORT2_OBJECT`
+2. `2019-12 NORMAL_MONTHLY_REPORT2_OBJECT`
+3. `2020-01 NORMAL_MONTHLY_REPORT2_OBJECT`
+4. `2022-03 NORMAL_MONTHLY_REPORT2_OBJECT`
+5. `2022-04 NORMAL_MONTHLY_REPORT2_OBJECT`
+6. `2022-05 NORMAL_MONTHLY_REPORT2_OBJECT`
+7. `2026-01 NORMAL_MONTHLY_REPORT2_OBJECT`
+
+`2022-04 PRE_APRIL_1_REFERENCE_OBJECT` is not part of the month-header
+grammar. Its inherited special resolver semantics are unchanged and receive
+no new authority from V9_017.
+
+## 7. Hard stopping rule and later authority
 
 There is exactly one bounded V9_017 discovery execution. If that one
 observation does not provide mechanically sufficient structural evidence for
@@ -131,7 +200,7 @@ V9_017 design GPT exact-SHA PASS
 No later implementation, application to other years, PDF acquisition, or
 network operation is authorized by this design draft.
 
-## 6. Current checkpoint and non-claims
+## 8. Current checkpoint and non-claims
 
 At this design checkpoint:
 
