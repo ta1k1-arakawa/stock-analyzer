@@ -139,16 +139,37 @@ truncation, or silent omission. An empty row has no first-cell observation,
 because it has no cell at column zero, while its zero row-cell count remains
 emitted.
 
-Normalization for all emitted structural text is exactly
-`" ".join(raw_text.split())`. Structural role is the sole inclusion rule;
-the runner performs no content filter, numeric parsing, or outcome
-calculation. Thus any emitted value is a bounded structural text observation,
-not market/trading numeric outcome data.
+`STRUCTURAL_TEXT_IS_OPAQUE=true`
 
-The safe result must never contain hrefs, URLs, raw HTML, filesystem paths,
-exception text, PDF bytes or text, market/trading numeric outcome data,
-protected/private data, or human identity. The runner must not select or
-freeze a new report label. It reports observations only.
+A `TH` or `FIRST_CELL` observation is an opaque normalized string selected
+solely by its pre-frozen structural role. A structurally selected string may
+contain decimal digits, punctuation, symbols, or mixtures of digits and
+letters, including numeric month headers. The presence of digits must not
+cause omission, filtering, classification, alternate selection, or fallback.
+
+The runner must not parse a structural string as an int, float, decimal,
+date, price, volume, or value; infer whether it represents a market/trading
+quantity; perform arithmetic on its textual content; compare numeric
+magnitudes; aggregate quantitative values; expose non-structural
+market/trading cells; or calculate outcomes, returns, trading dates, profits,
+or statistics.
+
+For V9_017 safe evidence, an opaque `TH`/`FIRST_CELL` string that contains
+digits is permitted because it is emitted solely by deterministic structural
+role. This permission does not authorize extraction or disclosure of
+arbitrary numeric market/trading cells.
+
+The denylist prohibits parsed or interpreted market/trading numeric values,
+quantitative market/trading fields selected because of their content,
+arbitrary non-structural cell values, hrefs, URLs, raw HTML, filesystem
+paths, exception dumps, PDF content, protected/private data, and human
+identity. The runner must not select or freeze a new report label; it reports
+observations only.
+
+GPT's later methodology judgment may use only exact opaque structural
+strings, structural roles, coordinates, table/row dimensions, and
+counts/multiplicities to decide whether to freeze one exact report-row anchor
+and one deterministic month-header grammar.
 
 ## 6. Required identity set
 
