@@ -54,10 +54,13 @@ def train_ai_model(config: AppConfig) -> bool:
     logger.info("正解ラベル作成: %d日後に %.1f%% 上昇なら勝ち(1)", ai.future_days, ai.target_percent)
     df_ready = create_target_variable(
         df_ta,
-        ai.future_days,
-        ai.target_percent,
-        ai.entry_slippage_percent,
-        ai.exit_slippage_percent,
+        future_days=ai.future_days,
+        target_percent=ai.target_percent,
+        entry_slippage_percent=ai.entry_slippage_percent,
+        exit_slippage_percent=ai.exit_slippage_percent,
+        stop_loss_percent=ai.stop_loss_percent,
+        stop_slippage_percent=ai.stop_slippage_percent,
+        commission_percent=ai.commission_percent,
     )
 
     # 必要なカラム確認

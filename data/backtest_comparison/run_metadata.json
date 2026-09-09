@@ -1,0 +1,19 @@
+{
+  "baseline_files_unchanged": true,
+  "deterministic_output_hashes": {
+    "candidate_summary.json": "7692e836b8c0be390fa9798e101555728ec6ce01018d957e1b4afef4ac14ad1a",
+    "capital_overlap.csv": "3a03e70998532d163b6a1bf696ce936a9aae71d7e64642e8805cc00a86aef522",
+    "comparison_by_stock.csv": "9a663af289ff58e1c041094780be67edc448d70a5ef4fa86b7e25ab9da74b663",
+    "comparison_manifest.json": "439e28be61bce9ef088146c09caf6393bdd4df2ae92ce77afc1ace618c5dad2f",
+    "difference_report.md": "5d58ae15b13920a06bfc58736e06638d8d0884827ffe1f025b3bed8f73654fd9",
+    "legacy_predictions.csv": "59d8f7dcd1397e041dc064aa21952452fd40c5732490dab4f379ce87251588d5",
+    "legacy_summary.json": "7190227719a2b642de241b6b34465f10ce3badb2d48b72fa544ec56857003fa8",
+    "legacy_trades.csv": "835a9c8c5d220d4d248635adacb7a6d0fca629e31de0b4b2c7eeee59295f982c",
+    "scenario_comparison.csv": "c33b0276c5ee9f29c4ce770239301db60a47a6b87f6c0bef93af6e49057212c8",
+    "trade_alignment.csv": "e600962d903c8f3b0c251f9b5e4c959f370ae34e5f0af643f62e51b75391ea86"
+  },
+  "external_network_attempts": 0,
+  "generated_at": "2026-08-02T05:18:05.314451+00:00",
+  "selected_rules_after_sha256": "26b660e7a3625005c2c2be7b3f9db332370c09a8c7564f6844015c4cf09aa646",
+  "selected_rules_before_sha256": "26b660e7a3625005c2c2be7b3f9db332370c09a8c7564f6844015c4cf09aa646"
+}

@@ -1,0 +1,86 @@
+{
+  "snapshot_id": "yahoo-jp-adjusted-2020-01-01-2026-05-20-788f37b6724d",
+  "generated_at": "2026-08-02T11:28:00+09:00",
+  "source": "Yahoo Finance chart API via src.fetchers.yfinance.YFinanceFetcher",
+  "price_adjustment_method": "adjclose/close factor applied to Open, High, Low; Close replaced by adjclose; Volume unchanged",
+  "timezone": "Asia/Tokyo source timestamps normalized to timezone-naive trading dates",
+  "date_from": "2020-01-01",
+  "date_to": "2026-05-20",
+  "columns": [
+    "Date",
+    "Open",
+    "High",
+    "Low",
+    "Close",
+    "Volume"
+  ],
+  "stock_codes": [
+    "1570",
+    "7211",
+    "4689",
+    "8306",
+    "5020",
+    "9432",
+    "4188",
+    "7267"
+  ],
+  "files": {
+    "1570": {
+      "code": "1570",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1554,
+      "sha256": "c7eafd90a07b9ed3d1988e489f7e102149a898263525852b65d0ccaf32d7cf78"
+    },
+    "7211": {
+      "code": "7211",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "sha256": "6be23c3f25f890843f5438814300d56207398f2e8be0dd9fe12f219f1a08099d"
+    },
+    "4689": {
+      "code": "4689",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "sha256": "8a313419cb9551b6192829c377388d1887169300b9b043b822c38ae483934263"
+    },
+    "8306": {
+      "code": "8306",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "sha256": "1409c0818c1176d723e98e72a3915539fb5abcf9cd86ebafc9a15022c5556cdb"
+    },
+    "5020": {
+      "code": "5020",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "sha256": "d48b226e0aba26b82f8b3ff88d5ae8bf86bb8d810a64367bd20747a63f9fe666"
+    },
+    "9432": {
+      "code": "9432",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "sha256": "5fbf4de59a6cbadb12eb9f705eb602e391ed82eed7b1a956812aac551388b73d"
+    },
+    "4188": {
+      "code": "4188",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "sha256": "aceb0800292c7aa7c526280ffd49b81975c32e6c7937f76ee1f3fdab0ca2ac77"
+    },
+    "7267": {
+      "code": "7267",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "sha256": "cb04cdc625cb219a8de94f1873990fb7c26fd7bfef1cb63bd52b72f3a3e3fcff"
+    }
+  },
+  "snapshot_hash": "788f37b6724d34f236977815ec6283af638e71fbafefa3dd9bc0f20d83764c2c"
+}

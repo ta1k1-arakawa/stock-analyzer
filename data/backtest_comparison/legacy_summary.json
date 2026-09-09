@@ -1,0 +1,308 @@
+{
+  "baseline_clean_before_and_after": true,
+  "legacy_selection_uses_non_validation_data": true,
+  "network_attempts": 0,
+  "reference_metrics": {
+    "duplicate_capital_trade_count": 581,
+    "gap_down_stop_count": 19,
+    "max_capital_overlap": 2662810.5873,
+    "max_drawdown": -145155.0,
+    "max_drawdown_percent": -32.99331656,
+    "max_simultaneous_locked_capital": 2962810.5873,
+    "max_simultaneous_positions": 10,
+    "monthly_win_rate": 71.42857143,
+    "normal_stop_count": 72,
+    "profit": 248300.0,
+    "profit_by_stock": {
+      "1570": -13254.0,
+      "4188": -16991.0,
+      "4689": 16499.0,
+      "5020": 142062.0,
+      "7211": -23677.0,
+      "7267": -15032.0,
+      "8306": 158693.0
+    },
+    "skip_counts": {},
+    "trades": 582,
+    "win_rate": 51.20274914
+  },
+  "research_selection": {
+    "1570": {
+      "Code": "1570",
+      "FoldsPos": "3/3",
+      "FoldsPosCount": 3,
+      "MinFold": 3635,
+      "ResearchScore": 169985,
+      "StopLossPercent": 5.0,
+      "TargetPercent": 1.5,
+      "TestProfit": 100757,
+      "Threshold": 0.4,
+      "Trades": 66,
+      "ValProfit": 69228,
+      "WinRate": 60.6
+    },
+    "4188": {
+      "Code": "4188",
+      "FoldsPos": "1/3",
+      "FoldsPosCount": 1,
+      "MinFold": -2964,
+      "ResearchScore": 118623,
+      "StopLossPercent": 5.0,
+      "TargetPercent": 1.5,
+      "TestProfit": 8652,
+      "Threshold": 0.15,
+      "Trades": 82,
+      "ValProfit": 115899,
+      "WinRate": 43.9
+    },
+    "4689": {
+      "Code": "4689",
+      "FoldsPos": "2/3",
+      "FoldsPosCount": 2,
+      "MinFold": -9263,
+      "ResearchScore": 3898,
+      "StopLossPercent": 5.0,
+      "TargetPercent": 3.0,
+      "TestProfit": 18782,
+      "Threshold": 0.2,
+      "Trades": 27,
+      "ValProfit": 3642,
+      "WinRate": 51.9
+    },
+    "5020": {
+      "Code": "5020",
+      "FoldsPos": "2/3",
+      "FoldsPosCount": 2,
+      "MinFold": -21531,
+      "ResearchScore": 183912,
+      "StopLossPercent": 2.0,
+      "TargetPercent": 1.0,
+      "TestProfit": 108219,
+      "Threshold": 0.15,
+      "Trades": 148,
+      "ValProfit": 118755,
+      "WinRate": 52.0
+    },
+    "7211": {
+      "Code": "7211",
+      "FoldsPos": "2/3",
+      "FoldsPosCount": 2,
+      "MinFold": -1922,
+      "ResearchScore": 164539,
+      "StopLossPercent": 3.0,
+      "TargetPercent": 2.5,
+      "TestProfit": 104974,
+      "Threshold": 0.3,
+      "Trades": 52,
+      "ValProfit": 63409,
+      "WinRate": 55.8
+    },
+    "7267": {
+      "Code": "7267",
+      "FoldsPos": "2/3",
+      "FoldsPosCount": 2,
+      "MinFold": -2038,
+      "ResearchScore": 52707,
+      "StopLossPercent": 2.0,
+      "TargetPercent": 3.0,
+      "TestProfit": 32900,
+      "Threshold": 0.3,
+      "Trades": 14,
+      "ValProfit": 23883,
+      "WinRate": 71.4
+    },
+    "8306": {
+      "Code": "8306",
+      "FoldsPos": "3/3",
+      "FoldsPosCount": 3,
+      "MinFold": 50243,
+      "ResearchScore": 367622,
+      "StopLossPercent": 5.0,
+      "TargetPercent": 1.0,
+      "TestProfit": 204989,
+      "Threshold": 0.15,
+      "Trades": 212,
+      "ValProfit": 162633,
+      "WinRate": 50.9
+    },
+    "9432": {
+      "Code": "9432",
+      "FoldsPos": "3/3",
+      "FoldsPosCount": 3,
+      "MinFold": 1372,
+      "ResearchScore": 24346,
+      "StopLossPercent": 2.0,
+      "TargetPercent": 2.5,
+      "TestProfit": 21044,
+      "Threshold": 0.15,
+      "Trades": 11,
+      "ValProfit": 3302,
+      "WinRate": 63.6
+    }
+  },
+  "saved_selection": [
+    {
+      "Code": "8306",
+      "FailedChecks": "",
+      "MaxDDPct": -12.0,
+      "MonthWinRate": 71.4,
+      "Profit": 158693,
+      "ResearchScore": 367622,
+      "SingleMonthShare": 30.2,
+      "Status": "PASS",
+      "StopLossPercent": 5.0,
+      "TargetPercent": 1.0,
+      "Threshold": 0.15,
+      "Trades": 196,
+      "WinRate": 52.0
+    },
+    {
+      "Code": "5020",
+      "FailedChecks": "drawdown_ok",
+      "MaxDDPct": -16.6,
+      "MonthWinRate": 71.4,
+      "Profit": 142062,
+      "ResearchScore": 183912,
+      "SingleMonthShare": 38.0,
+      "Status": "REVIEW",
+      "StopLossPercent": 2.0,
+      "TargetPercent": 1.0,
+      "Threshold": 0.15,
+      "Trades": 181,
+      "WinRate": 52.5
+    },
+    {
+      "Code": "1570",
+      "FailedChecks": "profit_positive,drawdown_ok,monthly_stability_ok",
+      "MaxDDPct": -19.6,
+      "MonthWinRate": 42.9,
+      "Profit": -13254,
+      "ResearchScore": 169985,
+      "SingleMonthShare": 0.0,
+      "Status": "REJECT",
+      "StopLossPercent": 5.0,
+      "TargetPercent": 1.5,
+      "Threshold": 0.4,
+      "Trades": 61,
+      "WinRate": 49.2
+    },
+    {
+      "Code": "7211",
+      "FailedChecks": "profit_positive,enough_trades,monthly_stability_ok",
+      "MaxDDPct": -9.9,
+      "MonthWinRate": 27.3,
+      "Profit": -23677,
+      "ResearchScore": 164539,
+      "SingleMonthShare": 0.0,
+      "Status": "REJECT",
+      "StopLossPercent": 3.0,
+      "TargetPercent": 2.5,
+      "Threshold": 0.3,
+      "Trades": 23,
+      "WinRate": 30.4
+    },
+    {
+      "Code": "4188",
+      "FailedChecks": "profit_positive,drawdown_ok,monthly_stability_ok",
+      "MaxDDPct": -28.4,
+      "MonthWinRate": 42.9,
+      "Profit": -16991,
+      "ResearchScore": 118623,
+      "SingleMonthShare": 0.0,
+      "Status": "REJECT",
+      "StopLossPercent": 5.0,
+      "TargetPercent": 1.5,
+      "Threshold": 0.15,
+      "Trades": 110,
+      "WinRate": 52.7
+    },
+    {
+      "Code": "7267",
+      "FailedChecks": "profit_positive,enough_trades,monthly_stability_ok",
+      "MaxDDPct": -3.2,
+      "MonthWinRate": 0.0,
+      "Profit": -15032,
+      "ResearchScore": 52707,
+      "SingleMonthShare": 0.0,
+      "Status": "REJECT",
+      "StopLossPercent": 2.0,
+      "TargetPercent": 3.0,
+      "Threshold": 0.3,
+      "Trades": 5,
+      "WinRate": 20.0
+    },
+    {
+      "Code": "9432",
+      "FailedChecks": "profit_positive,enough_trades,monthly_stability_ok",
+      "MaxDDPct": 0.0,
+      "MonthWinRate": 0.0,
+      "Profit": 0,
+      "ResearchScore": 24346,
+      "SingleMonthShare": 0.0,
+      "Status": "REJECT",
+      "StopLossPercent": 2.0,
+      "TargetPercent": 2.5,
+      "Threshold": 0.15,
+      "Trades": 0,
+      "WinRate": 0.0
+    },
+    {
+      "Code": "4689",
+      "FailedChecks": "enough_trades",
+      "MaxDDPct": -2.3,
+      "MonthWinRate": 100.0,
+      "Profit": 16499,
+      "ResearchScore": 3898,
+      "SingleMonthShare": 67.0,
+      "Status": "REJECT",
+      "StopLossPercent": 5.0,
+      "TargetPercent": 3.0,
+      "Threshold": 0.2,
+      "Trades": 6,
+      "WinRate": 83.3
+    }
+  ],
+  "selected_rules": {
+    "1570": {
+      "stop_loss_percent": 5.0,
+      "target_percent": 1.5,
+      "threshold": 0.4
+    },
+    "4188": {
+      "stop_loss_percent": 5.0,
+      "target_percent": 1.5,
+      "threshold": 0.15
+    },
+    "4689": {
+      "stop_loss_percent": 5.0,
+      "target_percent": 3.0,
+      "threshold": 0.2
+    },
+    "5020": {
+      "stop_loss_percent": 2.0,
+      "target_percent": 1.0,
+      "threshold": 0.15
+    },
+    "7211": {
+      "stop_loss_percent": 3.0,
+      "target_percent": 2.5,
+      "threshold": 0.3
+    },
+    "7267": {
+      "stop_loss_percent": 2.0,
+      "target_percent": 3.0,
+      "threshold": 0.3
+    },
+    "8306": {
+      "stop_loss_percent": 5.0,
+      "target_percent": 1.0,
+      "threshold": 0.15
+    },
+    "9432": {
+      "stop_loss_percent": 2.0,
+      "target_percent": 2.5,
+      "threshold": 0.15
+    }
+  },
+  "selection_explanation": "ResearchScore includes validation and research-test profit; saved adoption status uses reference-period metrics."
+}

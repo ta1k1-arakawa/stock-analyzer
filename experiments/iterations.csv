@@ -1,0 +1,3 @@
+iteration_id,changed_at,change_summary,baseline_metrics,candidate_metrics,baseline_commit,candidate_commit,decision,reason,data_snapshot_id,test_data_invalidated
+000,2026-08-02,baseline frozen,,,,2975e3375c615052bd3a1ab2e5a24e723e94c46b,,PENDING,awaiting fixed snapshot,,false
+001,2026-08-02,completed read-only fixed baseline comparison,"profit=248300;trades=582;max_dd=-145155","profit=-110765.79826181;trades=140;max_dd=-123801.98571775",2975e3375c615052bd3a1ab2e5a24e723e94c46b,94b016575d49436bd4017a21a1de252ab0d95834,DIAGNOSTIC,comparison only; no rule or model adoption,yahoo-jp-adjusted-2020-01-01-2026-05-20-788f37b6724d,false

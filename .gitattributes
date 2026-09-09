@@ -1,0 +1,7 @@
+.gitattributes text eol=lf
+data/benchmark/ohlcv/*.csv -text
+config.yaml text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+data/v7_jpx_calendar_source_2026_2027.html -text

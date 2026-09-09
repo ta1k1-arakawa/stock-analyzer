@@ -1,107 +1,161 @@
+"""Deterministic research selection and shared-cash reference backtest."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+import argparse
+import csv
+from dataclasses import asdict, dataclass
+from datetime import datetime
+import hashlib
+import json
 from pathlib import Path
+import subprocess
 from typing import Any
 
 import lightgbm as lgb
 import pandas as pd
-import yaml
 
 from src.analysis import calculate_indicators, create_target_variable, sanitize_ohlcv
-from src.config import AppConfig, load_app
-from src.fetchers.yfinance import YFinanceFetcher
+from src.benchmark import (
+    REQUIRED_COLUMNS, FixedOHLCVLoader, sha256_file, snapshot_hash,
+)
+from src.config import AIParams, AppConfig, load_app
+from src.reproducibility import CONFIG_HASH_METHOD, config_hash
+from src.trade_simulator import PortfolioSettings, simulate_execution, simulate_portfolio
 
 
 TARGET_GRID = [1.0, 1.5, 2.0, 2.5, 3.0]
 STOP_GRID = [2.0, 3.0, 5.0]
 THRESHOLD_GRID = [0.15, 0.20, 0.30, 0.40, 0.50]
+FOLDS = [(0.60, 0.70, 0.80), (0.70, 0.80, 0.90), (0.80, 0.90, 1.00)]
+MODEL_SEED = 42
+BASELINE_COMMIT = "2975e3375c615052bd3a1ab2e5a24e723e94c46b"
+RESEARCH_FROM = "2020-01-01"
+RESEARCH_TO = "2025-03-31"
+REFERENCE_FROM = "2025-04-01"
+REFERENCE_TO = "2026-05-20"
+RESULT_DIR = Path("data/backtest_results")
+LOOP_RESULT_DIR = Path("data/loop_validation_results")
 
-# Fold ratios are applied only inside the research period.
-FOLDS = [
-    (0.60, 0.70, 0.80),
-    (0.70, 0.80, 0.90),
-    (0.80, 0.90, 1.00),
-]
+
+class BlindValidationViolation(RuntimeError):
+    """Raised when blind validation attempts to cross an allowed-data boundary."""
+
+
+class LoopValidationPriceSource:
+    """Validate the snapshot but parse OHLCV rows only through research end."""
+
+    def __init__(self, source: str | Path | Any) -> None:
+        self._delegate = source if hasattr(source, "get_daily_stock_prices") else None
+        if self._delegate is not None:
+            self.root = None
+            self.manifest = source.manifest
+            return
+        self.root = Path(source)
+        manifest_path = self.root / "manifest.json"
+        self.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        files = self.manifest.get("files", {})
+        if self.manifest.get("columns") != REQUIRED_COLUMNS or not files:
+            raise BlindValidationViolation("invalid fixed benchmark manifest")
+        for code, metadata in files.items():
+            path = self.root / "ohlcv" / f"{code}.csv"
+            if not path.is_file() or sha256_file(path) != metadata.get("sha256"):
+                raise BlindValidationViolation(f"fixed benchmark mismatch for {code}")
+        if snapshot_hash(files) != self.manifest.get("snapshot_hash"):
+            raise BlindValidationViolation("fixed benchmark snapshot hash mismatch")
+
+    def get_daily_stock_prices(
+        self, stock_code: str, date_from_str: str, date_to_str: str,
+    ) -> pd.DataFrame:
+        requested_from = pd.Timestamp(date_from_str)
+        requested_to = pd.Timestamp(date_to_str)
+        if requested_from < pd.Timestamp(RESEARCH_FROM) or requested_to > pd.Timestamp(RESEARCH_TO):
+            raise BlindValidationViolation(
+                "loop-validation price access is limited to "
+                f"{RESEARCH_FROM}..{RESEARCH_TO}: requested "
+                f"{requested_from.date()}..{requested_to.date()}"
+            )
+        if self._delegate is not None:
+            frame = self._delegate.get_daily_stock_prices(
+                stock_code, date_from_str, date_to_str
+            )
+        else:
+            code = str(stock_code).removesuffix(".T")
+            if code not in self.manifest["files"]:
+                raise BlindValidationViolation(f"stock is not in fixed benchmark: {code}")
+            rows: list[dict[str, Any]] = []
+            previous_date: pd.Timestamp | None = None
+            with (self.root / "ohlcv" / f"{code}.csv").open(
+                "r", encoding="utf-8", newline=""
+            ) as stream:
+                reader = csv.DictReader(stream)
+                if reader.fieldnames != REQUIRED_COLUMNS:
+                    raise BlindValidationViolation(f"invalid fixed CSV columns for {code}")
+                for raw_row in reader:
+                    row_date = pd.Timestamp(raw_row["Date"])
+                    if row_date > pd.Timestamp(RESEARCH_TO):
+                        break
+                    if previous_date is not None and row_date <= previous_date:
+                        raise BlindValidationViolation(f"invalid date ordering for {code}")
+                    previous_date = row_date
+                    if row_date < requested_from or row_date > requested_to:
+                        continue
+                    rows.append({
+                        "Date": row_date,
+                        **{
+                            column: pd.to_numeric(raw_row[column], errors="raise")
+                            for column in REQUIRED_COLUMNS[1:]
+                        },
+                    })
+            frame = pd.DataFrame(rows, columns=REQUIRED_COLUMNS).set_index("Date")
+        if not frame.empty and pd.Timestamp(frame.index.max()) > pd.Timestamp(RESEARCH_TO):
+            raise BlindValidationViolation("loader returned a row on or after 2025-04-01")
+        return frame
 
 
 @dataclass(frozen=True)
-class BacktestSettings:
-    research_from: str
-    research_to: str
-    final_from: str
-    final_to: str
-    budget: int
-    min_research_trades: int
-    min_final_trades: int
-    max_drawdown_percent: float
-    min_month_win_rate: float
-    max_single_month_profit_share: float
-    result_path: Path
-
-
-@dataclass(frozen=True)
-class FixedRule:
+class Rule:
     code: str
     target_percent: float
     stop_loss_percent: float
     threshold: float
+    validation_score: float
 
 
-def _date_after(date_str: str, days: int = 1) -> str:
-    return (pd.Timestamp(date_str) + pd.Timedelta(days=days)).strftime("%Y-%m-%d")
+@dataclass(frozen=True)
+class PredictionCacheKey:
+    stock_code: str
+    fold: int
+    target_percent: float
+    stop_loss_percent: float
+    feature_columns: tuple[str, ...]
+    seed: int
+    training_cutoff: str
 
 
-def _resolve_auto_date(value: str | None) -> str | None:
-    if value == "auto":
-        return (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
-    return value
+@dataclass
+class CachedValidationPrediction:
+    key: PredictionCacheKey
+    validation_from: str
+    validation_to: str
+    validation_dates: list[str]
+    orders: list[dict[str, Any]]
+    training_row_count: int
+    training_last_feature_date: str
+    training_last_label_confirmed_date: str
 
 
-def _load_backtest_settings(config: AppConfig) -> BacktestSettings:
-    raw = config.raw.get("backtest_settings", {})
-    training = config.training_settings
-
-    research_from = raw.get("research_from") or training.get("data_from") or "2020-01-01"
-    research_to = raw.get("research_to") or "2025-03-31"
-    final_from = raw.get("final_from") or _date_after(research_to)
-    final_to = raw.get("final_to") or _resolve_auto_date(training.get("data_to")) or "2026-05-20"
-
-    return BacktestSettings(
-        research_from=str(research_from),
-        research_to=str(research_to),
-        final_from=str(final_from),
-        final_to=str(final_to),
-        budget=int(raw.get("budget", config.ai_params.budget)),
-        min_research_trades=int(raw.get("min_research_trades", 10)),
-        min_final_trades=int(raw.get("min_final_trades", 10)),
-        max_drawdown_percent=float(raw.get("max_drawdown_percent", 15.0)),
-        min_month_win_rate=float(raw.get("min_month_win_rate", 50.0)),
-        max_single_month_profit_share=float(raw.get("max_single_month_profit_share", 70.0)),
-        result_path=Path(raw.get("result_path", "data/backtest_selection.yaml")),
-    )
-
-
-def _normalize_index(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    idx = pd.to_datetime(df.index)
-    if getattr(idx, "tz", None) is not None:
-        idx = idx.tz_convert(None)
-    df.index = idx
-    return df.sort_index()
-
-
-def _slice_dates(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    df = _normalize_index(df)
-    start_ts = pd.Timestamp(start)
-    end_ts = pd.Timestamp(end)
-    return df[(df.index >= start_ts) & (df.index <= end_ts)]
+@dataclass(frozen=True)
+class SelectionConstraints:
+    min_trades: int
+    max_drawdown_percent: float
+    min_month_win_rate: float
+    max_stock_profit_share: float
 
 
 def _build_model() -> lgb.LGBMClassifier:
     return lgb.LGBMClassifier(
-        random_state=42,
+        random_state=MODEL_SEED,
         verbose=-1,
         force_col_wise=True,
         deterministic=True,
@@ -109,718 +163,961 @@ def _build_model() -> lgb.LGBMClassifier:
     )
 
 
-def _simulate_one_signal(
-    df: pd.DataFrame,
-    signal_pos: int,
-    prob: float,
-    budget: float,
-    future_days: int,
-    stop_loss_pct: float,
-    entry_slippage_pct: float,
-    exit_slippage_pct: float,
-    stop_slippage_pct: float,
-    commission_pct: float,
-) -> tuple[dict[str, Any] | None, float]:
-    entry_idx = signal_pos + 1
-    if entry_idx >= len(df):
-        return None, budget
-
-    exit_idx = entry_idx + future_days - 1
-    if exit_idx >= len(df):
-        return None, budget
-
-    entry_price = float(df.iloc[entry_idx]["Open"]) * (1 + entry_slippage_pct / 100)
-    if entry_price <= 0:
-        return None, budget
-
-    stop_price = entry_price * (1 - stop_loss_pct / 100)
-    exit_price = None
-    exit_reason = "TIME"
-    actual_exit_idx = exit_idx
-
-    for j in range(entry_idx, exit_idx + 1):
-        if float(df.iloc[j]["Low"]) <= stop_price:
-            exit_price = stop_price * (1 - stop_slippage_pct / 100)
-            exit_reason = "STOP"
-            actual_exit_idx = j
-            break
-
-    if exit_price is None:
-        exit_price = float(df.iloc[exit_idx]["Close"]) * (1 - exit_slippage_pct / 100)
-
-    qty = int(budget / entry_price)
-    if qty <= 0:
-        return None, budget
-
-    gross_profit = (exit_price - entry_price) * qty
-    commission = (entry_price + exit_price) * qty * commission_pct / 100
-    profit = gross_profit - commission
-    next_budget = budget + profit
-
-    return (
-        {
-            "signal_date": df.index[signal_pos],
-            "entry_date": df.index[entry_idx],
-            "exit_date": df.index[actual_exit_idx],
-            "prob": float(prob),
-            "entry_price": round(entry_price, 4),
-            "exit_price": round(float(exit_price), 4),
-            "qty": qty,
-            "profit": int(profit),
-            "equity": int(next_budget),
-            "win": profit > 0,
-            "exit_reason": exit_reason,
-        },
-        next_budget,
-    )
+def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+    result = sanitize_ohlcv(df.copy())
+    index = pd.to_datetime(result.index)
+    if getattr(index, "tz", None) is not None:
+        index = index.tz_convert(None)
+    result.index = index
+    return result.sort_index()
 
 
-def _simulate_trades(
-    df: pd.DataFrame,
-    probs,
-    threshold: float,
-    future_days: int,
-    stop_loss_pct: float,
-    entry_slippage_pct: float,
-    exit_slippage_pct: float,
-    stop_slippage_pct: float,
-    commission_pct: float,
-    starting_budget: int,
+def _labelled(
+    df_ta: pd.DataFrame, ai: AIParams, target: float, stop: float,
 ) -> pd.DataFrame:
-    trades: list[dict[str, Any]] = []
-
-    for i in range(len(df) - 1):
-        prob = float(probs[i])
-        if prob < threshold:
-            continue
-
-        # ペーパーログと同じく、過去の損益を複利運用せず毎回固定予算で売買する。
-        trade, _ = _simulate_one_signal(
-            df,
-            i,
-            prob,
-            float(starting_budget),
-            future_days,
-            stop_loss_pct,
-            entry_slippage_pct,
-            exit_slippage_pct,
-            stop_slippage_pct,
-            commission_pct,
-        )
-        if trade is not None:
-            trades.append(trade)
-
-    return pd.DataFrame(trades)
-
-
-def _max_losing_streak(profits: pd.Series) -> int:
-    worst = 0
-    current = 0
-    for profit in profits:
-        if profit <= 0:
-            current += 1
-            worst = max(worst, current)
-        else:
-            current = 0
-    return worst
-
-
-def _summarize_trades(trades: pd.DataFrame, starting_budget: int) -> dict[str, Any]:
-    if trades.empty:
-        return {
-            "Profit": 0,
-            "Trades": 0,
-            "Wins": 0,
-            "WinRate": 0.0,
-            "MaxDD": 0,
-            "MaxDDPct": 0.0,
-            "WorstMonth": 0,
-            "BestMonth": 0,
-            "MonthWinRate": 0.0,
-            "Months": 0,
-            "LosingStreak": 0,
-            "SingleMonthShare": 0.0,
-        }
-
-    profits = trades["profit"].astype(float)
-    equity = starting_budget + profits.cumsum()
-    peak = equity.cummax()
-    drawdown = equity - peak
-    drawdown_pct = (equity / peak - 1) * 100
-
-    exit_dates = pd.to_datetime(trades["exit_date"])
-    monthly = profits.groupby(exit_dates.dt.to_period("M")).sum()
-    best_month = int(monthly.max()) if not monthly.empty else 0
-    worst_month = int(monthly.min()) if not monthly.empty else 0
-    positive_months = int((monthly > 0).sum()) if not monthly.empty else 0
-    month_win_rate = round(positive_months / len(monthly) * 100, 1) if len(monthly) else 0.0
-    total_profit = int(profits.sum())
-    single_month_share = round(best_month / total_profit * 100, 1) if total_profit > 0 and best_month > 0 else 0.0
-
-    return {
-        "Profit": total_profit,
-        "Trades": int(len(trades)),
-        "Wins": int((profits > 0).sum()),
-        "WinRate": float(round((profits > 0).mean() * 100, 1)),
-        "MaxDD": int(drawdown.min()),
-        "MaxDDPct": round(float(drawdown_pct.min()), 1),
-        "WorstMonth": worst_month,
-        "BestMonth": best_month,
-        "MonthWinRate": month_win_rate,
-        "Months": int(len(monthly)),
-        "LosingStreak": _max_losing_streak(profits),
-        "SingleMonthShare": single_month_share,
-    }
-
-
-def _monthly_profit_table(trades: pd.DataFrame) -> pd.DataFrame:
-    if trades.empty:
-        return pd.DataFrame(columns=["Month", "Profit", "Trades", "Wins", "WinRate"])
-
-    df = trades.copy()
-    df["Month"] = pd.to_datetime(df["exit_date"]).dt.to_period("M").astype(str)
-    monthly = (
-        df.groupby("Month")
-        .agg(
-            Profit=("profit", "sum"),
-            Trades=("profit", "count"),
-            Wins=("win", "sum"),
-        )
-        .reset_index()
-    )
-    monthly["WinRate"] = (monthly["Wins"] / monthly["Trades"] * 100).round(1)
-    return monthly
-
-
-def _research_combo_rows(
-    labeled_by_tp: dict[float, pd.DataFrame],
-    feature_cols: list[str],
-    config: AppConfig,
-    settings: BacktestSettings,
-) -> pd.DataFrame:
-    ai = config.ai_params
-    rows: list[dict[str, Any]] = []
-
-    for tp, df_labeled in labeled_by_tp.items():
-        for fold_no, ratios in enumerate(FOLDS, 1):
-            tr_ratio, val_ratio, te_ratio = ratios
-            m = len(df_labeled)
-            tr_end = int(m * tr_ratio)
-            val_end = int(m * val_ratio)
-            te_end = int(m * te_ratio)
-
-            train_label_end = max(tr_end - ai.future_days, 0)
-            train_df = df_labeled.iloc[:train_label_end]
-            val_df = df_labeled.iloc[tr_end:val_end]
-            test_df = df_labeled.iloc[val_end:te_end]
-
-            if len(train_df["Target"].unique()) < 2 or len(val_df) < 10 or len(test_df) < 10:
-                continue
-
-            model = _build_model()
-            model.fit(train_df[feature_cols], train_df["Target"])
-            val_probs = model.predict_proba(val_df[feature_cols])[:, 1]
-            test_probs = model.predict_proba(test_df[feature_cols])[:, 1]
-
-            for stop in STOP_GRID:
-                for threshold in THRESHOLD_GRID:
-                    val_trades = _simulate_trades(
-                        val_df,
-                        val_probs,
-                        threshold,
-                        ai.future_days,
-                        stop,
-                        ai.entry_slippage_percent,
-                        ai.exit_slippage_percent,
-                        ai.stop_slippage_percent,
-                        ai.commission_percent,
-                        settings.budget,
-                    )
-                    test_trades = _simulate_trades(
-                        test_df,
-                        test_probs,
-                        threshold,
-                        ai.future_days,
-                        stop,
-                        ai.entry_slippage_percent,
-                        ai.exit_slippage_percent,
-                        ai.stop_slippage_percent,
-                        ai.commission_percent,
-                        settings.budget,
-                    )
-                    val = _summarize_trades(val_trades, settings.budget)
-                    test = _summarize_trades(test_trades, settings.budget)
-                    rows.append(
-                        {
-                            "fold": fold_no,
-                            "tp": tp,
-                            "stop": stop,
-                            "thr": threshold,
-                            "val_profit": val["Profit"],
-                            "val_trades": val["Trades"],
-                            "test_profit": test["Profit"],
-                            "test_trades": test["Trades"],
-                            "test_wins": test["Wins"],
-                            "test_win_rate": test["WinRate"],
-                            "test_max_dd": test["MaxDD"],
-                            "test_max_dd_pct": test["MaxDDPct"],
-                        }
-                    )
-
-    return pd.DataFrame(rows)
-
-
-def _select_research_rule(code: str, combo_rows: pd.DataFrame, settings: BacktestSettings) -> dict[str, Any] | None:
-    if combo_rows.empty:
-        return None
-
-    agg = (
-        combo_rows.groupby(["tp", "stop", "thr"])
-        .agg(
-            ValProfit=("val_profit", "sum"),
-            ValTrades=("val_trades", "sum"),
-            TestProfit=("test_profit", "sum"),
-            MinFold=("test_profit", "min"),
-            Folds=("fold", "nunique"),
-            Trades=("test_trades", "sum"),
-            Wins=("test_wins", "sum"),
-        )
-        .reset_index()
-    )
-    folds_pos = (
-        combo_rows.groupby(["tp", "stop", "thr"])["test_profit"]
-        .apply(lambda s: int((s > 0).sum()))
-        .rename("FoldsPosCount")
-        .reset_index()
-    )
-    agg = agg.merge(folds_pos, on=["tp", "stop", "thr"], how="left")
-    agg["WinRate"] = (agg["Wins"] / agg["Trades"] * 100).fillna(0).round(1)
-    agg["ResearchScore"] = (
-        agg["ValProfit"]
-        + agg["TestProfit"]
-        + agg["MinFold"].clip(upper=0) * 2
-        - (agg["Trades"] < settings.min_research_trades).astype(int) * 50_000
-    )
-
-    selected = agg.sort_values(
-        ["ResearchScore", "FoldsPosCount", "MinFold", "ValProfit", "Trades"],
-        ascending=[False, False, False, False, False],
-    ).iloc[0]
-
-    return {
-        "Code": code,
-        "TargetPercent": float(selected["tp"]),
-        "StopLossPercent": float(selected["stop"]),
-        "Threshold": float(selected["thr"]),
-        "ResearchScore": int(selected["ResearchScore"]),
-        "ValProfit": int(selected["ValProfit"]),
-        "TestProfit": int(selected["TestProfit"]),
-        "MinFold": int(selected["MinFold"]),
-        "FoldsPosCount": int(selected["FoldsPosCount"]),
-        "FoldsPos": f"{int(selected['FoldsPosCount'])}/{int(selected['Folds'])}",
-        "Trades": int(selected["Trades"]),
-        "WinRate": float(selected["WinRate"]),
-    }
-
-
-def _evaluate_research_stock(
-    code: str,
-    df_prices: pd.DataFrame,
-    config: AppConfig,
-    settings: BacktestSettings,
-) -> tuple[dict[str, Any] | None, pd.DataFrame]:
-    ai = config.ai_params
-    feature_cols = config.feature_columns
-    df_research = _slice_dates(df_prices, settings.research_from, settings.research_to)
-
-    if df_research.empty:
-        return None, pd.DataFrame()
-
-    df_ta = calculate_indicators(df_research, config.tech_params)
-    labeled_by_tp: dict[float, pd.DataFrame] = {}
-
-    for tp in TARGET_GRID:
-        df_labeled = create_target_variable(
-            df_ta,
-            ai.future_days,
-            tp,
-            ai.entry_slippage_percent,
-            ai.exit_slippage_percent,
-        )
-        df_labeled = df_labeled.dropna(subset=feature_cols + ["Target"])
-        if len(df_labeled) >= 100:
-            labeled_by_tp[tp] = df_labeled
-
-    if not labeled_by_tp:
-        return None, pd.DataFrame()
-
-    combo_rows = _research_combo_rows(labeled_by_tp, feature_cols, config, settings)
-    selected = _select_research_rule(code, combo_rows, settings)
-    return selected, combo_rows
-
-
-def _final_evaluation_rolling(
-    df_prices: pd.DataFrame,
-    rule: FixedRule,
-    config: AppConfig,
-    settings: BacktestSettings,
-) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame]:
-    ai = config.ai_params
-    feature_cols = config.feature_columns
-
-    df_full = _slice_dates(df_prices, settings.research_from, settings.final_to)
-    df_ta = calculate_indicators(df_full, config.tech_params)
-    df_labeled = create_target_variable(
+    result = create_target_variable(
         df_ta,
         ai.future_days,
-        rule.target_percent,
+        target,
         ai.entry_slippage_percent,
         ai.exit_slippage_percent,
+        stop,
+        ai.stop_slippage_percent,
+        ai.commission_percent,
     )
-    df_labeled = df_labeled.dropna(subset=feature_cols + ["Target"])
-
-    final_start = pd.Timestamp(settings.final_from)
-    final_end = pd.Timestamp(settings.final_to)
-    trades: list[dict[str, Any]] = []
-    predictions: list[dict[str, Any]] = []
-
-    df_signal = df_ta.dropna(subset=feature_cols)
-    for signal_date, signal_row in df_signal.iterrows():
-        if signal_date < final_start or signal_date > final_end:
-            continue
-
-        signal_pos = df_ta.index.get_loc(signal_date)
-        exit_pos = signal_pos + ai.future_days
-        if exit_pos >= len(df_ta) or df_ta.index[exit_pos] > final_end:
-            continue
-
-        label_cutoff_pos = signal_pos - ai.future_days
-        if label_cutoff_pos < 0:
-            continue
-        label_cutoff_date = df_ta.index[label_cutoff_pos]
-        train_df = df_labeled[df_labeled.index <= label_cutoff_date]
-
-        if len(train_df) < 100 or len(train_df["Target"].unique()) < 2:
-            continue
-
-        model = _build_model()
-        model.fit(train_df[feature_cols], train_df["Target"])
-        prob = float(model.predict_proba(signal_row[feature_cols].to_frame().T)[:, 1][0])
-        is_signal = prob >= rule.threshold
-        predictions.append({"date": signal_date, "prob": prob, "signal": is_signal})
-
-        if not is_signal:
-            continue
-
-        # 日次ウォークフォワードでも各シグナルの予算は固定する。
-        trade, _ = _simulate_one_signal(
-            df_ta,
-            signal_pos,
-            prob,
-            float(settings.budget),
+    result["LabelConfirmedDate"] = pd.NaT
+    column = result.columns.get_loc("LabelConfirmedDate")
+    for position in range(len(result)):
+        execution = simulate_execution(
+            result,
+            position,
             ai.future_days,
-            rule.stop_loss_percent,
+            stop,
             ai.entry_slippage_percent,
             ai.exit_slippage_percent,
             ai.stop_slippage_percent,
             ai.commission_percent,
         )
-        if trade is not None:
-            trades.append(trade)
-
-    trades_df = pd.DataFrame(trades)
-    predictions_df = pd.DataFrame(predictions)
-    summary = _summarize_trades(trades_df, settings.budget)
-    return summary, trades_df, predictions_df
+        if execution is not None:
+            result.iloc[position, column] = result.index[execution.exit_index]
+    return result
 
 
-def _adoption_checks(summary: dict[str, Any], settings: BacktestSettings) -> tuple[str, list[str]]:
-    checks = [
-        ("profit_positive", summary["Profit"] > 0),
-        ("enough_trades", summary["Trades"] >= settings.min_final_trades),
-        ("drawdown_ok", abs(summary["MaxDDPct"]) <= settings.max_drawdown_percent),
-        ("monthly_stability_ok", summary["MonthWinRate"] >= settings.min_month_win_rate),
-        (
-            "not_one_month_dependent",
-            summary["SingleMonthShare"] <= settings.max_single_month_profit_share or summary["Profit"] <= 0,
-        ),
-    ]
-    failed = [name for name, ok in checks if not ok]
-    if not failed:
-        return "PASS", []
-    if "profit_positive" in failed or "enough_trades" in failed:
-        return "REJECT", failed
-    return "REVIEW", failed
+def eligible_training_rows(
+    labelled: pd.DataFrame, prediction_date: str | pd.Timestamp, feature_columns: list[str],
+) -> pd.DataFrame:
+    """Return rows whose features and label outcome are known before prediction."""
+    cutoff = pd.Timestamp(prediction_date)
+    ready = labelled.dropna(subset=feature_columns + ["Target", "LabelConfirmedDate"])
+    return ready[(ready.index < cutoff) & (ready["LabelConfirmedDate"] < cutoff)]
 
 
-def _print_header(title: str) -> None:
-    print("\n" + "=" * 100)
-    print(title)
-    print("=" * 100)
+def _independent_metrics(
+    orders: list[dict[str, Any]], threshold: float, budget: int,
+) -> dict[str, float | int]:
+    profits: list[float] = []
+    for order in orders:
+        if float(order["prob"]) < threshold or order.get("skip_reason"):
+            continue
+        entry_price = float(order["entry_price"])
+        if entry_price <= 0:
+            continue
+        quantity = int(budget / entry_price)
+        if quantity <= 0:
+            continue
+        profits.append(float(order["return_percent"]) / 100 * entry_price * quantity)
+    return {
+        "profit": round(sum(profits), 8),
+        "trades": len(profits),
+        "wins": sum(value > 0 for value in profits),
+    }
 
 
-def _fixed_rule_from_row(row: pd.Series) -> FixedRule:
-    return FixedRule(
-        code=str(row["Code"]),
-        target_percent=float(row["TargetPercent"]),
-        stop_loss_percent=float(row["StopLossPercent"]),
-        threshold=float(row["Threshold"]),
+def _validation_order(
+    code: str,
+    df_until_validation_end: pd.DataFrame,
+    signal_date: pd.Timestamp,
+    probability: float,
+    ai: AIParams,
+    stop: float,
+) -> dict[str, Any]:
+    signal_position = int(df_until_validation_end.index.get_loc(signal_date))
+    entry_position = signal_position + 1
+    planned_entry = (
+        df_until_validation_end.index[entry_position]
+        if entry_position < len(df_until_validation_end) else signal_date
     )
-
-
-def _print_final_result(
-    rule: FixedRule,
-    summary: dict[str, Any],
-    trades: pd.DataFrame,
-    predictions: pd.DataFrame,
-    status: str,
-    failed_checks: list[str],
-) -> None:
-    _print_header(f"Final evaluation: {rule.code}")
-    print(f"Locked rule           : target={rule.target_percent}, stop={rule.stop_loss_percent}, threshold={rule.threshold}")
-    print(f"Adoption status       : {status}")
-    if failed_checks:
-        print(f"Failed checks         : {', '.join(failed_checks)}")
-    print(f"Predicted days        : {len(predictions)}")
-    print(f"Signals / trades      : {summary['Trades']}")
-    print(f"Profit                : {summary['Profit']:+,d}")
-    print(f"Max drawdown          : {summary['MaxDD']:+,d} ({summary['MaxDDPct']}%)")
-    print(f"Win rate              : {summary['WinRate']}%")
-    print(f"Monthly win rate      : {summary['MonthWinRate']}% ({summary['Months']} months)")
-    print(f"Worst month           : {summary['WorstMonth']:+,d}")
-    print(f"Best month            : {summary['BestMonth']:+,d}")
-    print(f"Max losing streak     : {summary['LosingStreak']}")
-    print(f"Best-month dependency : {summary['SingleMonthShare']}% of total profit")
-    print("\nMonthly result")
-    print(_monthly_profit_table(trades).to_string(index=False))
-
-
-def _save_selection_result(
-    final_results: pd.DataFrame,
-    settings: BacktestSettings,
-) -> str | None:
-    passed = final_results[final_results["Status"] == "PASS"].copy()
-    passed = passed.sort_values("ResearchScore", ascending=False)
-    recommended_code = str(passed.iloc[0]["Code"]) if not passed.empty else None
-
-    paper_test_rules = final_results[
-        final_results["Status"].isin(["PASS", "REVIEW"])
-    ].copy()
-    rules = {
-        str(row["Code"]): {
-            "target_percent": float(row["TargetPercent"]),
-            "stop_loss_percent": float(row["StopLossPercent"]),
-            "threshold": float(row["Threshold"]),
-        }
-        for _, row in paper_test_rules.iterrows()
+    base = {
+        "code": code,
+        "signal_date": signal_date.strftime("%Y-%m-%d"),
+        "planned_entry_date": planned_entry.strftime("%Y-%m-%d"),
+        "order_date": planned_entry.strftime("%Y-%m-%d"),
+        "prob": round(float(probability), 8),
+        "commission_percent": ai.commission_percent,
     }
-    result = {
-        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "recommended_stock_code": recommended_code,
-        "selection_method": "highest_research_score_among_final_pass",
-        "rules": rules,
+    execution = simulate_execution(
+        df_until_validation_end, signal_position, ai.future_days, stop,
+        ai.entry_slippage_percent, ai.exit_slippage_percent,
+        ai.stop_slippage_percent, ai.commission_percent,
+    )
+    if execution is None:
+        return {**base, "skip_reason": "SKIPPED_NO_FUTURE_DATA"}
+    return {
+        **base,
+        "entry_date": df_until_validation_end.index[execution.entry_index].strftime("%Y-%m-%d"),
+        "exit_date": df_until_validation_end.index[execution.exit_index].strftime("%Y-%m-%d"),
+        "entry_price": round(execution.entry_price, 8),
+        "exit_price": round(execution.exit_price, 8),
+        "exit_reason": execution.exit_reason,
+        "return_percent": round(execution.return_percent, 8),
     }
 
-    settings.result_path.parent.mkdir(parents=True, exist_ok=True)
-    with settings.result_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(result, f, allow_unicode=True, sort_keys=False)
-    return recommended_code
 
-
-def run_backtest() -> None:
-    config, _ = load_app(log_file="backtest.log")
+def research_candidate_cache(
+    code: str,
+    prices: pd.DataFrame,
+    config: AppConfig,
+    budget: int,
+) -> tuple[pd.DataFrame, dict[PredictionCacheKey, CachedValidationPrediction]]:
+    """Train once per target/stop/fold and cache validation probabilities."""
     ai = config.ai_params
-    settings = _load_backtest_settings(config)
-    stock_configs = {stock.stock_code: config.for_stock(stock) for stock in config.stocks}
-    candidates = list(stock_configs)
+    features = config.feature_columns
+    research = prices[(prices.index >= RESEARCH_FROM) & (prices.index <= RESEARCH_TO)]
+    df_ta = calculate_indicators(research, config.tech_params)
+    rows: list[dict[str, Any]] = []
+    cache: dict[PredictionCacheKey, CachedValidationPrediction] = {}
+    for target in TARGET_GRID:
+        for stop in STOP_GRID:
+            labelled = _labelled(df_ta, ai, target, stop)
+            usable = labelled.dropna(subset=features + ["Target", "LabelConfirmedDate"])
+            for fold, (train_ratio, validation_ratio, _test_ratio) in enumerate(FOLDS, 1):
+                count = len(usable)
+                train_end = int(count * train_ratio)
+                validation_end = int(count * validation_ratio)
+                validation = usable.iloc[train_end:validation_end]
+                if len(validation) < 10:
+                    continue
+                train = eligible_training_rows(usable.iloc[:train_end], validation.index[0], features)
+                if len(train) < 100 or train["Target"].nunique() < 2:
+                    continue
+                model = _build_model()
+                model.fit(train[features], train["Target"].astype(int))
+                validation_probabilities = model.predict_proba(validation[features])[:, 1]
+                training_cutoff = validation.index[0].strftime("%Y-%m-%d")
+                key = PredictionCacheKey(
+                    stock_code=code,
+                    fold=fold,
+                    target_percent=target,
+                    stop_loss_percent=stop,
+                    feature_columns=tuple(features),
+                    seed=MODEL_SEED,
+                    training_cutoff=training_cutoff,
+                )
+                validation_only_prices = df_ta[df_ta.index <= validation.index.max()]
+                orders = [
+                    _validation_order(
+                        code, validation_only_prices, signal_date, probability, ai, stop
+                    )
+                    for signal_date, probability in zip(validation.index, validation_probabilities)
+                ]
+                cache[key] = CachedValidationPrediction(
+                    key=key,
+                    validation_from=validation.index.min().strftime("%Y-%m-%d"),
+                    validation_to=validation.index.max().strftime("%Y-%m-%d"),
+                    validation_dates=[date.strftime("%Y-%m-%d") for date in validation.index],
+                    orders=orders,
+                    training_row_count=len(train),
+                    training_last_feature_date=train.index.max().strftime("%Y-%m-%d"),
+                    training_last_label_confirmed_date=pd.Timestamp(
+                        train["LabelConfirmedDate"].max()
+                    ).strftime("%Y-%m-%d"),
+                )
+                for threshold in THRESHOLD_GRID:
+                    validation_metrics = _independent_metrics(orders, threshold, budget)
+                    rows.append(
+                        {
+                            "Code": code,
+                            "Fold": fold,
+                            "TargetPercent": target,
+                            "StopLossPercent": stop,
+                            "Threshold": threshold,
+                            "ValidationProfit": validation_metrics["profit"],
+                            "ValidationTrades": validation_metrics["trades"],
+                            "ValidationWins": validation_metrics["wins"],
+                            "TrainLastFeatureDate": train.index.max().strftime("%Y-%m-%d"),
+                            "TrainLastLabelConfirmedDate": pd.Timestamp(train["LabelConfirmedDate"].max()).strftime("%Y-%m-%d"),
+                            "ValidationFrom": validation.index.min().strftime("%Y-%m-%d"),
+                            "ValidationTo": validation.index.max().strftime("%Y-%m-%d"),
+                        }
+                    )
+    return pd.DataFrame(rows), cache
 
-    _print_header("Backtest: research selection + locked final evaluation")
-    print(f"Research period : {settings.research_from} to {settings.research_to}")
-    print(f"Final period    : {settings.final_from} to {settings.final_to}")
-    print(f"Candidates      : {', '.join(candidates)}")
-    print(f"Future days     : {ai.future_days}")
-    print(f"Budget          : {settings.budget:,}")
-    print(f"Feature columns : {', '.join(config.feature_columns)}")
-    print(
-        "Cost model      : "
-        f"commission={ai.commission_percent:.3f}%, "
-        f"entry_slippage={ai.entry_slippage_percent:.3f}%, "
-        f"exit_slippage={ai.exit_slippage_percent:.3f}%, "
-        f"stop_slippage={ai.stop_slippage_percent:.3f}%"
+
+def research_candidate_rows(
+    code: str, prices: pd.DataFrame, config: AppConfig, budget: int,
+) -> pd.DataFrame:
+    """Compatibility wrapper returning independent validation diagnostics."""
+    rows, _ = research_candidate_cache(code, prices, config, budget)
+    return rows
+
+
+def select_rule_from_diagnostics(code: str, diagnostics: pd.DataFrame, min_trades: int) -> Rule:
+    """Select solely from validation columns; test/reference columns are ignored."""
+    grouped = diagnostics.groupby(
+        ["TargetPercent", "StopLossPercent", "Threshold"], as_index=False
+    ).agg(
+        ValidationProfit=("ValidationProfit", "sum"),
+        ValidationTrades=("ValidationTrades", "sum"),
     )
-    print(
-        "Grid            : "
-        f"target={TARGET_GRID}, stop={STOP_GRID}, threshold={THRESHOLD_GRID}"
+    grouped["ValidationScore"] = (
+        grouped["ValidationProfit"]
+        - (grouped["ValidationTrades"] < min_trades).astype(int) * 50_000
     )
-    print(
-        "Adoption checks : "
-        f"profit>0, trades>={settings.min_final_trades}, "
-        f"max_dd<={settings.max_drawdown_percent:.1f}%, "
-        f"month_win_rate>={settings.min_month_win_rate:.1f}%, "
-        f"best_month_share<={settings.max_single_month_profit_share:.1f}%"
+    selected = grouped.sort_values(
+        ["ValidationScore", "TargetPercent", "StopLossPercent", "Threshold"],
+        ascending=[False, True, True, True],
+        kind="mergesort",
+    ).iloc[0]
+    return Rule(
+        code=code,
+        target_percent=float(selected["TargetPercent"]),
+        stop_loss_percent=float(selected["StopLossPercent"]),
+        threshold=float(selected["Threshold"]),
+        validation_score=float(selected["ValidationScore"]),
     )
 
-    fetcher = YFinanceFetcher()
-    fetch_from = settings.research_from
-    fetch_to = _date_after(settings.final_to)
 
-    research_rows: list[dict[str, Any]] = []
-    price_cache: dict[str, pd.DataFrame] = {}
+def _rule_signature(rules: dict[str, Rule]) -> tuple[tuple[str, float, float, float], ...]:
+    return tuple(
+        (code, rules[code].target_percent, rules[code].stop_loss_percent, rules[code].threshold)
+        for code in sorted(rules)
+    )
 
-    _print_header("1) Research selection")
-    for code in candidates:
-        print(f"-- {code} --")
-        try:
-            df_prices = fetcher.get_daily_stock_prices(code, fetch_from, fetch_to)
-        except Exception as exc:
-            print(f"  error: {exc}")
-            continue
 
-        if df_prices is None or df_prices.empty:
-            print("  skipped: no data")
-            continue
+def _cache_entry(
+    cache: dict[PredictionCacheKey, CachedValidationPrediction], code: str,
+    fold: int, rule: Rule,
+) -> CachedValidationPrediction:
+    matches = [
+        value for key, value in cache.items()
+        if key.stock_code == code and key.fold == fold
+        and key.target_percent == rule.target_percent
+        and key.stop_loss_percent == rule.stop_loss_percent
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(f"validation cache lookup failed: {code} fold={fold} rule={rule}")
+    return matches[0]
 
-        df_prices = sanitize_ohlcv(_normalize_index(df_prices))
-        price_cache[code] = df_prices
 
-        selected, _ = _evaluate_research_stock(
-            code,
-            df_prices,
-            stock_configs[code],
-            settings,
+def assert_validation_folds_non_overlapping(
+    cache: dict[PredictionCacheKey, CachedValidationPrediction],
+) -> None:
+    fold_dates: dict[int, set[pd.Timestamp]] = {}
+    for entry in cache.values():
+        fold_dates.setdefault(entry.key.fold, set()).update(
+            pd.Timestamp(value) for value in entry.validation_dates
         )
-        if selected is None:
-            print("  skipped: not enough valid research data")
-            continue
+    folds = sorted(fold_dates)
+    for index, left in enumerate(folds):
+        for right in folds[index + 1:]:
+            overlap = fold_dates[left] & fold_dates[right]
+            if overlap:
+                raise ValueError(
+                    f"validation folds overlap: {left} and {right} at {min(overlap).date()}"
+                )
 
-        research_rows.append(selected)
-        print(
-            "  selected in research: "
-            f"tp={selected['TargetPercent']} "
-            f"stop={selected['StopLossPercent']} "
-            f"thr={selected['Threshold']} "
-            f"score={selected['ResearchScore']:+,d} "
-            f"research_test={selected['TestProfit']:+,d} "
-            f"trades={selected['Trades']} "
-            f"folds_pos={selected['FoldsPos']}"
+
+def _portfolio_fold_metrics(
+    fold: int,
+    results: list[dict[str, Any]],
+    ledger: list[dict[str, Any]],
+    budget: int,
+) -> dict[str, Any]:
+    trades = [row for row in results if row["status"] == "FILLED"]
+    skipped = [row for row in results if row["status"] != "FILLED"]
+    profits = pd.Series([float(row.get("profit", 0.0)) for row in trades], dtype=float)
+    equity = pd.Series(
+        [float(budget)] + [float(row["equity"]) for row in ledger], dtype=float
+    )
+    drawdown_percent = (equity / equity.cummax() - 1) * 100
+    return {
+        "fold": fold,
+        "profit": round(float(profits.sum()), 8),
+        "trades": len(trades),
+        "wins": int((profits > 0).sum()),
+        "max_drawdown_percent": round(abs(float(drawdown_percent.min())), 8),
+        "skip_counts": {
+            str(reason): int(count)
+            for reason, count in pd.Series(
+                [row["status"] for row in skipped], dtype="object"
+            ).value_counts().sort_index().items()
+        },
+    }
+
+
+def classify_validation_metrics(
+    metrics: dict[str, Any], constraints: SelectionConstraints,
+) -> dict[str, Any]:
+    checks = {
+        "total_profit_positive": metrics["total_profit"] > 0,
+        "positive_folds": metrics["positive_folds"] >= 2,
+        "enough_trades": metrics["trade_count"] >= constraints.min_trades,
+        "drawdown_ok": metrics["worst_max_drawdown_percent"] <= constraints.max_drawdown_percent,
+        "monthly_stability_ok": metrics["month_win_rate"] >= constraints.min_month_win_rate,
+        "stock_dependency_ok": metrics["max_stock_profit_share"] <= constraints.max_stock_profit_share,
+    }
+    failed = [name for name, passed in checks.items() if not passed]
+    return {**metrics, "selection_status": "PASS" if not failed else "REVIEW", "failed_checks": failed, "failed_check_count": len(failed)}
+
+
+def evaluate_validation_portfolio(
+    rules: dict[str, Rule],
+    cache: dict[PredictionCacheKey, CachedValidationPrediction],
+    budget: int,
+    portfolio_settings: PortfolioSettings,
+    constraints: SelectionConstraints,
+) -> dict[str, Any]:
+    """Evaluate only cached validation predictions, resetting cash each fold."""
+    assert_validation_folds_non_overlapping(cache)
+    by_fold: list[dict[str, Any]] = []
+    all_trades: list[dict[str, Any]] = []
+    all_skipped: list[dict[str, Any]] = []
+    for fold in sorted({key.fold for key in cache}):
+        orders: list[dict[str, Any]] = []
+        calendar: set[pd.Timestamp] = set()
+        for code in sorted(rules):
+            rule = rules[code]
+            entry = _cache_entry(cache, code, fold, rule)
+            calendar.update(pd.Timestamp(value) for value in entry.validation_dates)
+            orders.extend(
+                {**order, "validation_fold": fold}
+                for order in entry.orders if float(order["prob"]) >= rule.threshold
+            )
+        orders.sort(key=lambda row: (row["order_date"], -float(row["prob"]), row["code"]))
+        results, ledger = simulate_portfolio(
+            orders, budget, portfolio_settings, sorted(calendar)
         )
+        fold_metrics = _portfolio_fold_metrics(fold, results, ledger, budget)
+        by_fold.append(fold_metrics)
+        all_trades.extend({**row, "validation_fold": fold} for row in results if row["status"] == "FILLED")
+        all_skipped.extend({**row, "validation_fold": fold} for row in results if row["status"] != "FILLED")
 
-    if not research_rows:
-        print("No research result.")
-        return
+    trade_frame = pd.DataFrame(all_trades)
+    profits = pd.to_numeric(trade_frame.get("profit", pd.Series(dtype=float)), errors="coerce").fillna(0)
+    exit_dates = pd.to_datetime(trade_frame.get("exit_date", pd.Series(dtype=str)))
+    monthly = profits.groupby(exit_dates.dt.to_period("M")).sum() if len(profits) else pd.Series(dtype=float)
+    stock_profit = (
+        trade_frame.assign(profit=profits).groupby("code", sort=True)["profit"].sum()
+        if len(trade_frame) else pd.Series(dtype=float)
+    )
+    positive_stock_profit = stock_profit[stock_profit > 0]
+    positive_total = float(positive_stock_profit.sum())
+    dependency = (
+        float(positive_stock_profit.max()) / positive_total * 100
+        if positive_total > 0 else 0.0
+    )
+    skip_counts = {
+        str(reason): int(count)
+        for reason, count in pd.Series(
+            [row["status"] for row in all_skipped], dtype="object"
+        ).value_counts().sort_index().items()
+    }
+    metrics = {
+        "total_profit": round(sum(row["profit"] for row in by_fold), 8),
+        "positive_folds": sum(row["profit"] > 0 for row in by_fold),
+        "min_fold_profit": round(min(row["profit"] for row in by_fold), 8),
+        "worst_max_drawdown_percent": round(max(row["max_drawdown_percent"] for row in by_fold), 8),
+        "month_win_rate": round(float((monthly > 0).mean() * 100), 8) if len(monthly) else 0.0,
+        "max_stock_profit_share": round(dependency, 8),
+        "trade_count": len(all_trades),
+        "skip_counts": skip_counts,
+        "profit_by_stock": {str(code): round(float(value), 8) for code, value in stock_profit.items()},
+        "by_fold": by_fold,
+        "trades": all_trades,
+        "skipped": all_skipped,
+    }
+    return classify_validation_metrics(metrics, constraints)
 
-    df_research = pd.DataFrame(research_rows).sort_values(
-        ["ResearchScore", "FoldsPosCount", "MinFold", "ValProfit", "Trades"],
-        ascending=[False, False, False, False, False],
+
+def _selection_key(
+    metrics: dict[str, Any], rules: dict[str, Rule],
+) -> tuple[Any, ...]:
+    return (
+        0 if metrics["selection_status"] == "PASS" else 1,
+        0 if metrics["selection_status"] == "PASS" else metrics["failed_check_count"],
+        -metrics["total_profit"],
+        -metrics["min_fold_profit"],
+        metrics["worst_max_drawdown_percent"],
+        -metrics["month_win_rate"],
+        metrics["max_stock_profit_share"],
+        -metrics["trade_count"],
+        _rule_signature(rules),
     )
 
-    _print_header("Research summary")
-    print(df_research.to_string(index=False))
 
-    df_final_candidates = df_research.copy()
+def candidate_rules_from_diagnostics(
+    code: str, diagnostics: pd.DataFrame,
+) -> list[Rule]:
+    grouped = diagnostics.groupby(
+        ["TargetPercent", "StopLossPercent", "Threshold"], as_index=False
+    )["ValidationProfit"].sum()
+    return [
+        Rule(code, float(row.TargetPercent), float(row.StopLossPercent),
+             float(row.Threshold), float(row.ValidationProfit))
+        for row in grouped.sort_values(
+            ["TargetPercent", "StopLossPercent", "Threshold"], kind="mergesort"
+        ).itertuples(index=False)
+    ]
 
-    _print_header("2) Locked rules for per-stock final evaluation")
-    print(
-        df_final_candidates[
-            ["Code", "TargetPercent", "StopLossPercent", "Threshold"]
-        ].to_string(index=False)
-    )
-    print("Final evaluation will not search or adjust these values.")
 
-    final_rows: list[dict[str, Any]] = []
-    for _, selected in df_final_candidates.iterrows():
-        rule = _fixed_rule_from_row(selected)
-        if rule.code not in price_cache:
-            df_prices = fetcher.get_daily_stock_prices(rule.code, fetch_from, fetch_to)
-            if df_prices is None or df_prices.empty:
-                final_rows.append(
+def coordinate_select_rules(
+    initial_rules: dict[str, Rule],
+    candidates: dict[str, list[Rule]],
+    cache: dict[PredictionCacheKey, CachedValidationPrediction],
+    budget: int,
+    portfolio_settings: PortfolioSettings,
+    constraints: SelectionConstraints,
+    max_passes: int = 3,
+) -> tuple[dict[str, Rule], dict[str, Any], list[dict[str, Any]], int, int]:
+    rules = dict(initial_rules)
+    trace: list[dict[str, Any]] = []
+    evaluations = 0
+    completed_passes = 0
+    for pass_number in range(1, max_passes + 1):
+        changed = False
+        completed_passes = pass_number
+        for code in sorted(rules):
+            previous = rules[code]
+            evaluated: list[tuple[tuple[Any, ...], Rule, dict[str, Any], dict[str, Rule]]] = []
+            for candidate in candidates[code]:
+                candidate_set = dict(rules)
+                candidate_set[code] = candidate
+                metrics = evaluate_validation_portfolio(
+                    candidate_set, cache, budget, portfolio_settings, constraints
+                )
+                evaluations += 1
+                evaluated.append((_selection_key(metrics, candidate_set), candidate, metrics, candidate_set))
+            evaluated.sort(key=lambda item: item[0])
+            _, best_rule, best_metrics, _ = evaluated[0]
+            accepted_change = (
+                best_rule.target_percent,
+                best_rule.stop_loss_percent,
+                best_rule.threshold,
+            ) != (
+                previous.target_percent,
+                previous.stop_loss_percent,
+                previous.threshold,
+            )
+            if accepted_change:
+                rules[code] = best_rule
+                changed = True
+            for _, candidate, metrics, _ in evaluated:
+                trace.append(
                     {
-                        "Code": rule.code,
-                        "TargetPercent": rule.target_percent,
-                        "StopLossPercent": rule.stop_loss_percent,
-                        "Threshold": rule.threshold,
-                        "ResearchScore": int(selected["ResearchScore"]),
-                        "Status": "ERROR",
-                        "FailedChecks": "no_final_data",
+                        "pass_number": pass_number,
+                        "stock_code": code,
+                        "previous_rule": json.dumps(asdict(previous), sort_keys=True),
+                        "candidate_rule": json.dumps(asdict(candidate), sort_keys=True),
+                        "candidate_metrics": json.dumps(
+                            {key: value for key, value in metrics.items() if key not in {"trades", "skipped"}},
+                            sort_keys=True,
+                        ),
+                        "accepted": bool(accepted_change and candidate == best_rule),
+                        "reason": (
+                            "ACCEPTED_BEST_PORTFOLIO"
+                            if accepted_change and candidate == best_rule
+                            else "RETAINED_CURRENT_RULE"
+                            if not accepted_change and candidate == best_rule
+                            else "NOT_BEST_PORTFOLIO"
+                        ),
                     }
                 )
-                continue
-            price_cache[rule.code] = sanitize_ohlcv(_normalize_index(df_prices))
+        if not changed:
+            break
+    final_metrics = evaluate_validation_portfolio(
+        rules, cache, budget, portfolio_settings, constraints
+    )
+    return rules, final_metrics, trace, completed_passes, evaluations
 
-        try:
-            final_summary, final_trades, final_predictions = _final_evaluation_rolling(
-                price_cache[rule.code],
-                rule,
-                stock_configs[rule.code],
-                settings,
-            )
-        except Exception as exc:
-            print(f"  final evaluation error for {rule.code}: {exc}")
-            final_rows.append(
-                {
-                    "Code": rule.code,
-                    "TargetPercent": rule.target_percent,
-                    "StopLossPercent": rule.stop_loss_percent,
-                    "Threshold": rule.threshold,
-                    "ResearchScore": int(selected["ResearchScore"]),
-                    "Status": "ERROR",
-                    "FailedChecks": "final_evaluation_error",
-                }
-            )
+
+def research_test_diagnostics_after_selection(
+    code: str,
+    prices: pd.DataFrame,
+    config: AppConfig,
+    rule: Rule,
+    budget: int,
+) -> pd.DataFrame:
+    """Read the research test slices only after portfolio rule selection ends."""
+    ai = config.ai_params
+    features = config.feature_columns
+    research = prices[(prices.index >= RESEARCH_FROM) & (prices.index <= RESEARCH_TO)]
+    df_ta = calculate_indicators(research, config.tech_params)
+    labelled = _labelled(df_ta, ai, rule.target_percent, rule.stop_loss_percent)
+    usable = labelled.dropna(subset=features + ["Target", "LabelConfirmedDate"])
+    rows: list[dict[str, Any]] = []
+    for fold, (train_ratio, validation_ratio, test_ratio) in enumerate(FOLDS, 1):
+        count = len(usable)
+        train_end = int(count * train_ratio)
+        validation_end = int(count * validation_ratio)
+        test_end = int(count * test_ratio)
+        validation = usable.iloc[train_end:validation_end]
+        test = usable.iloc[validation_end:test_end]
+        train = eligible_training_rows(usable.iloc[:train_end], validation.index[0], features)
+        if len(train) < 100 or len(test) < 10 or train["Target"].nunique() < 2:
             continue
-        status, failed_checks = _adoption_checks(final_summary, settings)
-        _print_final_result(
-            rule,
-            final_summary,
-            final_trades,
-            final_predictions,
-            status,
-            failed_checks,
-        )
-        final_rows.append(
+        model = _build_model()
+        model.fit(train[features], train["Target"].astype(int))
+        probabilities = model.predict_proba(test[features])[:, 1]
+        test_only_prices = df_ta[df_ta.index <= test.index.max()]
+        orders = [
+            _validation_order(code, test_only_prices, date, probability, ai, rule.stop_loss_percent)
+            for date, probability in zip(test.index, probabilities)
+        ]
+        metrics = _independent_metrics(orders, rule.threshold, budget)
+        rows.append(
             {
-                "Code": rule.code,
-                "TargetPercent": rule.target_percent,
-                "StopLossPercent": rule.stop_loss_percent,
-                "Threshold": rule.threshold,
-                "ResearchScore": int(selected["ResearchScore"]),
-                "Status": status,
-                "Profit": final_summary["Profit"],
-                "Trades": final_summary["Trades"],
-                "WinRate": final_summary["WinRate"],
-                "MaxDDPct": final_summary["MaxDDPct"],
-                "MonthWinRate": final_summary["MonthWinRate"],
-                "SingleMonthShare": final_summary["SingleMonthShare"],
-                "FailedChecks": ",".join(failed_checks),
+                "Code": code,
+                "Fold": fold,
+                "TestProfitDiagnosticOnly": metrics["profit"],
+                "TestTradesDiagnosticOnly": metrics["trades"],
+                "TestFromDiagnosticOnly": test.index.min().strftime("%Y-%m-%d"),
+                "TestToDiagnosticOnly": test.index.max().strftime("%Y-%m-%d"),
             }
         )
+    return pd.DataFrame(rows)
 
-    df_final = pd.DataFrame(final_rows)
-    _print_header("3) Per-stock final evaluation summary")
-    print(df_final.to_string(index=False))
 
-    paper_test_rules = df_final[df_final["Status"].isin(["PASS", "REVIEW"])]
-    _print_header("Paper-test rules (PASS and REVIEW)")
-    if paper_test_rules.empty:
-        print("No stock qualified for a paper-test rule.")
-    else:
-        for _, row in paper_test_rules.iterrows():
-            print(f"- code: \"{row['Code']}\"  # {row['Status']}")
-            print("  ai_params:")
-            print(f"    target_percent: {row['TargetPercent']}")
-            print(f"    threshold: {row['Threshold']}")
-            print(f"    stop_loss_percent: {row['StopLossPercent']}")
+def _reference_predictions(
+    code: str, prices: pd.DataFrame, config: AppConfig, rule: Rule,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    ai = config.ai_params
+    features = config.feature_columns
+    df_ta = calculate_indicators(prices, config.tech_params)
+    labelled = _labelled(df_ta, ai, rule.target_percent, rule.stop_loss_percent)
+    signal_frame = df_ta.dropna(subset=features)
+    predictions: list[dict[str, Any]] = []
+    cutoffs: list[dict[str, Any]] = []
+    orders: list[dict[str, Any]] = []
+    for signal_date, signal_row in signal_frame.iterrows():
+        if signal_date < pd.Timestamp(REFERENCE_FROM) or signal_date > pd.Timestamp(REFERENCE_TO):
+            continue
+        train = eligible_training_rows(labelled, signal_date, features)
+        if len(train) < 100 or train["Target"].nunique() < 2:
+            continue
+        last_feature = train.index.max()
+        last_confirmed = pd.Timestamp(train["LabelConfirmedDate"].max())
+        if last_confirmed >= signal_date:
+            raise AssertionError("future label entered training data")
+        model = _build_model()
+        model.fit(train[features], train["Target"].astype(int))
+        probability = float(model.predict_proba(signal_row[features].to_frame().T)[:, 1][0])
+        common = {
+            "code": code,
+            "signal_date": signal_date.strftime("%Y-%m-%d"),
+            "prob": round(probability, 8),
+            "training_data_last_feature_date": last_feature.strftime("%Y-%m-%d"),
+            "training_data_last_label_confirmed_date": last_confirmed.strftime("%Y-%m-%d"),
+            "training_row_count": len(train),
+            "model_seed": MODEL_SEED,
+            "target_percent": rule.target_percent,
+            "stop_loss_percent": rule.stop_loss_percent,
+            "threshold": rule.threshold,
+        }
+        predictions.append({**common, "is_signal": probability >= rule.threshold})
+        cutoffs.append(common)
+        if probability < rule.threshold:
+            continue
+        signal_position = int(df_ta.index.get_loc(signal_date))
+        execution = simulate_execution(
+            df_ta, signal_position, ai.future_days, rule.stop_loss_percent,
+            ai.entry_slippage_percent, ai.exit_slippage_percent,
+            ai.stop_slippage_percent, ai.commission_percent,
+        )
+        entry_position = signal_position + 1
+        planned_entry = df_ta.index[entry_position] if entry_position < len(df_ta) else signal_date
+        order = {
+            "code": code,
+            "signal_date": signal_date.strftime("%Y-%m-%d"),
+            "planned_entry_date": planned_entry.strftime("%Y-%m-%d"),
+            "order_date": planned_entry.strftime("%Y-%m-%d"),
+            "prob": round(probability, 8),
+            "commission_percent": ai.commission_percent,
+        }
+        if execution is None or df_ta.index[execution.exit_index] > pd.Timestamp(REFERENCE_TO):
+            orders.append({**order, "skip_reason": "SKIPPED_NO_FUTURE_DATA"})
+            continue
+        orders.append(
+            {
+                **order,
+                "entry_date": df_ta.index[execution.entry_index].strftime("%Y-%m-%d"),
+                "exit_date": df_ta.index[execution.exit_index].strftime("%Y-%m-%d"),
+                "entry_price": round(execution.entry_price, 8),
+                "exit_price": round(execution.exit_price, 8),
+                "exit_reason": execution.exit_reason,
+            }
+        )
+    return predictions, cutoffs, orders
 
-    recommended_code = _save_selection_result(df_final, settings)
-    _print_header("Recommended stock")
-    if recommended_code:
-        print(f"Recommended: {recommended_code}")
-        print("Method  : highest research score among stocks that passed final checks")
-    else:
-        print("No stock passed all final checks.")
-    print("Slack notification targets are controlled by notify_slack in config.yaml.")
-    print(f"Saved   : {settings.result_path}")
+
+def _git_state() -> tuple[str, bool, str]:
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    status_lines = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=all"], text=True
+    ).splitlines()
+    relevant = [line for line in status_lines if "data/backtest_results/" not in line.replace("\\", "/")]
+    diff = subprocess.check_output(
+        ["git", "diff", "--binary", "HEAD", "--", ".", ":(exclude)data/backtest_results"],
+    )
+    digest = hashlib.sha256(diff + "\n".join(relevant).encode("utf-8")).hexdigest()
+    return commit, bool(relevant), digest
+
+
+def _write_csv(frame: pd.DataFrame, path: Path, columns: list[str]) -> None:
+    output = frame.reindex(columns=columns)
+    output.to_csv(path, index=False, encoding="utf-8", lineterminator="\n", float_format="%.8f")
+
+
+def sort_skipped_orders(frame: pd.DataFrame) -> pd.DataFrame:
+    """Apply the shared deterministic ordering for skipped-order artifacts."""
+    if frame.empty:
+        return frame.reset_index(drop=True)
+    return frame.sort_values(
+        ["signal_date", "planned_entry_date", "prob", "code", "status"],
+        ascending=[True, True, False, True, True],
+        kind="mergesort",
+        na_position="last",
+    ).reset_index(drop=True)
+
+
+def loop_validation_summary(
+    validation: dict[str, Any], normalized_config_hash: str | None = None,
+) -> dict[str, Any]:
+    """Expose validation-portfolio metrics only; ignore every diagnostic field."""
+    summary = {
+        "fold_profits": [
+            {"fold": int(row["fold"]), "profit": round(float(row["profit"]), 8)}
+            for row in sorted(validation["by_fold"], key=lambda row: int(row["fold"]))
+        ],
+        "max_drawdown_percent": round(float(validation["worst_max_drawdown_percent"]), 8),
+        "max_stock_profit_share": round(float(validation["max_stock_profit_share"]), 8),
+        "monthly_win_rate": round(float(validation["month_win_rate"]), 8),
+        "profit": round(float(validation["total_profit"]), 8),
+        "skip_counts": {
+            str(reason): int(count)
+            for reason, count in sorted(validation["skip_counts"].items())
+        },
+        "trade_count": int(validation["trade_count"]),
+    }
+    if normalized_config_hash is not None:
+        summary.update(
+            config_hash=normalized_config_hash,
+            config_hash_method=CONFIG_HASH_METHOD,
+        )
+    return summary
+
+
+def _write_loop_validation(summary: dict[str, Any]) -> None:
+    LOOP_RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    unexpected = sorted(
+        path.name for path in LOOP_RESULT_DIR.iterdir()
+        if path.name != "summary.json"
+    )
+    if unexpected:
+        raise BlindValidationViolation(
+            f"unexpected files in blind output directory: {unexpected}"
+        )
+    (LOOP_RESULT_DIR / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _summary(
+    results: pd.DataFrame,
+    ledger: pd.DataFrame,
+    manifest: dict[str, Any],
+    config_hash: str,
+    settings: PortfolioSettings,
+    validation: dict[str, Any],
+    coordinate_passes: int,
+    coordinate_evaluations: int,
+) -> dict[str, Any]:
+    trades = results[results["status"] == "FILLED"].copy() if not results.empty else results
+    profits = pd.to_numeric(trades.get("profit", pd.Series(dtype=float)), errors="coerce").fillna(0)
+    equity = pd.to_numeric(ledger["equity"], errors="coerce")
+    peak = equity.cummax()
+    drawdown = equity - peak
+    exit_dates = pd.to_datetime(trades.get("exit_date", pd.Series(dtype=str)))
+    monthly = profits.groupby(exit_dates.dt.to_period("M")).sum() if len(profits) else pd.Series(dtype=float)
+    commit, dirty, diff_hash = _git_state()
+    skipped = results[results["status"] != "FILLED"] if not results.empty else results
+    return {
+        "baseline_commit": BASELINE_COMMIT,
+        "candidate_commit": commit,
+        "working_tree_dirty": dirty,
+        "working_tree_diff_hash": diff_hash,
+        "snapshot_id": manifest["snapshot_id"],
+        "snapshot_hash": manifest["snapshot_hash"],
+        "config_hash": config_hash,
+        "config_hash_method": CONFIG_HASH_METHOD,
+        "seed": MODEL_SEED,
+        "periods": {
+            "research_from": RESEARCH_FROM,
+            "research_to": RESEARCH_TO,
+            "reference_from": REFERENCE_FROM,
+            "reference_to": REFERENCE_TO,
+        },
+        "portfolio_settings": asdict(settings),
+        "profit": round(float(profits.sum()), 8),
+        "trades": int(len(trades)),
+        "win_rate": round(float((profits > 0).mean() * 100), 8) if len(profits) else 0.0,
+        "max_drawdown": round(float(drawdown.min()), 8) if len(drawdown) else 0.0,
+        "max_drawdown_percent": round(float((equity / peak - 1).min() * 100), 8) if len(equity) else 0.0,
+        "monthly_win_rate": round(float((monthly > 0).mean() * 100), 8) if len(monthly) else 0.0,
+        "profit_by_stock": {
+            str(code): round(float(group["profit"].sum()), 8)
+            for code, group in trades.groupby("code", sort=True)
+        } if len(trades) else {},
+        "skipped_by_reason": {
+            str(reason): int(count)
+            for reason, count in skipped["status"].value_counts().sort_index().items()
+        } if len(skipped) else {},
+        "selection_status": validation["selection_status"],
+        "validation_total_profit": validation["total_profit"],
+        "validation_positive_folds": validation["positive_folds"],
+        "validation_min_fold_profit": validation["min_fold_profit"],
+        "validation_worst_max_drawdown_percent": validation["worst_max_drawdown_percent"],
+        "validation_month_win_rate": validation["month_win_rate"],
+        "validation_max_stock_profit_share": validation["max_stock_profit_share"],
+        "validation_trade_count": validation["trade_count"],
+        "validation_skip_counts": validation["skip_counts"],
+        "validation_failed_check_count": validation["failed_check_count"],
+        "validation_failed_checks": validation["failed_checks"],
+        "coordinate_passes": coordinate_passes,
+        "coordinate_evaluations": coordinate_evaluations,
+    }
+
+
+def run_backtest(mode: str = "full") -> dict[str, Any]:
+    if mode not in {"full", "loop-validation"}:
+        raise ValueError(f"unsupported backtest mode: {mode}")
+    config, _ = load_app(log_file="backtest.log")
+    raw = config.raw.get("backtest_settings", {})
+    if any(
+        str(raw.get(key)) != expected
+        for key, expected in {
+            "research_from": RESEARCH_FROM,
+            "research_to": RESEARCH_TO,
+            "final_from": REFERENCE_FROM,
+            "final_to": REFERENCE_TO,
+        }.items()
+    ):
+        raise ValueError("config period boundaries must match the frozen evaluator periods")
+    portfolio_raw = config.raw.get("portfolio_settings", {})
+    portfolio_settings = PortfolioSettings(
+        lot_size=int(portfolio_raw.get("lot_size", 1)),
+        max_position_percent=float(portfolio_raw.get("max_position_percent", 100.0)),
+        max_open_positions=int(portfolio_raw.get("max_open_positions", 1)),
+    )
+    loader = (
+        LoopValidationPriceSource("data/benchmark")
+        if mode == "loop-validation" else FixedOHLCVLoader("data/benchmark")
+    )
+    manifest = loader.manifest
+    configured_codes = [stock.stock_code for stock in config.stocks]
+    if configured_codes != manifest.get("stock_codes"):
+        raise ValueError("configured stocks differ from benchmark manifest")
+    research_prices = {
+        code: _normalize(loader.get_daily_stock_prices(code, RESEARCH_FROM, RESEARCH_TO))
+        for code in configured_codes
+    }
+    budget = int(raw.get("budget", config.ai_params.budget))
+    constraints = SelectionConstraints(
+        min_trades=int(raw.get("min_research_trades", 10)),
+        max_drawdown_percent=float(raw.get("max_drawdown_percent", 15.0)),
+        min_month_win_rate=float(raw.get("min_month_win_rate", 50.0)),
+        max_stock_profit_share=float(raw.get("max_stock_profit_share", 70.0)),
+    )
+    diagnostics_by_code: dict[str, pd.DataFrame] = {}
+    prediction_cache: dict[PredictionCacheKey, CachedValidationPrediction] = {}
+    initial_rules: dict[str, Rule] = {}
+    candidates_by_code: dict[str, list[Rule]] = {}
+    for stock in config.stocks:
+        stock_config = config.for_stock(stock)
+        diagnostics, stock_cache = research_candidate_cache(
+            stock.stock_code, research_prices[stock.stock_code], stock_config, budget
+        )
+        if diagnostics.empty:
+            raise RuntimeError(f"no research diagnostics for {stock.stock_code}")
+        diagnostics_by_code[stock.stock_code] = diagnostics
+        prediction_cache.update(stock_cache)
+        initial_rules[stock.stock_code] = select_rule_from_diagnostics(
+            stock.stock_code, diagnostics, constraints.min_trades
+        )
+        candidates_by_code[stock.stock_code] = candidate_rules_from_diagnostics(
+            stock.stock_code, diagnostics
+        )
+
+    assert_validation_folds_non_overlapping(prediction_cache)
+    selected_rule_map, validation_metrics, selection_trace, coordinate_passes, coordinate_evaluations = coordinate_select_rules(
+        initial_rules,
+        candidates_by_code,
+        prediction_cache,
+        budget,
+        portfolio_settings,
+        constraints,
+        max_passes=3,
+    )
+    selected_rules = [selected_rule_map[code] for code in sorted(selected_rule_map)]
+    if mode == "loop-validation":
+        summary = loop_validation_summary(validation_metrics, config_hash(Path("config.yaml")))
+        _write_loop_validation(summary)
+        print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+        return summary
+
+    all_diagnostics: list[pd.DataFrame] = []
+    stock_map = {stock.stock_code: stock for stock in config.stocks}
+    for rule in selected_rules:
+        diagnostics = diagnostics_by_code[rule.code]
+        selected_only = diagnostics[
+            (diagnostics["TargetPercent"] == rule.target_percent)
+            & (diagnostics["StopLossPercent"] == rule.stop_loss_percent)
+            & (diagnostics["Threshold"] == rule.threshold)
+        ].copy()
+        selected_only["SelectionBasis"] = "VALIDATION_PORTFOLIO_COORDINATE_SEARCH"
+        test_diagnostics = research_test_diagnostics_after_selection(
+            rule.code,
+            research_prices[rule.code],
+            config.for_stock(stock_map[rule.code]),
+            rule,
+            budget,
+        )
+        selected_only = selected_only.merge(
+            test_diagnostics, on=["Code", "Fold"], how="left", validate="one_to_one"
+        )
+        all_diagnostics.append(selected_only)
+
+    # Reference rows are exposed only after validation selection and research-test
+    # diagnostics have fully completed.
+    prices = {
+        code: _normalize(loader.get_daily_stock_prices(code, RESEARCH_FROM, REFERENCE_TO))
+        for code in configured_codes
+    }
+
+    predictions: list[dict[str, Any]] = []
+    cutoffs: list[dict[str, Any]] = []
+    orders: list[dict[str, Any]] = []
+    for rule in selected_rules:
+        stock_config = config.for_stock(stock_map[rule.code])
+        stock_predictions, stock_cutoffs, stock_orders = _reference_predictions(
+            rule.code, prices[rule.code], stock_config, rule
+        )
+        predictions.extend(stock_predictions)
+        cutoffs.extend(stock_cutoffs)
+        orders.extend(stock_orders)
+    predictions.sort(key=lambda row: (row["signal_date"], row["code"]))
+    cutoffs.sort(key=lambda row: (row["signal_date"], row["code"]))
+    orders.sort(key=lambda row: (row["order_date"], -row["prob"], row["code"]))
+    calendar = sorted(
+        set().union(*[
+            set(frame[(frame.index >= REFERENCE_FROM) & (frame.index <= REFERENCE_TO)].index)
+            for frame in prices.values()
+        ])
+    )
+    result_rows, ledger_rows = simulate_portfolio(orders, budget, portfolio_settings, calendar)
+    result_rows.sort(key=lambda row: (row.get("order_date", ""), -float(row["prob"]), row["code"]))
+    trades = pd.DataFrame([row for row in result_rows if row["status"] == "FILLED"])
+    skipped = sort_skipped_orders(
+        pd.DataFrame([row for row in result_rows if row["status"] != "FILLED"])
+    )
+    ledger = pd.DataFrame(ledger_rows)
+    rules_frame = pd.DataFrame([asdict(rule) for rule in selected_rules]).sort_values("code")
+    diagnostics_frame = pd.concat(all_diagnostics, ignore_index=True).sort_values(["Code", "Fold"])
+    predictions_frame = pd.DataFrame(predictions)
+    cutoffs_frame = pd.DataFrame(cutoffs)
+    results_frame = pd.DataFrame(result_rows)
+    validation_by_fold = pd.DataFrame(validation_metrics["by_fold"]).sort_values("fold")
+    validation_trades = pd.DataFrame(validation_metrics["trades"])
+    validation_skipped = sort_skipped_orders(pd.DataFrame(validation_metrics["skipped"]))
+    trace_frame = pd.DataFrame(selection_trace)
+
+    RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    _write_csv(rules_frame, RESULT_DIR / "selected_rules.csv", ["code", "target_percent", "stop_loss_percent", "threshold", "validation_score"])
+    _write_csv(diagnostics_frame, RESULT_DIR / "research_diagnostics.csv", list(diagnostics_frame.columns))
+    prediction_columns = ["code", "signal_date", "prob", "is_signal", "training_data_last_feature_date", "training_data_last_label_confirmed_date", "training_row_count", "model_seed", "target_percent", "stop_loss_percent", "threshold"]
+    _write_csv(predictions_frame, RESULT_DIR / "reference_predictions.csv", prediction_columns)
+    trade_columns = ["code", "signal_date", "planned_entry_date", "entry_date", "exit_date", "prob", "entry_price", "exit_price", "exit_reason", "available_cash", "qty", "entry_commission", "exit_commission", "profit", "status"]
+    _write_csv(trades, RESULT_DIR / "reference_trades.csv", trade_columns)
+    skipped_columns = ["code", "signal_date", "planned_entry_date", "prob", "status", "available_cash"]
+    _write_csv(skipped, RESULT_DIR / "reference_skipped_orders.csv", skipped_columns)
+    _write_csv(ledger, RESULT_DIR / "daily_ledger.csv", ["date", "available_cash", "pending_cash", "locked_capital", "open_positions", "equity"])
+    cutoff_columns = ["code", "signal_date", "training_data_last_feature_date", "training_data_last_label_confirmed_date", "training_row_count", "model_seed", "target_percent", "stop_loss_percent", "threshold"]
+    _write_csv(cutoffs_frame, RESULT_DIR / "training_cutoffs.csv", cutoff_columns)
+    _write_csv(
+        trace_frame,
+        RESULT_DIR / "portfolio_selection_trace.csv",
+        ["pass_number", "stock_code", "previous_rule", "candidate_rule", "candidate_metrics", "accepted", "reason"],
+    )
+    _write_csv(
+        validation_by_fold,
+        RESULT_DIR / "validation_portfolio_by_fold.csv",
+        ["fold", "profit", "trades", "wins", "max_drawdown_percent", "skip_counts"],
+    )
+    validation_trade_columns = ["validation_fold", "code", "signal_date", "planned_entry_date", "entry_date", "exit_date", "prob", "entry_price", "exit_price", "exit_reason", "available_cash", "qty", "entry_commission", "exit_commission", "profit", "status"]
+    _write_csv(validation_trades, RESULT_DIR / "validation_portfolio_trades.csv", validation_trade_columns)
+    validation_skip_columns = ["validation_fold", "code", "signal_date", "planned_entry_date", "prob", "status", "available_cash"]
+    _write_csv(validation_skipped, RESULT_DIR / "validation_portfolio_skipped_orders.csv", validation_skip_columns)
+    selection_summary = {
+        key: value for key, value in validation_metrics.items()
+        if key not in {"trades", "skipped"}
+    }
+    selection_summary.update(
+        {
+            "coordinate_passes": coordinate_passes,
+            "coordinate_evaluations": coordinate_evaluations,
+            "initial_rules": {code: asdict(initial_rules[code]) for code in sorted(initial_rules)},
+            "selected_rules": {code: asdict(selected_rule_map[code]) for code in sorted(selected_rule_map)},
+        }
+    )
+    (RESULT_DIR / "portfolio_selection_summary.json").write_text(
+        json.dumps(selection_summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    normalized_config_hash = config_hash(Path("config.yaml"))
+    summary = _summary(
+        results_frame, ledger, manifest, normalized_config_hash, portfolio_settings,
+        validation_metrics, coordinate_passes, coordinate_evaluations,
+    )
+    (RESULT_DIR / "summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    metadata = {"generated_at": datetime.now().astimezone().isoformat(timespec="seconds")}
+    (RESULT_DIR / "run_metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    return summary
+
+
+def main() -> None:
+    global RESULT_DIR, LOOP_RESULT_DIR
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode", choices=["full", "loop-validation"], default="full",
+        help="full diagnostics or blind research-validation-only evaluation",
+    )
+    parser.add_argument(
+        "--output-dir",
+        help="write artifacts outside tracked result directories (recommended for verification)",
+    )
+    args = parser.parse_args()
+    if args.output_dir:
+        if args.mode == "loop-validation":
+            LOOP_RESULT_DIR = Path(args.output_dir)
+        else:
+            RESULT_DIR = Path(args.output_dir)
+    run_backtest(args.mode)
 
 
 if __name__ == "__main__":
-    run_backtest()
+    main()

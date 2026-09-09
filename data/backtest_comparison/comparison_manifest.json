@@ -1,0 +1,133 @@
+{
+  "baseline_commit": "2975e3375c615052bd3a1ab2e5a24e723e94c46b",
+  "baseline_unavailable_v2_settings": {
+    "gap_stop_uses_open": true,
+    "label_includes_stop_and_commission": true,
+    "lot_size": 1,
+    "max_open_positions": 1,
+    "max_position_percent": 100.0,
+    "next_day_exit_proceeds": true,
+    "shared_cash": true
+  },
+  "budget": 300000.0,
+  "candidate_commit": "94b016575d49436bd4017a21a1de252ab0d95834",
+  "candidate_grid": {
+    "stop_loss_percent": [
+      2.0,
+      3.0,
+      5.0
+    ],
+    "target_percent": [
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0
+    ],
+    "threshold": [
+      0.15,
+      0.2,
+      0.3,
+      0.4,
+      0.5
+    ]
+  },
+  "commission_percent": 0.0,
+  "config_hash": "4ae7585cf39d362f61758a9aca3ff198089bed4de2d6545e4978d6d44811ef90",
+  "data_verification": [
+    {
+      "csv_sha256": "c7eafd90a07b9ed3d1988e489f7e102149a898263525852b65d0ccaf32d7cf78",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1554,
+      "stock_code": "1570"
+    },
+    {
+      "csv_sha256": "aceb0800292c7aa7c526280ffd49b81975c32e6c7937f76ee1f3fdab0ca2ac77",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "stock_code": "4188"
+    },
+    {
+      "csv_sha256": "8a313419cb9551b6192829c377388d1887169300b9b043b822c38ae483934263",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "stock_code": "4689"
+    },
+    {
+      "csv_sha256": "d48b226e0aba26b82f8b3ff88d5ae8bf86bb8d810a64367bd20747a63f9fe666",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "stock_code": "5020"
+    },
+    {
+      "csv_sha256": "6be23c3f25f890843f5438814300d56207398f2e8be0dd9fe12f219f1a08099d",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "stock_code": "7211"
+    },
+    {
+      "csv_sha256": "cb04cdc625cb219a8de94f1873990fb7c26fd7bfef1cb63bd52b72f3a3e3fcff",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "stock_code": "7267"
+    },
+    {
+      "csv_sha256": "1409c0818c1176d723e98e72a3915539fb5abcf9cd86ebafc9a15022c5556cdb",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "stock_code": "8306"
+    },
+    {
+      "csv_sha256": "5fbf4de59a6cbadb12eb9f705eb602e391ed82eed7b1a956812aac551388b73d",
+      "first_date": "2020-01-06",
+      "last_date": "2026-05-20",
+      "rows": 1555,
+      "stock_code": "9432"
+    }
+  ],
+  "entry_slippage_percent": 0.03,
+  "exit_slippage_percent": 0.03,
+  "feature_columns": [
+    "SMA_5_Rate",
+    "SMA_25_Rate",
+    "RSI_14",
+    "MACD_Rate",
+    "BB_Position",
+    "ATR_Rate",
+    "ADX_14",
+    "Change_Rate_1",
+    "Change_Rate_3",
+    "Change_Rate_5",
+    "Volume_Change_1"
+  ],
+  "future_days": 2,
+  "reference_period": {
+    "from": "2025-04-01",
+    "to": "2026-05-20"
+  },
+  "research_period": {
+    "from": "2020-01-01",
+    "to": "2025-03-31"
+  },
+  "seed": 42,
+  "snapshot_hash": "788f37b6724d34f236977815ec6283af638e71fbafefa3dd9bc0f20d83764c2c",
+  "snapshot_id": "yahoo-jp-adjusted-2020-01-01-2026-05-20-788f37b6724d",
+  "stock_codes": [
+    "1570",
+    "4188",
+    "4689",
+    "5020",
+    "7211",
+    "7267",
+    "8306",
+    "9432"
+  ],
+  "stop_slippage_percent": 0.1
+}
