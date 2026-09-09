@@ -140,6 +140,265 @@ Git SHAs, Python/platform identity, closed status/failure enums, and
 mechanically known network/package-resolution counts. Public artifacts must
 not contain private paths, raw stdout, raw stderr, or raw URLs.
 
+## 5A. Exact successor-artifact schema closure
+
+### Common JSON canonicalization
+
+For every V10 extension JSON artifact in this design, including
+`V10_CANONICAL_ENVIRONMENT_GENERIC_MIGRATION_AUTHORITY.json`, exactly the
+listed keys are allowed; missing or extra keys are invalid. Canonical bytes
+are UTF-8 with `ensure_ascii=false`, `sort_keys=true`, separators
+`(',', ':')`, `allow_nan=false`, and exactly one final LF. SHA-256 values are
+lowercase 64-hex; Git SHAs and Git-blob SHA-1 values are lowercase 40-hex.
+JSON booleans are booleans, never `0`/`1`; counts are nonnegative integers,
+never booleans.
+
+### Direct specification
+
+The exact future bytes of
+`V10_CANONICAL_ENVIRONMENT_SUCCESSOR_DIRECT_SPEC.txt` are UTF-8 with LF line
+endings, exactly one final LF, no blank lines, and no comments:
+
+```text
+pandas
+xlrd==2.0.2
+pdfplumber==0.11.10
+pandas-market-calendars==5.4.0
+```
+
+It is direct-dependency specification only and never installation authority.
+
+### Successor lock candidate
+
+`V10_CANONICAL_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json` has exactly:
+
+```text
+schema_version
+artifact_status
+frozen_v10_design_git_sha
+extension_design_git_sha
+reviewed_resolution_implementation_git_sha
+direct_spec_git_blob_sha1
+direct_spec_sha256
+predecessor_lock_git_blob_sha1
+predecessor_lock_sha256
+predecessor_package_count
+python_version
+platform_system
+platform_machine
+sysconfig_platform
+resolution_policy_id
+resolved_packages
+resolved_package_count
+predecessor_pin_drift_count
+pandas_market_calendars_version
+exchange_calendars_version
+```
+
+Fixed values are:
+
+```text
+schema_version=V10_CANONICAL_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE_V1
+artifact_status=WINDOWS_RESOLUTION_CANDIDATE_NOT_INSTALL_AUTHORITY
+frozen_v10_design_git_sha=8c923ed1734c6bdfe95a743cd9e15a5156d62c03
+predecessor_lock_git_blob_sha1=5e9d15caa822bd39e751a49cd0758db6eaf04bdf
+predecessor_lock_sha256=ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7
+predecessor_package_count=15
+python_version=3.12.10
+platform_system=Windows
+platform_machine=AMD64
+sysconfig_platform=win-amd64
+predecessor_pin_drift_count=0
+pandas_market_calendars_version=5.4.0
+```
+
+`extension_design_git_sha` equals the final GPT-reviewed extension-design SHA;
+`reviewed_resolution_implementation_git_sha` equals its later GPT-reviewed
+SHA. `resolution_policy_id` equals the exact identifier frozen only when the
+open resolution-mode finding is resolved; this design does not choose it.
+
+`resolved_packages` is an array of objects containing only `name` and
+`version`. Distribution names are lowercased with every maximal run of `-`,
+`_`, or `.` replaced by `-`; empty or duplicate normalized names are invalid.
+The array is sorted lexicographically by normalized name and
+`resolved_package_count == len(resolved_packages)`. It contains all
+predecessor 15 name/version pairs unchanged,
+`pandas-market-calendars==5.4.0`, and exactly one `exchange-calendars` entry;
+`exchange_calendars_version` equals that entry's version.
+
+### Windows resolution evidence
+
+`V10_CANONICAL_ENVIRONMENT_SUCCESSOR_WINDOWS_RESOLUTION_EVIDENCE.json` has
+exactly:
+
+```text
+schema_version
+artifact_status
+status
+failure_code
+frozen_v10_design_git_sha
+extension_design_git_sha
+reviewed_resolution_implementation_git_sha
+direct_spec_git_blob_sha1
+direct_spec_sha256
+predecessor_lock_git_blob_sha1
+predecessor_lock_sha256
+resolution_policy_id
+process_exit_code
+resolution_completed
+candidate_artifact_created
+successor_lock_candidate_sha256
+resolved_package_count
+package_index_network_requests
+human_authority_consumed
+package_installations
+alternate_venv_created
+calendar_imports
+calendar_dates_inspected
+```
+
+```text
+schema_version=V10_CANONICAL_ENVIRONMENT_SUCCESSOR_WINDOWS_RESOLUTION_EVIDENCE_V1
+artifact_status=WINDOWS_RESOLUTION_EVIDENCE
+status=PASS|FAIL
+failure_code={NONE,RESOLUTION_PROCESS_FAILURE,RESOLUTION_REPORT_INVALID,PREDECESSOR_PIN_DRIFT,REQUIRED_DISTRIBUTION_MISSING,SOURCE_DISTRIBUTION_REQUIRED,UNAUTHORIZED_INSTALLATION,UNAUTHORIZED_ALTERNATE_ENVIRONMENT}
+```
+
+For `PASS`, `failure_code=NONE`, `process_exit_code=0`,
+`resolution_completed=true`, `candidate_artifact_created=true`,
+`successor_lock_candidate_sha256` is lowercase 64-hex,
+`resolved_package_count>15`, `package_installations=0`,
+`alternate_venv_created=false`, `calendar_imports=0`, and
+`calendar_dates_inspected=0`. For `FAIL`, `failure_code != NONE`,
+`candidate_artifact_created=false`, `successor_lock_candidate_sha256=null`,
+and `resolved_package_count=null`; an invalid/failed resolution creates no
+accepted candidate. Retry and exact pip mechanics remain open.
+
+### Live validation evidence
+
+`V10_CANONICAL_ENVIRONMENT_SUCCESSOR_LIVE_VALIDATION_EVIDENCE.json` has
+exactly:
+
+```text
+schema_version
+artifact_status
+status
+failure_code
+frozen_v10_design_git_sha
+extension_design_git_sha
+reviewed_generic_authority_transition_git_sha
+migration_authority_git_blob_sha1
+generic_lock_git_blob_sha1
+generic_lock_sha256
+generic_lock_package_count
+observed_packages
+observed_package_count
+python_version
+platform_system
+platform_machine
+sysconfig_platform
+pandas_market_calendars_version
+exchange_calendars_version
+jpx_source_blob_match
+holiday_source_blob_match
+xls_probe_status
+pdf_probe_status
+package_index_network_requests
+package_installations
+calendar_object_creations
+calendar_dates_inspected
+protected_or_private_reads
+t0_run
+```
+
+```text
+schema_version=V10_CANONICAL_ENVIRONMENT_SUCCESSOR_LIVE_VALIDATION_EVIDENCE_V1
+artifact_status=V10_SUCCESSOR_LIVE_VALIDATION_EVIDENCE
+status=PASS|FAIL
+failure_code={NONE,PROVENANCE_BINDING_FAILURE,LIVE_PACKAGE_SET_MISMATCH,PYTHON_PLATFORM_MISMATCH,PMC_VERSION_MISMATCH,EXCHANGE_CALENDARS_VERSION_MISMATCH,JPX_SOURCE_BLOB_MISMATCH,HOLIDAY_SOURCE_BLOB_MISMATCH,XLS_PROBE_FAILURE,PDF_PROBE_FAILURE,UNAUTHORIZED_OPERATION_OBSERVED}
+```
+
+For `PASS`, all provenance bindings are exact; the observed package set equals
+the reviewed generic successor lock with equal count; Python/platform are
+`3.12.10` / `Windows` / `AMD64` / `win-amd64`;
+`pandas-market-calendars==5.4.0`; exchange-calendars equals the reviewed
+resolved version; both source-blob matches are true; XLS/PDF probes are
+`PASS`; and package-index network requests, installations, calendar-object
+creations, calendar-date inspections, and protected/private reads are zero,
+with `t0_run=false`. `PASS` requires `failure_code=NONE`; `FAIL` requires
+`failure_code != NONE`.
+
+### Final freeze-verification evidence
+
+`V10_CANONICAL_ENVIRONMENT_SUCCESSOR_FINAL_FREEZE_VERIFICATION_EVIDENCE.json`
+has exactly:
+
+```text
+schema_version
+artifact_status
+status
+failure_code
+frozen_v10_design_git_sha
+extension_design_git_sha
+reviewed_live_validation_evidence_git_sha
+reviewed_live_validation_evidence_git_blob_sha1
+reviewed_generic_authority_transition_git_sha
+migration_authority_git_blob_sha1
+generic_lock_git_blob_sha1
+generic_lock_sha256
+generic_lock_package_count
+generic_lock_candidate_git_blob_sha1
+generic_windows_validation_evidence_git_blob_sha1
+generic_freeze_record_git_blob_sha1
+checker_git_blob_sha1
+bootstrap_git_blob_sha1
+observed_package_count
+live_package_set_match
+environment_freeze_check
+pandas_market_calendars_version
+exchange_calendars_version
+jpx_source_blob_match
+holiday_source_blob_match
+xls_probe_status
+pdf_probe_status
+network_requests
+package_installations
+environment_mutations
+calendar_object_creations
+calendar_dates_inspected
+protected_or_private_reads
+t0_run
+future_protected_execution_authorized
+```
+
+```text
+schema_version=V10_CANONICAL_ENVIRONMENT_SUCCESSOR_FINAL_FREEZE_VERIFICATION_EVIDENCE_V1
+artifact_status=V10_SUCCESSOR_FINAL_FREEZE_VERIFICATION_EVIDENCE
+status=PASS|FAIL
+future_protected_execution_authorized=false
+failure_code={NONE,GIT_OR_PROVENANCE_BINDING_FAILURE,LIVE_PACKAGE_SET_MISMATCH,ENVIRONMENT_FREEZE_CHECK_FAILURE,PMC_VERSION_MISMATCH,EXCHANGE_CALENDARS_VERSION_MISMATCH,JPX_SOURCE_BLOB_MISMATCH,HOLIDAY_SOURCE_BLOB_MISMATCH,XLS_PROBE_FAILURE,PDF_PROBE_FAILURE,UNAUTHORIZED_OPERATION_OBSERVED}
+```
+
+For `PASS`, all Git/blob/hash bindings are exact,
+`live_package_set_match=true`, `environment_freeze_check=PASS`,
+`pandas-market-calendars==5.4.0`, exchange-calendars equals the reviewed
+resolved version, both source-blob matches are true, XLS/PDF probes are
+`PASS`, and network requests, installations, environment mutations,
+calendar-object creations, calendar-date inspections, protected/private reads
+are zero with `t0_run=false` and
+`future_protected_execution_authorized=false`. `PASS` requires
+`failure_code=NONE`; `FAIL` requires `failure_code != NONE`.
+
+### Relational bindings
+
+A `PASS` resolution-evidence hash refers to the exact canonical bytes of its
+lock candidate. Migration authority binds the exact GPT-reviewed
+candidate/evidence commit and blobs. Live validation binds the exact reviewed
+migration-authority transition and generic successor lock. Final verification
+binds the exact GPT-reviewed live-validation evidence and final generic
+artifacts. No artifact claims a later-stage status before that stage occurs,
+and a `FAIL` artifact never satisfies a `PASS` prerequisite.
+
 ## 6. Generic installation-authority transition
 
 Before canonical mutation, the current generic live-observation/freeze
