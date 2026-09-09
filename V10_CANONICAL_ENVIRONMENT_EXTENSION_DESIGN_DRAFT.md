@@ -142,12 +142,72 @@ not contain private paths, raw stdout, raw stderr, or raw URLs.
 
 ## 6. Generic installation-authority transition
 
+Before canonical mutation, the current generic live-observation/freeze
+artifacts are immutable predecessor evidence for the observed 15-package
+canonical environment. They must not be rewritten to claim a not-yet-observed
+successor environment:
+
+```text
+REAL_EXECUTION_ENVIRONMENT_LOCK_CANDIDATE.json
+REAL_EXECUTION_ENVIRONMENT_WINDOWS_VALIDATION_EVIDENCE.json
+REAL_EXECUTION_ENVIRONMENT_FREEZE_RECORD.json
+```
+
 The V10 successor candidate is not installation authority merely because it
 exists. After candidate/evidence exact-SHA GPT PASS, a separate reviewed
-generic-authority-transition commit must make the reviewed successor package
-set the contents and provenance authority of
-`requirements-real-execution.lock.txt` and update all mechanically coupled
-generic candidate, checker, bootstrap, tests, and documentation.
+pre-mutation generic-authority-transition may update
+`requirements-real-execution.lock.txt` to the reviewed successor package
+set. That lock then becomes the reviewed generic installation authority, but
+the transition is not a Windows-grounded live-environment observation.
+
+The transition must create and bind, in later reviewed work, exactly this
+additional provenance role (not in this task):
+
+```text
+V10_CANONICAL_ENVIRONMENT_GENERIC_MIGRATION_AUTHORITY.json
+```
+
+Its role is reviewed pre-mutation installation-authority provenance, not
+live-environment evidence and not environment-freeze evidence. Its exact
+schema fields are:
+
+```text
+schema_version
+artifact_status
+canonical_environment_state
+frozen_v10_design_git_sha
+predecessor_generic_lock_git_blob_sha1
+predecessor_generic_lock_sha256
+predecessor_generic_lock_package_count
+predecessor_generic_lock_candidate_git_blob_sha1
+predecessor_generic_freeze_record_git_blob_sha1
+reviewed_v10_successor_lock_candidate_git_sha
+reviewed_v10_successor_lock_candidate_git_blob_sha1
+reviewed_v10_resolution_evidence_git_sha
+reviewed_v10_resolution_evidence_git_blob_sha1
+new_generic_lock_git_blob_sha1
+new_generic_lock_sha256
+new_generic_lock_package_count
+live_environment_successor_match
+future_protected_execution_authorized
+```
+
+Its fixed values are:
+
+```text
+schema_version=V10_CANONICAL_ENVIRONMENT_GENERIC_MIGRATION_AUTHORITY_V1
+artifact_status=REVIEWED_INSTALL_AUTHORITY_NOT_LIVE_FROZEN
+canonical_environment_state=V10_SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED
+frozen_v10_design_git_sha=8c923ed1734c6bdfe95a743cd9e15a5156d62c03
+predecessor_generic_lock_git_blob_sha1=5e9d15caa822bd39e751a49cd0758db6eaf04bdf
+predecessor_generic_lock_sha256=ddd505cc01ac4a3a798cdf7ed9c35b3a9e56db569a421aef98c02d013dd286b7
+predecessor_generic_lock_package_count=15
+live_environment_successor_match=false
+future_protected_execution_authorized=false
+```
+
+All remaining Git/blob/SHA/count fields are exact mechanically derived values
+from their reviewed future artifacts.
 
 From that transition until final live-freeze PASS:
 
@@ -160,12 +220,31 @@ later canonical mutation installs only from the reviewed generic
 `requirements-real-execution.lock.txt` using `--no-deps`; it must never
 install directly from a V10 successor-candidate artifact.
 
+Because the generic installation authority and observed live environment no
+longer match in this state, `REAL_EXECUTION_ENVIRONMENT_FROZEN` must not be
+accepted as current live successor readiness. Existing predecessor history
+remains valid historical evidence. Only after canonical mutation may later
+no-network live validation produce successor live-observation evidence. Only
+the later final generic freeze/tooling closure may replace or update the three
+generic live-observation/freeze artifacts above, grounded in actual canonical
+Windows observation rather than the pre-mutation resolution candidate.
+
 ## 7. Later canonical mutation and validation
 
 Canonical mutation is a separate Phase A/B/C direct-Windows operation with
 fresh point-of-use authority. Neither the V10 scientific design freeze nor
 the resolution/acquisition authority is reusable for it. Failure does not
 authorize rollback, reset, reinstall, repair, or retry.
+
+Before mutation, separately reviewed migration-mode bootstrap/checker tooling
+must verify the predecessor live 15-package baseline, reviewed V10 successor
+candidate/evidence bindings, reviewed migration-authority artifact, and the
+reviewed successor generic lock. It must reject any successor live-ready or
+frozen claim. The mutation command is only:
+
+```text
+.venv-real-execution\Scripts\python.exe -m pip install --no-deps -r requirements-real-execution.lock.txt
+```
 
 After mutation, no-network live validation must require all of the following
 without creating a JPX calendar object or inspecting generated dates:
