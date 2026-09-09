@@ -1776,3 +1776,9 @@ transitions. This public log must not contain protected material.
 - Aligned Sections 10, 12, and 14 to the same eleven-step post-freeze order: the separately governed canonical protected-environment extension is immediate while V10 readiness is false; runtime-lock review, synthetic implementation/tests and review, Phase A, one offline generation, durable artifact/receipt, no-network inspection, and GPT adjudication follow only in the frozen Section 10 sequence.
 - The environment-extension stage remains non-semantic: it authorizes no JPX generator import, calendar generation, or date inspection.
 - No package/environment mutation, generator or calendar execution, research-data network, private/sealed access, human-gate consumption, T0, model, backtest, or profitability operation occurred. `V10_LOW_1` remains safely deferred.
+## 2026-09-09 — V10 Section 10 preamble sequence alignment remediation
+
+- Recorded GPT exact-SHA review `8c3115c1edaa5158082ddd4a881daeebff8ada1f`: `BLOCK`, `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, `LOW=1`.
+- Preserved `V10_HIGH_1=RESOLVED` and `V10_MEDIUM_1=RESOLVED`; remediated only `V10_MEDIUM_2=SECTION_10_SEQUENCE_PREAMBLE_STILL_CONTRADICTS_ENUMERATED_POST_FREEZE_ORDER` awaiting GPT review. `V10_LOW_1` remains safely deferred.
+- Section 10 now states that its eleven-step sequence begins only after exact-SHA `PASS_FROZEN`; while canonical-environment readiness is false, step 1 is the separately governed canonical-environment extension. Synthetic implementation and exact-SHA implementation review remain steps 5 and 6 unless stricter repository governance requires them earlier.
+- Sections 10, 12, and 14 therefore retain one post-design-freeze order. No package/environment mutation, generator or calendar execution, network/private access, human-gate consumption, T0, model, backtest, or profitability operation occurred.

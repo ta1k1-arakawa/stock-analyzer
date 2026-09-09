@@ -632,8 +632,13 @@ V10_FAVORABLE_CALENDAR_SELECTION=false
 V10_FALLBACK_ALLOWED=false
 ```
 
-The only later execution sequence permitted after this design is frozen,
-implemented, and independently reviewed is:
+The only later execution sequence permitted begins only after this design
+receives `PASS_FROZEN` at an exact GPT-reviewed Git SHA. Because
+`V10_CURRENT_CANONICAL_ENVIRONMENT_V10_READY=false`, step 1 is the
+canonical-environment-extension stage. Synthetic-only implementation and its
+exact-SHA implementation review remain steps 5 and 6, respectively, unless
+stricter repository governance requires them earlier; neither is a
+prerequisite to beginning step 1.
 
 1. A separate canonical-environment-extension stage operates only on
    `.venv-real-execution` through
