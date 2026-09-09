@@ -153,6 +153,33 @@ lowercase 64-hex; Git SHAs and Git-blob SHA-1 values are lowercase 40-hex.
 JSON booleans are booleans, never `0`/`1`; counts are nonnegative integers,
 never booleans.
 
+### Exact scalar and nullable-field domains
+
+Every field in each exact field list below has the following mechanical
+domain. `schema_version`, `artifact_status`, `canonical_environment_state`,
+`resolution_policy_id`, and every evaluated package/name/version/platform
+string are nonempty JSON strings. `status` is exactly `PASS` or `FAIL`, and
+each `failure_code` is exactly one member of that artifact's already-listed
+closed enum. Every field ending `_git_sha` and every
+`reviewed_*_implementation_git_sha` is a lowercase 40-hex JSON string; every
+field ending `_git_blob_sha1` is a lowercase 40-hex JSON string; and every
+field ending `_sha256` is a lowercase 64-hex JSON string, except where the
+artifact's fail-state rule expressly permits `null` before that value is
+observed or constructed.
+
+All named booleans, including completion, creation, match, source-blob,
+authorization, and operation flags, are JSON booleans only, except where the
+live-validation or final-verification fail-state rules below expressly permit
+`null` for an unperformed later check. Every `*_count`, every operation
+counter, and every package-count field is a nonnegative JSON integer and
+never a boolean, except where the fail-state rules expressly permit `null`
+for a count derived from an unperformed observation. `process_exit_code` is a
+JSON integer. Probe and environment-status fields use only their explicitly
+defined closed enums. These domains apply to the successor lock candidate,
+Windows resolution evidence, generic migration authority, live validation
+evidence, and final freeze-verification evidence; no mapping, string-list, or
+implicit alternate representation is permitted.
+
 ### Direct specification
 
 The exact future bytes of
@@ -328,6 +355,17 @@ creations, calendar-date inspections, and protected/private reads are zero,
 with `t0_run=false`. `PASS` requires `failure_code=NONE`; `FAIL` requires
 `failure_code != NONE`.
 
+`observed_packages` is exactly the same representation as
+`resolved_packages`: a JSON array whose every element is an object with only
+the string fields `name` and `version`. The installed metadata distribution
+name is lowercased and every maximal run of `-`, `_`, or `.` is replaced by
+`-`; an empty normalized name or a duplicate normalized name is invalid. The
+array is sorted lexicographically by normalized `name`, and
+`observed_package_count == len(observed_packages)`. For `PASS`, the array is
+exactly equal, element-for-element, to the normalized and sorted package
+array mechanically derived from the reviewed generic successor lock. No
+mapping or string-list alternative is permitted.
+
 ### Final freeze-verification evidence
 
 `V10_CANONICAL_ENVIRONMENT_SUCCESSOR_FINAL_FREEZE_VERIFICATION_EVIDENCE.json`
@@ -388,6 +426,57 @@ calendar-object creations, calendar-date inspections, protected/private reads
 are zero with `t0_run=false` and
 `future_protected_execution_authorized=false`. `PASS` requires
 `failure_code=NONE`; `FAIL` requires `failure_code != NONE`.
+
+### Fail-state and not-checked semantics
+
+A `FAIL` artifact records only mechanically established observations. For
+live validation, a version/string observation not evaluated because an
+earlier terminal failure occurred is `null`; an unperformed boolean match is
+`null`; and a count derived from an unperformed observation is `null`.
+`xls_probe_status` and `pdf_probe_status` are each exactly one of
+`PASS`, `FAIL`, or `NOT_CHECKED`. For final freeze verification,
+`environment_freeze_check`, `xls_probe_status`, and `pdf_probe_status` are
+each exactly one of `PASS`, `FAIL`, or `NOT_CHECKED`; later unperformed
+version/string observations, boolean matches, and derived counts are
+respectively `null`, `null`, and `null`.
+
+For a `PASS` live-validation or final-verification artifact, no required
+observation may be `null` and no required status may be `NOT_CHECKED`. A
+Windows resolution `FAIL` before a valid completed candidate exists remains
+closed as already specified: `candidate_artifact_created=false`,
+`successor_lock_candidate_sha256=null`, and
+`resolved_package_count=null`; no candidate may be fabricated from an
+incomplete or failed report.
+
+### Deterministic fail-closed evaluation order
+
+For Windows resolution evidence, record the first applicable failure in this
+exact order: (1) `UNAUTHORIZED_INSTALLATION`; (2)
+`UNAUTHORIZED_ALTERNATE_ENVIRONMENT`; (3) `RESOLUTION_PROCESS_FAILURE`; (4)
+`RESOLUTION_REPORT_INVALID`; (5) `PREDECESSOR_PIN_DRIFT`; (6)
+`REQUIRED_DISTRIBUTION_MISSING`; (7) `SOURCE_DISTRIBUTION_REQUIRED`; (8)
+`NONE` only when all `PASS` requirements hold.
+
+For live validation evidence, record the first applicable failure in this
+exact order: (1) `UNAUTHORIZED_OPERATION_OBSERVED`; (2)
+`PROVENANCE_BINDING_FAILURE`; (3) `LIVE_PACKAGE_SET_MISMATCH`; (4)
+`PYTHON_PLATFORM_MISMATCH`; (5) `PMC_VERSION_MISMATCH`; (6)
+`EXCHANGE_CALENDARS_VERSION_MISMATCH`; (7) `JPX_SOURCE_BLOB_MISMATCH`; (8)
+`HOLIDAY_SOURCE_BLOB_MISMATCH`; (9) `XLS_PROBE_FAILURE`; (10)
+`PDF_PROBE_FAILURE`; (11) `NONE` only when all `PASS` requirements hold.
+
+For final freeze-verification evidence, record the first applicable failure
+in this exact order: (1) `UNAUTHORIZED_OPERATION_OBSERVED`; (2)
+`GIT_OR_PROVENANCE_BINDING_FAILURE`; (3) `LIVE_PACKAGE_SET_MISMATCH`; (4)
+`ENVIRONMENT_FREEZE_CHECK_FAILURE`; (5) `PMC_VERSION_MISMATCH`; (6)
+`EXCHANGE_CALENDARS_VERSION_MISMATCH`; (7) `JPX_SOURCE_BLOB_MISMATCH`; (8)
+`HOLIDAY_SOURCE_BLOB_MISMATCH`; (9) `XLS_PROBE_FAILURE`; (10)
+`PDF_PROBE_FAILURE`; (11) `NONE` only when all `PASS` requirements hold.
+
+Once the first applicable failure is established, later unsafe or unnecessary
+checks are not required merely to populate an artifact; the null and
+`NOT_CHECKED` domains above apply. No retry, repair, or alternate resolver is
+created by any failure code.
 
 ### Relational bindings
 
@@ -467,6 +556,15 @@ future_protected_execution_authorized=false
 
 All remaining Git/blob/SHA/count fields are exact mechanically derived values
 from their reviewed future artifacts.
+
+`new_generic_lock_package_count` exactly equals the reviewed V10 successor
+lock candidate's `resolved_package_count`. `new_generic_lock_sha256` and
+`new_generic_lock_git_blob_sha1` identify the exact canonical
+`requirements-real-execution.lock.txt` bytes whose normalized name/version
+package set is exactly the reviewed successor lock-candidate package set.
+`live_environment_successor_match` remains `false` in this pre-mutation
+artifact. This migration-authority artifact can never satisfy live-ready or
+frozen-environment evidence.
 
 From that transition until final live-freeze PASS:
 
