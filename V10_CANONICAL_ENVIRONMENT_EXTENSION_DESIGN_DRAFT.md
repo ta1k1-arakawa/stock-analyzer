@@ -180,6 +180,11 @@ Windows resolution evidence, generic migration authority, live validation
 evidence, and final freeze-verification evidence; no mapping, string-list, or
 implicit alternate representation is permitted.
 
+For live validation only, `observed_packages` permits `null` exclusively
+under the unperformed-observation `FAIL` rule below. It is otherwise the
+defined JSON array; it never uses an empty array as a stand-in for an
+unperformed observation.
+
 ### Direct specification
 
 The exact future bytes of
@@ -365,6 +370,24 @@ array is sorted lexicographically by normalized `name`, and
 exactly equal, element-for-element, to the normalized and sorted package
 array mechanically derived from the reviewed generic successor lock. No
 mapping or string-list alternative is permitted.
+
+If the live package-set observation was mechanically performed,
+`observed_packages` is that normalized and sorted array and
+`observed_package_count == len(observed_packages)`. If an earlier terminal
+failure occurred before live package-set observation,
+`observed_packages=null` and `observed_package_count=null`. `[]` is permitted
+only when an observation actually occurred and mechanically observed zero
+distributions; it never represents `NOT_OBSERVED`.
+
+A `FAIL` that occurs after package observation retains the mechanically
+observed normalized/sorted array and its exact count even when the observed
+package set later proves mismatched. `LIVE_PACKAGE_SET_MISMATCH` may be
+selected only after package observation, so its `observed_packages` and
+`observed_package_count` are non-null. `PROVENANCE_BINDING_FAILURE` and
+`UNAUTHORIZED_OPERATION_OBSERVED` may stop before package observation, in
+which case the required pair is `null`. A `PASS` requires non-null
+`observed_packages` and `observed_package_count`, their exact length equality,
+and the exact reviewed-lock element-for-element equality above.
 
 ### Final freeze-verification evidence
 
