@@ -713,15 +713,24 @@ single `market_close` rule.
 
 ## 12. Later authority and execution requirements
 
-This draft grants no authority. The ten-step sequence in Section 10 is the
+This draft grants no authority. The eleven-step sequence in Section 10 is the
 sole later execution order. GPT methodology PASS on this exact design and a
-frozen exact Git SHA is its prerequisite; the sequence then requires
-software/environment provisioning if mechanically necessary, creation and
-GPT review of the exact canonical `V10_RUNTIME_ENVIRONMENT_LOCK.json`,
-synthetic implementation/tests and GPT implementation review, Phase A
-no-network preflight, exactly one offline pinned-generator execution,
-durable artifact/receipt, no-network inspection, and GPT adjudication. No
-historical calendar payload is acquired or read.
+frozen exact Git SHA is its prerequisite. Because
+`V10_CURRENT_CANONICAL_ENVIRONMENT_V10_READY=false` and
+`V10_CANONICAL_ENVIRONMENT_EXTENSION_REQUIRED=true`, the immediate next
+stage is the separately governed canonical-environment-extension stage. That
+stage establishes the canonical protected-environment extension, readiness,
+and freeze before V10 runtime-lock creation; it performs no JPX generator
+import, calendar generation, or date inspection.
+
+After the extension receives the required Windows-grounded validation,
+environment-freeze promotion, and GPT exact-SHA review, V10 proceeds only in
+the Section 10 order: creation and GPT review of the exact canonical
+`V10_RUNTIME_ENVIRONMENT_LOCK.json`, synthetic implementation/tests and GPT
+implementation review, Phase A no-network preflight, exactly one offline
+pinned-generator execution, durable artifact/receipt, no-network inspection,
+and GPT adjudication. The existing Section 10 stricter-governance ordering
+clause remains in force. No historical calendar payload is acquired or read.
 
 Calendar generation itself requires no historical calendar-data acquisition
 or private calendar access:
@@ -765,11 +774,17 @@ policy, no-retry/no-repair policy, failure codes, one-shot budget, safe
 receipt schema, and later offline execution sequence are all mechanically
 closed.
 
-If GPT passes and freezes this draft, the next stage is a synthetic-only
-implementation of the frozen minimal calendar/session-binding runner,
-followed by targeted tests and an independent exact-SHA implementation
-review. That stage still performs no real acquisition. Only a later,
-separately authorized execution may evaluate V10 calendar feasibility.
+If GPT passes and freezes this draft, the immediate next stage is the
+separately governed canonical-environment-extension stage defined in
+Sections 7 and 10. Because
+`V10_CURRENT_CANONICAL_ENVIRONMENT_V10_READY=false`, that extension must
+receive the required Windows-grounded validation, environment-freeze
+promotion, and GPT exact-SHA review before V10 continues only according to
+the Section 10 sequence. The extension does not authorize JPX calendar
+generation or date inspection. Synthetic-only implementation, targeted
+tests, and an independent exact-SHA implementation review remain required
+before any semantic feasibility execution. Only a later, separately
+authorized execution may evaluate V10 calendar feasibility.
 
 V10 feasibility PASS would establish input-binding readiness only. It would
 not establish profitability and would not itself authorize T0, historical
