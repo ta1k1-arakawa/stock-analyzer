@@ -68,6 +68,33 @@ V10_RESOLUTION_INTERPRETER=.venv-real-execution\Scripts\python.exe
 Invocation through the canonical interpreter for future resolution does not
 authorize mutation of that environment.
 
+The exact resolution policy is:
+
+```text
+resolution_policy_id=PIP_25_0_1_WINDOWS_WHEEL_DOWNLOAD_V1
+resolver_distribution=pip
+resolver_version=25.0.1
+resolver_interpreter=.venv-real-execution\Scripts\python.exe
+resolver_command=pip download
+alternate_venv_allowed=false
+package_installations_allowed=false
+source_distributions_allowed=false
+persistent_pip_cache_allowed=false
+automatic_retry_allowed=false
+package_index_id=PYPI_OFFICIAL_SIMPLE
+package_index_url=https://pypi.org/simple
+```
+
+Phase A must verify the canonical interpreter and exact `pip==25.0.1`
+before Phase B. The package index identity is fixed to
+`PYPI_OFFICIAL_SIMPLE`; public artifacts record only that identifier, not the
+URL. No alternate or extra index, trusted-host/TLS-verification bypass,
+pre-release override, editable/VCS/local-project requirement, source
+distribution, alternate interpreter, or alternate virtual environment is
+allowed. The actual running canonical Python `3.12.10` Windows/AMD64
+environment is the target; no cross-platform `--platform`, `--python-version`,
+or `--abi` simulation is permitted.
+
 ## 3. Dependency delta and fail-closed constraints
 
 The sole newly specified direct dependency is:
@@ -102,19 +129,54 @@ import, calendar generation, or date inspection.
 If real package-index/software network access is mechanically necessary,
 Phase B requires fresh, point-of-use human authority. It uses only
 `.venv-real-execution\Scripts\python.exe`, without installation and without
-creating an alternate virtual environment.
+creating an alternate virtual environment. Exactly one subprocess invocation
+of that interpreter runs `python -m pip download` with this exact argument
+vector and order (the durable wheelhouse is empty immediately before launch):
 
-The future implementation must use a reviewed pip dry-run/download/report
-mechanism with the predecessor lock as constraints and a V10 direct-spec
-candidate containing `pandas-market-calendars==5.4.0`. Wheel-only acquisition
-and no persistent pip cache are preferred. If an exact required wheel is
-unavailable and continuing would require an sdist/build-policy change, stop
-with `CHATGPT_DECISION_REQUIRED`.
+```text
+.venv-real-execution\Scripts\python.exe -m pip download
+  --dest <EMPTY_DURABLE_WHEELHOUSE>
+  --only-binary=:all:
+  --no-cache-dir
+  --disable-pip-version-check
+  --no-input
+  --progress-bar off
+  --retries 0
+  --timeout 15
+  --index-url https://pypi.org/simple
+  --requirement requirements-real-execution.lock.txt
+  --requirement V10_CANONICAL_ENVIRONMENT_SUCCESSOR_DIRECT_SPEC.txt
+  --constraint requirements-real-execution.lock.txt
+```
+
+The child process environment is sanitized by removing every inherited
+variable whose name begins with `PIP_`, then setting child
+`PIP_CONFIG_FILE` to Windows `NUL`. Parent machine/user pip configuration is
+not changed. Standard OS proxy/TLS variables are transport plumbing only and
+must not change provider identity; no trusted-host or TLS-verification bypass
+is allowed.
+
+`--only-binary=:all:` is mandatory. Every completed download must be a wheel;
+a source archive, local source tree, VCS reference, build operation, or
+missing acceptable wheel is `SOURCE_DISTRIBUTION_REQUIRED` and terminal for
+this attempt. The predecessor lock is both a requirement input and a
+constraint, so the wheelhouse represents the complete prospective successor
+environment. Do not use `pip install`, `pip wheel`, `pip --dry-run`, another
+index, `extra-index-url`, `find-links`, or any unlisted resolver option.
 
 The first complete Windows-grounded resolution result fixes the candidate.
 No complete result is re-resolved to obtain a preferable dependency set. A
 Phase B failure receives no automatic retry; Phase C returns only safe
 evidence to GPT. No JPX/calendar import or execution is permitted.
+
+The durable resolution root must not already exist and must not alias the
+protected environment, `.venv-real-execution`, V9/V10 durable state, or
+another governed path. Parent/root realpath and reparse protections follow
+the applicable repository rules. Once the subprocess is launched,
+`human_authority_consumed=true` for this attempt. A nonzero exit receives no
+second invocation, retry, root deletion, reset, or recreation; partial
+wheelhouse and stdout/stderr are preserved separately for Phase C. A zero
+exit fixes the first complete result and permits no re-resolution.
 
 ### Phase C — no-network inspection
 
@@ -246,8 +308,8 @@ pandas_market_calendars_version=5.4.0
 
 `extension_design_git_sha` equals the final GPT-reviewed extension-design SHA;
 `reviewed_resolution_implementation_git_sha` equals its later GPT-reviewed
-SHA. `resolution_policy_id` equals the exact identifier frozen only when the
-open resolution-mode finding is resolved; this design does not choose it.
+SHA. `resolution_policy_id` is exactly
+`PIP_25_0_1_WINDOWS_WHEEL_DOWNLOAD_V1`.
 
 `resolved_packages` is an array of objects containing only `name` and
 `version`. Distribution names are lowercased with every maximal run of `-`,
@@ -281,7 +343,8 @@ resolution_completed
 candidate_artifact_created
 successor_lock_candidate_sha256
 resolved_package_count
-package_index_network_requests
+package_index_id
+package_resolution_process_invocations
 human_authority_consumed
 package_installations
 alternate_venv_created
@@ -294,6 +357,7 @@ schema_version=V10_CANONICAL_ENVIRONMENT_SUCCESSOR_WINDOWS_RESOLUTION_EVIDENCE_V
 artifact_status=WINDOWS_RESOLUTION_EVIDENCE
 status=PASS|FAIL
 failure_code={NONE,RESOLUTION_PROCESS_FAILURE,RESOLUTION_REPORT_INVALID,PREDECESSOR_PIN_DRIFT,REQUIRED_DISTRIBUTION_MISSING,SOURCE_DISTRIBUTION_REQUIRED,UNAUTHORIZED_INSTALLATION,UNAUTHORIZED_ALTERNATE_ENVIRONMENT}
+package_index_id=PYPI_OFFICIAL_SIMPLE
 ```
 
 For `PASS`, `failure_code=NONE`, `process_exit_code=0`,
@@ -301,10 +365,26 @@ For `PASS`, `failure_code=NONE`, `process_exit_code=0`,
 `successor_lock_candidate_sha256` is lowercase 64-hex,
 `resolved_package_count>15`, `package_installations=0`,
 `alternate_venv_created=false`, `calendar_imports=0`, and
-`calendar_dates_inspected=0`. For `FAIL`, `failure_code != NONE`,
+`calendar_dates_inspected=0`, and
+`package_resolution_process_invocations=1`. For `FAIL`, `failure_code != NONE`,
 `candidate_artifact_created=false`, `successor_lock_candidate_sha256=null`,
 and `resolved_package_count=null`; an invalid/failed resolution creates no
-accepted candidate. Retry and exact pip mechanics remain open.
+accepted candidate. The invocation counter is a nonnegative integer, never
+boolean: it is `0` before Phase B launch, exactly `1` after the single
+subprocess is launched, and can never exceed `1`. A pre-launch failure is
+recorded only by Phase-A/preflight mechanics, not fabricated as completed
+Windows-resolution evidence. A nonzero exit or launch failure after the
+attempt boundary is `RESOLUTION_PROCESS_FAILURE`; a zero exit whose
+wheelhouse cannot produce the exact candidate is `RESOLUTION_REPORT_INVALID`.
+
+For the exact resolution policy, Phase C derives candidates offline from
+wheel filename plus wheel `METADATA`/`WHEEL` using reviewed standard-library
+tooling only; downloaded packages are never imported. Each wheel must yield
+exactly one normalized name/version; duplicate names or malformed/unreadable
+metadata are `RESOLUTION_REPORT_INVALID`. The candidate is the exact sorted
+package set represented by the completed wheelhouse, with no silent insertion
+from the old environment. No resolver fallback or second execution is
+permitted.
 
 ### Live validation evidence
 
