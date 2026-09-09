@@ -397,15 +397,20 @@ generator_implementation_git_sha
 reviewed canonical runtime-lock bytes; the complete runtime distribution
 mapping is bound only through that separate lock. `python_version` and
 `pandas_version` remain required scalar provenance fields and must equal the
-reviewed lock. `trading_dates` is the sorted unique `YYYY-MM-DD`
-session-label sequence.
+reviewed lock. `trading_dates` is the already-defined strictly canonical,
+sorted, unique `YYYY-MM-DD` session-label sequence. `trading_date_count` is
+an integer greater than zero and must equal exactly `len(trading_dates)`.
 Every emitted session must have a valid `market_close`; generation failure,
 duplicate or malformed session labels, out-of-coverage labels, invalid
 close values, or noncanonical serialization is unresolved and fails closed.
 The canonical JSON bytes are UTF-8 with `ensure_ascii=false`,
 `sort_keys=true`, `separators=(',', ':')`, `allow_nan=false`, and exactly one
-final LF. `canonical_calendar_sha256` is calculated over the canonical object
-with that field excluded, then recorded in the artifact. `pandas_version`
+final LF. `canonical_calendar_sha256` must be exact lower-case 64-hex. It is
+calculated as the SHA-256 of the canonical artifact object serialized under
+those already-frozen rules with `canonical_calendar_sha256` itself excluded,
+and is inserted only after that value is computed. Validation independently
+recomputes that digest from the artifact object with the stored field
+excluded and requires equality with the stored artifact field. `pandas_version`
 equals the exact version for normalized distribution name `pandas` in the
 reviewed runtime lock. `python_version` equals the reviewed runtime lock's
 exact `python_version`; no alternate representation is permitted. The exact
@@ -488,12 +493,31 @@ DURABLE_ARTIFACT_WRITE_FAILURE
 ```
 
 There is exactly one receipt schema and no alternate receipt mechanism. A
-`PASS` receipt requires `failure_code=NONE`,
-`calendar_artifact_created=true`, a lower-case 64-hex
-`canonical_calendar_sha256`, an integer `trading_date_count` greater than
-zero, `anchor_2020_10_01=INELIGIBLE`, and
-`anchor_2020_10_02=ELIGIBLE`. A `FAIL` receipt requires
-`failure_code` not equal to `NONE`.
+`PASS` receipt requires all of the following:
+
+- `failure_code=NONE`;
+- `calendar_artifact_created=true`;
+- the canonical calendar artifact exists durably and validates against its
+  exact schema, canonical serialization rules, `trading_dates`,
+  `trading_date_count`, and independently recomputed
+  `canonical_calendar_sha256` constraints;
+- receipt `canonical_calendar_sha256` exactly equals the validated artifact
+  `canonical_calendar_sha256`;
+- receipt `trading_date_count` exactly equals the validated artifact
+  `trading_date_count` and therefore exactly equals
+  `len(validated artifact trading_dates)`;
+- receipt `runtime_environment_lock_sha256` exactly equals both the validated
+  artifact `runtime_environment_lock_sha256` and the reviewed V10 runtime-lock
+  SHA-256;
+- receipt `design_git_sha` equals the exact frozen/reviewed V10 design SHA
+  applicable to execution;
+- receipt `generator_implementation_git_sha` equals the exact reviewed
+  implementation SHA applicable to execution; and
+- `anchor_2020_10_01=INELIGIBLE` and `anchor_2020_10_02=ELIGIBLE`.
+
+A receipt must not become `PASS` merely because its hash/count fields are
+syntactically valid. A `FAIL` receipt requires `failure_code` not equal to
+`NONE` and follows the mutually exclusive failure-state rules below.
 
 Both anchor fields are exactly one of `INELIGIBLE`, `ELIGIBLE`, or
 `NOT_CHECKED`. They record the observed generator classification only when
@@ -507,17 +531,41 @@ No additional anchor is permitted. A checked mismatch at the first anchor
 uses `ANCHOR_2020_10_01_FAILURE`. A checked mismatch at the second anchor,
 after the first passed, uses `ANCHOR_2020_10_02_FAILURE`.
 
-If failure occurs before valid canonical calendar artifact bytes exist,
-`calendar_artifact_created=false`,
+If failure occurs before valid canonical calendar artifact bytes have been
+fully constructed, `calendar_artifact_created=false`,
 `canonical_calendar_sha256=null`, and `trading_date_count=null` are required.
-If canonical artifact bytes were fully and validly created before a later
-durable artifact-handling failure, the mechanically known artifact fields
-are preserved rather than replaced with fabricated nulls. The closed
-`DURABLE_ARTIFACT_WRITE_FAILURE` code refers only to failure to durably
-create the canonical calendar artifact after canonical bytes were prepared.
-A failure to durably write the safe receipt cannot be represented inside a
-receipt that does not exist; it is an execution/orchestration observability
-incident for Phase-C inspection and does not authorize retry.
+
+For `DURABLE_ARTIFACT_WRITE_FAILURE`, valid canonical artifact bytes were
+mechanically constructed but durable creation of the canonical artifact
+failed. In that exclusive state,
+`calendar_artifact_created=false`, `canonical_calendar_sha256` retains the
+mechanically computed hash of those prepared canonical bytes, and
+`trading_date_count` retains the mechanically known count equal to
+`len(the prepared canonical trading_dates)`. No claim that a durable artifact
+exists is permitted.
+
+If the canonical artifact was durably created successfully,
+`calendar_artifact_created=true`. Any later inability to durably create the
+safe receipt produces no receipt and remains the already-defined Phase-C
+execution/orchestration observability incident; it does not fabricate a
+`FAIL` receipt or authorize retry.
+
+The mechanically exclusive execution outcomes are:
+
+1. pre-artifact failure: `calendar_artifact_created=false`, hash `null`, and
+   count `null`;
+2. `DURABLE_ARTIFACT_WRITE_FAILURE`: `calendar_artifact_created=false`, the
+   prepared canonical hash retained, and the prepared count retained with its
+   exact prepared-date-sequence equality;
+3. durable artifact plus durable receipt: `calendar_artifact_created=true`
+   and all receipt/artifact equality constraints above; or
+4. durable artifact plus safe-receipt write absence: no receipt exists, so
+   Phase-C treats it solely as the defined observability incident rather than
+   fabricating any receipt state.
+
+Each execution has exactly one of these outcomes; the applicable boolean,
+hash, and count relationships are mechanically determined only by that
+outcome.
 
 `design_git_sha` and `generator_implementation_git_sha` are exact lower-case
 40-hex reviewed Git SHAs. `runtime_environment_lock_sha256` is an exact
