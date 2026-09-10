@@ -23,6 +23,11 @@ This draft grants no package-resolution, package-installation, environment
 mutation, calendar, research-data, private/sealed, T0, historical-evaluation,
 model, backtest, or profitability authority.
 
+This remediation closes only the provenance gap between the first reviewed
+Windows wheelhouse and later canonical installation. It does not remediate
+the separate `PROCESS_LAUNCH_FAILURE_EXIT_CODE_SCHEMA_NOT_REPRESENTABLE`
+finding.
+
 ## 2. Immutable predecessor authority
 
 The only canonical protected predecessor environment is:
@@ -169,6 +174,14 @@ No complete result is re-resolved to obtain a preferable dependency set. A
 Phase B failure receives no automatic retry; Phase C returns only safe
 evidence to GPT. No JPX/calendar import or execution is permitted.
 
+After the first complete resolution is accepted, its durable wheelhouse is
+the immutable reviewed input for candidate/evidence creation, GPT review,
+generic migration-authority transition, and canonical mutation. No wheel may
+be replaced, added, deleted, re-downloaded, or re-resolved as a silent repair.
+If a later required wheel is missing or its bytes do not match the reviewed
+SHA-256, execution stops fail-closed and requires a GPT decision; no
+replacement is acquired under the accepted candidate.
+
 The durable resolution root must not already exist and must not alias the
 protected environment, `.venv-real-execution`, V9/V10 durable state, or
 another governed path. Parent/root realpath and reparse protections follow
@@ -284,6 +297,7 @@ sysconfig_platform
 resolution_policy_id
 resolved_packages
 resolved_package_count
+resolved_wheels
 predecessor_pin_drift_count
 pandas_market_calendars_version
 exchange_calendars_version
@@ -292,7 +306,7 @@ exchange_calendars_version
 Fixed values are:
 
 ```text
-schema_version=V10_CANONICAL_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE_V1
+schema_version=V10_CANONICAL_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE_V2
 artifact_status=WINDOWS_RESOLUTION_CANDIDATE_NOT_INSTALL_AUTHORITY
 frozen_v10_design_git_sha=8c923ed1734c6bdfe95a743cd9e15a5156d62c03
 predecessor_lock_git_blob_sha1=5e9d15caa822bd39e751a49cd0758db6eaf04bdf
@@ -319,6 +333,42 @@ The array is sorted lexicographically by normalized name and
 predecessor 15 name/version pairs unchanged,
 `pandas-market-calendars==5.4.0`, and exactly one `exchange-calendars` entry;
 `exchange_calendars_version` equals that entry's version.
+
+`resolved_wheels` is an array whose elements have exactly the four string
+fields `name`, `version`, `filename`, and `sha256`. `name` uses the same
+normalized distribution-name rule as `resolved_packages`; `version` is the
+exact nonempty resolved version string; `filename` is a nonempty basename
+with no path separator and a case-insensitive `.whl` suffix; and `sha256` is
+the lowercase 64-hex SHA-256 of the exact wheel-file bytes. The array is
+sorted lexicographically by normalized `name`. It contains exactly one wheel
+for every normalized resolved package:
+
+```text
+len(resolved_wheels) == resolved_package_count
+each resolved_packages {name,version} pair has exactly one matching resolved_wheels entry
+```
+
+Duplicate normalized names, duplicate filenames, missing or extra wheels,
+malformed wheel names, unreadable or malformed wheel metadata, or any
+package/version disagreement is `RESOLUTION_REPORT_INVALID`. The canonical
+successor-candidate artifact hash therefore commits to every reviewed wheel
+filename and SHA-256. Wheel inspection uses only wheel filenames and
+standard-library `METADATA`/`WHEEL` parsing; no wheel or package is imported.
+
+The package-set roles are mechanically defined as follows:
+
+```text
+PREDECESSOR_PACKAGE_SET=the existing exact reviewed 15 normalized name/version pairs
+SUCCESSOR_PACKAGE_SET=the reviewed successor resolved_packages array
+SUCCESSOR_DELTA_PACKAGE_SET=SUCCESSOR_PACKAGE_SET entries whose normalized name is absent from PREDECESSOR_PACKAGE_SET
+```
+
+Every predecessor package must remain present at its reviewed version. A
+predecessor version change or disappearance is terminal
+`PREDECESSOR_PIN_DRIFT`. The predecessor 15 packages are not reinstalled to
+establish V10; their already-frozen live environment remains their
+byte/provenance authority. Only `SUCCESSOR_DELTA_PACKAGE_SET` is installed
+by the later V10 mutation.
 
 ### Windows resolution evidence
 
@@ -356,7 +406,7 @@ calendar_dates_inspected
 schema_version=V10_CANONICAL_ENVIRONMENT_SUCCESSOR_WINDOWS_RESOLUTION_EVIDENCE_V1
 artifact_status=WINDOWS_RESOLUTION_EVIDENCE
 status=PASS|FAIL
-failure_code={NONE,RESOLUTION_PROCESS_FAILURE,RESOLUTION_REPORT_INVALID,PREDECESSOR_PIN_DRIFT,REQUIRED_DISTRIBUTION_MISSING,SOURCE_DISTRIBUTION_REQUIRED,UNAUTHORIZED_INSTALLATION,UNAUTHORIZED_ALTERNATE_ENVIRONMENT}
+failure_code={NONE,RESOLUTION_PROCESS_FAILURE,RESOLUTION_REPORT_INVALID,PREDECESSOR_PIN_DRIFT,REQUIRED_DISTRIBUTION_MISSING,SOURCE_DISTRIBUTION_REQUIRED,REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE,UNAUTHORIZED_INSTALLATION,UNAUTHORIZED_ALTERNATE_ENVIRONMENT}
 package_index_id=PYPI_OFFICIAL_SIMPLE
 ```
 
@@ -380,11 +430,12 @@ wheelhouse cannot produce the exact candidate is `RESOLUTION_REPORT_INVALID`.
 For the exact resolution policy, Phase C derives candidates offline from
 wheel filename plus wheel `METADATA`/`WHEEL` using reviewed standard-library
 tooling only; downloaded packages are never imported. Each wheel must yield
-exactly one normalized name/version; duplicate names or malformed/unreadable
-metadata are `RESOLUTION_REPORT_INVALID`. The candidate is the exact sorted
-package set represented by the completed wheelhouse, with no silent insertion
-from the old environment. No resolver fallback or second execution is
-permitted.
+exactly one normalized name/version and its exact file SHA-256; duplicate
+names, duplicate filenames, missing/extra wheel artifacts, or
+malformed/unreadable metadata are `RESOLUTION_REPORT_INVALID`. The candidate
+is the exact sorted package set and `resolved_wheels` manifest represented by
+the completed wheelhouse, with no silent insertion from the old environment.
+No resolver fallback or second execution is permitted.
 
 ### Live validation evidence
 
@@ -403,6 +454,10 @@ migration_authority_git_blob_sha1
 generic_lock_git_blob_sha1
 generic_lock_sha256
 generic_lock_package_count
+reviewed_successor_lock_candidate_sha256
+installed_delta_packages
+installed_delta_package_count
+installed_delta_wheel_count
 observed_packages
 observed_package_count
 python_version
@@ -439,6 +494,26 @@ resolved version; both source-blob matches are true; XLS/PDF probes are
 creations, calendar-date inspections, and protected/private reads are zero,
 with `t0_run=false`. `PASS` requires `failure_code=NONE`; `FAIL` requires
 `failure_code != NONE`.
+
+Successful mutation evidence additionally binds
+`reviewed_successor_lock_candidate_sha256` to the exact reviewed successor
+candidate whose canonical bytes contain `resolved_wheels`. This is the
+wheel-manifest identity through the candidate; no alternate wheel manifest
+or path-based identity is permitted. `installed_delta_packages` is an array
+of objects with only `name` and `version`, normalized and sorted exactly like
+`resolved_packages`; it must equal `SUCCESSOR_DELTA_PACKAGE_SET`, and its
+count must equal its length. `installed_delta_wheel_count` must equal the
+delta package count. These fields prove which reviewed delta was installed;
+wheel hashes prove byte identity/reproducibility, not package safety.
+
+For a `PASS` live-validation artifact, these three delta fields and
+`reviewed_successor_lock_candidate_sha256` are non-null; the candidate SHA
+must be the exact reviewed candidate identity, the delta array must be the
+exact sorted normalized difference defined above, and both counts must be
+exact nonnegative integers with the stated equalities. For a `FAIL` before
+successful mutation evidence exists, the candidate SHA, delta array, and both
+delta counts are `null`; after successful mutation evidence exists they are
+retained mechanically even if a later live-validation check fails.
 
 `observed_packages` is exactly the same representation as
 `resolved_packages`: a JSON array whose every element is an object with only
@@ -556,8 +631,9 @@ incomplete or failed report.
 For Windows resolution evidence, record the first applicable failure in this
 exact order: (1) `UNAUTHORIZED_INSTALLATION`; (2)
 `UNAUTHORIZED_ALTERNATE_ENVIRONMENT`; (3) `RESOLUTION_PROCESS_FAILURE`; (4)
-`RESOLUTION_REPORT_INVALID`; (5) `PREDECESSOR_PIN_DRIFT`; (6)
-`REQUIRED_DISTRIBUTION_MISSING`; (7) `SOURCE_DISTRIBUTION_REQUIRED`; (8)
+`RESOLUTION_REPORT_INVALID`; (5) `REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE`;
+(6) `PREDECESSOR_PIN_DRIFT`; (7)
+`REQUIRED_DISTRIBUTION_MISSING`; (8) `SOURCE_DISTRIBUTION_REQUIRED`; (9)
 `NONE` only when all `PASS` requirements hold.
 
 For live validation evidence, record the first applicable failure in this
@@ -610,6 +686,15 @@ pre-mutation generic-authority-transition may update
 `requirements-real-execution.lock.txt` to the reviewed successor package
 set. That lock then becomes the reviewed generic installation authority, but
 the transition is not a Windows-grounded live-environment observation.
+
+`requirements-real-execution.lock.txt` remains the full reviewed successor
+normalized name/version package-set authority, but it is not sufficient by
+itself to select installation bytes. Canonical mutation authority is
+conjunctive: (A) the reviewed generic successor package lock, (B) the
+reviewed candidate/evidence/migration-authority bindings, (C) the exact
+`resolved_wheels` filename/SHA-256 manifest committed by the reviewed
+candidate, and (D) the exact local wheel bytes passing the pre-install hash
+gate.
 
 The transition must create and bind, in later reviewed work, exactly this
 additional provenance role (not in this task):
@@ -676,9 +761,11 @@ CANONICAL_ENVIRONMENT_STATE=V10_SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED
 ```
 
 No protected, private, or research execution is permitted in that state. A
-later canonical mutation installs only from the reviewed generic
-`requirements-real-execution.lock.txt` using `--no-deps`; it must never
-install directly from a V10 successor-candidate artifact.
+later canonical mutation uses the reviewed generic lock only as the complete
+successor package-set authority and installs no predecessor package. It must
+install only the exact validated local wheel paths corresponding to
+`SUCCESSOR_DELTA_PACKAGE_SET`; it must never install directly from a V10
+successor-candidate artifact or reacquire package bytes from an index.
 
 Because the generic installation authority and observed live environment no
 longer match in this state, `REAL_EXECUTION_ENVIRONMENT_FROZEN` must not be
@@ -700,11 +787,30 @@ Before mutation, separately reviewed migration-mode bootstrap/checker tooling
 must verify the predecessor live 15-package baseline, reviewed V10 successor
 candidate/evidence bindings, reviewed migration-authority artifact, and the
 reviewed successor generic lock. It must reject any successor live-ready or
-frozen claim. The mutation command is only:
+frozen claim. It must also verify, before mutation, that the predecessor live
+environment exactly matches its reviewed 15-package baseline, the generic
+successor lock equals `SUCCESSOR_PACKAGE_SET`, the candidate/evidence/
+migration-authority SHA bindings pass, the preserved wheelhouse contains
+exactly every `resolved_wheels` file and no extra selectable wheel, every
+wheel SHA-256 recomputes exactly, and every delta wheel identity equals
+`SUCCESSOR_DELTA_PACKAGE_SET`.
+
+Immediately before launching pip, it must recompute the SHA-256 of every
+delta wheel. Any missing, extra, tampered, unparseable, or otherwise
+mismatched reviewed wheel is `REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE` and
+stops before mutation. No authority is consumed and no automatic repair,
+replacement download, or re-resolution is permitted. The exact local path
+list is constructed mechanically from the reviewed manifest and preserved
+wheelhouse; no package name/version specifier may cause pip to select another
+artifact. The only permitted mutation semantics are equivalent to:
 
 ```text
-.venv-real-execution\Scripts\python.exe -m pip install --no-deps -r requirements-real-execution.lock.txt
+.venv-real-execution\Scripts\python.exe -m pip install --no-deps --no-index <EXACT_REVIEWED_LOCAL_DELTA_WHEEL_PATHS>
 ```
+
+`NETWORK_REQUESTS=0` is required for canonical mutation. `--find-links` is
+not used as an artifact search mechanism, and no PyPI/index/fallback path is
+allowed.
 
 After mutation, no-network live validation must require all of the following
 without creating a JPX calendar object or inspecting generated dates:
@@ -714,6 +820,9 @@ without creating a JPX calendar object or inspecting generated dates:
 - existing PDF synthetic readiness remains `PASS`;
 - `pandas-market-calendars==5.4.0`;
 - `exchange-calendars` equals the reviewed resolved version;
+- successful mutation evidence binds the reviewed successor candidate SHA,
+  its `resolved_wheels` manifest, the exact normalized delta package set, and
+  the exact delta wheel count;
 - installed `jpx.py` and `jp.py` Git-blob identities equal the frozen V10
   source blobs.
 
@@ -727,12 +836,13 @@ The required order is:
 
 1. candidate/evidence exact-SHA GPT PASS;
 2. generic authority-transition exact-SHA GPT PASS;
-3. separately authorized canonical mutation;
-4. no-network live validation;
-5. evidence commit and GPT exact-SHA PASS;
-6. final generic freeze-record/tooling closure;
-7. final no-network live reverification; and
-8. GPT exact-SHA PASS.
+3. separately authorized pre-mutation exact-wheel integrity gate;
+4. separately authorized canonical mutation;
+5. no-network live validation;
+6. evidence commit and GPT exact-SHA PASS;
+7. final generic freeze-record/tooling closure;
+8. final no-network live reverification; and
+9. GPT exact-SHA PASS.
 
 Only then may:
 
