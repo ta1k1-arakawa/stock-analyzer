@@ -185,11 +185,12 @@ replacement is acquired under the accepted candidate.
 The durable resolution root must not already exist and must not alias the
 protected environment, `.venv-real-execution`, V9/V10 durable state, or
 another governed path. Parent/root realpath and reparse protections follow
-the applicable repository rules. Once the subprocess is launched,
-`human_authority_consumed=true` for this attempt. A nonzero exit receives no
-second invocation, retry, root deletion, reset, or recreation; partial
-wheelhouse and stdout/stderr are preserved separately for Phase C. A zero
-exit fixes the first complete result and permits no re-resolution.
+the applicable repository rules. Once the Phase-B attempt boundary is
+crossed, `human_authority_consumed=true` for this attempt, including a child
+launch failure. A nonzero exit or launch failure receives no second
+invocation, retry, root deletion, reset, or recreation; partial wheelhouse and
+stdout/stderr are preserved separately for Phase C. A zero exit fixes the
+first complete result and permits no re-resolution.
 
 ### Phase C — no-network inspection
 
@@ -208,6 +209,7 @@ V10_CANONICAL_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json
 V10_CANONICAL_ENVIRONMENT_SUCCESSOR_WINDOWS_RESOLUTION_EVIDENCE.json
 V10_CANONICAL_ENVIRONMENT_SUCCESSOR_LIVE_VALIDATION_EVIDENCE.json
 V10_CANONICAL_ENVIRONMENT_SUCCESSOR_FINAL_FREEZE_VERIFICATION_EVIDENCE.json
+V10_CANONICAL_ENVIRONMENT_MUTATION_PREFLIGHT_RECEIPT.json
 ```
 
 Their public provenance is limited to package names, versions, counts, hashes,
@@ -249,7 +251,9 @@ live-validation or final-verification fail-state rules below expressly permit
 counter, and every package-count field is a nonnegative JSON integer and
 never a boolean, except where the fail-state rules expressly permit `null`
 for a count derived from an unperformed observation. `process_exit_code` is a
-JSON integer. Probe and environment-status fields use only their explicitly
+JSON integer or `null`; `null` is permitted only when
+`process_started=false` in the Windows resolution evidence. Probe and
+environment-status fields use only their explicitly
 defined closed enums. These domains apply to the successor lock candidate,
 Windows resolution evidence, generic migration authority, live validation
 evidence, and final freeze-verification evidence; no mapping, string-list, or
@@ -388,6 +392,7 @@ direct_spec_sha256
 predecessor_lock_git_blob_sha1
 predecessor_lock_sha256
 resolution_policy_id
+process_started
 process_exit_code
 resolution_completed
 candidate_artifact_created
@@ -406,11 +411,12 @@ calendar_dates_inspected
 schema_version=V10_CANONICAL_ENVIRONMENT_SUCCESSOR_WINDOWS_RESOLUTION_EVIDENCE_V1
 artifact_status=WINDOWS_RESOLUTION_EVIDENCE
 status=PASS|FAIL
-failure_code={NONE,RESOLUTION_PROCESS_FAILURE,RESOLUTION_REPORT_INVALID,PREDECESSOR_PIN_DRIFT,REQUIRED_DISTRIBUTION_MISSING,SOURCE_DISTRIBUTION_REQUIRED,REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE,UNAUTHORIZED_INSTALLATION,UNAUTHORIZED_ALTERNATE_ENVIRONMENT}
+failure_code={NONE,RESOLUTION_PROCESS_FAILURE,RESOLUTION_REPORT_INVALID,PREDECESSOR_PIN_DRIFT,REQUIRED_DISTRIBUTION_MISSING,SOURCE_DISTRIBUTION_REQUIRED,UNAUTHORIZED_INSTALLATION,UNAUTHORIZED_ALTERNATE_ENVIRONMENT}
 package_index_id=PYPI_OFFICIAL_SIMPLE
 ```
 
-For `PASS`, `failure_code=NONE`, `process_exit_code=0`,
+For `PASS`, `failure_code=NONE`, `process_started=true`,
+`process_exit_code=0`,
 `resolution_completed=true`, `candidate_artifact_created=true`,
 `successor_lock_candidate_sha256` is lowercase 64-hex,
 `resolved_package_count>15`, `package_installations=0`,
@@ -419,13 +425,21 @@ For `PASS`, `failure_code=NONE`, `process_exit_code=0`,
 `package_resolution_process_invocations=1`. For `FAIL`, `failure_code != NONE`,
 `candidate_artifact_created=false`, `successor_lock_candidate_sha256=null`,
 and `resolved_package_count=null`; an invalid/failed resolution creates no
-accepted candidate. The invocation counter is a nonnegative integer, never
-boolean: it is `0` before Phase B launch, exactly `1` after the single
-subprocess is launched, and can never exceed `1`. A pre-launch failure is
-recorded only by Phase-A/preflight mechanics, not fabricated as completed
-Windows-resolution evidence. A nonzero exit or launch failure after the
-attempt boundary is `RESOLUTION_PROCESS_FAILURE`; a zero exit whose
-wheelhouse cannot produce the exact candidate is `RESOLUTION_REPORT_INVALID`.
+accepted candidate. `process_started` is a JSON boolean. After the Phase-B
+attempt boundary, a child that fails to start has
+`process_started=false`, `process_exit_code=null`,
+`resolution_completed=false`, `candidate_artifact_created=false`,
+`successor_lock_candidate_sha256=null`, `resolved_package_count=null`,
+`package_resolution_process_invocations=0`, `human_authority_consumed=true`,
+and `failure_code=RESOLUTION_PROCESS_FAILURE`. A child that starts has
+`process_started=true`, `package_resolution_process_invocations=1`, and
+`human_authority_consumed=true`; a nonzero exit records the actual integer
+`process_exit_code` and `failure_code=RESOLUTION_PROCESS_FAILURE`. A zero
+exit records `process_exit_code=0` and proceeds to Phase-C validation. The
+invocation counter counts successfully started child resolver subprocesses,
+not attempted launches. No sentinel exit code is invented for a child that
+never started. Before the attempt boundary, no completed resolution evidence
+is fabricated. No retry authority is created by a launch failure.
 
 For the exact resolution policy, Phase C derives candidates offline from
 wheel filename plus wheel `METADATA`/`WHEEL` using reviewed standard-library
@@ -605,6 +619,62 @@ are zero with `t0_run=false` and
 `future_protected_execution_authorized=false`. `PASS` requires
 `failure_code=NONE`; `FAIL` requires `failure_code != NONE`.
 
+### Pre-mutation Phase-A receipt
+
+`V10_CANONICAL_ENVIRONMENT_MUTATION_PREFLIGHT_RECEIPT.json` is a compact
+durable receipt for the deterministic Phase-A mutation preflight. It is
+evidence of preflight only, not resolution evidence, environment-freeze
+evidence, mutation-success evidence, or execution authority. Its exact keys
+are only:
+
+```text
+schema_version
+artifact_status
+status
+failure_code
+frozen_v10_design_git_sha
+extension_design_git_sha
+reviewed_successor_lock_candidate_sha256
+migration_authority_git_blob_sha1
+generic_lock_git_blob_sha1
+wheelhouse_integrity_verified
+delta_wheel_count
+mutation_authority_consumed
+mutation_started
+```
+
+Its fixed and closed domains are:
+
+```text
+schema_version=V10_CANONICAL_ENVIRONMENT_MUTATION_PREFLIGHT_RECEIPT_V1
+artifact_status=V10_CANONICAL_ENVIRONMENT_MUTATION_PREFLIGHT_RECEIPT
+status=PASS|FAIL
+failure_code={NONE,PROVENANCE_BINDING_FAILURE,PREDECESSOR_LIVE_BASELINE_MISMATCH,GENERIC_SUCCESSOR_LOCK_MISMATCH,REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE}
+wheelhouse_integrity_verified=JSON_BOOLEAN
+delta_wheel_count=NONNEGATIVE_INTEGER_OR_NULL
+mutation_authority_consumed=false
+mutation_started=false
+```
+
+The Git/SHA fields use the existing canonical JSON domains. `delta_wheel_count`
+is a nonnegative integer when delta-wheel-set determination was performed and
+is `null` only on an earlier terminal `FAIL`. The receipt's deterministic
+failure precedence is exactly: (1) `PROVENANCE_BINDING_FAILURE`; (2)
+`PREDECESSOR_LIVE_BASELINE_MISMATCH`; (3)
+`GENERIC_SUCCESSOR_LOCK_MISMATCH`; (4)
+`REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE`; (5) `NONE`.
+
+`PASS` requires `failure_code=NONE`, exact provenance bindings, an exact
+predecessor live baseline, an exact generic successor lock, an exact reviewed
+wheelhouse with every reviewed wheel SHA-256 recomputed successfully, an
+exact delta wheel set, `wheelhouse_integrity_verified=true`, an exact
+nonnegative `delta_wheel_count`, `mutation_authority_consumed=false`, and
+`mutation_started=false`. `FAIL` records only the first applicable failure;
+later unnecessary checks may remain `null` where applicable. It never grants
+mutation authority and never rewrites the already-reviewed Windows
+resolution evidence. A `PASS` receipt is a required input to the later
+fresh-authority mutation stage.
+
 ### Fail-state and not-checked semantics
 
 A `FAIL` artifact records only mechanically established observations. For
@@ -631,9 +701,8 @@ incomplete or failed report.
 For Windows resolution evidence, record the first applicable failure in this
 exact order: (1) `UNAUTHORIZED_INSTALLATION`; (2)
 `UNAUTHORIZED_ALTERNATE_ENVIRONMENT`; (3) `RESOLUTION_PROCESS_FAILURE`; (4)
-`RESOLUTION_REPORT_INVALID`; (5) `REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE`;
-(6) `PREDECESSOR_PIN_DRIFT`; (7)
-`REQUIRED_DISTRIBUTION_MISSING`; (8) `SOURCE_DISTRIBUTION_REQUIRED`; (9)
+`RESOLUTION_REPORT_INVALID`; (5) `PREDECESSOR_PIN_DRIFT`; (6)
+`REQUIRED_DISTRIBUTION_MISSING`; (7) `SOURCE_DISTRIBUTION_REQUIRED`; (8)
 `NONE` only when all `PASS` requirements hold.
 
 For live validation evidence, record the first applicable failure in this
