@@ -650,16 +650,33 @@ schema_version=V10_CANONICAL_ENVIRONMENT_MUTATION_PREFLIGHT_RECEIPT_V1
 artifact_status=V10_CANONICAL_ENVIRONMENT_MUTATION_PREFLIGHT_RECEIPT
 status=PASS|FAIL
 failure_code={NONE,PROVENANCE_BINDING_FAILURE,PREDECESSOR_LIVE_BASELINE_MISMATCH,GENERIC_SUCCESSOR_LOCK_MISMATCH,REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE}
-wheelhouse_integrity_verified=JSON_BOOLEAN
+wheelhouse_integrity_verified=JSON_BOOLEAN_OR_NULL
 delta_wheel_count=NONNEGATIVE_INTEGER_OR_NULL
 mutation_authority_consumed=false
 mutation_started=false
 ```
 
-The Git/SHA fields use the existing canonical JSON domains. `delta_wheel_count`
-is a nonnegative integer when delta-wheel-set determination was performed and
-is `null` only on an earlier terminal `FAIL`. The receipt's deterministic
-failure precedence is exactly: (1) `PROVENANCE_BINDING_FAILURE`; (2)
+The Git/SHA fields
+`frozen_v10_design_git_sha`, `extension_design_git_sha`,
+`reviewed_successor_lock_candidate_sha256`,
+`migration_authority_git_blob_sha1`, and `generic_lock_git_blob_sha1` are the
+reviewed/authoritative prerequisite identities mechanically bound into this
+receipt; they are not fabricated observations of a missing file and retain
+their existing exact SHA domains. The actual verification result is
+represented by `status`, `failure_code`, and the nullable observation fields.
+
+`wheelhouse_integrity_verified=null` if and only if wheelhouse integrity
+verification was not performed because an earlier terminal failure in the
+frozen preflight order stopped evaluation. It is `false` if and only if
+verification was performed and established
+`REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE`. It is `true` if and only if
+verification was performed and the complete reviewed wheelhouse passed every
+required exact check. `false` never represents `NOT_CHECKED`.
+
+`delta_wheel_count` is a nonnegative integer when delta-wheel-set
+determination was performed and is `null` if and only if that determination
+was not performed because an earlier terminal failure stopped evaluation.
+The receipt's deterministic failure precedence is exactly: (1) `PROVENANCE_BINDING_FAILURE`; (2)
 `PREDECESSOR_LIVE_BASELINE_MISMATCH`; (3)
 `GENERIC_SUCCESSOR_LOCK_MISMATCH`; (4)
 `REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE`; (5) `NONE`.
@@ -670,10 +687,13 @@ wheelhouse with every reviewed wheel SHA-256 recomputed successfully, an
 exact delta wheel set, `wheelhouse_integrity_verified=true`, an exact
 nonnegative `delta_wheel_count`, `mutation_authority_consumed=false`, and
 `mutation_started=false`. `FAIL` records only the first applicable failure;
-later unnecessary checks may remain `null` where applicable. It never grants
-mutation authority and never rewrites the already-reviewed Windows
-resolution evidence. A `PASS` receipt is a required input to the later
-fresh-authority mutation stage.
+for `PROVENANCE_BINDING_FAILURE`, `PREDECESSOR_LIVE_BASELINE_MISMATCH`, or
+`GENERIC_SUCCESSOR_LOCK_MISMATCH` occurring before wheelhouse verification,
+`wheelhouse_integrity_verified=null`; for
+`REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE`, it is `false`. Later unnecessary
+checks may remain `null` where applicable. It never grants mutation authority
+and never rewrites the already-reviewed Windows resolution evidence. A `PASS`
+receipt is a required input to the later fresh-authority mutation stage.
 
 ### Fail-state and not-checked semantics
 
