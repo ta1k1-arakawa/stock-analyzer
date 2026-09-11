@@ -68,6 +68,30 @@ STDERR_NAME = "stderr.txt"
 STATE_NAME = "attempt_state.json"
 CANDIDATE_NAME = "V10_CANONICAL_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json"
 EVIDENCE_NAME = "V10_CANONICAL_ENVIRONMENT_SUCCESSOR_WINDOWS_RESOLUTION_EVIDENCE.json"
+ATTEMPT_STATE_SCHEMA = "V10_CANONICAL_ENVIRONMENT_RESOLUTION_ATTEMPT_STATE_V1"
+RESOLUTION_POLICY_ID = "PIP_25_0_1_WINDOWS_WHEEL_DOWNLOAD_V1"
+PACKAGE_INDEX_ID = "PYPI_OFFICIAL_SIMPLE"
+ATTEMPT_STATE_KEYS = frozenset(
+    {
+        "schema_version",
+        "expected_current_head",
+        "frozen_v10_design_git_sha",
+        "extension_design_git_sha",
+        "reviewed_resolution_implementation_git_sha",
+        "direct_spec_git_blob_sha1",
+        "direct_spec_sha256",
+        "predecessor_lock_git_blob_sha1",
+        "predecessor_lock_sha256",
+        "resolution_policy_id",
+        "package_index_id",
+        "attempt_boundary_crossed",
+        "human_authority_consumed",
+        "process_started",
+        "process_exit_code",
+        "package_resolution_process_invocations",
+        "resolution_completed",
+    }
+)
 DIRECT_SPEC_BYTES = (
     b"pandas\n"
     b"xlrd==2.0.2\n"
@@ -551,11 +575,89 @@ def _write_attempt_state(root: Path, state: Mapping[str, Any]) -> None:
     _atomic_replace(root / STATE_NAME, canonical_json_bytes(state))
 
 
+def _initial_attempt_state(config: PhaseAConfig) -> dict[str, Any]:
+    """Return the closed internal state before the human-gated boundary."""
+
+    return {
+        "schema_version": ATTEMPT_STATE_SCHEMA,
+        "expected_current_head": config.expected_current_head,
+        "frozen_v10_design_git_sha": FROZEN_V10_DESIGN_SHA,
+        "extension_design_git_sha": config.expected_extension_design_sha,
+        "reviewed_resolution_implementation_git_sha": config.expected_reviewed_runner_sha,
+        "direct_spec_git_blob_sha1": config.expected_direct_spec_git_blob_sha1,
+        "direct_spec_sha256": config.expected_direct_spec_sha256,
+        "predecessor_lock_git_blob_sha1": PREDECESSOR_LOCK_BLOB_SHA1,
+        "predecessor_lock_sha256": PREDECESSOR_LOCK_SHA256,
+        "resolution_policy_id": RESOLUTION_POLICY_ID,
+        "package_index_id": PACKAGE_INDEX_ID,
+        "attempt_boundary_crossed": False,
+        "human_authority_consumed": False,
+        "process_started": None,
+        "process_exit_code": None,
+        "package_resolution_process_invocations": 0,
+        "resolution_completed": False,
+    }
+
+
+def _validate_attempt_state(config: PhaseAConfig, state: Mapping[str, Any]) -> None:
+    """Fail closed unless Phase-C input is the exact Phase-B durable state."""
+
+    if set(state) != ATTEMPT_STATE_KEYS:
+        raise RunnerValidationError("ATTEMPT_STATE_SCHEMA_INVALID")
+    if state["schema_version"] != ATTEMPT_STATE_SCHEMA:
+        raise RunnerValidationError("ATTEMPT_STATE_SCHEMA_INVALID")
+    for value, pattern, label in (
+        (state["expected_current_head"], SHA1_RE, "attempt expected head"),
+        (state["frozen_v10_design_git_sha"], SHA1_RE, "attempt frozen design SHA"),
+        (state["extension_design_git_sha"], SHA1_RE, "attempt extension design SHA"),
+        (state["reviewed_resolution_implementation_git_sha"], SHA1_RE, "attempt runner SHA"),
+        (state["direct_spec_git_blob_sha1"], SHA1_RE, "attempt direct spec blob SHA"),
+        (state["direct_spec_sha256"], SHA256_RE, "attempt direct spec SHA"),
+        (state["predecessor_lock_git_blob_sha1"], SHA1_RE, "attempt predecessor blob SHA"),
+        (state["predecessor_lock_sha256"], SHA256_RE, "attempt predecessor SHA"),
+    ):
+        _safe_sha(value, pattern, label)
+    exact_bindings = {
+        "expected_current_head": config.expected_current_head,
+        "frozen_v10_design_git_sha": FROZEN_V10_DESIGN_SHA,
+        "extension_design_git_sha": config.expected_extension_design_sha,
+        "reviewed_resolution_implementation_git_sha": config.expected_reviewed_runner_sha,
+        "direct_spec_git_blob_sha1": config.expected_direct_spec_git_blob_sha1,
+        "direct_spec_sha256": config.expected_direct_spec_sha256,
+        "predecessor_lock_git_blob_sha1": PREDECESSOR_LOCK_BLOB_SHA1,
+        "predecessor_lock_sha256": PREDECESSOR_LOCK_SHA256,
+        "resolution_policy_id": RESOLUTION_POLICY_ID,
+        "package_index_id": PACKAGE_INDEX_ID,
+    }
+    if any(state[key] != value for key, value in exact_bindings.items()):
+        raise RunnerValidationError("ATTEMPT_STATE_PROVENANCE_MISMATCH")
+    if state["attempt_boundary_crossed"] is not True or state["human_authority_consumed"] is not True:
+        raise RunnerValidationError("ATTEMPT_STATE_AMBIGUOUS")
+    if not isinstance(state["resolution_completed"], bool):
+        raise RunnerValidationError("ATTEMPT_STATE_SCHEMA_INVALID")
+    started = state["process_started"]
+    exit_code = state["process_exit_code"]
+    invocations = state["package_resolution_process_invocations"]
+    if started is False:
+        if exit_code is not None or invocations != 0 or state["resolution_completed"] is not False:
+            raise RunnerValidationError("ATTEMPT_STATE_AMBIGUOUS")
+    elif started is True:
+        if invocations != 1:
+            raise RunnerValidationError("ATTEMPT_STATE_AMBIGUOUS")
+        if exit_code is None:
+            if state["resolution_completed"] is not False:
+                raise RunnerValidationError("ATTEMPT_STATE_AMBIGUOUS")
+        elif not isinstance(exit_code, int) or isinstance(exit_code, bool) or state["resolution_completed"] is not True:
+            raise RunnerValidationError("ATTEMPT_STATE_AMBIGUOUS")
+    else:
+        raise RunnerValidationError("ATTEMPT_STATE_AMBIGUOUS")
+
+
 def run_phase_b(
     config: PhaseAConfig,
     *,
     execute_resolution: bool,
-    authority_consumer: Callable[[], bool] | None = None,
+    fresh_human_authority_confirmed: bool = False,
     observations: Mapping[str, Any] | None = None,
     popen_factory: Callable[..., Any] = subprocess.Popen,
     parent_environment: Mapping[str, str] | None = None,
@@ -567,7 +669,7 @@ def run_phase_b(
     preflight = run_phase_a(config, observations)
     if preflight["status"] != "PASS":
         raise RunnerValidationError(f"PHASE_A_{preflight['failure_code']}")
-    if authority_consumer is None or authority_consumer() is not True:
+    if fresh_human_authority_confirmed is not True:
         raise RunnerValidationError("FRESH_HUMAN_AUTHORITY_REQUIRED")
 
     root = config.durable_root
@@ -582,19 +684,13 @@ def run_phase_b(
 
     stdout_path = root / STDOUT_NAME
     stderr_path = root / STDERR_NAME
-    state = {
-        "schema_version": "V10_CANONICAL_ENVIRONMENT_RESOLUTION_ATTEMPT_STATE_V1",
-        "attempt_boundary_crossed": True,
-        "human_authority_consumed": True,
-        "process_started": None,
-        "process_exit_code": None,
-        "package_resolution_process_invocations": None,
-        "resolution_completed": False,
-    }
+    state = _initial_attempt_state(config)
     _write_attempt_state(root, state)
     argv = build_resolution_argv(config.repo_root, wheelhouse)
     child_environment = _sanitize_environment(parent_environment)
     with stdout_path.open("wb") as stdout_handle, stderr_path.open("wb") as stderr_handle:
+        state.update(attempt_boundary_crossed=True, human_authority_consumed=True)
+        _write_attempt_state(root, state)
         try:
             process = popen_factory(
                 argv,
@@ -614,10 +710,12 @@ def run_phase_b(
                 "package_resolution_process_invocations": 0,
                 "human_authority_consumed": True,
             }
+        state.update(process_started=True, process_exit_code=None, package_resolution_process_invocations=1)
+        _write_attempt_state(root, state)
         exit_code = process.wait()
     if not isinstance(exit_code, int) or isinstance(exit_code, bool):
         raise RunnerValidationError("PROCESS_EXIT_CODE_INVALID")
-    state.update(process_started=True, process_exit_code=exit_code, package_resolution_process_invocations=1)
+    state.update(process_started=True, process_exit_code=exit_code, package_resolution_process_invocations=1, resolution_completed=True)
     _write_attempt_state(root, state)
     return {
         "status": "PASS" if exit_code == 0 else "FAIL",
@@ -654,14 +752,14 @@ def _base_resolution_evidence(
         "direct_spec_sha256": config.expected_direct_spec_sha256,
         "predecessor_lock_git_blob_sha1": PREDECESSOR_LOCK_BLOB_SHA1,
         "predecessor_lock_sha256": PREDECESSOR_LOCK_SHA256,
-        "resolution_policy_id": "PIP_25_0_1_WINDOWS_WHEEL_DOWNLOAD_V1",
+        "resolution_policy_id": RESOLUTION_POLICY_ID,
         "process_started": process_started,
         "process_exit_code": process_exit_code,
         "resolution_completed": resolution_completed,
         "candidate_artifact_created": candidate_artifact_created,
         "successor_lock_candidate_sha256": candidate_sha,
         "resolved_package_count": package_count,
-        "package_index_id": "PYPI_OFFICIAL_SIMPLE",
+        "package_index_id": PACKAGE_INDEX_ID,
         "package_resolution_process_invocations": invocations,
         "human_authority_consumed": True,
         "package_installations": 0,
@@ -742,8 +840,9 @@ def run_phase_c(
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError) as error:
         raise RunnerValidationError("ATTEMPT_STATE_UNREADABLE") from error
-    if state.get("schema_version") != "V10_CANONICAL_ENVIRONMENT_RESOLUTION_ATTEMPT_STATE_V1" or state.get("attempt_boundary_crossed") is not True or state.get("human_authority_consumed") is not True:
-        raise RunnerValidationError("ATTEMPT_STATE_AMBIGUOUS")
+    if not isinstance(state, dict):
+        raise RunnerValidationError("ATTEMPT_STATE_SCHEMA_INVALID")
+    _validate_attempt_state(config, state)
     started = state.get("process_started")
     exit_code = state.get("process_exit_code")
     invocations = state.get("package_resolution_process_invocations")
@@ -841,6 +940,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     phase_b = subparsers.add_parser("phase-b")
     _add_common_arguments(phase_b)
     phase_b.add_argument("--execute-resolution", action="store_true")
+    phase_b.add_argument("--fresh-human-authority-confirmed", action="store_true")
     phase_c = subparsers.add_parser("phase-c")
     _add_common_arguments(phase_c)
     phase_c.add_argument("--expected-successor-lock-candidate-sha256")
@@ -850,7 +950,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "phase-a":
             result = run_phase_a(config)
         elif args.command == "phase-b":
-            result = run_phase_b(config, execute_resolution=args.execute_resolution)
+            result = run_phase_b(
+                config,
+                execute_resolution=args.execute_resolution,
+                fresh_human_authority_confirmed=args.fresh_human_authority_confirmed,
+            )
         else:
             result = run_phase_c(config, expected_successor_lock_candidate_sha256=args.expected_successor_lock_candidate_sha256)
     except RunnerValidationError as error:

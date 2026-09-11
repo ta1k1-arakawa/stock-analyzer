@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import hashlib
 import json
 import zipfile
@@ -160,6 +161,10 @@ def test_phase_b_requires_flag_and_uses_exact_single_resolver(tmp_path: Path) ->
         runner.run_phase_b(config, execute_resolution=False, observations=_valid_observations(config))
     assert not config.durable_root.exists()
 
+    with pytest.raises(ContractValidationError, match="FRESH_HUMAN_AUTHORITY_REQUIRED"):
+        runner.run_phase_b(config, execute_resolution=True, observations=_valid_observations(config))
+    assert not config.durable_root.exists()
+
     calls: list[tuple[list[str], dict[str, object]]] = []
     process = _FakeProcess(0)
 
@@ -171,7 +176,7 @@ def test_phase_b_requires_flag_and_uses_exact_single_resolver(tmp_path: Path) ->
     result = runner.run_phase_b(
         config,
         execute_resolution=True,
-        authority_consumer=lambda: True,
+        fresh_human_authority_confirmed=True,
         observations=_valid_observations(config),
         popen_factory=fake_popen,
         parent_environment=parent_env,
@@ -195,6 +200,150 @@ def test_phase_b_requires_flag_and_uses_exact_single_resolver(tmp_path: Path) ->
     assert state["package_resolution_process_invocations"] == 1
 
 
+def test_phase_b_cli_without_human_flag_creates_no_root_or_launch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(runner, "run_phase_a", lambda *_args, **_kwargs: {"status": "PASS"})
+    arguments = [
+        "phase-b",
+        "--repo-root",
+        str(config.repo_root),
+        "--expected-head",
+        config.expected_current_head,
+        "--expected-extension-design-sha",
+        config.expected_extension_design_sha,
+        "--expected-runner-sha",
+        config.expected_reviewed_runner_sha,
+        "--expected-direct-spec-git-blob-sha1",
+        config.expected_direct_spec_git_blob_sha1,
+        "--expected-direct-spec-sha256",
+        config.expected_direct_spec_sha256,
+        "--durable-root",
+        str(config.durable_root),
+        "--execute-resolution",
+    ]
+    assert runner.main(arguments) == 1
+    assert not config.durable_root.exists()
+
+
+def test_phase_b_cli_forwards_both_explicit_gates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _config(tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_phase_b(received: runner.PhaseAConfig, **kwargs: object) -> dict[str, object]:
+        seen["config"] = received
+        seen.update(kwargs)
+        return {"status": "PASS", "failure_code": "NONE"}
+
+    monkeypatch.setattr(runner, "run_phase_b", fake_phase_b)
+    arguments = [
+        "phase-b",
+        "--repo-root", str(config.repo_root),
+        "--expected-head", config.expected_current_head,
+        "--expected-extension-design-sha", config.expected_extension_design_sha,
+        "--expected-runner-sha", config.expected_reviewed_runner_sha,
+        "--expected-direct-spec-git-blob-sha1", config.expected_direct_spec_git_blob_sha1,
+        "--expected-direct-spec-sha256", config.expected_direct_spec_sha256,
+        "--durable-root", str(config.durable_root),
+        "--execute-resolution",
+        "--fresh-human-authority-confirmed",
+    ]
+    assert runner.main(arguments) == 0
+    received = seen["config"]
+    assert isinstance(received, runner.PhaseAConfig)
+    assert received.repo_root == config.repo_root
+    assert received.durable_root == config.durable_root
+    assert seen["execute_resolution"] is True
+    assert seen["fresh_human_authority_confirmed"] is True
+
+
+def test_phase_b_persists_boundary_before_popen_and_exact_provenance(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_popen(*_args: object, **_kwargs: object) -> _FakeProcess:
+        state = json.loads((config.durable_root / runner.STATE_NAME).read_text(encoding="utf-8"))
+        seen.update(state)
+        return _FakeProcess(0)
+
+    runner.run_phase_b(
+        config,
+        execute_resolution=True,
+        fresh_human_authority_confirmed=True,
+        observations=_valid_observations(config),
+        popen_factory=fake_popen,
+    )
+    assert seen["attempt_boundary_crossed"] is True
+    assert seen["human_authority_consumed"] is True
+    assert seen["process_started"] is None
+    assert seen["process_exit_code"] is None
+    assert seen["package_resolution_process_invocations"] == 0
+    assert seen["expected_current_head"] == config.expected_current_head
+    assert seen["frozen_v10_design_git_sha"] == runner.FROZEN_V10_DESIGN_SHA
+    assert seen["extension_design_git_sha"] == config.expected_extension_design_sha
+    assert seen["reviewed_resolution_implementation_git_sha"] == config.expected_reviewed_runner_sha
+    assert seen["direct_spec_git_blob_sha1"] == config.expected_direct_spec_git_blob_sha1
+    assert seen["direct_spec_sha256"] == config.expected_direct_spec_sha256
+    assert seen["predecessor_lock_git_blob_sha1"] == PREDECESSOR_LOCK_BLOB_SHA1
+    assert seen["predecessor_lock_sha256"] == PREDECESSOR_LOCK_SHA256
+    assert seen["resolution_policy_id"] == runner.RESOLUTION_POLICY_ID
+    assert seen["package_index_id"] == runner.PACKAGE_INDEX_ID
+    assert set(seen) == runner.ATTEMPT_STATE_KEYS
+
+
+def test_phase_b_root_creation_failure_does_not_consume_authority(tmp_path: Path) -> None:
+    blocking_parent = tmp_path / "not-a-directory"
+    blocking_parent.write_text("block", encoding="utf-8")
+    config = _config(tmp_path, durable_root=blocking_parent / "attempt")
+    with pytest.raises(ContractValidationError, match="DURABLE_ATTEMPT_ROOT_CREATION_FAILURE"):
+        runner.run_phase_b(
+            config,
+            execute_resolution=True,
+            fresh_human_authority_confirmed=True,
+            observations=_valid_observations(config),
+        )
+    assert not (config.durable_root / runner.STATE_NAME).exists()
+
+
+class _InspectingWaitProcess:
+    def __init__(self, state_path: Path, *, fail: bool = False):
+        self.state_path = state_path
+        self.fail = fail
+
+    def wait(self) -> int:
+        state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        assert state["process_started"] is True
+        assert state["process_exit_code"] is None
+        assert state["package_resolution_process_invocations"] == 1
+        assert state["resolution_completed"] is False
+        if self.fail:
+            raise RuntimeError("synthetic wait failure")
+        return 0
+
+
+def test_phase_b_marks_started_before_wait_and_wait_failure_is_ambiguous_to_phase_c(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+
+    def fake_popen(*_args: object, **_kwargs: object) -> _InspectingWaitProcess:
+        return _InspectingWaitProcess(config.durable_root / runner.STATE_NAME, fail=True)
+
+    with pytest.raises(RuntimeError, match="synthetic wait failure"):
+        runner.run_phase_b(
+            config,
+            execute_resolution=True,
+            fresh_human_authority_confirmed=True,
+            observations=_valid_observations(config),
+            popen_factory=fake_popen,
+        )
+    state = json.loads((config.durable_root / runner.STATE_NAME).read_text(encoding="utf-8"))
+    assert state["process_started"] is True
+    assert state["process_exit_code"] is None
+    assert state["package_resolution_process_invocations"] == 1
+    with pytest.raises(ContractValidationError, match="ATTEMPT_STATE_AMBIGUOUS"):
+        runner.run_phase_c(config)
+    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
+    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
+
+
 def test_phase_b_collision_prevents_launch(tmp_path: Path) -> None:
     root = tmp_path / "collision"
     root.mkdir()
@@ -209,7 +358,7 @@ def test_phase_b_collision_prevents_launch(tmp_path: Path) -> None:
         runner.run_phase_b(
             config,
             execute_resolution=True,
-            authority_consumer=lambda: True,
+            fresh_human_authority_confirmed=True,
             observations=_valid_observations(config),
             popen_factory=fake_popen,
         )
@@ -228,7 +377,7 @@ def test_phase_b_failure_process_semantics(tmp_path: Path, exit_code: int | None
     result = runner.run_phase_b(
         config,
         execute_resolution=True,
-        authority_consumer=lambda: True,
+        fresh_human_authority_confirmed=True,
         observations=_valid_observations(config),
         popen_factory=fake_popen,
     )
@@ -278,7 +427,7 @@ def _run_successful_phase_b(tmp_path: Path) -> tuple[runner.PhaseAConfig, dict[s
     runner.run_phase_b(
         config,
         execute_resolution=True,
-        authority_consumer=lambda: True,
+        fresh_human_authority_confirmed=True,
         observations=_valid_observations(config),
         popen_factory=fake_popen,
     )
@@ -307,6 +456,51 @@ def test_phase_c_success_builds_and_validates_candidate_and_evidence(tmp_path: P
     assert "https://pypi.org/simple" not in evidence_path.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("expected_current_head", "d" * 40),
+        ("expected_reviewed_runner_sha", "e" * 40),
+        ("expected_extension_design_sha", "f" * 40),
+        ("expected_direct_spec_git_blob_sha1", "1" * 40),
+        ("expected_direct_spec_sha256", "2" * 64),
+    ],
+)
+def test_phase_c_rejects_changed_phase_b_provenance_before_artifacts(
+    tmp_path: Path, field: str, replacement: str
+) -> None:
+    config, _ = _run_successful_phase_b(tmp_path)
+    changed = replace(config, **{field: replacement})
+    with pytest.raises(ContractValidationError, match="ATTEMPT_STATE_PROVENANCE_MISMATCH"):
+        runner.run_phase_c(changed)
+    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
+    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
+
+
+def test_phase_c_rejects_changed_predecessor_binding_before_artifacts(tmp_path: Path) -> None:
+    config, _ = _run_successful_phase_b(tmp_path)
+    state_path = config.durable_root / runner.STATE_NAME
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["predecessor_lock_sha256"] = "3" * 64
+    state_path.write_bytes(runner.canonical_json_bytes(state))
+    with pytest.raises(ContractValidationError, match="ATTEMPT_STATE_PROVENANCE_MISMATCH"):
+        runner.run_phase_c(config)
+    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
+    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
+
+
+def test_phase_c_rejects_extra_or_missing_attempt_state_key_before_artifacts(tmp_path: Path) -> None:
+    config, _ = _run_successful_phase_b(tmp_path)
+    state_path = config.durable_root / runner.STATE_NAME
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["unexpected"] = True
+    state_path.write_bytes(runner.canonical_json_bytes(state))
+    with pytest.raises(ContractValidationError, match="ATTEMPT_STATE_SCHEMA_INVALID"):
+        runner.run_phase_c(config)
+    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
+    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
+
+
 def test_phase_c_launch_failure_writes_fail_evidence_without_candidate(tmp_path: Path) -> None:
     config = _config(tmp_path)
 
@@ -316,7 +510,7 @@ def test_phase_c_launch_failure_writes_fail_evidence_without_candidate(tmp_path:
     runner.run_phase_b(
         config,
         execute_resolution=True,
-        authority_consumer=lambda: True,
+        fresh_human_authority_confirmed=True,
         observations=_valid_observations(config),
         popen_factory=fake_popen,
     )
