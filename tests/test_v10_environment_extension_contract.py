@@ -246,6 +246,9 @@ def _validate_resolution(evidence: dict) -> None:
         evidence,
         expected_extension_design_sha=EXTENSION_SHA,
         expected_reviewed_resolution_implementation_sha=IMPLEMENTATION_SHA,
+        expected_direct_spec_git_blob_sha1=DIRECT_BLOB_SHA,
+        expected_direct_spec_sha256=DIRECT_SHA256,
+        expected_successor_lock_candidate_sha256=CANDIDATE_SHA256,
     )
 
 
@@ -283,6 +286,105 @@ def test_resolution_process_start_semantics() -> None:
         resolved_package_count=None,
     )
     _validate_resolution(nonzero)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("package_installations", 1),
+    ("alternate_venv_created", True),
+    ("calendar_imports", 1),
+    ("calendar_dates_inspected", 1),
+])
+def test_resolution_pass_rejects_forbidden_operations(field: str, value: object) -> None:
+    evidence = _resolution_evidence()
+    evidence[field] = value
+    with pytest.raises(ContractValidationError):
+        _validate_resolution(evidence)
+
+
+def test_resolution_unauthorized_installation_precedence() -> None:
+    evidence = _resolution_evidence()
+    evidence.update(
+        status="FAIL",
+        failure_code="UNAUTHORIZED_INSTALLATION",
+        package_installations=1,
+        resolution_completed=False,
+        candidate_artifact_created=False,
+        successor_lock_candidate_sha256=None,
+        resolved_package_count=None,
+    )
+    _validate_resolution(evidence)
+
+    invalid = copy.deepcopy(evidence)
+    invalid["package_installations"] = 0
+    with pytest.raises(ContractValidationError):
+        _validate_resolution(invalid)
+
+    both = copy.deepcopy(evidence)
+    both["alternate_venv_created"] = True
+    _validate_resolution(both)
+
+
+def test_resolution_unauthorized_alternate_environment_precedence() -> None:
+    evidence = _resolution_evidence()
+    evidence.update(
+        status="FAIL",
+        failure_code="UNAUTHORIZED_ALTERNATE_ENVIRONMENT",
+        alternate_venv_created=True,
+        resolution_completed=False,
+        candidate_artifact_created=False,
+        successor_lock_candidate_sha256=None,
+        resolved_package_count=None,
+    )
+    _validate_resolution(evidence)
+
+    invalid = copy.deepcopy(evidence)
+    invalid["alternate_venv_created"] = False
+    with pytest.raises(ContractValidationError):
+        _validate_resolution(invalid)
+
+
+@pytest.mark.parametrize("field", [
+    "predecessor_lock_git_blob_sha1",
+    "predecessor_lock_sha256",
+])
+def test_resolution_requires_exact_predecessor_provenance(field: str) -> None:
+    evidence = _resolution_evidence()
+    evidence[field] = "0" * (40 if field.endswith("sha1") else 64)
+    with pytest.raises(ContractValidationError):
+        _validate_resolution(evidence)
+
+
+@pytest.mark.parametrize("argument,wrong", [
+    ("expected_direct_spec_git_blob_sha1", "0" * 40),
+    ("expected_direct_spec_sha256", "0" * 64),
+    ("expected_extension_design_sha", "0" * 40),
+    ("expected_reviewed_resolution_implementation_sha", "0" * 40),
+])
+def test_resolution_requires_caller_bound_provenance(argument: str, wrong: str) -> None:
+    evidence = _resolution_evidence()
+    kwargs = {
+        "expected_extension_design_sha": EXTENSION_SHA,
+        "expected_reviewed_resolution_implementation_sha": IMPLEMENTATION_SHA,
+        "expected_direct_spec_git_blob_sha1": DIRECT_BLOB_SHA,
+        "expected_direct_spec_sha256": DIRECT_SHA256,
+        "expected_successor_lock_candidate_sha256": CANDIDATE_SHA256,
+    }
+    kwargs[argument] = wrong
+    with pytest.raises(ContractValidationError):
+        validate_resolution_evidence(evidence, **kwargs)
+
+
+def test_resolution_pass_requires_caller_bound_candidate_sha() -> None:
+    evidence = _resolution_evidence()
+    with pytest.raises(ContractValidationError):
+        validate_resolution_evidence(
+            evidence,
+            expected_extension_design_sha=EXTENSION_SHA,
+            expected_reviewed_resolution_implementation_sha=IMPLEMENTATION_SHA,
+            expected_direct_spec_git_blob_sha1=DIRECT_BLOB_SHA,
+            expected_direct_spec_sha256=DIRECT_SHA256,
+            expected_successor_lock_candidate_sha256="0" * 64,
+        )
 
 
 def _receipt(status: str, failure: str, integrity: bool | None, delta_count: int | None) -> dict:

@@ -269,19 +269,33 @@ def _validate_common_sha_fields(value: Mapping[str, Any], expected: Mapping[str,
 def validate_resolution_evidence(
     evidence: Mapping[str, Any],
     *,
-    expected_extension_design_sha: str | None = None,
-    expected_reviewed_resolution_implementation_sha: str | None = None,
+    expected_extension_design_sha: str,
+    expected_reviewed_resolution_implementation_sha: str,
+    expected_direct_spec_git_blob_sha1: str,
+    expected_direct_spec_sha256: str,
+    expected_successor_lock_candidate_sha256: str | None,
 ) -> None:
     _exact_keys(evidence, RESOLUTION_EVIDENCE_KEYS, "resolution evidence")
     _require(evidence["schema_version"] == "V10_CANONICAL_ENVIRONMENT_SUCCESSOR_WINDOWS_RESOLUTION_EVIDENCE_V1", "resolution schema")
     _require(evidence["artifact_status"] == "WINDOWS_RESOLUTION_EVIDENCE", "resolution artifact status")
     _require(evidence["status"] in {"PASS", "FAIL"}, "resolution status")
     _require(evidence["failure_code"] in RESOLUTION_FAILURES, "resolution failure code")
-    expected = {"frozen_v10_design_git_sha": FROZEN_V10_DESIGN_SHA}
-    if expected_extension_design_sha is not None:
-        expected["extension_design_git_sha"] = expected_extension_design_sha
-    if expected_reviewed_resolution_implementation_sha is not None:
-        expected["reviewed_resolution_implementation_git_sha"] = expected_reviewed_resolution_implementation_sha
+    for value, pattern, label in (
+        (expected_extension_design_sha, SHA1_RE, "expected extension design SHA"),
+        (expected_reviewed_resolution_implementation_sha, SHA1_RE, "expected resolution implementation SHA"),
+        (expected_direct_spec_git_blob_sha1, SHA1_RE, "expected direct spec blob SHA"),
+        (expected_direct_spec_sha256, SHA256_RE, "expected direct spec SHA"),
+    ):
+        _sha(value, pattern, label)
+    expected = {
+        "frozen_v10_design_git_sha": FROZEN_V10_DESIGN_SHA,
+        "extension_design_git_sha": expected_extension_design_sha,
+        "reviewed_resolution_implementation_git_sha": expected_reviewed_resolution_implementation_sha,
+        "direct_spec_git_blob_sha1": expected_direct_spec_git_blob_sha1,
+        "direct_spec_sha256": expected_direct_spec_sha256,
+        "predecessor_lock_git_blob_sha1": PREDECESSOR_LOCK_BLOB_SHA1,
+        "predecessor_lock_sha256": PREDECESSOR_LOCK_SHA256,
+    }
     _validate_common_sha_fields(evidence, expected)
     _require(evidence["resolution_policy_id"] == "PIP_25_0_1_WINDOWS_WHEEL_DOWNLOAD_V1", "resolution policy")
     _require(evidence["package_index_id"] == "PYPI_OFFICIAL_SIMPLE", "package index")
@@ -299,12 +313,41 @@ def validate_resolution_evidence(
     _require(invocations in {0, 1}, "invocation count")
     candidate_sha = evidence["successor_lock_candidate_sha256"]
     package_count = evidence["resolved_package_count"]
+    installations = _strict_int(evidence["package_installations"], "package installations")
+    alternate_venv_created = evidence["alternate_venv_created"]
+
+    # The frozen precedence records unauthorized operations before any
+    # resolver/process or Phase-C failure classification.
+    if installations > 0:
+        _require(evidence["status"] == "FAIL", "unauthorized installation must be FAIL")
+        _require(evidence["failure_code"] == "UNAUTHORIZED_INSTALLATION", "installation precedence")
+        _require(not evidence["candidate_artifact_created"], "unauthorized installation candidate")
+        _require(candidate_sha is None and package_count is None, "unauthorized installation candidate fields")
+        return
+    _require(evidence["failure_code"] != "UNAUTHORIZED_INSTALLATION", "installation failure requires installation")
+    if alternate_venv_created:
+        _require(evidence["status"] == "FAIL", "unauthorized alternate environment must be FAIL")
+        _require(evidence["failure_code"] == "UNAUTHORIZED_ALTERNATE_ENVIRONMENT", "alternate environment precedence")
+        _require(not evidence["candidate_artifact_created"], "unauthorized alternate environment candidate")
+        _require(candidate_sha is None and package_count is None, "unauthorized alternate environment candidate fields")
+        return
+    _require(
+        evidence["failure_code"] != "UNAUTHORIZED_ALTERNATE_ENVIRONMENT",
+        "alternate environment failure requires alternate environment",
+    )
     if evidence["status"] == "PASS":
         _require(process_started and exit_code == 0, "PASS requires started zero-exit process")
         _require(evidence["failure_code"] == "NONE", "PASS failure code")
         _require(invocations == 1 and evidence["human_authority_consumed"], "PASS attempt semantics")
         _require(evidence["resolution_completed"] and evidence["candidate_artifact_created"], "PASS completion")
+        _require(installations == 0, "PASS package installations")
+        _require(not alternate_venv_created, "PASS alternate environment")
+        _require(evidence["calendar_imports"] == 0, "PASS calendar imports")
+        _require(evidence["calendar_dates_inspected"] == 0, "PASS calendar dates inspected")
         _sha(candidate_sha, SHA256_RE, "candidate SHA")
+        _require(expected_successor_lock_candidate_sha256 is not None, "PASS expected candidate SHA")
+        _sha(expected_successor_lock_candidate_sha256, SHA256_RE, "expected candidate SHA")
+        _require(candidate_sha == expected_successor_lock_candidate_sha256, "unexpected candidate SHA")
         _require(_strict_int(package_count, "package count") > 15, "PASS package count")
     elif not process_started:
         _require(evidence["failure_code"] == "RESOLUTION_PROCESS_FAILURE", "launch failure code")
