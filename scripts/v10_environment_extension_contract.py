@@ -436,13 +436,15 @@ def inspect_wheel_file(wheel_path: str | Path) -> dict[str, str]:
 def verify_reviewed_wheelhouse(
     wheelhouse: str | Path,
     resolved_wheels: Sequence[Mapping[str, Any]],
-    delta_packages: Sequence[Mapping[str, Any]],
+    successor_packages: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     try:
+        package_sets = derive_package_sets(list(successor_packages))
+        successor = package_sets["successor"]
+        delta = package_sets["delta"]
         expected = _validate_wheel_manifest(list(resolved_wheels))
-        delta = _validate_package_array(list(delta_packages), "delta packages")
-        expected_names = {item["name"] for item in expected}
-        _require(set(name for name, _ in delta).issubset(expected_names), "delta wheel package missing")
+        wheel_pairs = tuple((item["name"], item["version"]) for item in expected)
+        _require(wheel_pairs == successor, "wheel/package identity mismatch")
         root = Path(wheelhouse)
         _require(root.is_dir(), "wheelhouse missing")
         entries = list(root.iterdir())
@@ -455,25 +457,32 @@ def verify_reviewed_wheelhouse(
             actual = actual_by_casefold[item["filename"].casefold()]
             inspected = inspect_wheel_file(actual)
             _require(inspected == item, "wheelhouse wheel identity or hash mismatch")
-        paths = [actual_by_casefold[next(item["filename"].casefold() for item in expected if item["name"] == name)] for name, _ in delta]
+        paths: list[Path] = []
+        for pair in delta:
+            matches = [item for item in expected if (item["name"], item["version"]) == pair]
+            _require(len(matches) == 1, "delta wheel identity is not one-to-one")
+            paths.append(actual_by_casefold[matches[0]["filename"].casefold()])
+        _require(len(paths) == len(delta), "delta wheel count mismatch")
+        _require(
+            tuple((item["name"], item["version"]) for item in expected if (item["name"], item["version"]) in delta)
+            == delta,
+            "delta wheel ordering mismatch",
+        )
         return {
             "ok": True,
             "failure_code": "NONE",
             "wheelhouse_integrity_verified": True,
             "delta_wheel_count": len(paths),
+            "delta_packages": delta,
             "delta_wheel_paths": tuple(paths),
         }
-    except (OSError, ContractValidationError) as error:
-        delta_count: int | None = None
-        try:
-            delta_count = len(_validate_package_array(list(delta_packages), "delta packages"))
-        except ContractValidationError:
-            pass
+    except (OSError, ContractValidationError, TypeError, ValueError) as error:
         return {
             "ok": False,
             "failure_code": "REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE",
             "wheelhouse_integrity_verified": False,
-            "delta_wheel_count": delta_count,
+            "delta_wheel_count": None,
+            "delta_packages": None,
             "delta_wheel_paths": tuple(),
             "reason": str(error),
         }

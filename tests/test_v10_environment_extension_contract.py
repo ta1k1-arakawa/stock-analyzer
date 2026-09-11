@@ -174,41 +174,109 @@ def _write_wheel(root: Path, name: str, version: str) -> Path:
     return path
 
 
-def test_synthetic_wheel_inspection_and_integrity(tmp_path: Path) -> None:
-    wheel = _write_wheel(tmp_path, "demo-package", "1.0")
-    inspected = inspect_wheel_file(wheel)
-    result = verify_reviewed_wheelhouse(
-        tmp_path, [inspected], [{"name": "demo-package", "version": "1.0"}]
+def _successor_packages() -> list[dict[str, str]]:
+    packages = [{"name": name, "version": version} for name, version in PREDECESSOR_PACKAGE_SET]
+    packages.extend(
+        [
+            {"name": "exchange-calendars", "version": "5.0.0"},
+            {"name": "pandas-market-calendars", "version": "5.4.0"},
+        ]
     )
+    packages.sort(key=lambda item: item["name"])
+    return packages
+
+
+def _write_successor_wheelhouse(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    successor = _successor_packages()
+    manifest = []
+    for package in successor:
+        manifest.append(inspect_wheel_file(_write_wheel(root, package["name"], package["version"])))
+    return successor, manifest
+
+
+def test_synthetic_wheel_inspection_and_integrity(tmp_path: Path) -> None:
+    successor, manifest = _write_successor_wheelhouse(tmp_path)
+    result = verify_reviewed_wheelhouse(tmp_path, manifest, successor)
     assert result["ok"] is True
     assert result["wheelhouse_integrity_verified"] is True
-    assert result["delta_wheel_count"] == 1
-    assert result["delta_wheel_paths"] == (wheel,)
+    assert result["delta_packages"] == (
+        ("exchange-calendars", "5.0.0"),
+        ("pandas-market-calendars", "5.4.0"),
+    )
+    assert result["delta_wheel_count"] == len(result["delta_packages"])
+    assert [path.name for path in result["delta_wheel_paths"]] == [
+        "exchange_calendars-5.0.0-py3-none-any.whl",
+        "pandas_market_calendars-5.4.0-py3-none-any.whl",
+    ]
+    argv = build_exact_delta_install_argv(
+        r"C:\venv\Scripts\python.exe", result["delta_wheel_paths"]
+    )
+    assert argv[-2:] == [str(path) for path in result["delta_wheel_paths"]]
 
+    wheel = tmp_path / "exchange_calendars-5.0.0-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "a") as archive:
         archive.writestr("tamper.txt", "changed bytes")
-    tampered = verify_reviewed_wheelhouse(
-        tmp_path, [inspected], [{"name": "demo-package", "version": "1.0"}]
-    )
+    tampered = verify_reviewed_wheelhouse(tmp_path, manifest, successor)
     assert tampered["ok"] is False
     assert tampered["failure_code"] == "REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE"
     assert tampered["wheelhouse_integrity_verified"] is False
+    assert tampered["delta_wheel_paths"] == ()
 
 
 def test_wheelhouse_missing_and_extra_files_fail(tmp_path: Path) -> None:
-    wheel = _write_wheel(tmp_path, "demo-package", "1.0")
-    manifest = [inspect_wheel_file(wheel)]
+    successor, manifest = _write_successor_wheelhouse(tmp_path)
+    wheel = tmp_path / "exchange_calendars-5.0.0-py3-none-any.whl"
     wheel.unlink()
-    missing = verify_reviewed_wheelhouse(
-        tmp_path, manifest, [{"name": "demo-package", "version": "1.0"}]
-    )
+    missing = verify_reviewed_wheelhouse(tmp_path, manifest, successor)
     assert missing["wheelhouse_integrity_verified"] is False
-    _write_wheel(tmp_path, "demo-package", "1.0")
+    _write_wheel(tmp_path, "exchange-calendars", "5.0.0")
     _write_wheel(tmp_path, "extra-package", "1.0")
-    extra = verify_reviewed_wheelhouse(
-        tmp_path, manifest, [{"name": "demo-package", "version": "1.0"}]
-    )
+    extra = verify_reviewed_wheelhouse(tmp_path, manifest, successor)
     assert extra["failure_code"] == "REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE"
+
+
+def test_wheelhouse_delta_is_derived_and_legacy_subset_is_not_accepted(tmp_path: Path) -> None:
+    successor, manifest = _write_successor_wheelhouse(tmp_path)
+    with pytest.raises(TypeError):
+        verify_reviewed_wheelhouse(tmp_path, manifest, successor, successor[:1])
+    result = verify_reviewed_wheelhouse(tmp_path, manifest, successor)
+    assert result["delta_packages"] == (
+        ("exchange-calendars", "5.0.0"),
+        ("pandas-market-calendars", "5.4.0"),
+    )
+    assert all(name not in {item[0] for item in PREDECESSOR_PACKAGE_SET} for name, _ in result["delta_packages"])
+
+
+@pytest.mark.parametrize("mutation", [
+    "wrong_delta_version",
+    "missing_delta_wheel",
+    "wheel_not_in_successor",
+    "successor_version_mismatch",
+    "predecessor_as_delta",
+])
+def test_wheelhouse_exact_successor_delta_binding_rejection(tmp_path: Path, mutation: str) -> None:
+    successor, manifest = _write_successor_wheelhouse(tmp_path)
+    if mutation == "wrong_delta_version":
+        successor[-1] = {**successor[-1], "version": "99.0.0"}
+    elif mutation == "missing_delta_wheel":
+        manifest.pop()
+    elif mutation == "wheel_not_in_successor":
+        manifest[-1] = {
+            **manifest[-1],
+            "name": "unreviewed-package",
+            "version": "1.0.0",
+            "filename": "unreviewed_package-1.0.0-py3-none-any.whl",
+        }
+    elif mutation == "successor_version_mismatch":
+        manifest[-1] = {**manifest[-1], "version": "5.4.1"}
+    else:
+        successor.append({"name": "cffi", "version": "2.1.1"})
+    result = verify_reviewed_wheelhouse(tmp_path, manifest, successor)
+    assert result["ok"] is False
+    assert result["failure_code"] == "REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE"
+    assert result["delta_wheel_paths"] == ()
+    assert result["delta_packages"] is None
+    assert result["delta_wheel_count"] is None
 
 
 def _resolution_evidence() -> dict:
