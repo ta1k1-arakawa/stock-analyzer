@@ -440,8 +440,18 @@ def verify_reviewed_wheelhouse(
 ) -> dict[str, Any]:
     try:
         package_sets = derive_package_sets(list(successor_packages))
+    except (ContractValidationError, TypeError, ValueError) as error:
+        # No wheelhouse observation occurred if the successor/delta authority
+        # could not be established.  Let the enclosing preflight classify the
+        # earlier prerequisite failure rather than mislabeling it as a
+        # checked-and-failed wheelhouse.
+        if isinstance(error, ContractValidationError):
+            raise
+        raise ContractValidationError("invalid successor package set") from error
+
+    delta = package_sets["delta"]
+    try:
         successor = package_sets["successor"]
-        delta = package_sets["delta"]
         expected = _validate_wheel_manifest(list(resolved_wheels))
         wheel_pairs = tuple((item["name"], item["version"]) for item in expected)
         _require(wheel_pairs == successor, "wheel/package identity mismatch")
@@ -481,8 +491,8 @@ def verify_reviewed_wheelhouse(
             "ok": False,
             "failure_code": "REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE",
             "wheelhouse_integrity_verified": False,
-            "delta_wheel_count": None,
-            "delta_packages": None,
+            "delta_wheel_count": len(delta),
+            "delta_packages": delta,
             "delta_wheel_paths": tuple(),
             "reason": str(error),
         }
