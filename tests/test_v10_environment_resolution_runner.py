@@ -565,6 +565,62 @@ def test_phase_c_invalid_wheelhouse_fails_without_candidate(tmp_path: Path, muta
     assert evidence["candidate_artifact_created"] is False
 
 
+def _apply_compound_failure(wheelhouse: Path, case: str) -> None:
+    source = wheelhouse / "source-package-1.0.0.tar.gz"
+    if case in {"malformed_plus_source", "malformed_missing_source", "wrong_pmc_plus_source"}:
+        if case == "wrong_pmc_plus_source":
+            (wheelhouse / "pandas_market_calendars-5.4.0-py3-none-any.whl").unlink()
+            _write_wheel(wheelhouse, "pandas-market-calendars", "9.9.9")
+        else:
+            (wheelhouse / "exchange_calendars-5.0.0-py3-none-any.whl").write_bytes(b"malformed")
+        if case == "malformed_missing_source":
+            (wheelhouse / "pandas_market_calendars-5.4.0-py3-none-any.whl").unlink()
+        source.write_bytes(b"source")
+    elif case in {"drift_plus_source", "drift_missing_required_plus_source"}:
+        (wheelhouse / "cffi-2.1.1-py3-none-any.whl").unlink()
+        if case == "drift_missing_required_plus_source":
+            (wheelhouse / "pandas_market_calendars-5.4.0-py3-none-any.whl").unlink()
+        source.write_bytes(b"source")
+    elif case == "missing_pmc_plus_source":
+        (wheelhouse / "pandas_market_calendars-5.4.0-py3-none-any.whl").unlink()
+        source.write_bytes(b"source")
+    elif case == "missing_exchange_plus_source":
+        (wheelhouse / "exchange_calendars-5.0.0-py3-none-any.whl").unlink()
+        source.write_bytes(b"source")
+    elif case == "valid_plus_source":
+        source.write_bytes(b"source")
+    else:
+        raise AssertionError(f"unknown compound case: {case}")
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_failure"),
+    [
+        ("malformed_plus_source", "RESOLUTION_REPORT_INVALID"),
+        ("malformed_missing_source", "RESOLUTION_REPORT_INVALID"),
+        ("drift_plus_source", "PREDECESSOR_PIN_DRIFT"),
+        ("drift_missing_required_plus_source", "PREDECESSOR_PIN_DRIFT"),
+        ("missing_pmc_plus_source", "REQUIRED_DISTRIBUTION_MISSING"),
+        ("missing_exchange_plus_source", "REQUIRED_DISTRIBUTION_MISSING"),
+        ("valid_plus_source", "SOURCE_DISTRIBUTION_REQUIRED"),
+        ("wrong_pmc_plus_source", "RESOLUTION_REPORT_INVALID"),
+    ],
+)
+def test_phase_c_compound_wheelhouse_failures_use_frozen_precedence(
+    tmp_path: Path, case: str, expected_failure: str
+) -> None:
+    config, _ = _run_successful_phase_b(tmp_path)
+    _apply_compound_failure(config.durable_root / runner.WHEELHOUSE_NAME, case)
+    result = runner.run_phase_c(config)
+    assert result["failure_code"] == expected_failure
+    assert result["candidate_artifact_created"] is False
+    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
+    evidence = json.loads((config.durable_root / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
+    assert evidence["status"] == "FAIL"
+    assert evidence["failure_code"] == expected_failure
+    assert evidence["candidate_artifact_created"] is False
+
+
 def test_phase_c_predecessor_drift_is_not_success(tmp_path: Path) -> None:
     config, _ = _run_successful_phase_b(tmp_path)
     _write_wheel(config.durable_root / runner.WHEELHOUSE_NAME, "cffi", "99.0.0")

@@ -785,21 +785,9 @@ def _validate_and_write_evidence(config: PhaseAConfig, evidence: Mapping[str, An
     _atomic_create_no_overwrite(destination, canonical_json_bytes(evidence))
 
 
-def _phase_c_failure_code(wheelhouse: Path) -> str:
-    try:
-        entries = list(wheelhouse.iterdir())
-    except OSError:
-        return "REQUIRED_DISTRIBUTION_MISSING"
-    if not entries:
-        return "REQUIRED_DISTRIBUTION_MISSING"
-    if any(not entry.is_file() for entry in entries):
-        return "RESOLUTION_REPORT_INVALID"
-    if any(not entry.name.lower().endswith(".whl") for entry in entries):
-        return "SOURCE_DISTRIBUTION_REQUIRED"
-    return "RESOLUTION_REPORT_INVALID"
-
-
 def _inspect_phase_c_wheelhouse(wheelhouse: Path) -> tuple[str | None, list[dict[str, str]] | None]:
+    """Classify one wheelhouse using the frozen Phase-C precedence order."""
+
     try:
         entries = list(wheelhouse.iterdir())
     except OSError:
@@ -808,10 +796,10 @@ def _inspect_phase_c_wheelhouse(wheelhouse: Path) -> tuple[str | None, list[dict
         return "REQUIRED_DISTRIBUTION_MISSING", None
     if any(not entry.is_file() for entry in entries):
         return "RESOLUTION_REPORT_INVALID", None
-    if any(not entry.name.lower().endswith(".whl") for entry in entries):
-        return "SOURCE_DISTRIBUTION_REQUIRED", None
+    source_present = any(not entry.name.lower().endswith(".whl") for entry in entries)
+    wheel_entries = [entry for entry in entries if entry.name.lower().endswith(".whl")]
     try:
-        wheels = [inspect_wheel_file(entry) for entry in entries]
+        wheels = [inspect_wheel_file(entry) for entry in wheel_entries]
         wheels.sort(key=lambda item: item["name"])
         manifest = list(_validate_wheel_manifest(wheels))
     except (OSError, ContractValidationError, ValueError):
@@ -828,6 +816,8 @@ def _inspect_phase_c_wheelhouse(wheelhouse: Path) -> tuple[str | None, list[dict
         return "REQUIRED_DISTRIBUTION_MISSING", manifest
     if package_map["pandas-market-calendars"] != "5.4.0":
         return "RESOLUTION_REPORT_INVALID", manifest
+    if source_present:
+        return "SOURCE_DISTRIBUTION_REQUIRED", manifest
     return None, manifest
 
 
@@ -863,7 +853,7 @@ def run_phase_c(
 
     failure_code, manifest = _inspect_phase_c_wheelhouse(root / WHEELHOUSE_NAME)
     if failure_code is not None or manifest is None:
-        evidence = _base_resolution_evidence(config=config, status="FAIL", failure_code=failure_code or _phase_c_failure_code(root / WHEELHOUSE_NAME), process_started=True, process_exit_code=0, resolution_completed=False, candidate_artifact_created=False, candidate_sha=None, package_count=None, invocations=1)
+        evidence = _base_resolution_evidence(config=config, status="FAIL", failure_code=failure_code or "RESOLUTION_REPORT_INVALID", process_started=True, process_exit_code=0, resolution_completed=False, candidate_artifact_created=False, candidate_sha=None, package_count=None, invocations=1)
         _validate_and_write_evidence(config, evidence, root / EVIDENCE_NAME)
         return {"status": "FAIL", "failure_code": evidence["failure_code"], "candidate_artifact_created": False}
 
