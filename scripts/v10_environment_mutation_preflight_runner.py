@@ -101,6 +101,8 @@ EXPECTED_GENERIC_AUTHORITY_TRANSITION_REVIEW_SHA = "d0e0ee33bd18580e2932f405c288
 EXPECTED_REVIEWED_RESOLUTION_IMPLEMENTATION_SHA = "1b9de998a4ef1757aca2f73b8993fb22b4d697c8"
 EXPECTED_DIRECT_SPEC_BLOB_SHA1 = "8dbd6f599c61032d5fb6235bd06db3307420ab24"
 EXPECTED_DIRECT_SPEC_SHA256 = "80c553ad35db95c41b2c8809b946b6f4095411ce761436cd082af5a74a1a3f08"
+CURRENT_HEAD_CANDIDATE_GIT_BLOB_SHA1 = REVIEWED_SUCCESSOR_CANDIDATE_GIT_BLOB_SHA1
+CURRENT_HEAD_EVIDENCE_GIT_BLOB_SHA1 = REVIEWED_RESOLUTION_EVIDENCE_GIT_BLOB_SHA1
 EXPECTED_DELTA_PACKAGES = (
     ("exchange-calendars", "4.13.2"),
     ("korean-lunar-calendar", "0.4.0"),
@@ -330,6 +332,10 @@ def _validate_provenance(config: PreflightConfig, obs: Mapping[str, Any]) -> dic
     if obs.get("candidate_git_blob_sha1") != config.expected_candidate_blob_sha1:
         return None
     if obs.get("evidence_git_blob_sha1") != config.expected_evidence_blob_sha1:
+        return None
+    if obs.get("current_head_candidate_git_blob_sha1") != CURRENT_HEAD_CANDIDATE_GIT_BLOB_SHA1:
+        return None
+    if obs.get("current_head_evidence_git_blob_sha1") != CURRENT_HEAD_EVIDENCE_GIT_BLOB_SHA1:
         return None
     if obs.get("migration_authority_git_blob_sha1") != config.expected_migration_authority_blob_sha1:
         return None
@@ -632,6 +638,8 @@ def _default_provenance_observations(config: PreflightConfig) -> dict[str, Any]:
             current_runner_blob_sha1=_run_git(config.repo_root, ["hash-object", "--", str(config.repo_root / RUNNER_RELATIVE)]).decode().strip(),
             candidate_git_blob_sha1=_run_git(config.repo_root, ["rev-parse", f"{config.expected_candidate_commit_sha}:{CANDIDATE_RELATIVE.as_posix()}"]).decode().strip(),
             evidence_git_blob_sha1=_run_git(config.repo_root, ["rev-parse", f"{config.expected_evidence_commit_sha}:{EVIDENCE_RELATIVE.as_posix()}"]).decode().strip(),
+            current_head_candidate_git_blob_sha1=_run_git(config.repo_root, ["rev-parse", f"HEAD:{CANDIDATE_RELATIVE.as_posix()}"]).decode().strip(),
+            current_head_evidence_git_blob_sha1=_run_git(config.repo_root, ["rev-parse", f"HEAD:{EVIDENCE_RELATIVE.as_posix()}"]).decode().strip(),
             migration_authority_git_blob_sha1=_run_git(config.repo_root, ["rev-parse", f"HEAD:{MIGRATION_AUTHORITY_RELATIVE.as_posix()}"]).decode().strip(),
             candidate_bytes=_git_show(config.repo_root, config.expected_candidate_commit_sha, CANDIDATE_RELATIVE),
             evidence_bytes=_git_show(config.repo_root, config.expected_evidence_commit_sha, EVIDENCE_RELATIVE),

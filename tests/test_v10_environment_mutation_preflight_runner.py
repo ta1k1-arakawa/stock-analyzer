@@ -142,6 +142,8 @@ def _fixture(tmp_path: Path) -> tuple[runner.PreflightConfig, dict[str, object],
         "current_runner_blob_sha1": REVIEWED_RUNNER_BLOB,
         "candidate_git_blob_sha1": config.expected_candidate_blob_sha1,
         "evidence_git_blob_sha1": config.expected_evidence_blob_sha1,
+        "current_head_candidate_git_blob_sha1": runner.CURRENT_HEAD_CANDIDATE_GIT_BLOB_SHA1,
+        "current_head_evidence_git_blob_sha1": runner.CURRENT_HEAD_EVIDENCE_GIT_BLOB_SHA1,
         "migration_authority_git_blob_sha1": config.expected_migration_authority_blob_sha1,
         "candidate_bytes": candidate_bytes,
         "evidence_bytes": evidence_bytes,
@@ -525,6 +527,114 @@ def test_default_valid_provenance_reaches_only_expected_predecessor_probe(
     result = runner.run_preflight(config)
     assert result["receipt"]["status"] == "PASS"
     assert launch_count == 1
+
+
+@pytest.mark.parametrize("current_field", [
+    "current_head_candidate_git_blob_sha1",
+    "current_head_evidence_git_blob_sha1",
+])
+def test_exact_current_head_artifact_blob_binding_allows_provenance_to_proceed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    current_field: str,
+) -> None:
+    config, observations, _ = _fixture(tmp_path)
+    predecessor_keys = {
+        "interpreter_executable",
+        "python_implementation",
+        "python_version",
+        "platform_system",
+        "platform_machine",
+        "sysconfig_platform",
+        "pip_version",
+        "live_packages",
+        "predecessor_lock_git_blob_sha1",
+        "predecessor_lock_sha256",
+        "predecessor_lock_package_count",
+    }
+    monkeypatch.setattr(runner, "_default_provenance_observations", lambda _config: copy.deepcopy(observations))
+    monkeypatch.setattr(
+        runner,
+        "_default_predecessor_observations",
+        lambda _config: {key: observations[key] for key in predecessor_keys},
+    )
+    result = runner.run_preflight(config)
+    assert result["receipt"]["failure_code"] != "PROVENANCE_BINDING_FAILURE"
+    assert observations[current_field] == (
+        runner.CURRENT_HEAD_CANDIDATE_GIT_BLOB_SHA1
+        if "candidate" in current_field
+        else runner.CURRENT_HEAD_EVIDENCE_GIT_BLOB_SHA1
+    )
+
+
+@pytest.mark.parametrize("current_field", [
+    "current_head_candidate_git_blob_sha1",
+    "current_head_evidence_git_blob_sha1",
+])
+@pytest.mark.parametrize("mutation", ["wrong", "missing"])
+def test_current_head_artifact_drift_fails_before_canonical_process_or_wheelhouse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    current_field: str,
+    mutation: str,
+) -> None:
+    config, observations, _ = _fixture(tmp_path)
+    bad = copy.deepcopy(observations)
+    if mutation == "wrong":
+        bad[current_field] = "0" * 40
+    else:
+        del bad[current_field]
+    process_count = 0
+    wheelhouse_count = 0
+    monkeypatch.setattr(runner, "_default_provenance_observations", lambda _config: bad)
+
+    def probe(_config: runner.PreflightConfig) -> dict[str, object]:
+        nonlocal process_count
+        process_count += 1
+        raise AssertionError("canonical process must not launch after current-artifact drift")
+
+    def inspect_wheelhouse(*_args: object, **_kwargs: object) -> object:
+        nonlocal wheelhouse_count
+        wheelhouse_count += 1
+        raise AssertionError("wheelhouse must not be inspected after current-artifact drift")
+
+    monkeypatch.setattr(runner, "_probe_canonical_environment", probe)
+    monkeypatch.setattr(runner, "verify_reviewed_wheelhouse", inspect_wheelhouse)
+    result = runner.run_preflight(config)
+    assert result["receipt"]["failure_code"] == "PROVENANCE_BINDING_FAILURE"
+    assert process_count == 0
+    assert wheelhouse_count == 0
+
+
+def test_current_head_artifact_drift_fails_even_when_historical_bindings_remain_exact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, observations, _ = _fixture(tmp_path)
+    bad = copy.deepcopy(observations)
+    bad["current_head_candidate_git_blob_sha1"] = "0" * 40
+    assert bad["candidate_git_blob_sha1"] == config.expected_candidate_blob_sha1
+    assert bad["evidence_git_blob_sha1"] == config.expected_evidence_blob_sha1
+    process_count = 0
+    wheelhouse_count = 0
+    monkeypatch.setattr(runner, "_default_provenance_observations", lambda _config: bad)
+
+    def probe(_config: runner.PreflightConfig) -> dict[str, object]:
+        nonlocal process_count
+        process_count += 1
+        raise AssertionError("canonical process must not launch after current-artifact drift")
+
+    def inspect_wheelhouse(*_args: object, **_kwargs: object) -> object:
+        nonlocal wheelhouse_count
+        wheelhouse_count += 1
+        raise AssertionError("wheelhouse must not be inspected after current-artifact drift")
+
+    monkeypatch.setattr(runner, "_probe_canonical_environment", probe)
+    monkeypatch.setattr(runner, "verify_reviewed_wheelhouse", inspect_wheelhouse)
+    result = runner.run_preflight(config)
+    assert result["receipt"]["failure_code"] == "PROVENANCE_BINDING_FAILURE"
+    assert process_count == 0
+    assert wheelhouse_count == 0
 
 
 @pytest.mark.parametrize("stage", ["provenance", "predecessor", "successor"])
