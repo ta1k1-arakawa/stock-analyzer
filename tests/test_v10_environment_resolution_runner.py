@@ -30,11 +30,21 @@ def _git_blob_sha1(raw: bytes) -> str:
     return hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
 
 
+def _frozen_predecessor_lock_bytes() -> bytes:
+    raw = "".join(
+        f"{name}=={version}\n"
+        for name, version in PREDECESSOR_PACKAGE_SET
+    ).encode("utf-8")
+    assert hashlib.sha256(raw).hexdigest() == PREDECESSOR_LOCK_SHA256
+    assert _git_blob_sha1(raw) == PREDECESSOR_LOCK_BLOB_SHA1
+    return raw
+
+
 def _config(tmp_path: Path, *, durable_root: Path | None = None) -> runner.PhaseAConfig:
     repo = tmp_path / "repo"
     repo.mkdir(exist_ok=True)
     direct = runner.DIRECT_SPEC_BYTES
-    lock = (Path(__file__).parents[1] / runner.LOCK_RELATIVE).read_bytes().replace(b"\r\n", b"\n")
+    lock = _frozen_predecessor_lock_bytes()
     return runner.PhaseAConfig(
         repo_root=repo,
         expected_current_head="c" * 40,
@@ -48,7 +58,7 @@ def _config(tmp_path: Path, *, durable_root: Path | None = None) -> runner.Phase
 
 
 def _valid_observations(config: runner.PhaseAConfig) -> dict[str, object]:
-    lock = (Path(__file__).parents[1] / runner.LOCK_RELATIVE).read_bytes().replace(b"\r\n", b"\n")
+    lock = _frozen_predecessor_lock_bytes()
     return {
         "repository_identity": "https://github.com/ta1k1-arakawa/stock-analyzer.git",
         "branch": runner.AUTHORITATIVE_BRANCH,
@@ -116,6 +126,46 @@ def test_direct_spec_git_attributes_bind_lf_and_worktree_bytes() -> None:
     ).stdout
     assert worktree == committed == runner.DIRECT_SPEC_BYTES
     assert hashlib.sha256(worktree).hexdigest() == runner.DIRECT_SPEC_SHA256
+
+
+def test_frozen_predecessor_fixture_is_independent_of_successor_lock() -> None:
+    raw = _frozen_predecessor_lock_bytes()
+    successor_lock = (Path(__file__).parents[1] / runner.LOCK_RELATIVE).read_bytes().replace(b"\r\n", b"\n")
+    assert len(raw.splitlines()) == 15
+    assert hashlib.sha256(raw).hexdigest() == PREDECESSOR_LOCK_SHA256
+    assert _git_blob_sha1(raw) == PREDECESSOR_LOCK_BLOB_SHA1
+    assert raw != successor_lock
+
+
+def test_successor_generic_lock_git_attributes_bind_lf_worktree_bytes() -> None:
+    repo_root = Path(__file__).parents[1]
+    relative = runner.LOCK_RELATIVE.as_posix()
+    attributes = subprocess.run(
+        ["git", "-C", str(repo_root), "check-attr", "text", "eol", "--", relative],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+        shell=False,
+    ).stdout.decode("utf-8").strip().splitlines()
+    assert attributes == [
+        f"{relative}: text: set",
+        f"{relative}: eol: lf",
+    ]
+
+    worktree = (repo_root / runner.LOCK_RELATIVE).read_bytes()
+    committed = subprocess.run(
+        ["git", "-C", str(repo_root), "show", f"HEAD:{relative}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+        shell=False,
+    ).stdout
+    assert worktree == committed
+    assert b"\r" not in worktree
+    assert hashlib.sha256(worktree).hexdigest() == (
+        "eb325ac5e3417e6407400b18c8d90ca734a32e852056926e5bcd2a635e43c444"
+    )
+    assert len(worktree.splitlines()) == 20
 
 
 def test_live_freeze_normalizes_equivalent_name_before_phase_a_validation(tmp_path: Path) -> None:
