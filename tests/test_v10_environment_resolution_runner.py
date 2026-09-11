@@ -16,6 +16,7 @@ from scripts.v10_environment_extension_contract import (
     PREDECESSOR_LOCK_SHA256,
     PREDECESSOR_PACKAGE_SET,
     ContractValidationError,
+    normalize_distribution_name,
     validate_resolution_evidence,
     validate_successor_lock_candidate,
 )
@@ -115,6 +116,54 @@ def test_direct_spec_git_attributes_bind_lf_and_worktree_bytes() -> None:
     ).stdout
     assert worktree == committed == runner.DIRECT_SPEC_BYTES
     assert hashlib.sha256(worktree).hexdigest() == runner.DIRECT_SPEC_SHA256
+
+
+def test_live_freeze_normalizes_equivalent_name_before_phase_a_validation(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    raw_lines = [
+        f"{name}=={version}"
+        for name, version in PREDECESSOR_PACKAGE_SET
+    ]
+    raw_lines[1] = "CHARSET_normalizer==3.5.1"
+    observations = _valid_observations(config)
+    observations["live_packages"] = runner._parse_live_freeze_packages(
+        ("\n".join(raw_lines) + "\n").encode("utf-8")
+    )
+
+    assert observations["live_packages"][1] == {  # type: ignore[index]
+        "name": "charset-normalizer",
+        "version": "3.5.1",
+    }
+    assert runner.run_phase_a(config, observations)["status"] == "PASS"
+
+
+@pytest.mark.parametrize(
+    ("raw_name", "expected"),
+    [
+        ("CHARSET_normalizer", "charset-normalizer"),
+        ("PDFMINER_six", "pdfminer-six"),
+        ("python.dateutil", "python-dateutil"),
+    ],
+)
+def test_live_freeze_uses_shared_distribution_normalization(raw_name: str, expected: str) -> None:
+    assert runner.normalize_distribution_name is normalize_distribution_name
+    parsed = runner._parse_live_freeze_packages(f"{raw_name}==1.0\n".encode("utf-8"))
+    assert parsed == [{"name": expected, "version": "1.0"}]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"cffi==2.1.1\nnot-a-freeze-line\n",
+        b"-e C:\\project\n",
+        b"cffi==\n",
+        b"cffi==2.1.1\nCFFI==2.1.1\n",
+        b"\xff\n",
+    ],
+)
+def test_live_freeze_malformed_or_normalization_collision_fails_closed(raw: bytes) -> None:
+    with pytest.raises(runner.RunnerValidationError):
+        runner._parse_live_freeze_packages(raw)
 
 
 def test_phase_a_valid_synthetic_preflight_is_read_only(tmp_path: Path) -> None:

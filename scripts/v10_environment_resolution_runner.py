@@ -33,6 +33,7 @@ try:
         _validate_wheel_manifest,
         derive_package_sets,
         inspect_wheel_file,
+        normalize_distribution_name,
         validate_resolution_evidence,
         validate_successor_lock_candidate,
     )
@@ -49,6 +50,7 @@ except ModuleNotFoundError:  # direct ``python scripts/<runner>.py`` invocation
         _validate_wheel_manifest,
         derive_package_sets,
         inspect_wheel_file,
+        normalize_distribution_name,
         validate_resolution_evidence,
         validate_successor_lock_candidate,
     )
@@ -478,13 +480,8 @@ def _probe_canonical_environment(interpreter: Path) -> dict[str, Any]:
         stderr=subprocess.DEVNULL,
         check=True,
         shell=False,
-    ).stdout.decode()
-    packages = []
-    for line in freeze.splitlines():
-        if "==" not in line or line.startswith("-"):
-            raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE")
-        name, version = line.split("==", 1)
-        packages.append({"name": name, "version": version})
+    ).stdout
+    packages = _parse_live_freeze_packages(freeze)
     pip_match = re.search(r"\bpip\s+([0-9][^\s]*)", pip_output)
     if len(probe) != 6 or pip_match is None:
         raise RunnerValidationError("CANONICAL_INTERPRETER_PROBE_INVALID")
@@ -498,6 +495,34 @@ def _probe_canonical_environment(interpreter: Path) -> dict[str, Any]:
         "pip_version": pip_match.group(1),
         "live_packages": packages,
     }
+
+
+def _parse_live_freeze_packages(raw: bytes) -> list[dict[str, str]]:
+    """Parse pip-freeze bytes into the reviewed normalized package form."""
+
+    try:
+        text = raw.decode("utf-8")
+    except (AttributeError, UnicodeDecodeError) as error:
+        raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE") from error
+    packages: list[dict[str, str]] = []
+    normalized_names: set[str] = set()
+    for line in text.splitlines():
+        if not line:
+            continue
+        if line.count("==") != 1 or line.startswith("-"):
+            raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE")
+        raw_name, version = line.split("==", 1)
+        if not version:
+            raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE")
+        try:
+            normalized_name = normalize_distribution_name(raw_name)
+        except ContractValidationError as error:
+            raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE") from error
+        if normalized_name in normalized_names:
+            raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE")
+        normalized_names.add(normalized_name)
+        packages.append({"name": normalized_name, "version": version})
+    return sorted(packages, key=lambda package: package["name"])
 
 
 def _atomic_replace(path: Path, raw: bytes) -> None:
