@@ -90,6 +90,33 @@ def test_direct_spec_is_exact_utf8_lf_bytes() -> None:
     assert runner.validate_direct_spec_bytes(raw) == runner.DIRECT_SPEC_SHA256
 
 
+def test_direct_spec_git_attributes_bind_lf_and_worktree_bytes() -> None:
+    repo_root = Path(__file__).parents[1]
+    relative = runner.DIRECT_SPEC_RELATIVE.as_posix()
+    attributes = subprocess.run(
+        ["git", "-C", str(repo_root), "check-attr", "text", "eol", "--", relative],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+        shell=False,
+    ).stdout.decode("utf-8").strip().splitlines()
+    assert attributes == [
+        f"{relative}: text: set",
+        f"{relative}: eol: lf",
+    ]
+
+    worktree = (repo_root / runner.DIRECT_SPEC_RELATIVE).read_bytes()
+    committed = subprocess.run(
+        ["git", "-C", str(repo_root), "show", f"HEAD:{relative}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+        shell=False,
+    ).stdout
+    assert worktree == committed == runner.DIRECT_SPEC_BYTES
+    assert hashlib.sha256(worktree).hexdigest() == runner.DIRECT_SPEC_SHA256
+
+
 def test_phase_a_valid_synthetic_preflight_is_read_only(tmp_path: Path) -> None:
     config = _config(tmp_path)
     result = runner.run_phase_a(config, _valid_observations(config))
