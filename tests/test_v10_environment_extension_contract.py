@@ -10,13 +10,23 @@ import pytest
 from scripts.v10_environment_extension_contract import (
     FROZEN_V10_DESIGN_SHA,
     PREDECESSOR_LOCK_BLOB_SHA1,
+    PREDECESSOR_FREEZE_RECORD_GIT_BLOB_SHA1,
+    PREDECESSOR_LOCK_CANDIDATE_GIT_BLOB_SHA1,
     PREDECESSOR_LOCK_SHA256,
     PREDECESSOR_PACKAGE_SET,
+    GENERIC_SUCCESSOR_LOCK_GIT_BLOB_SHA1,
+    GENERIC_SUCCESSOR_LOCK_PACKAGE_COUNT,
+    GENERIC_SUCCESSOR_LOCK_SHA256,
+    REVIEWED_RESOLUTION_EVIDENCE_GIT_BLOB_SHA1,
+    REVIEWED_RESOLUTION_EVIDENCE_GIT_SHA,
+    REVIEWED_SUCCESSOR_CANDIDATE_GIT_BLOB_SHA1,
+    REVIEWED_SUCCESSOR_CANDIDATE_GIT_SHA,
     ContractValidationError,
     build_exact_delta_install_argv,
     derive_package_sets,
     inspect_wheel_file,
     validate_mutation_preflight_receipt,
+    validate_generic_migration_authority,
     validate_resolution_evidence,
     validate_successor_lock_candidate,
     verify_reviewed_wheelhouse,
@@ -30,6 +40,65 @@ DIRECT_SHA256 = "d" * 64
 CANDIDATE_SHA256 = "e" * 64
 MIGRATION_BLOB_SHA = "f" * 40
 GENERIC_LOCK_BLOB_SHA = "1" * 40
+
+
+def _migration_authority() -> dict:
+    return {
+        "schema_version": "V10_CANONICAL_ENVIRONMENT_GENERIC_MIGRATION_AUTHORITY_V1",
+        "artifact_status": "REVIEWED_INSTALL_AUTHORITY_NOT_LIVE_FROZEN",
+        "canonical_environment_state": "V10_SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED",
+        "frozen_v10_design_git_sha": FROZEN_V10_DESIGN_SHA,
+        "predecessor_generic_lock_git_blob_sha1": PREDECESSOR_LOCK_BLOB_SHA1,
+        "predecessor_generic_lock_sha256": PREDECESSOR_LOCK_SHA256,
+        "predecessor_generic_lock_package_count": 15,
+        "predecessor_generic_lock_candidate_git_blob_sha1": PREDECESSOR_LOCK_CANDIDATE_GIT_BLOB_SHA1,
+        "predecessor_generic_freeze_record_git_blob_sha1": PREDECESSOR_FREEZE_RECORD_GIT_BLOB_SHA1,
+        "reviewed_v10_successor_lock_candidate_git_sha": REVIEWED_SUCCESSOR_CANDIDATE_GIT_SHA,
+        "reviewed_v10_successor_lock_candidate_git_blob_sha1": REVIEWED_SUCCESSOR_CANDIDATE_GIT_BLOB_SHA1,
+        "reviewed_v10_resolution_evidence_git_sha": REVIEWED_RESOLUTION_EVIDENCE_GIT_SHA,
+        "reviewed_v10_resolution_evidence_git_blob_sha1": REVIEWED_RESOLUTION_EVIDENCE_GIT_BLOB_SHA1,
+        "new_generic_lock_git_blob_sha1": GENERIC_SUCCESSOR_LOCK_GIT_BLOB_SHA1,
+        "new_generic_lock_sha256": GENERIC_SUCCESSOR_LOCK_SHA256,
+        "new_generic_lock_package_count": GENERIC_SUCCESSOR_LOCK_PACKAGE_COUNT,
+        "live_environment_successor_match": False,
+        "future_protected_execution_authorized": False,
+    }
+
+
+def _validate_migration_authority(authority: dict) -> None:
+    validate_generic_migration_authority(
+        authority,
+        expected_reviewed_successor_lock_candidate_git_sha=REVIEWED_SUCCESSOR_CANDIDATE_GIT_SHA,
+        expected_reviewed_successor_lock_candidate_git_blob_sha1=REVIEWED_SUCCESSOR_CANDIDATE_GIT_BLOB_SHA1,
+        expected_reviewed_resolution_evidence_git_sha=REVIEWED_RESOLUTION_EVIDENCE_GIT_SHA,
+        expected_reviewed_resolution_evidence_git_blob_sha1=REVIEWED_RESOLUTION_EVIDENCE_GIT_BLOB_SHA1,
+        expected_new_generic_lock_git_blob_sha1=GENERIC_SUCCESSOR_LOCK_GIT_BLOB_SHA1,
+        expected_new_generic_lock_sha256=GENERIC_SUCCESSOR_LOCK_SHA256,
+        expected_new_generic_lock_package_count=GENERIC_SUCCESSOR_LOCK_PACKAGE_COUNT,
+    )
+
+
+def test_generic_migration_authority_exact_18_key_schema() -> None:
+    _validate_migration_authority(_migration_authority())
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "wrong_commit", "wrong_blob", "truthy_bool", "bool_count"])
+def test_generic_migration_authority_rejects_schema_or_binding_drift(mutation: str) -> None:
+    authority = _migration_authority()
+    if mutation == "missing":
+        del authority["new_generic_lock_sha256"]
+    elif mutation == "extra":
+        authority["unexpected"] = True
+    elif mutation == "wrong_commit":
+        authority["reviewed_v10_successor_lock_candidate_git_sha"] = "0" * 40
+    elif mutation == "wrong_blob":
+        authority["new_generic_lock_git_blob_sha1"] = "0" * 40
+    elif mutation == "truthy_bool":
+        authority["live_environment_successor_match"] = 0
+    else:
+        authority["new_generic_lock_package_count"] = True
+    with pytest.raises(ContractValidationError):
+        _validate_migration_authority(authority)
 
 
 def _wheel_filename(name: str, version: str) -> str:

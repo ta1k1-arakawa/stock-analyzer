@@ -90,6 +90,32 @@ PREFLIGHT_FAILURES = frozenset(
         "REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE",
     }
 )
+GENERIC_MIGRATION_AUTHORITY_KEYS = frozenset(
+    {
+        "schema_version", "artifact_status", "canonical_environment_state",
+        "frozen_v10_design_git_sha", "predecessor_generic_lock_git_blob_sha1",
+        "predecessor_generic_lock_sha256", "predecessor_generic_lock_package_count",
+        "predecessor_generic_lock_candidate_git_blob_sha1",
+        "predecessor_generic_freeze_record_git_blob_sha1",
+        "reviewed_v10_successor_lock_candidate_git_sha",
+        "reviewed_v10_successor_lock_candidate_git_blob_sha1",
+        "reviewed_v10_resolution_evidence_git_sha",
+        "reviewed_v10_resolution_evidence_git_blob_sha1",
+        "new_generic_lock_git_blob_sha1", "new_generic_lock_sha256",
+        "new_generic_lock_package_count", "live_environment_successor_match",
+        "future_protected_execution_authorized",
+    }
+)
+REVIEWED_SUCCESSOR_CANDIDATE_GIT_SHA = "1f045ee8e962827f2cf6e8218c5dd28d364d2a18"
+REVIEWED_SUCCESSOR_CANDIDATE_GIT_BLOB_SHA1 = "eb5c95d9b5cac096fadce870e34ca138cee395c2"
+REVIEWED_RESOLUTION_EVIDENCE_GIT_SHA = "1f045ee8e962827f2cf6e8218c5dd28d364d2a18"
+REVIEWED_RESOLUTION_EVIDENCE_GIT_BLOB_SHA1 = "c0213acda4e9713dbed9911b25db7748d131ccf7"
+PREDECESSOR_LOCK_CANDIDATE_GIT_BLOB_SHA1 = "19e3bfc72fbb66886701434a296c90817fb3cbd7"
+PREDECESSOR_FREEZE_RECORD_GIT_BLOB_SHA1 = "6c013aeea41677d4bf010ff9fb470b4fa0799e9a"
+GENERIC_SUCCESSOR_LOCK_GIT_BLOB_SHA1 = "99395e7a5be752fb3ea92fd31be0334f38792261"
+GENERIC_SUCCESSOR_LOCK_SHA256 = "eb325ac5e3417e6407400b18c8d90ca734a32e852056926e5bcd2a635e43c444"
+GENERIC_SUCCESSOR_LOCK_PACKAGE_COUNT = 20
+GENERIC_MIGRATION_AUTHORITY_SCHEMA = "V10_CANONICAL_ENVIRONMENT_GENERIC_MIGRATION_AUTHORITY_V1"
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -248,6 +274,87 @@ def validate_successor_lock_candidate(
     wheel_pairs = tuple((item["name"], item["version"]) for item in wheels)
     _require(wheel_pairs == packages, "wheel/package identity mismatch")
     return package_sets
+
+
+def validate_generic_migration_authority(
+    authority: Mapping[str, Any],
+    *,
+    expected_reviewed_successor_lock_candidate_git_sha: str,
+    expected_reviewed_successor_lock_candidate_git_blob_sha1: str,
+    expected_reviewed_resolution_evidence_git_sha: str,
+    expected_reviewed_resolution_evidence_git_blob_sha1: str,
+    expected_new_generic_lock_git_blob_sha1: str,
+    expected_new_generic_lock_sha256: str,
+    expected_new_generic_lock_package_count: int,
+) -> None:
+    """Validate the exact 18-key pre-mutation migration-authority schema."""
+
+    _exact_keys(authority, GENERIC_MIGRATION_AUTHORITY_KEYS, "generic migration authority")
+    _require(
+        expected_reviewed_successor_lock_candidate_git_sha == REVIEWED_SUCCESSOR_CANDIDATE_GIT_SHA,
+        "expected reviewed candidate commit",
+    )
+    _require(
+        expected_reviewed_successor_lock_candidate_git_blob_sha1 == REVIEWED_SUCCESSOR_CANDIDATE_GIT_BLOB_SHA1,
+        "expected reviewed candidate blob",
+    )
+    _require(
+        expected_reviewed_resolution_evidence_git_sha == REVIEWED_RESOLUTION_EVIDENCE_GIT_SHA,
+        "expected reviewed evidence commit",
+    )
+    _require(
+        expected_reviewed_resolution_evidence_git_blob_sha1 == REVIEWED_RESOLUTION_EVIDENCE_GIT_BLOB_SHA1,
+        "expected reviewed evidence blob",
+    )
+    _require(expected_new_generic_lock_git_blob_sha1 == GENERIC_SUCCESSOR_LOCK_GIT_BLOB_SHA1, "expected generic lock blob")
+    _require(expected_new_generic_lock_sha256 == GENERIC_SUCCESSOR_LOCK_SHA256, "expected generic lock SHA")
+    _require(expected_new_generic_lock_package_count == GENERIC_SUCCESSOR_LOCK_PACKAGE_COUNT, "expected generic lock count")
+    _require(authority["schema_version"] == GENERIC_MIGRATION_AUTHORITY_SCHEMA, "migration authority schema")
+    _require(authority["artifact_status"] == "REVIEWED_INSTALL_AUTHORITY_NOT_LIVE_FROZEN", "migration authority status")
+    _require(
+        authority["canonical_environment_state"] == "V10_SUCCESSOR_MIGRATION_IN_PROGRESS_NOT_AUTHORIZED",
+        "migration authority state",
+    )
+    _require(authority["frozen_v10_design_git_sha"] == FROZEN_V10_DESIGN_SHA, "migration authority frozen design SHA")
+    _sha(authority["frozen_v10_design_git_sha"], SHA1_RE, "migration authority frozen design SHA")
+    for key, expected in (
+        ("predecessor_generic_lock_git_blob_sha1", PREDECESSOR_LOCK_BLOB_SHA1),
+        ("predecessor_generic_lock_sha256", PREDECESSOR_LOCK_SHA256),
+        ("predecessor_generic_lock_candidate_git_blob_sha1", PREDECESSOR_LOCK_CANDIDATE_GIT_BLOB_SHA1),
+        ("predecessor_generic_freeze_record_git_blob_sha1", PREDECESSOR_FREEZE_RECORD_GIT_BLOB_SHA1),
+        ("reviewed_v10_successor_lock_candidate_git_sha", expected_reviewed_successor_lock_candidate_git_sha),
+        ("reviewed_v10_successor_lock_candidate_git_blob_sha1", expected_reviewed_successor_lock_candidate_git_blob_sha1),
+        ("reviewed_v10_resolution_evidence_git_sha", expected_reviewed_resolution_evidence_git_sha),
+        ("reviewed_v10_resolution_evidence_git_blob_sha1", expected_reviewed_resolution_evidence_git_blob_sha1),
+        ("new_generic_lock_git_blob_sha1", expected_new_generic_lock_git_blob_sha1),
+        ("new_generic_lock_sha256", expected_new_generic_lock_sha256),
+    ):
+        _require(authority[key] == expected, f"migration authority {key}")
+    for key in (
+        "predecessor_generic_lock_git_blob_sha1",
+        "predecessor_generic_lock_candidate_git_blob_sha1",
+        "predecessor_generic_freeze_record_git_blob_sha1",
+        "reviewed_v10_successor_lock_candidate_git_sha",
+        "reviewed_v10_successor_lock_candidate_git_blob_sha1",
+        "reviewed_v10_resolution_evidence_git_sha",
+        "reviewed_v10_resolution_evidence_git_blob_sha1",
+        "new_generic_lock_git_blob_sha1",
+    ):
+        _sha(authority[key], SHA1_RE, f"migration authority {key}")
+    for key in ("predecessor_generic_lock_sha256", "new_generic_lock_sha256"):
+        _sha(authority[key], SHA256_RE, f"migration authority {key}")
+    _require(
+        _strict_int(authority["predecessor_generic_lock_package_count"], "migration predecessor package count") == 15,
+        "migration predecessor package count",
+    )
+    _require(
+        _strict_int(authority["new_generic_lock_package_count"], "migration successor package count")
+        == expected_new_generic_lock_package_count
+        == GENERIC_SUCCESSOR_LOCK_PACKAGE_COUNT,
+        "migration successor package count",
+    )
+    _require(authority["live_environment_successor_match"] is False, "migration live successor match")
+    _require(authority["future_protected_execution_authorized"] is False, "migration future authority")
 
 
 def _validate_common_sha_fields(value: Mapping[str, Any], expected: Mapping[str, str] | None = None) -> None:
