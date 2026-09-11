@@ -68,6 +68,8 @@ STDERR_NAME = "stderr.txt"
 STATE_NAME = "attempt_state.json"
 CANDIDATE_NAME = "V10_CANONICAL_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json"
 EVIDENCE_NAME = "V10_CANONICAL_ENVIRONMENT_SUCCESSOR_WINDOWS_RESOLUTION_EVIDENCE.json"
+ARTIFACT_DIRECTORY_NAME = "resolution_artifacts"
+ARTIFACT_STAGING_DIRECTORY_NAME = "resolution_artifacts.staging"
 ATTEMPT_STATE_SCHEMA = "V10_CANONICAL_ENVIRONMENT_RESOLUTION_ATTEMPT_STATE_V1"
 RESOLUTION_POLICY_ID = "PIP_25_0_1_WINDOWS_WHEEL_DOWNLOAD_V1"
 PACKAGE_INDEX_ID = "PYPI_OFFICIAL_SIMPLE"
@@ -532,6 +534,56 @@ def _atomic_create_no_overwrite(path: Path, raw: bytes) -> None:
             pass
 
 
+def published_artifact_directory(root: Path) -> Path:
+    return Path(root) / ARTIFACT_DIRECTORY_NAME
+
+
+def staging_artifact_directory(root: Path) -> Path:
+    return Path(root) / ARTIFACT_STAGING_DIRECTORY_NAME
+
+
+def published_candidate_path(root: Path) -> Path:
+    return published_artifact_directory(root) / CANDIDATE_NAME
+
+
+def published_evidence_path(root: Path) -> Path:
+    return published_artifact_directory(root) / EVIDENCE_NAME
+
+
+def _publication_namespace_is_safe(root: Path) -> None:
+    final = published_artifact_directory(root)
+    staging = staging_artifact_directory(root)
+    if _is_reparse_or_symlink(final) or _is_reparse_or_symlink(staging):
+        raise RunnerValidationError("CHATGPT_DECISION_REQUIRED")
+    if os.path.lexists(final) or os.path.lexists(staging):
+        raise RunnerValidationError("CHATGPT_DECISION_REQUIRED")
+
+
+def _publish_artifact_bundle(
+    root: Path,
+    *,
+    candidate_bytes: bytes | None,
+    evidence_bytes: bytes,
+) -> None:
+    """Publish one validated candidate/evidence bundle by one directory rename."""
+
+    _publication_namespace_is_safe(root)
+    final = published_artifact_directory(root)
+    staging = staging_artifact_directory(root)
+    try:
+        staging.mkdir()
+        if candidate_bytes is not None:
+            _atomic_create_no_overwrite(staging / CANDIDATE_NAME, candidate_bytes)
+        _atomic_create_no_overwrite(staging / EVIDENCE_NAME, evidence_bytes)
+        if candidate_bytes is not None and (staging / CANDIDATE_NAME).read_bytes() != candidate_bytes:
+            raise RunnerValidationError("STAGED_ARTIFACT_BYTES_MISMATCH")
+        if (staging / EVIDENCE_NAME).read_bytes() != evidence_bytes:
+            raise RunnerValidationError("STAGED_ARTIFACT_BYTES_MISMATCH")
+        os.rename(staging, final)
+    except (OSError, RunnerValidationError):
+        raise
+
+
 def build_resolution_argv(repo_root: Path, wheelhouse: Path) -> list[str]:
     interpreter = repo_root / CANONICAL_INTERPRETER_RELATIVE
     lock = repo_root / LOCK_RELATIVE
@@ -773,7 +825,7 @@ def _base_resolution_evidence(
     }
 
 
-def _validate_and_write_evidence(config: PhaseAConfig, evidence: Mapping[str, Any], destination: Path) -> None:
+def _validate_evidence(config: PhaseAConfig, evidence: Mapping[str, Any]) -> bytes:
     validate_resolution_evidence(
         evidence,
         expected_extension_design_sha=config.expected_extension_design_sha,
@@ -782,7 +834,7 @@ def _validate_and_write_evidence(config: PhaseAConfig, evidence: Mapping[str, An
         expected_direct_spec_sha256=config.expected_direct_spec_sha256,
         expected_successor_lock_candidate_sha256=evidence["successor_lock_candidate_sha256"],
     )
-    _atomic_create_no_overwrite(destination, canonical_json_bytes(evidence))
+    return canonical_json_bytes(evidence)
 
 
 def _inspect_phase_c_wheelhouse(wheelhouse: Path) -> tuple[str | None, list[dict[str, str]] | None]:
@@ -837,24 +889,28 @@ def run_phase_c(
     if not isinstance(state, dict):
         raise RunnerValidationError("ATTEMPT_STATE_SCHEMA_INVALID")
     _validate_attempt_state(config, state)
+    _publication_namespace_is_safe(root)
     started = state.get("process_started")
     exit_code = state.get("process_exit_code")
     invocations = state.get("package_resolution_process_invocations")
     if started is False:
         evidence = _base_resolution_evidence(config=config, status="FAIL", failure_code="RESOLUTION_PROCESS_FAILURE", process_started=False, process_exit_code=None, resolution_completed=False, candidate_artifact_created=False, candidate_sha=None, package_count=None, invocations=0)
-        _validate_and_write_evidence(config, evidence, root / EVIDENCE_NAME)
+        evidence_bytes = _validate_evidence(config, evidence)
+        _publish_artifact_bundle(root, candidate_bytes=None, evidence_bytes=evidence_bytes)
         return {"status": "FAIL", "failure_code": "RESOLUTION_PROCESS_FAILURE", "candidate_artifact_created": False}
     if started is not True or not isinstance(exit_code, int) or isinstance(exit_code, bool) or invocations != 1:
         raise RunnerValidationError("ATTEMPT_STATE_AMBIGUOUS")
     if exit_code != 0:
         evidence = _base_resolution_evidence(config=config, status="FAIL", failure_code="RESOLUTION_PROCESS_FAILURE", process_started=True, process_exit_code=exit_code, resolution_completed=False, candidate_artifact_created=False, candidate_sha=None, package_count=None, invocations=1)
-        _validate_and_write_evidence(config, evidence, root / EVIDENCE_NAME)
+        evidence_bytes = _validate_evidence(config, evidence)
+        _publish_artifact_bundle(root, candidate_bytes=None, evidence_bytes=evidence_bytes)
         return {"status": "FAIL", "failure_code": "RESOLUTION_PROCESS_FAILURE", "candidate_artifact_created": False}
 
     failure_code, manifest = _inspect_phase_c_wheelhouse(root / WHEELHOUSE_NAME)
     if failure_code is not None or manifest is None:
         evidence = _base_resolution_evidence(config=config, status="FAIL", failure_code=failure_code or "RESOLUTION_REPORT_INVALID", process_started=True, process_exit_code=0, resolution_completed=False, candidate_artifact_created=False, candidate_sha=None, package_count=None, invocations=1)
-        _validate_and_write_evidence(config, evidence, root / EVIDENCE_NAME)
+        evidence_bytes = _validate_evidence(config, evidence)
+        _publish_artifact_bundle(root, candidate_bytes=None, evidence_bytes=evidence_bytes)
         return {"status": "FAIL", "failure_code": evidence["failure_code"], "candidate_artifact_created": False}
 
     packages = [{"name": item["name"], "version": item["version"]} for item in manifest]
@@ -890,15 +946,16 @@ def run_phase_c(
         )
     except ContractValidationError:
         evidence = _base_resolution_evidence(config=config, status="FAIL", failure_code="RESOLUTION_REPORT_INVALID", process_started=True, process_exit_code=0, resolution_completed=False, candidate_artifact_created=False, candidate_sha=None, package_count=None, invocations=1)
-        _validate_and_write_evidence(config, evidence, root / EVIDENCE_NAME)
+        evidence_bytes = _validate_evidence(config, evidence)
+        _publish_artifact_bundle(root, candidate_bytes=None, evidence_bytes=evidence_bytes)
         return {"status": "FAIL", "failure_code": "RESOLUTION_REPORT_INVALID", "candidate_artifact_created": False}
     candidate_bytes = canonical_json_bytes(candidate)
     candidate_sha = hashlib.sha256(candidate_bytes).hexdigest()
     if expected_successor_lock_candidate_sha256 is not None and candidate_sha != expected_successor_lock_candidate_sha256:
         raise RunnerValidationError("CANDIDATE_SHA_EXPECTATION_MISMATCH")
-    _atomic_create_no_overwrite(root / CANDIDATE_NAME, candidate_bytes)
     evidence = _base_resolution_evidence(config=config, status="PASS", failure_code="NONE", process_started=True, process_exit_code=0, resolution_completed=True, candidate_artifact_created=True, candidate_sha=candidate_sha, package_count=len(packages), invocations=1)
-    _validate_and_write_evidence(config, evidence, root / EVIDENCE_NAME)
+    evidence_bytes = _validate_evidence(config, evidence)
+    _publish_artifact_bundle(root, candidate_bytes=candidate_bytes, evidence_bytes=evidence_bytes)
     return {"status": "PASS", "failure_code": "NONE", "candidate_artifact_created": True, "candidate_sha256": candidate_sha, "resolved_package_count": len(packages)}
 
 

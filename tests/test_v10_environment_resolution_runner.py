@@ -16,6 +16,8 @@ from scripts.v10_environment_extension_contract import (
     PREDECESSOR_LOCK_SHA256,
     PREDECESSOR_PACKAGE_SET,
     ContractValidationError,
+    validate_resolution_evidence,
+    validate_successor_lock_candidate,
 )
 
 
@@ -349,8 +351,8 @@ def test_phase_b_marks_started_before_wait_and_wait_failure_is_ambiguous_to_phas
     runner._validate_attempt_state(config, state)
     with pytest.raises(ContractValidationError, match="ATTEMPT_STATE_AMBIGUOUS"):
         runner.run_phase_c(config)
-    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
-    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
+    assert not runner.published_candidate_path(config.durable_root).exists()
+    assert not runner.published_evidence_path(config.durable_root).exists()
 
 
 @pytest.mark.parametrize("invocation_count", [True, False, -1, 2, 1.0, "1", None])
@@ -369,8 +371,8 @@ def test_phase_c_rejects_non_strict_attempt_invocation_count_before_inspection(
     )
     with pytest.raises(ContractValidationError, match="ATTEMPT_STATE_SCHEMA_INVALID"):
         runner.run_phase_c(config)
-    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
-    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
+    assert not runner.published_candidate_path(config.durable_root).exists()
+    assert not runner.published_evidence_path(config.durable_root).exists()
 
 
 def test_phase_b_collision_prevents_launch(tmp_path: Path) -> None:
@@ -470,8 +472,12 @@ def test_phase_c_success_builds_and_validates_candidate_and_evidence(tmp_path: P
     assert result["status"] == "PASS"
     assert result["candidate_artifact_created"] is True
     assert result["resolved_package_count"] == 17
-    candidate_path = config.durable_root / runner.CANDIDATE_NAME
-    evidence_path = config.durable_root / runner.EVIDENCE_NAME
+    candidate_path = runner.published_candidate_path(config.durable_root)
+    evidence_path = runner.published_evidence_path(config.durable_root)
+    assert candidate_path.parent == runner.published_artifact_directory(config.durable_root)
+    assert candidate_path.parent.exists()
+    assert not runner.staging_artifact_directory(config.durable_root).exists()
+    assert candidate_path.exists() and evidence_path.exists()
     candidate_bytes = candidate_path.read_bytes()
     candidate = json.loads(candidate_bytes)
     evidence = json.loads(evidence_path.read_bytes())
@@ -479,10 +485,122 @@ def test_phase_c_success_builds_and_validates_candidate_and_evidence(tmp_path: P
     assert result["candidate_sha256"] == candidate_sha
     assert evidence["successor_lock_candidate_sha256"] == candidate_sha
     assert evidence["candidate_artifact_created"] is True
+    validate_successor_lock_candidate(
+        candidate,
+        expected_extension_design_sha=config.expected_extension_design_sha,
+        expected_reviewed_resolution_implementation_sha=config.expected_reviewed_runner_sha,
+    )
+    validate_resolution_evidence(
+        evidence,
+        expected_extension_design_sha=config.expected_extension_design_sha,
+        expected_reviewed_resolution_implementation_sha=config.expected_reviewed_runner_sha,
+        expected_direct_spec_git_blob_sha1=config.expected_direct_spec_git_blob_sha1,
+        expected_direct_spec_sha256=config.expected_direct_spec_sha256,
+        expected_successor_lock_candidate_sha256=candidate_sha,
+    )
     assert "exchange-calendars" in [item["name"] for item in candidate["resolved_packages"]]
     assert "pandas-market-calendars" in [item["name"] for item in candidate["resolved_packages"]]
     assert str(config.durable_root) not in candidate_path.read_text(encoding="utf-8")
     assert "https://pypi.org/simple" not in evidence_path.read_text(encoding="utf-8")
+
+
+def test_phase_c_pass_exposes_both_files_only_after_one_directory_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _ = _run_successful_phase_b(tmp_path)
+    original_rename = runner.os.rename
+    rename_calls = 0
+
+    def observing_rename(source: str | bytes, destination: str | bytes, *args: object, **kwargs: object) -> None:
+        nonlocal rename_calls
+        rename_calls += 1
+        source_path = Path(source)
+        destination_path = Path(destination)
+        assert source_path == runner.staging_artifact_directory(config.durable_root)
+        assert destination_path == runner.published_artifact_directory(config.durable_root)
+        assert runner.published_candidate_path(config.durable_root).exists() is False
+        assert runner.published_evidence_path(config.durable_root).exists() is False
+        assert (source_path / runner.CANDIDATE_NAME).exists()
+        assert (source_path / runner.EVIDENCE_NAME).exists()
+        original_rename(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(runner.os, "rename", observing_rename)
+    result = runner.run_phase_c(config)
+    assert result["status"] == "PASS"
+    assert rename_calls == 1
+    assert runner.published_candidate_path(config.durable_root).exists()
+    assert runner.published_evidence_path(config.durable_root).exists()
+    assert not runner.staging_artifact_directory(config.durable_root).exists()
+
+
+def test_phase_c_candidate_staging_write_failure_never_exposes_final_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _ = _run_successful_phase_b(tmp_path)
+    original_create = runner._atomic_create_no_overwrite
+
+    def fail_candidate(path: Path, raw: bytes) -> None:
+        if path.name == runner.CANDIDATE_NAME:
+            raise OSError("synthetic candidate staging failure")
+        original_create(path, raw)
+
+    monkeypatch.setattr(runner, "_atomic_create_no_overwrite", fail_candidate)
+    with pytest.raises(OSError, match="synthetic candidate staging failure"):
+        runner.run_phase_c(config)
+    assert not runner.published_artifact_directory(config.durable_root).exists()
+
+
+def test_phase_c_evidence_staging_write_failure_never_exposes_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _ = _run_successful_phase_b(tmp_path)
+    original_create = runner._atomic_create_no_overwrite
+
+    def fail_evidence(path: Path, raw: bytes) -> None:
+        if path.name == runner.EVIDENCE_NAME:
+            raise OSError("synthetic evidence staging failure")
+        original_create(path, raw)
+
+    monkeypatch.setattr(runner, "_atomic_create_no_overwrite", fail_evidence)
+    with pytest.raises(OSError, match="synthetic evidence staging failure"):
+        runner.run_phase_c(config)
+    assert not runner.published_artifact_directory(config.durable_root).exists()
+    assert not runner.published_candidate_path(config.durable_root).exists()
+    assert (runner.staging_artifact_directory(config.durable_root) / runner.CANDIDATE_NAME).exists()
+
+
+def test_phase_c_rename_failure_leaves_staging_without_final_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _ = _run_successful_phase_b(tmp_path)
+
+    def fail_rename(*_args: object, **_kwargs: object) -> None:
+        raise OSError("synthetic publication rename failure")
+
+    monkeypatch.setattr(runner.os, "rename", fail_rename)
+    with pytest.raises(OSError, match="synthetic publication rename failure"):
+        runner.run_phase_c(config)
+    assert runner.staging_artifact_directory(config.durable_root).exists()
+    assert not runner.published_artifact_directory(config.durable_root).exists()
+
+
+@pytest.mark.parametrize("existing_namespace", ["staging", "final"])
+def test_phase_c_existing_publication_namespace_stops_without_cleanup_or_overwrite(
+    tmp_path: Path, existing_namespace: str
+) -> None:
+    config, _ = _run_successful_phase_b(tmp_path)
+    namespace = (
+        runner.staging_artifact_directory(config.durable_root)
+        if existing_namespace == "staging"
+        else runner.published_artifact_directory(config.durable_root)
+    )
+    namespace.mkdir()
+    marker = namespace / "marker"
+    marker.write_text("preserve", encoding="utf-8")
+    with pytest.raises(ContractValidationError, match="CHATGPT_DECISION_REQUIRED"):
+        runner.run_phase_c(config)
+    assert marker.read_text(encoding="utf-8") == "preserve"
+    assert namespace.exists()
 
 
 @pytest.mark.parametrize(
@@ -502,8 +620,8 @@ def test_phase_c_rejects_changed_phase_b_provenance_before_artifacts(
     changed = replace(config, **{field: replacement})
     with pytest.raises(ContractValidationError, match="ATTEMPT_STATE_PROVENANCE_MISMATCH"):
         runner.run_phase_c(changed)
-    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
-    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
+    assert not runner.published_candidate_path(config.durable_root).exists()
+    assert not runner.published_evidence_path(config.durable_root).exists()
 
 
 def test_phase_c_rejects_changed_predecessor_binding_before_artifacts(tmp_path: Path) -> None:
@@ -514,8 +632,8 @@ def test_phase_c_rejects_changed_predecessor_binding_before_artifacts(tmp_path: 
     state_path.write_bytes(runner.canonical_json_bytes(state))
     with pytest.raises(ContractValidationError, match="ATTEMPT_STATE_PROVENANCE_MISMATCH"):
         runner.run_phase_c(config)
-    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
-    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
+    assert not runner.published_candidate_path(config.durable_root).exists()
+    assert not runner.published_evidence_path(config.durable_root).exists()
 
 
 def test_phase_c_rejects_extra_or_missing_attempt_state_key_before_artifacts(tmp_path: Path) -> None:
@@ -526,8 +644,8 @@ def test_phase_c_rejects_extra_or_missing_attempt_state_key_before_artifacts(tmp
     state_path.write_bytes(runner.canonical_json_bytes(state))
     with pytest.raises(ContractValidationError, match="ATTEMPT_STATE_SCHEMA_INVALID"):
         runner.run_phase_c(config)
-    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
-    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
+    assert not runner.published_candidate_path(config.durable_root).exists()
+    assert not runner.published_evidence_path(config.durable_root).exists()
 
 
 def test_phase_c_launch_failure_writes_fail_evidence_without_candidate(tmp_path: Path) -> None:
@@ -545,12 +663,13 @@ def test_phase_c_launch_failure_writes_fail_evidence_without_candidate(tmp_path:
     )
     result = runner.run_phase_c(config)
     assert result["failure_code"] == "RESOLUTION_PROCESS_FAILURE"
-    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
-    evidence = json.loads((config.durable_root / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
+    assert not runner.published_candidate_path(config.durable_root).exists()
+    evidence = json.loads(runner.published_evidence_path(config.durable_root).read_text(encoding="utf-8"))
     assert evidence["process_started"] is False
     assert evidence["process_exit_code"] is None
     assert evidence["candidate_artifact_created"] is False
     assert str(config.durable_root) not in json.dumps(evidence)
+    assert set(runner.published_artifact_directory(config.durable_root).iterdir()) == {runner.published_evidence_path(config.durable_root)}
 
 
 @pytest.mark.parametrize("mutation", ["missing", "extra", "tamper", "source"])
@@ -568,8 +687,8 @@ def test_phase_c_invalid_wheelhouse_fails_without_candidate(tmp_path: Path, muta
     result = runner.run_phase_c(config)
     assert result["status"] == "FAIL"
     assert result["candidate_artifact_created"] is False
-    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
-    evidence = json.loads((config.durable_root / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
+    assert not runner.published_candidate_path(config.durable_root).exists()
+    evidence = json.loads(runner.published_evidence_path(config.durable_root).read_text(encoding="utf-8"))
     assert evidence["candidate_artifact_created"] is False
 
 
@@ -627,8 +746,8 @@ def test_phase_c_compound_wheelhouse_failures_use_frozen_precedence(
     result = runner.run_phase_c(config)
     assert result["failure_code"] == expected_failure
     assert result["candidate_artifact_created"] is False
-    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
-    evidence = json.loads((config.durable_root / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
+    assert not runner.published_candidate_path(config.durable_root).exists()
+    evidence = json.loads(runner.published_evidence_path(config.durable_root).read_text(encoding="utf-8"))
     assert evidence["status"] == "FAIL"
     assert evidence["failure_code"] == expected_failure
     assert evidence["candidate_artifact_created"] is False
@@ -641,4 +760,4 @@ def test_phase_c_predecessor_drift_is_not_success(tmp_path: Path) -> None:
     result = runner.run_phase_c(config)
     assert result["status"] == "FAIL"
     assert result["failure_code"] == "PREDECESSOR_PIN_DRIFT"
-    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
+    assert not runner.published_candidate_path(config.durable_root).exists()
