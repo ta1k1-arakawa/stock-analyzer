@@ -333,6 +333,8 @@ def _validate_provenance(config: PreflightConfig, obs: Mapping[str, Any]) -> dic
         return None
     if obs.get("migration_authority_git_blob_sha1") != config.expected_migration_authority_blob_sha1:
         return None
+    if obs.get("generic_lock_git_blob_sha1") != config.expected_generic_lock_blob_sha1:
+        return None
     candidate_bytes = obs.get("candidate_bytes")
     evidence_bytes = obs.get("evidence_bytes")
     authority_bytes = obs.get("migration_authority_bytes")
@@ -475,8 +477,37 @@ def run_preflight(
 ) -> dict[str, Any]:
     """Run the frozen receipt precedence without mutation or package install."""
 
-    obs = _default_observations(config) if observations is None else dict(observations)
-    provenance = _validate_provenance(config, obs)
+    if observations is None:
+        # Stage P is isolated: this collector performs repository/file
+        # binding only and cannot launch the canonical interpreter.
+        obs = _default_provenance_observations(config)
+        provenance = _validate_provenance(config, obs)
+        if provenance is None:
+            result = _failure(config, "PROVENANCE_BINDING_FAILURE")
+            if publish:
+                publish_receipt(config, result["receipt"])
+            return result
+        # Stage L is reached only after Stage P has passed.
+        try:
+            obs.update(_default_predecessor_observations(config))
+        except (OSError, subprocess.CalledProcessError, UnicodeError, ValueError, PreflightValidationError):
+            pass
+        if not _validate_predecessor(config, obs):
+            result = _failure(config, "PREDECESSOR_LIVE_BASELINE_MISMATCH")
+            if publish:
+                publish_receipt(config, result["receipt"])
+            return result
+        # Stage S reads the committed/worktree lock only after the live
+        # predecessor baseline has passed.
+        try:
+            obs.update(_default_successor_lock_observations(config))
+        except (OSError, subprocess.CalledProcessError, UnicodeError, ValueError, PreflightValidationError):
+            pass
+    else:
+        # Synthetic callers inject all observations and therefore perform no
+        # real process or environment probe.
+        obs = dict(observations)
+        provenance = _validate_provenance(config, obs)
     if provenance is None:
         result = _failure(config, "PROVENANCE_BINDING_FAILURE")
     elif not _validate_predecessor(config, obs):
@@ -580,8 +611,8 @@ def _probe_canonical_environment(config: PreflightConfig) -> dict[str, Any]:
     }
 
 
-def _default_observations(config: PreflightConfig) -> dict[str, Any]:
-    """Gather only local/no-network observations for a future real call."""
+def _default_provenance_observations(config: PreflightConfig) -> dict[str, Any]:
+    """Gather only Stage-P local/no-network observations."""
 
     obs: dict[str, Any] = {}
     try:
@@ -606,18 +637,36 @@ def _default_observations(config: PreflightConfig) -> dict[str, Any]:
             evidence_bytes=_git_show(config.repo_root, config.expected_evidence_commit_sha, EVIDENCE_RELATIVE),
             migration_authority_bytes=_git_show(config.repo_root, "HEAD", MIGRATION_AUTHORITY_RELATIVE),
             generic_lock_git_blob_sha1=_run_git(config.repo_root, ["rev-parse", f"HEAD:{LOCK_RELATIVE.as_posix()}"]).decode().strip(),
-            generic_lock_committed_bytes=_git_show(config.repo_root, "HEAD", LOCK_RELATIVE),
-            generic_lock_worktree_bytes=(config.repo_root / LOCK_RELATIVE).read_bytes(),
         )
         obs.update(
             candidate_bytes_git_blob_sha1=_git_blob_sha1(obs["candidate_bytes"]),
             evidence_bytes_git_blob_sha1=_git_blob_sha1(obs["evidence_bytes"]),
             migration_authority_bytes_git_blob_sha1=_git_blob_sha1(obs["migration_authority_bytes"]),
         )
-        obs.update(_probe_canonical_environment(config))
     except (OSError, subprocess.CalledProcessError, UnicodeError, ValueError, PreflightValidationError):
         return obs
     return obs
+
+
+def _default_predecessor_observations(config: PreflightConfig) -> dict[str, Any]:
+    """Gather Stage-L observations only after provenance has passed."""
+
+    return _probe_canonical_environment(config)
+
+
+def _default_successor_lock_observations(config: PreflightConfig) -> dict[str, Any]:
+    """Gather Stage-S lock bytes only after the predecessor gate has passed."""
+
+    return {
+        "generic_lock_committed_bytes": _git_show(config.repo_root, "HEAD", LOCK_RELATIVE),
+        "generic_lock_worktree_bytes": (config.repo_root / LOCK_RELATIVE).read_bytes(),
+    }
+
+
+def _default_observations(config: PreflightConfig) -> dict[str, Any]:
+    """Backward-compatible alias for the Stage-P-only collector."""
+
+    return _default_provenance_observations(config)
 
 
 def _atomic_create_no_overwrite(path: Path, raw: bytes) -> None:
@@ -671,12 +720,14 @@ def _config_from_args(args: argparse.Namespace) -> PreflightConfig:
         expected_extension_design_sha=args.expected_extension_design_sha,
         expected_reviewed_runner_commit_sha=args.expected_reviewed_runner_commit_sha,
         expected_reviewed_runner_blob_sha1=args.expected_reviewed_runner_blob_sha1,
-        wheelhouse=Path(args.wheelhouse).resolve(),
-        output_root=Path(args.output_root).resolve(),
+        # Keep user-supplied lexical paths intact until the safety gate has
+        # inspected every existing ancestor for symlinks/reparse points.
+        wheelhouse=Path(args.wheelhouse),
+        output_root=Path(args.output_root),
     )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", required=True)
     parser.add_argument("--expected-current-head", required=True)
@@ -685,6 +736,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--expected-reviewed-runner-blob-sha1", required=True)
     parser.add_argument("--wheelhouse", required=True)
     parser.add_argument("--output-root", required=True)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _build_parser()
     args = parser.parse_args(argv)
     config = _config_from_args(args)
     result = run_preflight(config, publish=True)

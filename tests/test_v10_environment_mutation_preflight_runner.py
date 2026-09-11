@@ -5,6 +5,7 @@ import hashlib
 import json
 import subprocess
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -299,7 +300,8 @@ def test_successor_lock_mismatch_precedes_wheelhouse(tmp_path: Path, mutation: s
     else:
         observations["generic_lock_worktree_bytes"] = observations["generic_lock_committed_bytes"].replace(b"\n", b"\r\n")
     result = _run(config, observations)
-    assert result["receipt"]["failure_code"] == "GENERIC_SUCCESSOR_LOCK_MISMATCH"
+    expected = "PROVENANCE_BINDING_FAILURE" if mutation == "blob" else "GENERIC_SUCCESSOR_LOCK_MISMATCH"
+    assert result["receipt"]["failure_code"] == expected
     assert result["receipt"]["wheelhouse_integrity_verified"] is None
     assert result["receipt"]["delta_wheel_count"] is None
     assert candidate["resolved_package_count"] == 20
@@ -384,3 +386,168 @@ def test_symlink_wheelhouse_is_rejected_as_filesystem_safety_when_supported(tmp_
         pytest.skip("symlink creation unavailable")
     with pytest.raises(ContractValidationError, match="WHEELHOUSE_FILESYSTEM_SAFETY_FAILURE"):
         _run(config, observations)
+
+
+def _cli_config(config: runner.PreflightConfig, wheelhouse: Path, output_root: Path) -> runner.PreflightConfig:
+    parser = runner._build_parser()
+    args = parser.parse_args([
+        "--repo-root", str(config.repo_root),
+        "--expected-current-head", config.expected_current_head,
+        "--expected-extension-design-sha", config.expected_extension_design_sha,
+        "--expected-reviewed-runner-commit-sha", config.expected_reviewed_runner_commit_sha,
+        "--expected-reviewed-runner-blob-sha1", config.expected_reviewed_runner_blob_sha1,
+        "--wheelhouse", str(wheelhouse),
+        "--output-root", str(output_root),
+    ])
+    return runner._config_from_args(args)
+
+
+def _make_directory_symlink(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("directory symlink/reparse creation unavailable")
+
+
+@pytest.mark.parametrize("wheelhouse_kind", ["ancestor", "itself"])
+def test_cli_wheelhouse_lexical_reparse_paths_stop_and_match_direct_config(
+    tmp_path: Path,
+    wheelhouse_kind: str,
+) -> None:
+    config, observations, _ = _fixture(tmp_path / "fixture")
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    link_root = tmp_path / "link-root"
+    _make_directory_symlink(link_root, real_root)
+    if wheelhouse_kind == "ancestor":
+        supplied = link_root / "nested" / "wheelhouse"
+    else:
+        supplied = link_root
+    cli = _cli_config(config, supplied, tmp_path / "safe-output")
+    direct = replace(config, wheelhouse=supplied, output_root=tmp_path / "safe-output")
+    assert cli.wheelhouse == supplied
+    assert cli.wheelhouse == direct.wheelhouse
+    assert runner._wheelhouse_path_is_safe(cli.wheelhouse) is False
+    assert runner._wheelhouse_path_is_safe(direct.wheelhouse) is False
+    with pytest.raises(ContractValidationError, match="WHEELHOUSE_FILESYSTEM_SAFETY_FAILURE"):
+        _run(cli, observations)
+
+
+def test_cli_output_root_lexical_reparse_ancestor_stops_before_publication(tmp_path: Path) -> None:
+    config, observations, _ = _fixture(tmp_path / "fixture")
+    real_root = tmp_path / "real-output-root"
+    real_root.mkdir()
+    link_root = tmp_path / "link-output-root"
+    _make_directory_symlink(link_root, real_root)
+    supplied = link_root / "receipt"
+    cli = _cli_config(config, config.wheelhouse, supplied)
+    direct = replace(config, output_root=supplied)
+    result = _run(config, observations)
+    for candidate in (cli, direct):
+        with pytest.raises(ContractValidationError, match="DURABLE_OUTPUT_ROOT_SAFETY_FAILURE"):
+            runner.publish_receipt(candidate, result["receipt"])
+
+
+def test_cli_safe_ordinary_absolute_paths_remain_usable(tmp_path: Path) -> None:
+    config, _, _ = _fixture(tmp_path / "fixture")
+    wheelhouse = tmp_path / "ordinary-wheelhouse"
+    wheelhouse.mkdir()
+    output_root = tmp_path / "ordinary-output"
+    cli = _cli_config(config, wheelhouse, output_root)
+    assert cli.wheelhouse == wheelhouse
+    assert cli.output_root == output_root
+    assert runner._wheelhouse_path_is_safe(cli.wheelhouse)
+    assert runner.validate_durable_root(
+        cli.output_root,
+        repo_root=config.repo_root,
+        protected_environment=config.canonical_environment,
+        governed_roots=(cli.wheelhouse,),
+    ) == "DURABLE_ROOT_OK"
+
+
+@pytest.mark.parametrize("field", [
+    "head",
+    "clean",
+    "current_runner_blob_sha1",
+    "migration_authority_git_blob_sha1",
+])
+def test_default_stage_p_failure_launches_no_canonical_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    config, observations, _ = _fixture(tmp_path)
+    bad = copy.deepcopy(observations)
+    bad[field] = False if field == "clean" else "0" * 40
+    launch_count = 0
+
+    monkeypatch.setattr(runner, "_default_provenance_observations", lambda _config: bad)
+
+    def probe(_config: runner.PreflightConfig) -> dict[str, object]:
+        nonlocal launch_count
+        launch_count += 1
+        raise AssertionError("canonical interpreter must not launch after provenance failure")
+
+    monkeypatch.setattr(runner, "_probe_canonical_environment", probe)
+    result = runner.run_preflight(config)
+    assert result["receipt"]["failure_code"] == "PROVENANCE_BINDING_FAILURE"
+    assert launch_count == 0
+
+
+def test_default_valid_provenance_reaches_only_expected_predecessor_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, observations, _ = _fixture(tmp_path)
+    launch_count = 0
+    predecessor_keys = {
+        "interpreter_executable",
+        "python_implementation",
+        "python_version",
+        "platform_system",
+        "platform_machine",
+        "sysconfig_platform",
+        "pip_version",
+        "live_packages",
+        "predecessor_lock_git_blob_sha1",
+        "predecessor_lock_sha256",
+        "predecessor_lock_package_count",
+    }
+    predecessor = {key: observations[key] for key in predecessor_keys}
+    monkeypatch.setattr(runner, "_default_provenance_observations", lambda _config: copy.deepcopy(observations))
+
+    def probe(_config: runner.PreflightConfig) -> dict[str, object]:
+        nonlocal launch_count
+        launch_count += 1
+        return predecessor
+
+    monkeypatch.setattr(runner, "_probe_canonical_environment", probe)
+    result = runner.run_preflight(config)
+    assert result["receipt"]["status"] == "PASS"
+    assert launch_count == 1
+
+
+@pytest.mark.parametrize("stage", ["provenance", "predecessor", "successor"])
+def test_wheelhouse_verification_is_not_called_before_prior_stage_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    config, observations, _ = _fixture(tmp_path)
+    if stage == "provenance":
+        observations["head"] = "0" * 40
+    elif stage == "predecessor":
+        observations["live_packages"] = []
+    else:
+        observations["generic_lock_worktree_bytes"] = b"changed"
+    calls = 0
+
+    def fail_if_called(*_args: object, **_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("wheelhouse verification called before its stage")
+
+    monkeypatch.setattr(runner, "verify_reviewed_wheelhouse", fail_if_called)
+    result = _run(config, observations)
+    assert result["receipt"]["failure_code"] != "NONE"
+    assert calls == 0
