@@ -338,7 +338,28 @@ def test_phase_b_marks_started_before_wait_and_wait_failure_is_ambiguous_to_phas
     assert state["process_started"] is True
     assert state["process_exit_code"] is None
     assert state["package_resolution_process_invocations"] == 1
+    runner._validate_attempt_state(config, state)
     with pytest.raises(ContractValidationError, match="ATTEMPT_STATE_AMBIGUOUS"):
+        runner.run_phase_c(config)
+    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
+    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
+
+
+@pytest.mark.parametrize("invocation_count", [True, False, -1, 2, 1.0, "1", None])
+def test_phase_c_rejects_non_strict_attempt_invocation_count_before_inspection(
+    tmp_path: Path, invocation_count: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _ = _run_successful_phase_b(tmp_path)
+    state_path = config.durable_root / runner.STATE_NAME
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["package_resolution_process_invocations"] = invocation_count
+    state_path.write_bytes(runner.canonical_json_bytes(state))
+    monkeypatch.setattr(
+        runner,
+        "_inspect_phase_c_wheelhouse",
+        lambda *_args: pytest.fail("wheelhouse inspection must not occur"),
+    )
+    with pytest.raises(ContractValidationError, match="ATTEMPT_STATE_SCHEMA_INVALID"):
         runner.run_phase_c(config)
     assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
     assert not (config.durable_root / runner.EVIDENCE_NAME).exists()

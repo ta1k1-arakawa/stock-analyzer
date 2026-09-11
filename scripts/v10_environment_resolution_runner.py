@@ -638,6 +638,10 @@ def _validate_attempt_state(config: PhaseAConfig, state: Mapping[str, Any]) -> N
     started = state["process_started"]
     exit_code = state["process_exit_code"]
     invocations = state["package_resolution_process_invocations"]
+    if not isinstance(invocations, int) or isinstance(invocations, bool) or invocations < 0:
+        raise RunnerValidationError("ATTEMPT_STATE_SCHEMA_INVALID")
+    if invocations not in (0, 1):
+        raise RunnerValidationError("ATTEMPT_STATE_SCHEMA_INVALID")
     if started is False:
         if exit_code is not None or invocations != 0 or state["resolution_completed"] is not False:
             raise RunnerValidationError("ATTEMPT_STATE_AMBIGUOUS")
