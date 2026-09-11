@@ -812,10 +812,10 @@ def _inspect_phase_c_wheelhouse(wheelhouse: Path) -> tuple[str | None, list[dict
             return "PREDECESSOR_PIN_DRIFT", manifest
         return "RESOLUTION_REPORT_INVALID", manifest
     package_map = dict(pairs)
+    if "pandas-market-calendars" in package_map and package_map["pandas-market-calendars"] != "5.4.0":
+        return "RESOLUTION_REPORT_INVALID", manifest
     if "pandas-market-calendars" not in package_map or "exchange-calendars" not in package_map:
         return "REQUIRED_DISTRIBUTION_MISSING", manifest
-    if package_map["pandas-market-calendars"] != "5.4.0":
-        return "RESOLUTION_REPORT_INVALID", manifest
     if source_present:
         return "SOURCE_DISTRIBUTION_REQUIRED", manifest
     return None, manifest

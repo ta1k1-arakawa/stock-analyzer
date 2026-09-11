@@ -4,6 +4,7 @@ import copy
 from dataclasses import replace
 import hashlib
 import json
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -72,7 +73,14 @@ def _valid_observations(config: runner.PhaseAConfig) -> dict[str, object]:
 
 
 def test_direct_spec_is_exact_utf8_lf_bytes() -> None:
-    raw = (Path(__file__).parents[1] / runner.DIRECT_SPEC_RELATIVE).read_bytes()
+    repo_root = Path(__file__).parents[1]
+    raw = subprocess.run(
+        ["git", "-C", str(repo_root), "show", f"HEAD:{runner.DIRECT_SPEC_RELATIVE.as_posix()}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+        shell=False,
+    ).stdout
     assert raw == runner.DIRECT_SPEC_BYTES
     assert b"\r" not in raw
     assert raw.endswith(b"\n")
@@ -567,15 +575,18 @@ def test_phase_c_invalid_wheelhouse_fails_without_candidate(tmp_path: Path, muta
 
 def _apply_compound_failure(wheelhouse: Path, case: str) -> None:
     source = wheelhouse / "source-package-1.0.0.tar.gz"
-    if case in {"malformed_plus_source", "malformed_missing_source", "wrong_pmc_plus_source"}:
-        if case == "wrong_pmc_plus_source":
+    if case in {"malformed_plus_source", "malformed_missing_source", "wrong_pmc_plus_source", "wrong_pmc_exchange_missing_source", "wrong_pmc_exchange_missing"}:
+        if case.startswith("wrong_pmc"):
             (wheelhouse / "pandas_market_calendars-5.4.0-py3-none-any.whl").unlink()
             _write_wheel(wheelhouse, "pandas-market-calendars", "9.9.9")
+            if "exchange_missing" in case:
+                (wheelhouse / "exchange_calendars-5.0.0-py3-none-any.whl").unlink()
         else:
             (wheelhouse / "exchange_calendars-5.0.0-py3-none-any.whl").write_bytes(b"malformed")
         if case == "malformed_missing_source":
             (wheelhouse / "pandas_market_calendars-5.4.0-py3-none-any.whl").unlink()
-        source.write_bytes(b"source")
+        if case.endswith("_source"):
+            source.write_bytes(b"source")
     elif case in {"drift_plus_source", "drift_missing_required_plus_source"}:
         (wheelhouse / "cffi-2.1.1-py3-none-any.whl").unlink()
         if case == "drift_missing_required_plus_source":
@@ -604,6 +615,8 @@ def _apply_compound_failure(wheelhouse: Path, case: str) -> None:
         ("missing_exchange_plus_source", "REQUIRED_DISTRIBUTION_MISSING"),
         ("valid_plus_source", "SOURCE_DISTRIBUTION_REQUIRED"),
         ("wrong_pmc_plus_source", "RESOLUTION_REPORT_INVALID"),
+        ("wrong_pmc_exchange_missing_source", "RESOLUTION_REPORT_INVALID"),
+        ("wrong_pmc_exchange_missing", "RESOLUTION_REPORT_INVALID"),
     ],
 )
 def test_phase_c_compound_wheelhouse_failures_use_frozen_precedence(
