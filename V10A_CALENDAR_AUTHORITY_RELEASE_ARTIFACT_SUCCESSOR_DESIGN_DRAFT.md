@@ -2,9 +2,12 @@
 
 ```text
 study_identity=V10A_CALENDAR_AUTHORITY_RELEASE_ARTIFACT_SUCCESSOR
-design_status=DRAFT_AWAITING_GPT_EXACT_SHA_REVIEW
-design_frozen=false
-human_freeze_approved=false
+design_status=FROZEN_AFTER_GPT_PASS_AND_HUMAN_APPROVAL
+approved_design_sha=b14cc5510685210e928000af0815e188bc1aadc0
+gpt_final_design_review_sha=b14cc5510685210e928000af0815e188bc1aadc0
+gpt_final_design_review_result=PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0
+design_frozen=true
+human_freeze_approved=true
 predecessor_study=V10_CALENDAR_AUTHORITY_SUCCESSOR
 predecessor_terminal_reason=FROZEN_DESIGN_SOURCE_IDENTITY_INCONSISTENCY
 ```
@@ -18,9 +21,11 @@ its frozen `jpx.py` source blob is inconsistent with the reviewed
 authority under a new study identity while preserving the V10 scientific
 methodology stated below.
 
-This draft is design-only and awaits GPT exact-SHA review. It does not freeze
-V10A, authorize environment mutation, authorize calendar generation, or
-authorize historical evaluation.
+The design content approved by GPT and the human is exactly the content at
+`b14cc5510685210e928000af0815e188bc1aadc0`. V10A design freeze is recorded
+after the exact-SHA GPT PASS and explicit human approval. This freeze does not
+authorize environment mutation, calendar generation, T0, or historical
+evaluation.
 
 ## 2. Terminal V10 adjudication
 
@@ -189,9 +194,10 @@ must remain wholly synthetic and must not read private or research inputs.
 ## 7. Governance and non-claims
 
 ```text
-V10A_DESIGN_FROZEN=false
+V10A_DESIGN_FROZEN=true
 V10A_EXECUTION_AUTHORIZED=false
-V10A_HUMAN_FREEZE_APPROVED=false
+V10A_HUMAN_FREEZE_APPROVED=true
+V10A_APPROVED_DESIGN_SHA=b14cc5510685210e928000af0815e188bc1aadc0
 V10A_HISTORICAL_EVALUATION_AUTHORIZED=false
 V10A_T0_AUTHORIZED=false
 V10A_CALENDAR_GENERATION_AUTHORIZED=false
@@ -205,12 +211,11 @@ finding.
 
 ## 8. Review and promotion requirements
 
-Before V10A can proceed, GPT exact-SHA review must approve this design and
-the implementation that binds the corrected release artifact. Any human
-freeze approval must be explicit and scoped to V10A design freeze. The later
-operational sequence must separately bind the reviewed V10A artifacts,
-validate the pre-existing environment with no network, and preserve a
-one-shot/no-retry boundary for any future mutation.
+The GPT exact-SHA review and explicit human freeze approval recorded above are
+bound to the approved design SHA. Any later implementation and operational
+sequence must be separately reviewed and authorized, must bind the reviewed
+V10A artifacts, validate the pre-existing environment with no network, and
+preserve a one-shot/no-retry boundary for any future mutation.
 
 No V10A package installation, calendar generation, T0, historical
 evaluation, model fitting, backtest, broker operation, private/sealed read,
