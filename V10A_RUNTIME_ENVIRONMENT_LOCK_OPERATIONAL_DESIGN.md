@@ -44,7 +44,7 @@ V10A_EXECUTION_AUTHORIZED=false
 V10A_CALENDAR_GENERATION_AUTHORIZED=false
 V10A_T0_AUTHORIZED=false
 V10A_HISTORICAL_EVALUATION_AUTHORIZED=false
-V10A_RUNTIME_ENVIRONMENT_LOCK=NOT_CREATED
+V10A_RUNTIME_ENVIRONMENT_LOCK=NOT_CREATED_FOR_PROMOTION
 V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_AUTHORIZED=false
 future_profitability_established=false
 ```
@@ -242,7 +242,24 @@ R1 is committed and reviewed; no future SHA is fabricated here.
 
 ### R3 — live runtime-lock snapshot
 
-After R2 PASS, the repository phased rule is:
+The first real attempt reached runtime `PASS` but is terminally
+non-promotable because the then-frozen execution-evidence schema did not
+carry all wrapper/GPT authority facts required by later repository review:
+
+```text
+R3_ATTEMPT_1_TERMINAL_NONPROMOTABLE=true
+R3_ATTEMPT_1_RUNTIME_RESULT=PASS
+R3_ATTEMPT_1_PROMOTION_CHAIN_RESULT=BLOCK
+```
+
+The attempt-1 lock and execution evidence are preserved in place. They are
+not deleted, reset, rewritten, retried, or reused as R4/R5 promotion
+authority. The attempt-1 authorization is consumed and cannot be reused.
+The remediation is governance-only and does not reinterpret the runtime
+snapshot or change the scientific calendar methodology.
+
+Every future attempt is a new identity. After a future R2 PASS, the phased
+rule is:
 
 ```text
 R3 remote precheck 1 through connected GitHub
@@ -255,58 +272,85 @@ R3 remote precheck 1 through connected GitHub
 ```
 
 R3 remote precheck 1 must verify through connected GitHub that the
-authoritative branch HEAD equals the exact R2-reviewed SHA immediately before
-Phase A. A mismatch is `EXPECTED_HEAD_MISMATCH` and stops the chain.
+authoritative branch HEAD equals the exact future R2-reviewed SHA immediately
+before Phase A. A mismatch is `EXPECTED_HEAD_MISMATCH` and stops the chain.
 
 Phase A must be local and no-network. Before any canonical-environment
 observation it verifies the exact branch, local HEAD, local tracking ref,
-clean tree, reviewed R2 runner/test blobs, this design provenance, the frozen
-V10A design/freeze/P5 provenance, and exclusive durable-root availability.
-Phase A writes no durable attempt state, launches no canonical Python, and
-does not read the canonical environment, wheelhouse, packages, or calendar.
+clean tree, reviewed R2 runner/test/design blobs, frozen V10A design/freeze/P5
+provenance, final-freeze evidence/adjudication provenance, and exclusive
+durable-root availability. Phase A writes no durable attempt state, launches
+no canonical Python, and does not read the canonical environment, wheelhouse,
+packages, or calendar.
 
 After Phase A PASS and before fresh authorization, R3 remote precheck 2 must
 again verify through connected GitHub that the authoritative branch HEAD is
-the exact R2-reviewed SHA. A mismatch is `EXPECTED_HEAD_MISMATCH` and stops
-the chain. No `git fetch` is required inside the no-network Phase A/B/C path.
+the exact future R2-reviewed SHA. A mismatch is `EXPECTED_HEAD_MISMATCH` and
+stops the chain. No `git fetch` is required inside the no-network Phase A/B/C
+path.
 
-The R3 attempt has a new one-shot identity. Its fresh authorization is
-distinct from all V10/V10A promotion and validation authorizations and is
-consumed only at the reviewed attempt boundary. Phase B may launch only the
-exact R2-reviewed runner once, against `.venv-real-execution`, and may only
-read the permitted runtime metadata/source bytes and write one runtime lock
-and one safe result receipt into exclusive durable roots. It performs no repo
-commit, git write, mutation, installation, network operation, or calendar
-operation.
+The future R3 attempt has a fresh one-shot identity, for example
+`R3_RUNTIME_LOCK_ATTEMPT_2`. Its authorization is distinct from all V10 and
+V10A authorizations and is consumed only at the reviewed attempt boundary.
+Phase B may launch only the exact R2-reviewed runner once, against
+`.venv-real-execution`, and may only read the permitted runtime metadata and
+source bytes and write one runtime lock and one runner-produced execution
+evidence receipt into exclusive durable roots. It performs no repo commit,
+git write, mutation, installation, network operation, or calendar operation.
 
 ```text
 R3_CREATES_REPOSITORY_COMMIT=false
 ```
 
 Phase C performs no runner rerun and no environment observation. It inspects
-only the durable lock, safe evidence, and wrapper state; preserves exact lock
-and evidence SHA-256 values; and creates no repository commit. The R3
-attempt's fresh authority is never inferred from R2 PASS or any earlier V10A
-authorization.
+only the durable lock, runner execution evidence, separate R3 adjudication,
+and wrapper state; preserves exact lock/evidence SHA-256 values; and creates
+no repository commit. The fresh R3 authority is never inferred from R2 PASS,
+the terminal attempt-1 PASS, or any earlier V10A authorization.
 
 On launch failure, nonzero exit, validation failure, or durable write
 failure: do not retry, rerun, delete, reset, repair, reinstall, recreate the
 environment, or use an alternate provider. Preserve durable state, complete
 Phase C where safe, and return to GPT review.
 
-### R4 — repository lock/evidence commit
+### R3 adjudication artifact
 
-Only after an R3 PASS may a repository-only commit add exactly these four
-authorized changes:
+The runner-produced artifacts remain separate from wrapper/GPT governance
+facts:
 
 ```text
 V10A_RUNTIME_ENVIRONMENT_LOCK.json
 V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE.json
+V10A_RUNTIME_ENVIRONMENT_LOCK_R3_ADJUDICATION.json
+```
+
+`V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE.json` remains the exact
+environment/provenance receipt produced by the reviewed runner. Its existing
+reviewed schema is not augmented or reinterpreted. The separate
+`V10A_RUNTIME_ENVIRONMENT_LOCK_R3_ADJUDICATION.json` is the only artifact
+that carries the wrapper/GPT authority facts. It must bind the exact future
+R2-reviewed SHA, runner/test/design blobs, remote precheck 1, Phase A, remote
+precheck 2, point-of-use remote check, fresh authorization consumption,
+`retry_authorized=false`, process-start facts and exit code, Phase C, exact
+durable lock/evidence hashes and sizes, result/failure code, exact runtime
+snapshot, all prohibited-operation counters, and all downstream authority
+booleans false. It contains no local paths, raw authorization, human
+identity, protected data, source bytes, prices, tickers, or outcomes.
+
+### R4 — repository lock/evidence/adjudication commit
+
+Only after a future R3 PASS may a repository-only commit add exactly these
+five authorized changes:
+
+```text
+V10A_RUNTIME_ENVIRONMENT_LOCK.json
+V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE.json
+V10A_RUNTIME_ENVIRONMENT_LOCK_R3_ADJUDICATION.json
 PROJECT_STATE.md
 PROJECT_DECISION_LOG.md
 ```
 
-R4 must be exactly one direct commit after the exact R2-reviewed SHA:
+R4 must be exactly one direct commit after the exact future R2-reviewed SHA:
 
 ```text
 R4_PARENT_SHA=exact_R2_reviewed_SHA
@@ -322,30 +366,33 @@ environment authority files.
 
 Before commit and push, R4 mechanically verifies that the reviewed runner,
 reviewed test, and this operational-design blobs equal their exact R2-bound
-blobs. The durable lock is copied byte-for-byte without reserialization.
-The staged repository lock has exactly the durable lock byte size and
-SHA-256; any difference stops R4. R4 performs no runner rerun, environment
-read, package operation, calendar operation, or gate consumption.
+blobs. Both durable runner artifacts are copied byte-for-byte without
+reserialization; their repository/staged SHA-256 values and sizes must equal
+the durable R3 values. The R3 adjudication is created from safe wrapper facts
+only. R4 performs no runner rerun, environment read, package operation,
+calendar operation, or gate consumption.
 
-The R4 execution evidence binds the exact R2-reviewed SHA, reviewed runner
-and test blobs, design blob, runtime-lock Git blob/SHA-256/size, both R3
-remote-precheck PASS results, Phase A/B/C results and process facts, fresh
+The R4 evidence and adjudication together bind the exact R2-reviewed SHA,
+reviewed runner/test/design blobs, runtime-lock Git blob/SHA-256/size, exact
+execution-evidence SHA-256/size, both R3 remote-precheck PASS results, the
+point-of-use remote check, Phase A/B/C results and process facts, fresh
 authorization consumption, `retry_authorized=false`, exact 20-package
 result, corrected source blobs, and all prohibited-operation counters zero.
-It also binds `calendar_generation_authorized=false`,
+They also bind `calendar_generation_authorized=false`,
 `t0_authorized=false`, `historical_evaluation_authorized=false`, and
-`future_profitability_established=false`. It contains no local paths or raw
-human authorization.
+`future_profitability_established=false`. Neither artifact contains local
+paths or raw human authorization.
 
 ### R5 — GPT exact-SHA runtime-lock review
 
-GPT reviews the R4 commit and its exact lock/evidence blobs. R5 must
-mechanically verify the R4 parent, `ahead_by=1`, `behind_by=0`, exactly the
-four R4-authorized files, unchanged R2-bound runner/test/design blobs,
-unchanged frozen scientific/protected artifacts, exact durable-to-repository
-lock bytes and SHA-256, exact R2/evidence bindings, one-shot authorization,
-`retry=false`, runtime snapshot PASS, zero prohibited-operation counters,
-and no calendar/T0/historical authority claim.
+GPT reviews the R4 commit and all three exact artifacts. R5 must mechanically
+verify the R4 parent, `ahead_by=1`, `behind_by=0`, exactly the five
+R4-authorized files, unchanged R2-bound runner/test/design blobs, unchanged
+frozen scientific/protected artifacts, exact durable-to-repository lock and
+execution-evidence bytes and SHA-256 values, exact R3 adjudication bindings,
+one-shot authorization, `retry=false`, runtime snapshot PASS, zero
+prohibited-operation counters, and no calendar/T0/historical authority
+claim.
 
 Only R5 PASS with `CRITICAL=0`, `HIGH=0`, and `MEDIUM=0` establishes
 `V10A_RUNTIME_ENVIRONMENT_LOCK=GPT_REVIEWED_PASS`. R5 does not authorize
