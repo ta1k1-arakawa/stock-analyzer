@@ -9,6 +9,7 @@ import pytest
 
 from scripts import v10_environment_successor_live_validation_runner as runner
 from scripts import v10_environment_mutation_preflight_runner as preflight
+from scripts import check_real_execution_env
 from scripts.v10_environment_extension_contract import PREDECESSOR_PACKAGE_SET
 
 
@@ -19,6 +20,16 @@ LIVE_BLOB = "b" * 40
 
 def _hash(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def test_pdf_probe_uses_reviewed_public_status_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(check_real_execution_env, "check_pdf_parser_synthetic_probe", lambda: {"status": "PASS"})
+    public_success = check_real_execution_env.check_pdf_parser_synthetic_probe()
+
+    assert public_success["status"] == "PASS"
+    assert runner._normalize_synthetic_probe_status(public_success) == "PASS"
+    assert runner._normalize_synthetic_probe_status({"status": "FAIL"}) == "FAIL"
+    assert runner._normalize_synthetic_probe_status({"status": "SYNTHETIC_PDF_PROBE_PASS"}) == "FAIL"
 
 
 def _successor_packages() -> list[dict[str, str]]:

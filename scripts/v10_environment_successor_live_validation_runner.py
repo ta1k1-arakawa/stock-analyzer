@@ -470,6 +470,11 @@ def _packages_as_json(packages: Sequence[tuple[str, str]]) -> list[dict[str, str
     return [{"name": name, "version": version} for name, version in packages]
 
 
+def _normalize_synthetic_probe_status(probe_result: Any) -> str:
+    """Normalize a reviewed synthetic-probe helper's public status contract."""
+    return "PASS" if isinstance(probe_result, Mapping) and probe_result.get("status") == "PASS" else "FAIL"
+
+
 def _default_live_observations(config: LiveValidationConfig) -> dict[str, Any]:
     observations: dict[str, Any] = {
         "package_index_network_requests": 0,
@@ -502,7 +507,7 @@ def _default_live_observations(config: LiveValidationConfig) -> dict[str, Any]:
         from scripts.check_real_execution_env import check_jpx_xls_parser_synthetic_probe, check_pdf_parser_synthetic_probe
 
         observations["xls_probe_status"] = "PASS" if check_jpx_xls_parser_synthetic_probe().get("status") == "PASS" else "FAIL"
-        observations["pdf_probe_status"] = "PASS" if check_pdf_parser_synthetic_probe().get("status") == "SYNTHETIC_PDF_PROBE_PASS" else "FAIL"
+        observations["pdf_probe_status"] = _normalize_synthetic_probe_status(check_pdf_parser_synthetic_probe())
     except (OSError, ImportError, KeyError, TypeError, ValueError):
         observations.setdefault("observed_packages", None)
     return observations
