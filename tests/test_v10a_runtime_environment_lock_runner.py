@@ -78,6 +78,24 @@ def _install_success_collectors(monkeypatch: pytest.MonkeyPatch, config: runner.
     )
 
 
+def _assert_evidence_only_failure(config: runner.RuntimeLockConfig, expected_code: str) -> dict[str, object]:
+    assert config.output_root.exists()
+    assert sorted(path.name for path in config.output_root.iterdir()) == [runner.EVIDENCE_NAME]
+    evidence = json.loads((config.output_root / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
+    assert evidence["status"] == "FAIL"
+    assert evidence["failure_code"] == expected_code
+    runner.validate_evidence(evidence)
+    return evidence
+
+
+def _successful_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[runner.RuntimeLockConfig, dict[str, object]]:
+    config = _config(tmp_path)
+    _install_success_collectors(monkeypatch, config)
+    result = runner.run_lock(config)
+    assert result["status"] == "PASS"
+    return config, result
+
+
 def test_normalize_distribution_name_exactly() -> None:
     assert runner.normalize_distribution_name("Pandas_Market.Calendars") == "pandas-market-calendars"
     assert runner.normalize_distribution_name("x--__..y") == "x-y"
@@ -256,7 +274,140 @@ def test_source_failure_suppresses_pass_publication(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(runner, "_default_source_observations", lambda: {"calendar_source_blob": "f" * 40, "holiday_source_blob": runner.HOLIDAY_SOURCE_BLOB})
     result = runner.run_lock(config)
     assert result["failure_code"] == "CALENDAR_SOURCE_BLOB_MISMATCH"
+    assert sorted(path.name for path in config.output_root.iterdir()) == [runner.EVIDENCE_NAME]
+    evidence = json.loads((config.output_root / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
+    assert evidence["status"] == "FAIL"
+    assert evidence["failure_code"] == "CALENDAR_SOURCE_BLOB_MISMATCH"
+    assert evidence["durable_lock_created"] is False
+    assert evidence["runtime_lock_sha256"] is None
+    assert evidence["runtime_lock_size"] is None
+    runner.validate_evidence(evidence)
+
+
+def test_wrong_interpreter_publishes_evidence_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _install_success_collectors(monkeypatch, config)
+    monkeypatch.setattr(runner, "_default_interpreter_observations", lambda _: {"executable": "wrong", "expected_executable": "right", "python_version": runner.PYTHON_VERSION})
+    result = runner.run_lock(config)
+    assert result["failure_code"] == "WRONG_CANONICAL_INTERPRETER"
+    _assert_evidence_only_failure(config, "WRONG_CANONICAL_INTERPRETER")
+
+
+def test_python_mismatch_publishes_evidence_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _install_success_collectors(monkeypatch, config)
+    expected = str(config.canonical_interpreter.resolve())
+    monkeypatch.setattr(runner, "_default_interpreter_observations", lambda _: {"executable": expected, "expected_executable": expected, "python_version": "3.11.0"})
+    result = runner.run_lock(config)
+    assert result["failure_code"] == "PYTHON_VERSION_MISMATCH"
+    _assert_evidence_only_failure(config, "PYTHON_VERSION_MISMATCH")
+
+
+def test_package_mismatch_publishes_evidence_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _install_success_collectors(monkeypatch, config)
+    monkeypatch.setattr(runner, "_default_package_observations", lambda: {"runtime_distributions": [], "runtime_distribution_count": 0})
+    result = runner.run_lock(config)
+    assert result["failure_code"] == "PACKAGE_SET_MISMATCH"
+    _assert_evidence_only_failure(config, "PACKAGE_SET_MISMATCH")
+
+
+def test_holiday_source_mismatch_publishes_evidence_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _install_success_collectors(monkeypatch, config)
+    monkeypatch.setattr(runner, "_default_source_observations", lambda: {"calendar_source_blob": runner.CALENDAR_SOURCE_BLOB, "holiday_source_blob": "0" * 40})
+    result = runner.run_lock(config)
+    assert result["failure_code"] == "HOLIDAY_SOURCE_BLOB_MISMATCH"
+    _assert_evidence_only_failure(config, "HOLIDAY_SOURCE_BLOB_MISMATCH")
+
+
+def test_canonicalization_failure_publishes_evidence_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _install_success_collectors(monkeypatch, config)
+    monkeypatch.setattr(runner, "build_runtime_lock", lambda _: (_ for _ in ()).throw(runner.RuntimeLockError("RUNTIME_LOCK_CANONICALIZATION_FAILURE")))
+    result = runner.run_lock(config)
+    assert result["failure_code"] == "RUNTIME_LOCK_CANONICALIZATION_FAILURE"
+    _assert_evidence_only_failure(config, "RUNTIME_LOCK_CANONICALIZATION_FAILURE")
+
+
+def test_provenance_failure_writes_no_output_artifact(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(runner, "_default_provenance_observations", lambda _: {})
+    result = runner.run_lock(config)
+    assert result["failure_code"] == "PROVENANCE_BINDING_FAILURE"
     assert not config.output_root.exists()
+
+
+def test_lock_write_failure_preserves_prepared_hash_and_writes_evidence_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _install_success_collectors(monkeypatch, config)
+    original = runner._exclusive_write
+    calls: list[str] = []
+
+    def fail_lock(path: Path, raw: bytes) -> None:
+        calls.append(path.name)
+        if path.name == runner.LOCK_NAME:
+            raise OSError("synthetic lock write failure")
+        original(path, raw)
+
+    monkeypatch.setattr(runner, "_exclusive_write", fail_lock)
+    result = runner.run_lock(config)
+    assert result["failure_code"] == "DURABLE_WRITE_FAILURE"
+    assert result["durable_lock_created"] is False
+    assert isinstance(result["runtime_lock_sha256"], str)
+    assert isinstance(result["runtime_lock_size"], int)
+    assert calls == [runner.LOCK_NAME, runner.EVIDENCE_NAME]
+    _assert_evidence_only_failure(config, "DURABLE_WRITE_FAILURE")
+    evidence = json.loads((config.output_root / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
+    assert evidence["durable_lock_created"] is False
+    assert evidence["runtime_lock_sha256"] == result["runtime_lock_sha256"]
+    assert evidence["runtime_lock_size"] == result["runtime_lock_size"]
+
+
+def test_evidence_write_failure_is_not_retried_and_preserves_partial_lock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _install_success_collectors(monkeypatch, config)
+    original = runner._exclusive_write
+    calls: list[str] = []
+
+    def fail_evidence(path: Path, raw: bytes) -> None:
+        calls.append(path.name)
+        if path.name == runner.EVIDENCE_NAME:
+            raise OSError("synthetic evidence write failure")
+        original(path, raw)
+
+    monkeypatch.setattr(runner, "_exclusive_write", fail_evidence)
+    result = runner.run_lock(config)
+    assert result["failure_code"] == "DURABLE_WRITE_FAILURE"
+    assert result["status"] == "FAIL"
+    assert result["durable_lock_created"] is True
+    assert calls == [runner.LOCK_NAME, runner.EVIDENCE_NAME]
+    assert (config.output_root / runner.LOCK_NAME).exists()
+    assert not (config.output_root / runner.EVIDENCE_NAME).exists()
+
+
+def test_pass_evidence_is_validated_before_evidence_publication(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    _install_success_collectors(monkeypatch, config)
+    original_validate = runner.validate_evidence
+    original_write = runner._exclusive_write
+    events: list[str] = []
+
+    def record_validate(evidence: object, config_arg: runner.RuntimeLockConfig | None = None) -> None:
+        events.append("validate")
+        original_validate(evidence, config_arg)
+
+    def record_write(path: Path, raw: bytes) -> None:
+        if path.name == runner.EVIDENCE_NAME:
+            assert events and events[-1] == "validate"
+            events.append("evidence-write")
+        original_write(path, raw)
+
+    monkeypatch.setattr(runner, "validate_evidence", record_validate)
+    monkeypatch.setattr(runner, "_exclusive_write", record_write)
+    result = runner.run_lock(config)
+    assert result["status"] == "PASS"
+    assert events[-2:] == ["validate", "evidence-write"]
 
 
 def test_output_collision_fails_closed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -293,13 +444,85 @@ def test_success_evidence_has_zero_counters_and_false_authority(monkeypatch: pyt
         assert result[key] is False
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("python_version", "3.11.0"),
+        ("canonical_interpreter_verified", False),
+        ("calendar_distribution_name", "pandas-market-calendars"),
+        ("calendar_distribution_version", "5.3.0"),
+        ("calendar_name", "NYSE"),
+        ("runtime_distribution_count", 19),
+        ("exact_package_mapping", False),
+        ("calendar_source_blob", "0" * 40),
+        ("holiday_source_blob", "0" * 40),
+        ("t0_run", True),
+        ("network_requests", 1),
+        ("package_installations", 1),
+        ("environment_mutations", 1),
+        ("calendar_imports", 1),
+        ("calendar_object_creations", 1),
+        ("calendar_dates_inspected", 1),
+        ("protected_or_private_research_reads", 1),
+        ("execution_authorized", True),
+        ("calendar_generation_authorized", True),
+        ("t0_authorized", True),
+        ("historical_evaluation_authorized", True),
+        ("future_profitability_established", True),
+    ],
+)
+def test_pass_evidence_rejects_each_frozen_semantic_drift(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, field: str, value: object
+) -> None:
+    _, result = _successful_evidence(monkeypatch, tmp_path)
+    mutated = dict(result)
+    mutated[field] = value
+    with pytest.raises(runner.RuntimeLockError):
+        runner.validate_evidence(mutated)
+
+
+def test_pass_evidence_must_match_dynamic_config_provenance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config, result = _successful_evidence(monkeypatch, tmp_path)
+    mutated = dict(result)
+    mutated["expected_r2_reviewed_sha"] = "f" * 40
+    with pytest.raises(runner.RuntimeLockError):
+        runner.validate_evidence(mutated, config)
+
+
+def test_fail_evidence_rejects_positive_counter_for_non_unauthorized_failure(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    evidence = runner._base_evidence(config, "PACKAGE_SET_MISMATCH")
+    evidence["network_requests"] = 1
+    with pytest.raises(runner.RuntimeLockError):
+        runner.validate_evidence(evidence)
+
+
+def test_fail_evidence_allows_unauthorized_counter_only_for_unauthorized_failure(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    evidence = runner._base_evidence(config, "UNAUTHORIZED_OPERATION_OBSERVED")
+    evidence["network_requests"] = 1
+    runner.validate_evidence(evidence)
+
+
+def test_durable_write_failure_requires_consistent_lock_hash_state(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    evidence = runner._base_evidence(config, "DURABLE_WRITE_FAILURE")
+    evidence["durable_lock_created"] = True
+    with pytest.raises(runner.RuntimeLockError):
+        runner.validate_evidence(evidence)
+
+
 def test_failure_never_promotes_authority(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     config = _config(tmp_path)
     monkeypatch.setattr(runner, "_default_provenance_observations", lambda _: {})
     result = runner.run_lock(config)
     assert result["status"] == "FAIL"
-    assert result["canonical_environment_promoted"] if "canonical_environment_promoted" in result else True
-    assert result["execution_authorized"] is False
+    for key in (
+        "execution_authorized", "calendar_generation_authorized", "t0_authorized",
+        "historical_evaluation_authorized", "future_profitability_established",
+    ):
+        assert result[key] is False
+    assert result["t0_run"] is False
 
 
 def test_evidence_contains_no_machine_path_or_exception_text(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

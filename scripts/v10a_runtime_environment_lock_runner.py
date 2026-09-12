@@ -538,7 +538,7 @@ def _complete_evidence(evidence: dict[str, Any], lock_bytes: bytes | None = None
     return evidence
 
 
-def validate_evidence(evidence: Mapping[str, Any]) -> None:
+def validate_evidence(evidence: Mapping[str, Any], config: RuntimeLockConfig | None = None) -> None:
     if set(evidence) != EVIDENCE_KEYS:
         raise RuntimeLockError("EVIDENCE_KEYSET_INVALID")
     if evidence["schema_version"] != EVIDENCE_SCHEMA or evidence["artifact_status"] != EVIDENCE_STATUS:
@@ -557,11 +557,58 @@ def validate_evidence(evidence: Mapping[str, Any]) -> None:
     if evidence["runtime_lock_sha256"] is not None:
         _strict_sha(evidence["runtime_lock_sha256"], SHA256_RE, "runtime_lock_sha256")
     if evidence["status"] == "PASS":
+        if evidence["python_version"] != PYTHON_VERSION or evidence["canonical_interpreter_verified"] is not True:
+            raise RuntimeLockError("EVIDENCE_INTERPRETER_INVALID")
+        if (
+            evidence["calendar_distribution_name"] != CALENDAR_DISTRIBUTION_NAME
+            or evidence["calendar_distribution_version"] != CALENDAR_DISTRIBUTION_VERSION
+            or evidence["calendar_name"] != CALENDAR_NAME
+        ):
+            raise RuntimeLockError("EVIDENCE_CALENDAR_INVALID")
+        if evidence["runtime_distribution_count"] != 20 or evidence["exact_package_mapping"] is not True:
+            raise RuntimeLockError("EVIDENCE_PACKAGE_INVALID")
+        if evidence["calendar_source_blob"] != CALENDAR_SOURCE_BLOB or evidence["holiday_source_blob"] != HOLIDAY_SOURCE_BLOB:
+            raise RuntimeLockError("EVIDENCE_SOURCE_INVALID")
         if any(evidence[key] != 0 for key in ("network_requests", "package_installations", "environment_mutations", "calendar_imports", "calendar_object_creations", "calendar_dates_inspected", "protected_or_private_research_reads")):
             raise RuntimeLockError("EVIDENCE_COUNTER_INVALID")
         if any(evidence[key] is not False for key in ("execution_authorized", "calendar_generation_authorized", "t0_authorized", "historical_evaluation_authorized", "future_profitability_established")):
             raise RuntimeLockError("EVIDENCE_AUTHORITY_INVALID")
-        if evidence["runtime_lock_sha256"] is None or evidence["runtime_lock_size"] is None or evidence["durable_lock_created"] is not True:
+        if evidence["runtime_lock_sha256"] is None or evidence["runtime_lock_size"] is None or not isinstance(evidence["runtime_lock_size"], int) or isinstance(evidence["runtime_lock_size"], bool) or evidence["runtime_lock_size"] <= 0 or evidence["durable_lock_created"] is not True:
+            raise RuntimeLockError("EVIDENCE_LOCK_INVALID")
+        if evidence["t0_run"] is not False:
+            raise RuntimeLockError("EVIDENCE_T0_INVALID")
+        if config is not None:
+            for key, expected in (
+                ("expected_r2_reviewed_sha", config.expected_r2_reviewed_sha),
+                ("runtime_lock_runner_git_blob_sha1", config.expected_runner_blob_sha1),
+                ("runtime_lock_test_git_blob_sha1", config.expected_test_blob_sha1),
+                ("runtime_lock_design_git_blob_sha1", config.expected_design_blob_sha1),
+            ):
+                if evidence[key] != expected:
+                    raise RuntimeLockError("EVIDENCE_PROVENANCE_INVALID")
+    else:
+        if evidence["failure_code"] == "NONE":
+            raise RuntimeLockError("EVIDENCE_STATUS_INVALID")
+        if evidence["t0_run"] is not False:
+            raise RuntimeLockError("EVIDENCE_T0_INVALID")
+        if any(evidence[key] is not False for key in ("execution_authorized", "calendar_generation_authorized", "t0_authorized", "historical_evaluation_authorized", "future_profitability_established")):
+            raise RuntimeLockError("EVIDENCE_AUTHORITY_INVALID")
+        if evidence["failure_code"] != "UNAUTHORIZED_OPERATION_OBSERVED" and any(
+            evidence[key] != 0 for key in ("network_requests", "package_installations", "environment_mutations", "calendar_imports", "calendar_object_creations", "calendar_dates_inspected", "protected_or_private_research_reads")
+        ):
+            raise RuntimeLockError("EVIDENCE_COUNTER_INVALID")
+        if evidence["failure_code"] != "DURABLE_WRITE_FAILURE":
+            if evidence["durable_lock_created"] is not False or evidence["runtime_lock_sha256"] is not None or evidence["runtime_lock_size"] is not None:
+                raise RuntimeLockError("EVIDENCE_LOCK_INVALID")
+        elif evidence["durable_lock_created"] is True:
+            if evidence["runtime_lock_sha256"] is None or evidence["runtime_lock_size"] is None or evidence["runtime_lock_size"] <= 0:
+                raise RuntimeLockError("EVIDENCE_LOCK_INVALID")
+        elif evidence["durable_lock_created"] is False:
+            hashes_absent = evidence["runtime_lock_sha256"] is None and evidence["runtime_lock_size"] is None
+            hashes_present = evidence["runtime_lock_sha256"] is not None and evidence["runtime_lock_size"] is not None and evidence["runtime_lock_size"] > 0
+            if not (hashes_absent or hashes_present):
+                raise RuntimeLockError("EVIDENCE_LOCK_INVALID")
+        else:
             raise RuntimeLockError("EVIDENCE_LOCK_INVALID")
 
 
@@ -583,10 +630,37 @@ def _exclusive_write(path: Path, raw: bytes) -> None:
         raise
 
 
-def publish_artifacts(config: RuntimeLockConfig, lock_bytes: bytes, evidence: Mapping[str, Any]) -> None:
-    config.output_root.mkdir()
-    _exclusive_write(config.output_root / LOCK_NAME, lock_bytes)
-    _exclusive_write(config.output_root / EVIDENCE_NAME, canonical_json_bytes(evidence))
+def _publish_evidence_once(config: RuntimeLockConfig, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Write one already-validated evidence artifact, without retrying."""
+    validate_evidence(evidence, config)
+    try:
+        _exclusive_write(config.output_root / EVIDENCE_NAME, canonical_json_bytes(evidence))
+        return dict(evidence)
+    except OSError:
+        summary = dict(evidence)
+        summary["status"] = "FAIL"
+        summary["failure_code"] = "DURABLE_WRITE_FAILURE"
+        validate_evidence(summary, config)
+        return summary
+
+
+def _post_provenance_failure(config: RuntimeLockConfig, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Publish a safe FAIL result after the trusted output root exists."""
+    return _publish_evidence_once(config, evidence)
+
+
+def publish_artifacts(config: RuntimeLockConfig, lock_bytes: bytes, evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Create the two artifacts with one lock write and one evidence write."""
+    try:
+        _exclusive_write(config.output_root / LOCK_NAME, lock_bytes)
+    except OSError:
+        failure = dict(evidence)
+        failure["status"] = "FAIL"
+        failure["failure_code"] = "DURABLE_WRITE_FAILURE"
+        failure["durable_lock_created"] = False
+        _complete_evidence(failure, lock_bytes)
+        return _publish_evidence_once(config, failure)
+    return _publish_evidence_once(config, evidence)
 
 
 def run_lock(config: RuntimeLockConfig) -> dict[str, Any]:
@@ -604,7 +678,13 @@ def run_lock(config: RuntimeLockConfig) -> dict[str, Any]:
         return evidence
     if not output_root_safe(config):
         evidence = _base_evidence(config, "DURABLE_OUTPUT_COLLISION")
-        validate_evidence(evidence)
+        validate_evidence(evidence, config)
+        return evidence
+    try:
+        config.output_root.mkdir()
+    except OSError:
+        evidence = _base_evidence(config, "DURABLE_WRITE_FAILURE")
+        validate_evidence(evidence, config)
         return evidence
 
     evidence = _base_evidence(config, "NONE")
@@ -614,13 +694,11 @@ def run_lock(config: RuntimeLockConfig) -> dict[str, Any]:
     if evidence["canonical_interpreter_verified"] is not True:
         evidence["status"] = "FAIL"
         evidence["failure_code"] = "WRONG_CANONICAL_INTERPRETER"
-        validate_evidence(evidence)
-        return evidence
+        return _post_provenance_failure(config, evidence)
     if evidence["python_version"] != PYTHON_VERSION:
         evidence["status"] = "FAIL"
         evidence["failure_code"] = "PYTHON_VERSION_MISMATCH"
-        validate_evidence(evidence)
-        return evidence
+        return _post_provenance_failure(config, evidence)
 
     try:
         package_obs = _default_package_observations()
@@ -631,14 +709,12 @@ def run_lock(config: RuntimeLockConfig) -> dict[str, Any]:
     if evidence["exact_package_mapping"] is not True:
         evidence["status"] = "FAIL"
         evidence["failure_code"] = "PACKAGE_SET_MISMATCH"
-        validate_evidence(evidence)
-        return evidence
+        return _post_provenance_failure(config, evidence)
     packages = package_obs["runtime_distributions"]
     if dict(packages).get("pandas-market-calendars") != CALENDAR_DISTRIBUTION_VERSION:
         evidence["status"] = "FAIL"
         evidence["failure_code"] = "CALENDAR_DISTRIBUTION_VERSION_MISMATCH"
-        validate_evidence(evidence)
-        return evidence
+        return _post_provenance_failure(config, evidence)
     evidence["calendar_distribution_version"] = CALENDAR_DISTRIBUTION_VERSION
 
     try:
@@ -651,13 +727,11 @@ def run_lock(config: RuntimeLockConfig) -> dict[str, Any]:
     if not jpx_ok:
         evidence["status"] = "FAIL"
         evidence["failure_code"] = "CALENDAR_SOURCE_BLOB_MISMATCH"
-        validate_evidence(evidence)
-        return evidence
+        return _post_provenance_failure(config, evidence)
     if not holiday_ok:
         evidence["status"] = "FAIL"
         evidence["failure_code"] = "HOLIDAY_SOURCE_BLOB_MISMATCH"
-        validate_evidence(evidence)
-        return evidence
+        return _post_provenance_failure(config, evidence)
 
     try:
         lock = build_runtime_lock(package_obs)
@@ -668,21 +742,18 @@ def run_lock(config: RuntimeLockConfig) -> dict[str, Any]:
     except (RuntimeLockError, TypeError, ValueError, UnicodeError):
         evidence["status"] = "FAIL"
         evidence["failure_code"] = "RUNTIME_LOCK_CANONICALIZATION_FAILURE"
-        validate_evidence(evidence)
-        return evidence
+        return _post_provenance_failure(config, evidence)
 
     evidence["durable_lock_created"] = True
     _complete_evidence(evidence, lock_bytes)
     try:
-        publish_artifacts(config, lock_bytes, evidence)
+        return publish_artifacts(config, lock_bytes, evidence)
     except (OSError, ValueError):
         evidence["status"] = "FAIL"
         evidence["failure_code"] = "DURABLE_WRITE_FAILURE"
         evidence["durable_lock_created"] = False
-        validate_evidence(evidence)
-        return evidence
-    validate_evidence(evidence)
-    return evidence
+        _complete_evidence(evidence, lock_bytes)
+        return _publish_evidence_once(config, evidence)
 
 
 def _build_parser() -> argparse.ArgumentParser:
