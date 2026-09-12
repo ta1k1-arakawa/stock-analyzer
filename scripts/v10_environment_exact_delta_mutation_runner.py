@@ -7,6 +7,7 @@ temporary wheelhouses, receipt bytes, attempt roots, and process launchers.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -43,6 +44,9 @@ RECEIPT_RELATIVE = Path("V10_CANONICAL_ENVIRONMENT_MUTATION_PREFLIGHT_RECEIPT.js
 ATTEMPT_STATE_SCHEMA = "V10_CANONICAL_ENVIRONMENT_EXACT_DELTA_MUTATION_ATTEMPT_V1"
 FRESH_MUTATION_AUTHORITY_TOKEN = "FRESH_CANONICAL_ENVIRONMENT_MUTATION_AUTHORITY_V1"
 EXPECTED_STEP3_RECEIPT_SHA256 = "0c15278d79f88110766a581aa3c14bdc03434b88806b8a7975327bbd6bee07ae"
+EXPECTED_EXTENSION_DESIGN_SHA = "efe2e9d8cfab696c74b94cfd1cfaa2a2a4706c58"
+EXPECTED_PREMUTATION_RUNNER_COMMIT_SHA = "9f37cc5c0c10db11a0164ab7a3d4d2dc9d311adb"
+EXPECTED_PREMUTATION_RUNNER_BLOB_SHA1 = "21e9f94928f6e6ce315fa473bf52d65ff7537ffb"
 EXPECTED_DELTA_COUNT = 5
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -244,13 +248,20 @@ def _phase_a(config: MutationConfig, observations: Mapping[str, Any] | None) -> 
     injected = observations is not None
     if observations is None:
         observations = _default_provenance_observations(config)
+    # Reject malformed/mismatched mutation-runner CLI bindings before any
+    # shared predecessor/environment observation can be reached.
+    if not _mutation_runner_provenance_ok(config, observations):
+        return None, PROVENANCE_BINDING_FAILURE
     base = preflight._validate_provenance(config.preflight_config, observations)
-    if base is None or not _mutation_runner_provenance_ok(config, observations):
+    if base is None:
         return None, PROVENANCE_BINDING_FAILURE
     receipt_pair = _validate_step3_receipt(config, _read_step3_receipt(config, observations))
     if receipt_pair is None:
         return None, PREMUTATION_RECEIPT_INVALID
     receipt, receipt_sha = receipt_pair
+
+    if not preflight._wheelhouse_path_is_safe(config.wheelhouse):
+        return None, REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE
 
     if not injected:
         try:
@@ -358,6 +369,7 @@ def _state_base(config: MutationConfig, phase_a: PhaseAResult) -> dict[str, Any]
         "reviewed_successor_lock_candidate_sha256": config.preflight_config.expected_candidate_sha256,
         "wheel_manifest": [dict(item) for item in phase_a.wheel_manifest],
         "delta_wheel_paths": list(phase_a.delta_wheel_paths),
+        "process_start_attempted": False,
         "process_started": False,
         "mutation_authority_consumed": False,
         "mutation_started": False,
@@ -375,20 +387,21 @@ def _write_state(root: Path, filename: str, state: Mapping[str, Any]) -> None:
     _atomic_create(root / filename, canonical_json_bytes(state))
 
 
-def _run_child(argv: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
+def _launch_child(argv: Sequence[str]) -> subprocess.Popen[bytes]:
+    return subprocess.Popen(
         list(argv),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        check=False,
         shell=False,
     )
 
 
-def _strict_process_result(result: Any) -> tuple[int, bytes, bytes]:
-    returncode = getattr(result, "returncode", None)
-    stdout = getattr(result, "stdout", None)
-    stderr = getattr(result, "stderr", None)
+def _strict_process_result(child: Any) -> tuple[int, bytes, bytes]:
+    communicate = getattr(child, "communicate", None)
+    if not callable(communicate):
+        raise MutationValidationError("MUTATION_ATTEMPT_STATE_FAILURE")
+    stdout, stderr = communicate()
+    returncode = getattr(child, "returncode", None)
     if not isinstance(returncode, int) or isinstance(returncode, bool):
         raise MutationValidationError("MUTATION_ATTEMPT_STATE_FAILURE")
     if not isinstance(stdout, bytes) or not isinstance(stderr, bytes):
@@ -415,14 +428,14 @@ def _launch_phase_b(
     except (OSError, MutationValidationError) as error:
         return _failure(MUTATION_ATTEMPT_STATE_FAILURE, phase_a=phase_a)
 
-    started = dict(initial)
-    started.update(
-        process_started=True,
+    attempted = dict(initial)
+    attempted.update(
+        process_start_attempted=True,
         mutation_authority_consumed=True,
         mutation_started=True,
     )
     try:
-        _write_state(root, "attempt_state_started.json", started)
+        _write_state(root, "attempt_state_attempted.json", attempted)
     except (OSError, MutationValidationError):
         return _failure(
             MUTATION_ATTEMPT_STATE_FAILURE,
@@ -433,29 +446,40 @@ def _launch_phase_b(
             attempt_state=initial,
         )
 
+    start_failure = False
+    state_failure = False
+    child_started = False
+    started = dict(attempted)
     try:
-        completed = process_runner(phase_a.install_argv)
-        returncode, stdout, stderr = _strict_process_result(completed)
+        child = process_runner(phase_a.install_argv)
+        child_started = True
+        started["process_started"] = True
+        try:
+            _write_state(root, "attempt_state_started.json", started)
+        except (OSError, MutationValidationError):
+            # The child exists.  Do not abandon it or start another one;
+            # communicate() below remains the sole wait/capture operation.
+            state_failure = True
+        returncode, stdout, stderr = _strict_process_result(child)
     except OSError:
         stdout = b""
         stderr = b""
         returncode = None
-        start_failure = True
+        start_failure = not child_started
+        state_failure = child_started
     except MutationValidationError:
         stdout = b""
         stderr = b""
         returncode = None
-        start_failure = False
         state_failure = True
-    else:
-        start_failure = False
-        state_failure = False
 
     try:
         stdout_path, stdout_sha = _capture_output(root, "stdout.bin", stdout)
         stderr_path, stderr_sha = _capture_output(root, "stderr.bin", stderr)
-        final = dict(started)
+        final = dict(started if child_started else attempted)
         final.update(
+            process_start_attempted=True,
+            process_started=child_started,
             process_exit_code=returncode,
             stdout_capture_path=stdout_path,
             stdout_sha256=stdout_sha,
@@ -528,7 +552,7 @@ def run_mutation(
     ):
         return _failure(REVIEWED_WHEELHOUSE_INTEGRITY_FAILURE, phase_a=phase_a)
 
-    launcher = process_runner or _run_child
+    launcher = process_runner or _launch_child
     return _launch_phase_b(config, phase_a, launcher)
 
 
@@ -543,6 +567,7 @@ def validate_attempt_state(state: Mapping[str, Any]) -> None:
         "reviewed_successor_lock_candidate_sha256",
         "wheel_manifest",
         "delta_wheel_paths",
+        "process_start_attempted",
         "process_started",
         "mutation_authority_consumed",
         "mutation_started",
@@ -556,12 +581,24 @@ def validate_attempt_state(state: Mapping[str, Any]) -> None:
     }
     if set(state) != required or state["schema_version"] != ATTEMPT_STATE_SCHEMA:
         raise MutationValidationError("MUTATION_ATTEMPT_STATE_FAILURE")
-    for key in ("process_started", "mutation_authority_consumed", "mutation_started", "retry_authorized"):
+    for key in (
+        "process_start_attempted",
+        "process_started",
+        "mutation_authority_consumed",
+        "mutation_started",
+        "retry_authorized",
+    ):
         if not isinstance(state[key], bool):
             raise MutationValidationError("MUTATION_ATTEMPT_STATE_FAILURE")
     if state["retry_authorized"] is not False:
         raise MutationValidationError("MUTATION_ATTEMPT_STATE_FAILURE")
-    if not state["process_started"] and (state["mutation_authority_consumed"] or state["mutation_started"]):
+    if not state["process_start_attempted"] and (
+        state["process_started"] or state["mutation_authority_consumed"] or state["mutation_started"]
+    ):
+        raise MutationValidationError("MUTATION_ATTEMPT_STATE_FAILURE")
+    if state["process_start_attempted"] and (
+        state["mutation_authority_consumed"] is not True or state["mutation_started"] is not True
+    ):
         raise MutationValidationError("MUTATION_ATTEMPT_STATE_FAILURE")
     if state["process_started"] and (state["mutation_authority_consumed"] is not True or state["mutation_started"] is not True):
         raise MutationValidationError("MUTATION_ATTEMPT_STATE_FAILURE")
@@ -582,5 +619,67 @@ def validate_attempt_state(state: Mapping[str, Any]) -> None:
     _strict_sha(state["reviewed_successor_lock_candidate_sha256"], SHA256_RE, "state candidate SHA")
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo-root", required=True)
+    parser.add_argument("--expected-current-head", required=True)
+    parser.add_argument("--expected-mutation-runner-commit-sha", required=True)
+    parser.add_argument("--expected-mutation-runner-blob-sha1", required=True)
+    parser.add_argument("--wheelhouse", required=True)
+    parser.add_argument("--step3-receipt", required=True)
+    parser.add_argument("--attempt-root", required=True)
+    parser.add_argument(
+        "--fresh-mutation-authority-token",
+        required=True,
+        choices=(FRESH_MUTATION_AUTHORITY_TOKEN,),
+    )
+    return parser
+
+
+def _config_from_args(args: argparse.Namespace) -> MutationConfig:
+    preflight_config = preflight.PreflightConfig(
+        repo_root=Path(args.repo_root),
+        expected_current_head=args.expected_current_head,
+        expected_extension_design_sha=EXPECTED_EXTENSION_DESIGN_SHA,
+        expected_reviewed_runner_commit_sha=EXPECTED_PREMUTATION_RUNNER_COMMIT_SHA,
+        expected_reviewed_runner_blob_sha1=EXPECTED_PREMUTATION_RUNNER_BLOB_SHA1,
+        wheelhouse=Path(args.wheelhouse),
+    )
+    return MutationConfig(
+        preflight_config=preflight_config,
+        expected_mutation_runner_commit_sha=args.expected_mutation_runner_commit_sha,
+        expected_mutation_runner_blob_sha1=args.expected_mutation_runner_blob_sha1,
+        attempt_root=Path(args.attempt_root),
+        step3_receipt_path=Path(args.step3_receipt),
+    )
+
+
+def _safe_cli_summary(result: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "status": result.get("status", "FAIL"),
+        "failure_code": result.get("failure_code", MUTATION_ATTEMPT_STATE_FAILURE),
+        "mutation_authority_consumed": result.get("mutation_authority_consumed", False),
+        "mutation_started": result.get("mutation_started", False),
+        "canonical_environment_ready": False,
+        "environment_frozen": False,
+    }
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    config = _config_from_args(args)
+    try:
+        result = run_mutation(
+            config,
+            observations=None,
+            mutation_authority_token=args.fresh_mutation_authority_token,
+            process_runner=None,
+        )
+    except (ContractValidationError, OSError, TypeError, ValueError):
+        result = _failure(MUTATION_ATTEMPT_STATE_FAILURE)
+    print(json.dumps(_safe_cli_summary(result), sort_keys=True, separators=(",", ":")))
+    return 0 if result.get("status") == "PASS" else 1
+
+
 if __name__ == "__main__":
-    raise SystemExit("This runner requires an explicit reviewed configuration and fresh mutation authority.")
+    raise SystemExit(main())

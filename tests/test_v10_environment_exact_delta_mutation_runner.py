@@ -5,7 +5,6 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Sequence
 
 import pytest
@@ -53,15 +52,130 @@ class FakeProcess:
         self.stderr = stderr
         self.argv: list[str] | None = None
         self.calls = 0
+        self.communicate_calls = 0
 
-    def __call__(self, argv: list[str] | tuple[str, ...]) -> SimpleNamespace:
+    def __call__(self, argv: list[str] | tuple[str, ...]) -> "FakeProcess":
         self.calls += 1
         self.argv = list(argv)
-        return SimpleNamespace(returncode=self.returncode, stdout=self.stdout, stderr=self.stderr)
+        return self
+
+    def communicate(self) -> tuple[bytes, bytes]:
+        self.communicate_calls += 1
+        return self.stdout, self.stderr
 
 
 def _complete_state(config: runner.MutationConfig) -> dict[str, object]:
     return json.loads((config.attempt_root / "attempt_state_complete.json").read_text(encoding="utf-8"))
+
+
+def _cli_arguments(config: runner.MutationConfig) -> list[str]:
+    return [
+        "--repo-root", str(config.repo_root),
+        "--expected-current-head", config.preflight_config.expected_current_head,
+        "--expected-mutation-runner-commit-sha", config.expected_mutation_runner_commit_sha,
+        "--expected-mutation-runner-blob-sha1", config.expected_mutation_runner_blob_sha1,
+        "--wheelhouse", str(config.wheelhouse),
+        "--step3-receipt", str(config.default_step3_receipt_path),
+        "--attempt-root", str(config.attempt_root),
+        "--fresh-mutation-authority-token", runner.FRESH_MUTATION_AUTHORITY_TOKEN,
+    ]
+
+
+def test_production_cli_constructs_real_config_and_closes_injection_seams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config, _ = _mutation_fixture(tmp_path)
+    captured: dict[str, object] = {}
+
+    def production_call(
+        actual_config: runner.MutationConfig,
+        observations: object = None,
+        *,
+        mutation_authority_token: str | None = None,
+        process_runner: object = None,
+    ) -> dict[str, object]:
+        captured.update(
+            config=actual_config,
+            observations=observations,
+            mutation_authority_token=mutation_authority_token,
+            process_runner=process_runner,
+        )
+        return {
+            "status": "FAIL",
+            "failure_code": runner.MUTATION_AUTHORITY_MISSING,
+            "mutation_authority_consumed": False,
+            "mutation_started": False,
+            "canonical_environment_ready": False,
+            "environment_frozen": False,
+        }
+
+    monkeypatch.setattr(runner, "run_mutation", production_call)
+    assert runner.main(_cli_arguments(config)) == 1
+    actual = captured["config"]
+    assert isinstance(actual, runner.MutationConfig)
+    assert actual.preflight_config.expected_extension_design_sha == runner.EXPECTED_EXTENSION_DESIGN_SHA
+    assert actual.preflight_config.expected_reviewed_runner_commit_sha == runner.EXPECTED_PREMUTATION_RUNNER_COMMIT_SHA
+    assert actual.preflight_config.expected_reviewed_runner_blob_sha1 == runner.EXPECTED_PREMUTATION_RUNNER_BLOB_SHA1
+    assert actual.wheelhouse == config.wheelhouse
+    assert actual.attempt_root == config.attempt_root
+    assert captured["observations"] is None
+    assert captured["process_runner"] is None
+    assert captured["mutation_authority_token"] == runner.FRESH_MUTATION_AUTHORITY_TOKEN
+    output_raw = capsys.readouterr().out
+    output = json.loads(output_raw)
+    assert output["canonical_environment_ready"] is False
+    assert output["environment_frozen"] is False
+    assert "pip-out" not in output_raw
+
+
+def test_cli_exposes_no_synthetic_or_alternate_authority_options() -> None:
+    options = {
+        option
+        for action in runner._build_parser()._actions
+        for option in action.option_strings
+    }
+    assert "--observations" not in options
+    assert "--process-runner" not in options
+    assert "--alternate-interpreter" not in options
+    assert "--install-argv" not in options
+    assert "--candidate" not in options
+    assert "--evidence" not in options
+    assert "--lock" not in options
+
+
+def test_cli_rejects_invalid_authority_input() -> None:
+    parser = runner._build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "--repo-root", str(Path.cwd()),
+            "--expected-current-head", "0" * 40,
+            "--expected-mutation-runner-commit-sha", MUTATION_COMMIT,
+            "--expected-mutation-runner-blob-sha1", MUTATION_BLOB,
+            "--wheelhouse", str(Path.cwd() / "synthetic-wheelhouse"),
+            "--step3-receipt", str(Path.cwd() / "synthetic-receipt.json"),
+            "--attempt-root", str(Path.cwd() / "synthetic-attempt"),
+            "--fresh-mutation-authority-token", "NOT_A_FRESH_AUTHORITY",
+        ])
+
+
+def test_cli_wrong_head_fails_closed_before_canonical_probe(capsys: pytest.CaptureFixture[str]) -> None:
+    args = [
+        "--repo-root", str(Path.cwd()),
+        "--expected-current-head", "0" * 40,
+        "--expected-mutation-runner-commit-sha", MUTATION_COMMIT,
+        "--expected-mutation-runner-blob-sha1", MUTATION_BLOB,
+        "--wheelhouse", str(Path.cwd() / "synthetic-wheelhouse"),
+        "--step3-receipt", str(Path.cwd() / "synthetic-receipt.json"),
+        "--attempt-root", str(Path.cwd() / "synthetic-attempt"),
+        "--fresh-mutation-authority-token", runner.FRESH_MUTATION_AUTHORITY_TOKEN,
+    ]
+    assert runner.main(args) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["failure_code"] == runner.PROVENANCE_BINDING_FAILURE
+    assert output["canonical_environment_ready"] is False
+    assert output["environment_frozen"] is False
 
 
 def test_exact_pass_rechecks_wheels_and_persists_exact_argv_and_state(tmp_path: Path) -> None:
@@ -76,6 +190,7 @@ def test_exact_pass_rechecks_wheels_and_persists_exact_argv_and_state(tmp_path: 
     assert result["status"] == "PASS"
     assert result["failure_code"] == runner.NONE
     assert process.calls == 1
+    assert process.communicate_calls == 1
     assert result["canonical_environment_ready"] is False
     assert result["environment_frozen"] is False
     expected_prefix = [
@@ -109,6 +224,14 @@ def test_exact_pass_rechecks_wheels_and_persists_exact_argv_and_state(tmp_path: 
     assert json.loads((config.attempt_root / "attempt_state_prelaunch.json").read_text())[
         "mutation_authority_consumed"
     ] is False
+    prelaunch = json.loads((config.attempt_root / "attempt_state_prelaunch.json").read_text())
+    assert prelaunch["process_start_attempted"] is False
+    assert prelaunch["process_started"] is False
+    attempted = json.loads((config.attempt_root / "attempt_state_attempted.json").read_text())
+    assert attempted["process_start_attempted"] is True
+    assert attempted["process_started"] is False
+    assert attempted["mutation_authority_consumed"] is True
+    assert attempted["mutation_started"] is True
 
 
 @pytest.mark.parametrize("field, value", [
@@ -230,6 +353,7 @@ def test_nonzero_process_exit_is_exactly_persisted_without_retry(tmp_path: Path)
     result = runner.run_mutation(config, observations, mutation_authority_token=runner.FRESH_MUTATION_AUTHORITY_TOKEN, process_runner=process)
     assert result["failure_code"] == runner.MUTATION_PROCESS_FAILURE
     assert process.calls == 1
+    assert process.communicate_calls == 1
     state = _complete_state(config)
     assert state["process_exit_code"] == 7
     assert state["stdout_sha256"] == hashlib.sha256(b"partial-out").hexdigest()
@@ -244,6 +368,7 @@ def test_boolean_process_exit_code_is_rejected_and_not_coerced(tmp_path: Path) -
     result = runner.run_mutation(config, observations, mutation_authority_token=runner.FRESH_MUTATION_AUTHORITY_TOKEN, process_runner=process)
     assert result["failure_code"] == runner.MUTATION_ATTEMPT_STATE_FAILURE
     assert process.calls == 1
+    assert process.communicate_calls == 1
     state = _complete_state(config)
     assert state["process_exit_code"] is None
     assert isinstance(state["process_exit_code"], (int, type(None)))
@@ -267,11 +392,13 @@ def test_process_start_failure_consumes_authority_once_and_preserves_state(tmp_p
     assert result["failure_code"] == runner.MUTATION_PROCESS_START_FAILURE
     assert calls == 1
     state = _complete_state(config)
-    assert state["process_started"] is True
+    assert state["process_start_attempted"] is True
+    assert state["process_started"] is False
     assert state["mutation_authority_consumed"] is True
     assert state["mutation_started"] is True
     assert state["process_exit_code"] is None
     assert state["retry_authorized"] is False
+    runner.validate_attempt_state(state)
 
 
 def test_existing_attempt_root_is_no_overwrite_failure(tmp_path: Path) -> None:
@@ -283,7 +410,7 @@ def test_existing_attempt_root_is_no_overwrite_failure(tmp_path: Path) -> None:
     assert process.calls == 0
 
 
-def test_started_state_persistence_failure_does_not_consume_authority_or_launch(
+def test_started_state_persistence_failure_waits_for_started_child_without_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -304,6 +431,10 @@ def test_started_state_persistence_failure_does_not_consume_authority_or_launch(
         process_runner=process,
     )
     assert result["failure_code"] == runner.MUTATION_ATTEMPT_STATE_FAILURE
-    assert result["mutation_authority_consumed"] is False
-    assert result["mutation_started"] is False
-    assert process.calls == 0
+    assert result["mutation_authority_consumed"] is True
+    assert result["mutation_started"] is True
+    assert process.calls == 1
+    assert process.communicate_calls == 1
+    state = _complete_state(config)
+    assert state["process_started"] is True
+    runner.validate_attempt_state(state)
