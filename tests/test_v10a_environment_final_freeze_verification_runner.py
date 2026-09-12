@@ -11,13 +11,19 @@ from scripts import v10a_environment_final_freeze_verification_runner as runner
 from scripts import v10a_environment_no_network_validation_runner as v10a
 
 
+def _sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
 def _config(tmp_path: Path) -> runner.FinalFreezeConfig:
+    candidate = runner.candidate_template(runner_blob_sha1="b" * 40, test_blob_sha1="e" * 40)
+    candidate_raw = runner.canonical_json_bytes(candidate)
     return runner.FinalFreezeConfig(
         repo_root=tmp_path / "repo",
         expected_p2_reviewed_sha="a" * 40,
         expected_final_runner_blob_sha1="b" * 40,
-        expected_candidate_blob_sha1="c" * 40,
-        expected_candidate_sha256="d" * 64,
+        expected_candidate_blob_sha1=runner._git_blob_sha1(candidate_raw),
+        expected_candidate_sha256=_sha256(candidate_raw),
         wheelhouse=tmp_path / "wheelhouse",
         step4_attempt_root=tmp_path / "step4",
         output_root=tmp_path / "output",
@@ -88,11 +94,51 @@ def _synthetic_observations(*, provenance_valid: bool = True, delegated: dict[st
     }
 
 
+def _stage2_baseline(config: runner.FinalFreezeConfig) -> dict[str, object]:
+    candidate = runner.candidate_template(
+        runner_blob_sha1=config.expected_final_runner_blob_sha1,
+        test_blob_sha1="e" * 40,
+    )
+    raw = runner.canonical_json_bytes(candidate)
+    return {
+        "repository_identity": "https://github.com/ta1k1-arakawa/stock-analyzer.git",
+        "branch": runner.AUTHORITATIVE_BRANCH,
+        "head": config.expected_p2_reviewed_sha,
+        "clean": True,
+        "promotion_design_commit_exists": True,
+        "promotion_design_blob_sha1": runner.PROMOTION_DESIGN_BLOB_SHA1,
+        "current_promotion_design_blob_sha1": runner.PROMOTION_DESIGN_BLOB_SHA1,
+        "approved_design_commit_exists": True,
+        "approved_design_blob_sha1": runner.APPROVED_DESIGN_BLOB_SHA1,
+        "freeze_record_commit_exists": True,
+        "freeze_record_blob_sha1": runner.FREEZE_RECORD_BLOB_SHA1,
+        "current_frozen_design_blob_sha1": runner.FREEZE_RECORD_BLOB_SHA1,
+        "reviewed_evidence_record_commit_exists": True,
+        "reviewed_evidence_record_evidence_blob_sha1": runner.ATTEMPT1_EVIDENCE_BLOB_SHA1,
+        "reviewed_evidence_record_adjudication_blob_sha1": runner.ATTEMPT1_ADJUDICATION_BLOB_SHA1,
+        "reviewed_attempt1_runner_commit_exists": True,
+        "reviewed_attempt1_runner_blob_sha1": runner.REVIEWED_ATTEMPT1_RUNNER_BLOB_SHA1,
+        "current_attempt1_runner_blob_sha1": runner.REVIEWED_ATTEMPT1_RUNNER_BLOB_SHA1,
+        "attempt1_evidence_sha256": runner.ATTEMPT1_EVIDENCE_SHA256,
+        "attempt1_evidence_git_blob_sha1": runner.ATTEMPT1_EVIDENCE_BLOB_SHA1,
+        "attempt1_adjudication_git_blob_sha1": runner.ATTEMPT1_ADJUDICATION_BLOB_SHA1,
+        "final_runner_current_blob_sha1": config.expected_final_runner_blob_sha1,
+        "final_test_current_blob_sha1": "e" * 40,
+        "candidate_raw_sha256": _sha256(raw),
+        "candidate_raw_json": candidate,
+        "candidate_current_blob_sha1": runner._git_blob_sha1(raw),
+        "attempt1_evidence_package_set": _packages(),
+        "attempt1_evidence_package_count": 20,
+        "output_root_safe": True,
+    }
+
+
 def test_candidate_requires_p3_adjudication_and_has_no_self_reference() -> None:
     candidate = runner.candidate_template(runner_blob_sha1="a" * 40, test_blob_sha1="b" * 40)
     runner.validate_candidate(candidate, expected_runner_blob_sha1="a" * 40, expected_test_blob_sha1="b" * 40)
     assert candidate["p3_adjudication_required"] is True
     assert candidate["p3_adjudication_repo_path"] == "V10A_CANONICAL_ENVIRONMENT_FINAL_FREEZE_VERIFICATION_ADJUDICATION.json"
+    assert candidate["reviewed_evidence_record_commit"] == runner.REVIEWED_EVIDENCE_RECORD_COMMIT
     assert "candidate_git_blob_sha1" not in candidate
     assert "candidate_sha256" not in candidate
 
@@ -112,9 +158,26 @@ def test_candidate_binding_failure_suppresses_delegated_validation(tmp_path: Pat
     assert called is False
 
 
-@pytest.mark.parametrize("field", ["candidate_sha256", "candidate_git_blob_sha1", "final_runner_blob", "promotion_design", "attempt1_evidence", "attempt1_adjudication", "expected_head", "dirty"])
+@pytest.mark.parametrize("field", [
+    "candidate_raw_sha256",
+    "candidate_current_blob_sha1",
+    "final_runner_current_blob_sha1",
+    "promotion_design_blob_sha1",
+    "current_promotion_design_blob_sha1",
+    "reviewed_evidence_record_commit_exists",
+    "reviewed_evidence_record_evidence_blob_sha1",
+    "reviewed_evidence_record_adjudication_blob_sha1",
+    "attempt1_evidence_git_blob_sha1",
+    "attempt1_adjudication_git_blob_sha1",
+    "attempt1_evidence_sha256",
+    "head",
+    "clean",
+    "final_test_current_blob_sha1",
+])
 def test_provenance_mismatch_suppresses_delegated_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str) -> None:
     config = _config(tmp_path)
+    baseline = _stage2_baseline(config)
+    baseline[field] = False if field in {"reviewed_evidence_record_commit_exists", "clean"} else ("0" * 64 if field in {"candidate_raw_sha256", "attempt1_evidence_sha256"} else "0" * 40)
     called = False
 
     def delegate(*_args: object, **_kwargs: object) -> dict[str, object]:
@@ -122,8 +185,10 @@ def test_provenance_mismatch_suppresses_delegated_validation(tmp_path: Path, mon
         called = True
         raise AssertionError("delegated validation must not run")
 
+    monkeypatch.setattr(runner, "_default_stage2_observations", lambda _config: baseline)
     monkeypatch.setattr(v10a, "run_validation", delegate)
-    result = runner.run_final_verification(config, _synthetic_observations(provenance_valid=False), publish=False)
+    assert runner._validate_stage2(config, baseline) is False
+    result = runner.run_final_verification(config, observations=None, publish=False)
     assert result["failure_code"] == "PROVENANCE_BINDING_FAILURE"
     assert called is False
 
@@ -140,11 +205,10 @@ def test_output_collision_fails_closed(tmp_path: Path, monkeypatch: pytest.Monke
 
 def test_production_delegates_with_no_observations_and_publish_false(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config(tmp_path)
-    stage2 = {"output_root_safe": True, "final_test_current_blob_sha1": "e" * 40}
+    stage2 = _stage2_baseline(config)
     calls: list[tuple[object, object, object]] = []
 
     monkeypatch.setattr(runner, "_default_stage2_observations", lambda _config: stage2)
-    monkeypatch.setattr(runner, "_validate_stage2", lambda _config, _obs: True)
 
     def delegate(_config: object, observations: object, *, publish: bool) -> dict[str, object]:
         calls.append((_config, observations, publish))

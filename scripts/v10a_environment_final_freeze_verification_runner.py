@@ -46,6 +46,7 @@ FREEZE_RECORD_SHA = "86ceda3dee531b08afa5db4df7af1298ca770fad"
 FREEZE_RECORD_BLOB_SHA1 = "a3f913857966cb0593f3218d882c4f91b2bc1f2f"
 PROMOTION_DESIGN_SHA = "f312fdab7f98ab1a6ce9be7b9f9a494f2548c502"
 PROMOTION_DESIGN_BLOB_SHA1 = "25962ef5d4b0feab102668614dbca22d39cb34b5"
+REVIEWED_EVIDENCE_RECORD_COMMIT = "faea2e710fe62ebc17ab2bad032ca44ea496aee0"
 REVIEWED_ATTEMPT1_RUNNER_SHA = "4b6c89915fe5016301ac7635258dfe8d2f452bcd"
 REVIEWED_ATTEMPT1_RUNNER_BLOB_SHA1 = "9bf27e9c22d0108a82304f7e8f43eb1f55c45f05"
 ATTEMPT1_EVIDENCE_SHA256 = "bcef3587f8a86c889306a4808e3cf033b12e16fef45009788ded444983c77d1e"
@@ -78,6 +79,7 @@ FINAL_EVIDENCE_KEYS = frozenset(
         "final_verification_test_blob_sha1",
         "approved_design_sha",
         "freeze_record_sha",
+        "reviewed_evidence_record_commit",
         "reviewed_attempt1_runner_sha",
         "reviewed_attempt1_runner_blob_sha1",
         "attempt1_evidence_repo_path",
@@ -282,6 +284,7 @@ def candidate_template(*, runner_blob_sha1: str, test_blob_sha1: str) -> dict[st
         "candidate_status": "CANDIDATE_ONLY",
         "approved_v10a_design_sha": APPROVED_DESIGN_SHA,
         "freeze_record_sha": FREEZE_RECORD_SHA,
+        "reviewed_evidence_record_commit": REVIEWED_EVIDENCE_RECORD_COMMIT,
         "promotion_design_reviewed_sha": PROMOTION_DESIGN_SHA,
         "promotion_design_blob_sha1": PROMOTION_DESIGN_BLOB_SHA1,
         "attempt1_evidence_repo_path": str(ATTEMPT1_EVIDENCE_RELATIVE).replace("\\", "/"),
@@ -385,6 +388,9 @@ def _default_stage2_observations(config: FinalFreezeConfig) -> dict[str, Any]:
             freeze_record_commit_exists=_git_exists(config.repo_root, FREEZE_RECORD_SHA),
             freeze_record_blob_sha1=_git_blob_at(config.repo_root, FREEZE_RECORD_SHA, v10a.FROZEN_DESIGN_RELATIVE),
             current_frozen_design_blob_sha1=_git_blob_at(config.repo_root, "HEAD", v10a.FROZEN_DESIGN_RELATIVE),
+            reviewed_evidence_record_commit_exists=_git_exists(config.repo_root, REVIEWED_EVIDENCE_RECORD_COMMIT),
+            reviewed_evidence_record_evidence_blob_sha1=_git_blob_at(config.repo_root, REVIEWED_EVIDENCE_RECORD_COMMIT, ATTEMPT1_EVIDENCE_RELATIVE),
+            reviewed_evidence_record_adjudication_blob_sha1=_git_blob_at(config.repo_root, REVIEWED_EVIDENCE_RECORD_COMMIT, ATTEMPT1_ADJUDICATION_RELATIVE),
             reviewed_attempt1_runner_commit_exists=_git_exists(config.repo_root, REVIEWED_ATTEMPT1_RUNNER_SHA),
             reviewed_attempt1_runner_blob_sha1=_git_blob_at(config.repo_root, REVIEWED_ATTEMPT1_RUNNER_SHA, v10a.RUNNER_RELATIVE),
             current_attempt1_runner_blob_sha1=_git_blob_at(config.repo_root, "HEAD", v10a.RUNNER_RELATIVE),
@@ -432,6 +438,9 @@ def _validate_stage2(config: FinalFreezeConfig, obs: Mapping[str, Any]) -> bool:
                 obs.get("freeze_record_commit_exists") is True,
                 obs.get("freeze_record_blob_sha1") == FREEZE_RECORD_BLOB_SHA1,
                 obs.get("current_frozen_design_blob_sha1") == FREEZE_RECORD_BLOB_SHA1,
+                obs.get("reviewed_evidence_record_commit_exists") is True,
+                obs.get("reviewed_evidence_record_evidence_blob_sha1") == ATTEMPT1_EVIDENCE_BLOB_SHA1,
+                obs.get("reviewed_evidence_record_adjudication_blob_sha1") == ATTEMPT1_ADJUDICATION_BLOB_SHA1,
                 obs.get("reviewed_attempt1_runner_commit_exists") is True,
                 obs.get("reviewed_attempt1_runner_blob_sha1") == REVIEWED_ATTEMPT1_RUNNER_BLOB_SHA1,
                 obs.get("current_attempt1_runner_blob_sha1") == REVIEWED_ATTEMPT1_RUNNER_BLOB_SHA1,
@@ -484,6 +493,7 @@ def _provenance_fields(config: FinalFreezeConfig, obs: Mapping[str, Any]) -> dic
         "final_verification_test_blob_sha1": obs.get("final_test_current_blob_sha1"),
         "approved_design_sha": APPROVED_DESIGN_SHA,
         "freeze_record_sha": FREEZE_RECORD_SHA,
+        "reviewed_evidence_record_commit": REVIEWED_EVIDENCE_RECORD_COMMIT,
         "reviewed_attempt1_runner_sha": REVIEWED_ATTEMPT1_RUNNER_SHA,
         "reviewed_attempt1_runner_blob_sha1": REVIEWED_ATTEMPT1_RUNNER_BLOB_SHA1,
         "attempt1_evidence_repo_path": str(ATTEMPT1_EVIDENCE_RELATIVE).replace("\\", "/"),
@@ -539,7 +549,7 @@ def validate_final_evidence(evidence: Mapping[str, Any]) -> None:
         raise FinalFreezeValidationError("FINAL_EVIDENCE_DOMAIN_INVALID")
     if (evidence["status"] == "PASS") != (evidence["failure_code"] == "NONE"):
         raise FinalFreezeValidationError("FINAL_EVIDENCE_STATUS_INVALID")
-    for key in ("expected_p2_reviewed_sha", "promotion_design_sha", "promotion_design_blob_sha1", "candidate_git_blob_sha1", "final_verification_runner_blob_sha1", "approved_design_sha", "freeze_record_sha", "reviewed_attempt1_runner_sha", "reviewed_attempt1_runner_blob_sha1", "attempt1_evidence_git_blob_sha1", "attempt1_adjudication_git_blob_sha1"):
+    for key in ("expected_p2_reviewed_sha", "promotion_design_sha", "promotion_design_blob_sha1", "candidate_git_blob_sha1", "final_verification_runner_blob_sha1", "approved_design_sha", "freeze_record_sha", "reviewed_evidence_record_commit", "reviewed_attempt1_runner_sha", "reviewed_attempt1_runner_blob_sha1", "attempt1_evidence_git_blob_sha1", "attempt1_adjudication_git_blob_sha1"):
         _strict_sha(evidence[key], SHA1_RE, key)
     for key in ("candidate_sha256", "attempt1_evidence_sha256"):
         _strict_sha(evidence[key], SHA256_RE, key)
@@ -571,12 +581,17 @@ def validate_final_evidence(evidence: Mapping[str, Any]) -> None:
             evidence["exchange_calendars_version"] == "4.13.2",
             evidence["official_wheel_filename"] == v10a.OFFICIAL_WHEEL_FILENAME,
             evidence["official_wheel_sha256_match"] is True,
+            evidence["observed_official_wheel_sha256"] == v10a.OFFICIAL_WHEEL_SHA256,
             evidence["jpx_entry_occurrence_count"] == 1,
             evidence["jp_entry_occurrence_count"] == 1,
             evidence["jpx_installed_equals_wheel_entry"] is True,
             evidence["jp_installed_equals_wheel_entry"] is True,
             evidence["jpx_source_blob_match"] is True,
             evidence["holiday_source_blob_match"] is True,
+            evidence["jpx_wheel_git_blob_sha1"] == v10a.JPX_RELEASE_GIT_BLOB_SHA1,
+            evidence["jpx_installed_git_blob_sha1"] == v10a.JPX_RELEASE_GIT_BLOB_SHA1,
+            evidence["jp_wheel_git_blob_sha1"] == v10a.JP_RELEASE_GIT_BLOB_SHA1,
+            evidence["jp_installed_git_blob_sha1"] == v10a.JP_RELEASE_GIT_BLOB_SHA1,
             evidence["xls_probe_status"] == "PASS",
             evidence["pdf_probe_status"] == "PASS",
             evidence["historical_step4_provenance_verified"] is True,
