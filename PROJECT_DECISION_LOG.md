@@ -2209,3 +2209,10 @@ transitions. This public log must not contain protected material.
 - The wrapper fact `authorization_consumed=true` is not treated as proof of valid fresh point-of-use human authorization before Phase B. Attempt 2 is terminally non-promotable, non-reusable, and not salvageable; no post-hoc authorization, retry, or attempt-1 authorization reuse is allowed.
 - The safe adjudication records only the reported package count `20`, zero network requests, installations, mutations, calendar operations, and T0 activity. It does not infer omitted source/package detail from Phase C `PASS`. Runtime-lock GPT-reviewed authority and all downstream execution/calendar/T0/historical authorities remain false.
 - This documentation record consumed no new human gate and performed no rerun, canonical-environment read, calendar, package, network data/package, private/sealed, T0, or historical-evaluation operation. Next action is `GPT_EXACT_SHA_ATTEMPT_2_TERMINAL_ADJUDICATION_REVIEW`.
+
+## 2026-09-12 — V10A runtime-lock R3 attempt 2 review/adjudication provenance separation
+
+- Recorded GPT exact-SHA review of `511e1f69aa6c6af1adfa2c25a663f4b8622fc715` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`. The finding is `EXACT_SHA_REVIEW_RESULT_CONFLATED_WITH_R3_ADJUDICATION_RESULT`.
+- The exact-SHA review of baseline `912e7243990b600425dd39be794bf6a6321b7ee6` was separately `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=1`. The R3 attempt-2 adjudication was separately `BLOCK` with `CRITICAL=0`, `HIGH=1`, `MEDIUM=0`, and `LOW=0`; these are distinct authority events.
+- No attempt result is reinterpreted. Attempt 2 remains terminally non-promotable, its authorization remains non-reusable, and no R4 promotion follows from the runtime `PASS`.
+- This provenance-only bookkeeping performed no attempt-2 rerun, canonical Python/environment read, durable attempt-artifact operation, runner/test/design change, R4 promotion, human-gate consumption, calendar/T0/evaluation, network data/private/sealed access, or methodology change. Next action is `GPT_EXACT_SHA_ATTEMPT_2_REVIEW_PROVENANCE_REMEDIATION_REVIEW`.
