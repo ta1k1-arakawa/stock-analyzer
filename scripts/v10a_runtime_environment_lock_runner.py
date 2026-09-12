@@ -44,7 +44,7 @@ FINAL_EVIDENCE_SHA256 = "658e264a70ab15ba402e7bf56d5e4b8abe5d81f2f7bb22f28bc797b
 P3_ADJUDICATION_BLOB_SHA1 = "6f5571961bd1fa533ea7aea30730dc3383ddc2e8"
 
 SCHEMA_VERSION = "V10A_RUNTIME_ENVIRONMENT_LOCK_V1"
-EVIDENCE_SCHEMA = "V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE_V1"
+EVIDENCE_SCHEMA = "V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE_V2"
 EVIDENCE_STATUS = "V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE"
 PYTHON_VERSION = "3.12.10"
 CALENDAR_DISTRIBUTION_NAME = "pandas_market_calendars"
@@ -97,7 +97,7 @@ FAILURE_CODES = (
 EVIDENCE_KEYS = frozenset(
     {
         "schema_version", "artifact_status", "status", "failure_code",
-        "expected_r2_reviewed_sha", "runtime_lock_design_git_blob_sha1",
+        "reviewed_baseline_sha", "runtime_lock_design_git_blob_sha1",
         "runtime_lock_runner_git_blob_sha1", "runtime_lock_test_git_blob_sha1",
         "frozen_v10a_design_sha", "v10a_freeze_record_sha", "p5_reviewed_p4_sha",
         "p5_bookkeeping_sha", "final_freeze_evidence_git_blob_sha1",
@@ -124,7 +124,7 @@ class RuntimeLockError(ValueError):
 @dataclass(frozen=True)
 class RuntimeLockConfig:
     repo_root: Path
-    expected_r2_reviewed_sha: str
+    reviewed_baseline_sha: str
     expected_runner_blob_sha1: str
     expected_test_blob_sha1: str
     expected_design_blob_sha1: str
@@ -296,7 +296,7 @@ def _default_provenance_observations(config: RuntimeLockConfig) -> dict[str, Any
 
 def validate_provenance(config: RuntimeLockConfig, obs: Mapping[str, Any]) -> bool:
     try:
-        _strict_sha(config.expected_r2_reviewed_sha, SHA1_RE, "expected_r2_reviewed_sha")
+        _strict_sha(config.reviewed_baseline_sha, SHA1_RE, "reviewed_baseline_sha")
         _strict_sha(config.expected_runner_blob_sha1, SHA1_RE, "expected_runner_blob_sha1")
         _strict_sha(config.expected_test_blob_sha1, SHA1_RE, "expected_test_blob_sha1")
         _strict_sha(config.expected_design_blob_sha1, SHA1_RE, "expected_design_blob_sha1")
@@ -309,7 +309,7 @@ def validate_provenance(config: RuntimeLockConfig, obs: Mapping[str, Any]) -> bo
         (
             _repository_identity_matches(obs.get("repository_identity")),
             obs.get("branch") == AUTHORITATIVE_BRANCH,
-            obs.get("head") == config.expected_r2_reviewed_sha,
+            obs.get("head") == config.reviewed_baseline_sha,
             obs.get("clean") is True,
             obs.get("design_blob") == config.expected_design_blob_sha1,
             obs.get("current_runner_blob") == config.expected_runner_blob_sha1,
@@ -492,7 +492,7 @@ def _base_evidence(config: RuntimeLockConfig, failure_code: str) -> dict[str, An
         "artifact_status": EVIDENCE_STATUS,
         "status": "PASS" if failure_code == "NONE" else "FAIL",
         "failure_code": failure_code,
-        "expected_r2_reviewed_sha": config.expected_r2_reviewed_sha,
+        "reviewed_baseline_sha": config.reviewed_baseline_sha,
         "runtime_lock_design_git_blob_sha1": config.expected_design_blob_sha1,
         "runtime_lock_runner_git_blob_sha1": config.expected_runner_blob_sha1,
         "runtime_lock_test_git_blob_sha1": config.expected_test_blob_sha1,
@@ -547,7 +547,7 @@ def validate_evidence(evidence: Mapping[str, Any], config: RuntimeLockConfig | N
         raise RuntimeLockError("EVIDENCE_STATUS_INVALID")
     if (evidence["status"] == "PASS") != (evidence["failure_code"] == "NONE"):
         raise RuntimeLockError("EVIDENCE_STATUS_INVALID")
-    for key in ("expected_r2_reviewed_sha", "runtime_lock_runner_git_blob_sha1", "runtime_lock_test_git_blob_sha1", "runtime_lock_design_git_blob_sha1", "frozen_v10a_design_sha", "v10a_freeze_record_sha", "p5_reviewed_p4_sha", "p5_bookkeeping_sha", "final_freeze_evidence_git_blob_sha1", "p3_adjudication_git_blob_sha1"):
+    for key in ("reviewed_baseline_sha", "runtime_lock_runner_git_blob_sha1", "runtime_lock_test_git_blob_sha1", "runtime_lock_design_git_blob_sha1", "frozen_v10a_design_sha", "v10a_freeze_record_sha", "p5_reviewed_p4_sha", "p5_bookkeeping_sha", "final_freeze_evidence_git_blob_sha1", "p3_adjudication_git_blob_sha1"):
         _strict_sha(evidence[key], SHA1_RE, key)
     _strict_sha(evidence["final_freeze_evidence_sha256"], SHA256_RE, "final_freeze_evidence_sha256")
     for key in ("canonical_interpreter_verified", "exact_package_mapping", "durable_lock_created", "t0_run", "execution_authorized", "calendar_generation_authorized", "t0_authorized", "historical_evaluation_authorized", "future_profitability_established"):
@@ -565,7 +565,7 @@ def validate_evidence(evidence: Mapping[str, Any], config: RuntimeLockConfig | N
             ("final_freeze_evidence_git_blob_sha1", FINAL_EVIDENCE_BLOB_SHA1),
             ("final_freeze_evidence_sha256", FINAL_EVIDENCE_SHA256),
             ("p3_adjudication_git_blob_sha1", P3_ADJUDICATION_BLOB_SHA1),
-            ("expected_r2_reviewed_sha", config.expected_r2_reviewed_sha),
+            ("reviewed_baseline_sha", config.reviewed_baseline_sha),
             ("runtime_lock_runner_git_blob_sha1", config.expected_runner_blob_sha1),
             ("runtime_lock_test_git_blob_sha1", config.expected_test_blob_sha1),
             ("runtime_lock_design_git_blob_sha1", config.expected_design_blob_sha1),
@@ -766,7 +766,7 @@ def run_lock(config: RuntimeLockConfig) -> dict[str, Any]:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", required=True)
-    parser.add_argument("--expected-r2-reviewed-sha", required=True)
+    parser.add_argument("--reviewed-baseline-sha", required=True)
     parser.add_argument("--expected-runner-blob-sha1", required=True)
     parser.add_argument("--expected-test-blob-sha1", required=True)
     parser.add_argument("--expected-design-blob-sha1", required=True)
@@ -777,7 +777,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _config_from_args(args: argparse.Namespace) -> RuntimeLockConfig:
     config = RuntimeLockConfig(
         repo_root=Path(args.repo_root),
-        expected_r2_reviewed_sha=args.expected_r2_reviewed_sha,
+        reviewed_baseline_sha=args.reviewed_baseline_sha,
         expected_runner_blob_sha1=args.expected_runner_blob_sha1,
         expected_test_blob_sha1=args.expected_test_blob_sha1,
         expected_design_blob_sha1=args.expected_design_blob_sha1,
@@ -786,7 +786,7 @@ def _config_from_args(args: argparse.Namespace) -> RuntimeLockConfig:
     if not config.repo_root.is_absolute() or not config.output_root.is_absolute():
         raise RuntimeLockError("PATH_INVALID")
     for value, pattern, label in (
-        (config.expected_r2_reviewed_sha, SHA1_RE, "expected_r2_reviewed_sha"),
+        (config.reviewed_baseline_sha, SHA1_RE, "reviewed_baseline_sha"),
         (config.expected_runner_blob_sha1, SHA1_RE, "expected_runner_blob_sha1"),
         (config.expected_test_blob_sha1, SHA1_RE, "expected_test_blob_sha1"),
         (config.expected_design_blob_sha1, SHA1_RE, "expected_design_blob_sha1"),

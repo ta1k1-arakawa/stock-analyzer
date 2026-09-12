@@ -15,7 +15,7 @@ def _config(tmp_path: Path, *, output: Path | None = None) -> runner.RuntimeLock
     repo.mkdir(exist_ok=True)
     return runner.RuntimeLockConfig(
         repo_root=repo,
-        expected_r2_reviewed_sha="1" * 40,
+        reviewed_baseline_sha="1" * 40,
         expected_runner_blob_sha1="2" * 40,
         expected_test_blob_sha1="3" * 40,
         expected_design_blob_sha1="4" * 40,
@@ -27,7 +27,7 @@ def _provenance(config: runner.RuntimeLockConfig) -> dict[str, object]:
     return {
         "repository_identity": "https://github.com/ta1k1-arakawa/stock-analyzer.git",
         "branch": runner.AUTHORITATIVE_BRANCH,
-        "head": config.expected_r2_reviewed_sha,
+        "head": config.reviewed_baseline_sha,
         "clean": True,
         "design_blob": config.expected_design_blob_sha1,
         "current_runner_blob": config.expected_runner_blob_sha1,
@@ -183,6 +183,39 @@ def test_validate_evidence_rejects_boolean_as_integer(tmp_path: Path) -> None:
     evidence["network_requests"] = True
     with pytest.raises(runner.RuntimeLockError):
         runner.validate_evidence(evidence)
+
+
+def test_execution_evidence_v2_baseline_key_is_exact() -> None:
+    assert runner.EVIDENCE_SCHEMA == "V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE_V2"
+    assert "reviewed_baseline_sha" in runner.EVIDENCE_KEYS
+    assert "expected_r2_reviewed_sha" not in runner.EVIDENCE_KEYS
+
+
+def test_v2_evidence_requires_reviewed_baseline_sha(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config, result = _successful_evidence(monkeypatch, tmp_path)
+    assert result["reviewed_baseline_sha"] == config.reviewed_baseline_sha
+    missing = dict(result)
+    del missing["reviewed_baseline_sha"]
+    with pytest.raises(runner.RuntimeLockError):
+        runner.validate_evidence(missing, config)
+    legacy = dict(result)
+    legacy["expected_r2_reviewed_sha"] = "f" * 40
+    with pytest.raises(runner.RuntimeLockError):
+        runner.validate_evidence(legacy, config)
+
+
+def test_reviewed_baseline_sha_is_validated_for_provenance(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    assert runner.validate_provenance(config, _provenance(config)) is True
+    config_with_wrong_head = runner.RuntimeLockConfig(
+        repo_root=config.repo_root,
+        reviewed_baseline_sha="f" * 40,
+        expected_runner_blob_sha1=config.expected_runner_blob_sha1,
+        expected_test_blob_sha1=config.expected_test_blob_sha1,
+        expected_design_blob_sha1=config.expected_design_blob_sha1,
+        output_root=config.output_root,
+    )
+    assert runner.validate_provenance(config_with_wrong_head, _provenance(config)) is False
 
 
 def test_provenance_failure_suppresses_all_live_collection(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -484,7 +517,7 @@ def test_pass_evidence_rejects_each_frozen_semantic_drift(
 def test_pass_evidence_must_match_dynamic_config_provenance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     config, result = _successful_evidence(monkeypatch, tmp_path)
     mutated = dict(result)
-    mutated["expected_r2_reviewed_sha"] = "f" * 40
+    mutated["reviewed_baseline_sha"] = "f" * 40
     with pytest.raises(runner.RuntimeLockError):
         runner.validate_evidence(mutated, config)
 
@@ -514,7 +547,7 @@ def test_pass_evidence_rejects_each_frozen_provenance_drift(
 @pytest.mark.parametrize(
     "field",
     [
-        "expected_r2_reviewed_sha",
+        "reviewed_baseline_sha",
         "runtime_lock_runner_git_blob_sha1",
         "runtime_lock_test_git_blob_sha1",
         "runtime_lock_design_git_blob_sha1",
@@ -604,9 +637,17 @@ def test_cli_has_only_provenance_and_path_inputs() -> None:
     parser = runner._build_parser()
     options = {option for action in parser._actions for option in action.option_strings}
     assert options == {
-        "-h", "--help", "--repo-root", "--expected-r2-reviewed-sha", "--expected-runner-blob-sha1",
+        "-h", "--help", "--repo-root", "--reviewed-baseline-sha", "--expected-runner-blob-sha1",
         "--expected-test-blob-sha1", "--expected-design-blob-sha1", "--output-root",
     }
+    help_text = parser.format_help()
+    assert "--reviewed-baseline-sha" in help_text
+    assert "--expected-r2-reviewed-sha" not in help_text
+
+
+def test_legacy_baseline_cli_argument_is_rejected() -> None:
+    with pytest.raises(SystemExit):
+        runner._build_parser().parse_args(["--expected-r2-reviewed-sha", "1" * 40])
 
 
 def test_run_lock_has_no_observation_injection_parameter() -> None:
@@ -640,7 +681,7 @@ def test_canonical_interpreter_is_not_configurable(tmp_path: Path) -> None:
 
 def test_main_rejects_relative_paths_and_malformed_sha() -> None:
     with pytest.raises(runner.RuntimeLockError):
-        runner._config_from_args(type("Args", (), {"repo_root": "repo", "expected_r2_reviewed_sha": "x", "expected_runner_blob_sha1": "2" * 40, "expected_test_blob_sha1": "3" * 40, "expected_design_blob_sha1": "4" * 40, "output_root": "out"})())
+        runner._config_from_args(type("Args", (), {"repo_root": "repo", "reviewed_baseline_sha": "x", "expected_runner_blob_sha1": "2" * 40, "expected_test_blob_sha1": "3" * 40, "expected_design_blob_sha1": "4" * 40, "output_root": "out"})())
 
 
 def test_public_failure_codes_are_closed() -> None:
