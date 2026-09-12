@@ -83,13 +83,48 @@ official_pypi_wheel_sha256=bb2b93b28d496cab173b41c7d120fd5cd9d506b31f3bb0ad3d1d9
 
 The source blob algorithm is the Git blob SHA-1 over the exact source bytes:
 `sha1(b"blob " + decimal_length + b"\0" + raw_bytes)`. V10A must bind the
-release-tag source identities and the reviewed official wheel bytes exactly.
+release-tag source identities and the reviewed official wheel archive exactly.
 
-V10A live validation must establish both conjunctive conditions:
+V10A does not require equality between the complete wheel ZIP archive and the
+complete installed distribution tree:
 
-1. installed package bytes equal the reviewed official wheel bytes; and
-2. the wheel's `jpx.py` and `jp.py` source blobs equal the `v5.4.0`
-   release-tag source blobs above.
+```text
+FULL_INSTALLED_DISTRIBUTION_TREE_BYTE_EQUALITY_REQUIRED=false
+```
+
+Instead, V10A source identity is closed by three independent bindings:
+
+1. The preserved wheel archive has the exact filename and SHA-256 above.
+2. For each of exactly two scientific source files, raw wheel-entry bytes
+   equal raw installed-file bytes without decoding, whitespace normalization,
+   newline normalization, AST comparison, or import-based reconstruction:
+
+   ```text
+   wheel_entry=pandas_market_calendars/calendars/jpx.py
+   installed_relative_path=pandas_market_calendars/calendars/jpx.py
+   wheel_entry=pandas_market_calendars/holidays/jp.py
+   installed_relative_path=pandas_market_calendars/holidays/jp.py
+   ```
+
+3. The Git blob SHA-1 of each exact wheel-entry byte sequence equals the
+   corresponding `v5.4.0` release-tag blob above. The installed-file Git
+   blob may also be computed and must equal that same expected value as a
+   redundant fail-closed cross-check.
+
+Therefore V10A live validation must establish all of the following:
+
+```text
+official_wheel_sha256_match=true
+installed_jpx_equals_wheel_entry=true
+wheel_jpx_git_blob_sha1=a7a59b6cf910e325c85fc042459ff57ca8f70613
+installed_jp_equals_wheel_entry=true
+wheel_jp_git_blob_sha1=4c34214d06862e02ac22e946757463f748074fde
+```
+
+These source-entry checks prove source identity only. They do not substitute
+for the complete reviewed installed package-set/count, package versions,
+Python/platform requirements, provenance, or synthetic XLS/PDF readiness
+probes, all of which remain separate V10A requirements.
 
 The old V10 `jpx.py` blob `0c2041b1300d1dbbd505202b00ac0ada38c712e1` is never
 accepted as a V10A source match.
