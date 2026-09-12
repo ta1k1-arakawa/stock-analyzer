@@ -302,40 +302,117 @@ git write, mutation, installation, network operation, or calendar operation.
 R3_CREATES_REPOSITORY_COMMIT=false
 ```
 
-Phase C performs no runner rerun and no environment observation. It inspects
-only the durable lock, runner execution evidence, separate R3 adjudication,
-and wrapper state; preserves exact lock/evidence SHA-256 values; and creates
-no repository commit. The fresh R3 authority is never inferred from R2 PASS,
-the terminal attempt-1 PASS, or any earlier V10A authorization.
+Phase C is read-only. It performs no runner rerun and no environment
+observation. It may inspect only the durable runtime lock, durable
+runner-produced execution evidence, durable wrapper prelaunch/result files,
+stdout/stderr captures, and repository provenance. The R3 adjudication
+artifact does not yet exist and MUST NOT be inspected or created in Phase C.
+Phase C reports safe facts to GPT; it creates no repository commit and does
+not consume authority. The fresh R3 authority is never inferred from R2
+PASS, the terminal attempt-1 PASS, or any earlier V10A authorization.
 
 On launch failure, nonzero exit, validation failure, or durable write
 failure: do not retry, rerun, delete, reset, repair, reinstall, recreate the
 environment, or use an alternate provider. Preserve durable state, complete
 Phase C where safe, and return to GPT review.
 
-### R3 adjudication artifact
+### GPT R3 adjudication and future artifact contract
 
-The runner-produced artifacts remain separate from wrapper/GPT governance
-facts:
+After Phase C, GPT adjudicates the reported safe facts as `PASS` or `BLOCK`.
+Only if GPT adjudicates R3 `PASS` does GPT freeze the exact safe values that
+R4 may record. R4 then deterministically creates
+`V10A_RUNTIME_ENVIRONMENT_LOCK_R3_ADJUDICATION.json` from those already
+frozen safe values. The artifact therefore does not exist during Phase C,
+and R4 does not infer or recalculate facts from a live environment.
+
+The future adjudication artifact has exactly this top-level key set and no
+extra or missing fields:
 
 ```text
-V10A_RUNTIME_ENVIRONMENT_LOCK.json
-V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE.json
-V10A_RUNTIME_ENVIRONMENT_LOCK_R3_ADJUDICATION.json
+schema_version
+study_identity
+attempt_identity
+r2_reviewed_sha
+runtime_lock_runner_git_blob_sha1
+runtime_lock_test_git_blob_sha1
+runtime_lock_design_git_blob_sha1
+remote_precheck_1
+phase_a
+remote_precheck_2
+point_of_use_remote_check
+phase_b
+phase_c
+authorization_consumed
+retry_authorized
+process_start_attempted
+process_started
+process_exit_code
+runtime_lock_size
+runtime_lock_sha256
+execution_evidence_size
+execution_evidence_sha256
+execution_evidence_status
+execution_failure_code
+python_version
+runtime_distribution_count
+exact_package_mapping
+calendar_source_blob
+holiday_source_blob
+network_requests
+package_installations
+environment_mutations
+calendar_imports
+calendar_object_creations
+calendar_dates_inspected
+protected_private_research_reads
+t0_run
+runtime_result
+promotion_chain_result
+runtime_environment_lock_gpt_reviewed_pass
+execution_authorized
+calendar_generation_authorized
+t0_authorized
+historical_evaluation_authorized
+future_profitability_established
 ```
 
-`V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE.json` remains the exact
-environment/provenance receipt produced by the reviewed runner. Its existing
-reviewed schema is not augmented or reinterpreted. The separate
-`V10A_RUNTIME_ENVIRONMENT_LOCK_R3_ADJUDICATION.json` is the only artifact
-that carries the wrapper/GPT authority facts. It must bind the exact future
-R2-reviewed SHA, runner/test/design blobs, remote precheck 1, Phase A, remote
-precheck 2, point-of-use remote check, fresh authorization consumption,
-`retry_authorized=false`, process-start facts and exit code, Phase C, exact
-durable lock/evidence hashes and sizes, result/failure code, exact runtime
-snapshot, all prohibited-operation counters, and all downstream authority
-booleans false. It contains no local paths, raw authorization, human
-identity, protected data, source bytes, prices, tickers, or outcomes.
+Its schema version is exactly
+`V10A_RUNTIME_ENVIRONMENT_LOCK_R3_ADJUDICATION_V1`. Its canonical bytes are
+UTF-8 with `ensure_ascii=false`, `sort_keys=true`,
+`separators=(',', ':')`, `allow_nan=false`, and exactly one final LF. It
+contains no self-hash.
+
+Field sources are fixed as follows. GPT-fixed/repository provenance supplies
+`schema_version`, `study_identity`, `attempt_identity`, `r2_reviewed_sha`,
+the runner/test/design blobs, and `remote_precheck_1`,
+`remote_precheck_2`, and `point_of_use_remote_check`. Phase A supplies
+`phase_a`. The Phase-B durable wrapper supplies `phase_b`,
+`authorization_consumed`, `retry_authorized`, `process_start_attempted`,
+`process_started`, and `process_exit_code`. Phase C independently verifies
+the durable artifacts and supplies `phase_c`, lock/evidence sizes and
+hashes, runner evidence status/failure code, Python/package/source facts,
+and all operation counters. GPT R3 adjudication supplies `runtime_result`
+and `promotion_chain_result`. The six downstream/profitability fields are
+fixed non-authority values and must remain false.
+
+For an R3 promotable PASS, require exactly: all remote-precheck and
+Phase-A/B/C fields equal `PASS`; `authorization_consumed=true`;
+`retry_authorized=false`; `process_start_attempted=true`;
+`process_started=true`; integer `process_exit_code=0`;
+`execution_evidence_status=PASS`; `execution_failure_code=NONE`;
+`python_version=3.12.10`; `runtime_distribution_count=20`;
+`exact_package_mapping=true`; corrected JPX/JP source blobs exact; all
+prohibited-operation counters equal zero; `t0_run=false`;
+`runtime_result=PASS`; `promotion_chain_result=PASS`; and every downstream
+authority/profitability field false.
+
+R4 must construct the exact canonical bytes only after GPT R3 PASS. It must
+validate the exact key set, every SHA/hash format, all fixed PASS semantics,
+the lock hash/size against the copied durable lock, the evidence hash/size
+against the copied durable runner evidence, and every exact R2/blob binding.
+No alternate value, missing-field default, post-hoc repair, or fallback is
+allowed. The adjudication contains no local paths, raw authorization,
+human identity, protected data, source bytes, prices, tickers, or outcomes.
 
 ### R4 — repository lock/evidence/adjudication commit
 
@@ -372,16 +449,14 @@ the durable R3 values. The R3 adjudication is created from safe wrapper facts
 only. R4 performs no runner rerun, environment read, package operation,
 calendar operation, or gate consumption.
 
-The R4 evidence and adjudication together bind the exact R2-reviewed SHA,
-reviewed runner/test/design blobs, runtime-lock Git blob/SHA-256/size, exact
-execution-evidence SHA-256/size, both R3 remote-precheck PASS results, the
-point-of-use remote check, Phase A/B/C results and process facts, fresh
-authorization consumption, `retry_authorized=false`, exact 20-package
-result, corrected source blobs, and all prohibited-operation counters zero.
-They also bind `calendar_generation_authorized=false`,
-`t0_authorized=false`, `historical_evaluation_authorized=false`, and
-`future_profitability_established=false`. Neither artifact contains local
-paths or raw human authorization.
+The lock and runner execution evidence remain byte-for-byte copies of the
+durable R3 artifacts. The separate R3 adjudication is the only artifact
+carrying the wrapper/GPT authority facts. Together, the three artifacts bind
+the exact R2-reviewed SHA, reviewed runner/test/design blobs, lock and
+execution-evidence Git/SHA-256/size values, all remote/phase results and
+process facts, fresh authorization consumption, `retry_authorized=false`,
+the exact runtime snapshot, all prohibited-operation counters zero, and all
+downstream authority/profitability values false.
 
 ### R5 — GPT exact-SHA runtime-lock review
 
