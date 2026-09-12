@@ -416,8 +416,8 @@ human identity, protected data, source bytes, prices, tickers, or outcomes.
 
 ### R4 — repository lock/evidence/adjudication commit
 
-Only after a future R3 PASS may a repository-only commit add exactly these
-five authorized changes:
+Only after a future R3 PASS may a repository-only commit operate only on
+these five logical artifact paths:
 
 ```text
 V10A_RUNTIME_ENVIRONMENT_LOCK.json
@@ -461,13 +461,13 @@ downstream authority/profitability values false.
 ### R5 — GPT exact-SHA runtime-lock review
 
 GPT reviews the R4 commit and all three exact artifacts. R5 must mechanically
-verify the R4 parent, `ahead_by=1`, `behind_by=0`, exactly the five
-R4-authorized files, unchanged R2-bound runner/test/design blobs, unchanged
-frozen scientific/protected artifacts, exact durable-to-repository lock and
-execution-evidence bytes and SHA-256 values, exact R3 adjudication bindings,
-one-shot authorization, `retry=false`, runtime snapshot PASS, zero
-prohibited-operation counters, and no calendar/T0/historical authority
-claim.
+verify the R4 parent, `ahead_by=1`, `behind_by=0`, the authorized logical
+artifact set and its mechanically derived actual changed-file set, unchanged
+R2-bound runner/test/design blobs, unchanged frozen scientific/protected
+artifacts, exact durable-to-repository lock and execution-evidence bytes and
+SHA-256 values, exact R3 adjudication bindings, one-shot authorization,
+`retry=false`, runtime snapshot PASS, zero prohibited-operation counters, and
+no calendar/T0/historical authority claim.
 
 Only R5 PASS with `CRITICAL=0`, `HIGH=0`, and `MEDIUM=0` establishes
 `V10A_RUNTIME_ENVIRONMENT_LOCK=GPT_REVIEWED_PASS`. R5 does not authorize
@@ -612,13 +612,66 @@ all durable bindings, and all downstream-false/non-profitability semantics.
 Only R5 `PASS` with `CRITICAL=0`, `HIGH=0`, and `MEDIUM=0` may establish
 `V10A_RUNTIME_ENVIRONMENT_LOCK=GPT_REVIEWED_PASS`.
 
-The next live identity is `R3_RUNTIME_LOCK_ATTEMPT_4`. It requires a fresh
-implementation/design exact-SHA review, explicit GPT designation of the exact
+### Idempotent R4 durable-artifact publication
+
+R4 has this exact logical artifact set:
+
+```text
+R4_LOGICAL_ARTIFACT_SET=
+V10A_RUNTIME_ENVIRONMENT_LOCK.json
+V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE.json
+V10A_RUNTIME_ENVIRONMENT_LOCK_R3_ADJUDICATION.json
+PROJECT_STATE.md
+PROJECT_DECISION_LOG.md
+```
+
+These are the only paths R4 may modify. The Git changed-file set is not
+required to contain all five logical paths. For every logical artifact,
+`TARGET_BYTES` are the exact bytes fixed by the reviewed R3 and GPT facts. If
+the parent bytes differ from `TARGET_BYTES`, R4 must change that path to the
+target bytes. If the parent bytes already equal `TARGET_BYTES`, R4 must leave
+the path unchanged. Artificial mutation solely to create a Git diff, including
+a touch, newline change, or formatting rewrite, is prohibited.
+
+Thus `R4_GIT_CHANGED_FILE_SET` is exactly the subset of
+`R4_LOGICAL_ARTIFACT_SET` whose parent bytes differ from their target bytes:
+no extra path may change and no required byte change may be omitted.
+
+For each durable runner artifact independently—the runtime lock and the
+runner execution evidence—R4 first compares exact durable bytes with parent
+repository bytes. If they are already byte-identical, R4 does not rewrite the
+artifact, verifies parent SHA-256/size and child byte identity, and records
+publication mode `UNCHANGED_IDENTICAL_PARENT_ARTIFACT`. If they differ, R4
+copies the durable bytes byte-for-byte without parsing or reserialization,
+verifies child SHA-256/size against the durable artifact, and records
+`BYTE_FOR_BYTE_REPLACED_FROM_DURABLE_ARTIFACT`. No third publication mode is
+allowed.
+
+R5 must verify: the five logical paths are the only authorized paths; the
+actual changed-file set equals the mechanically derived
+`R4_GIT_CHANGED_FILE_SET`; no unauthorized path changed; and every logical
+artifact's child bytes equal its target bytes. For an unchanged-identical
+durable artifact, R5 verifies parent and child byte identity and exact durable
+SHA-256/size. For a changed durable artifact, R5 verifies exact raw
+durable-to-child byte equality. R5 also verifies V2 adjudication canonical
+bytes, the exact reviewed-baseline chain, and all downstream authorities
+false. R5 must never require meaningless content mutation to create a diff.
+
+Attempt 4 is terminally non-promotable because its durable runtime lock
+already equaled the parent repository lock, while the former contract
+incorrectly required all five logical paths to appear as Git changes. That is
+a governance publication-contract inconsistency, not a scientific or strategy
+failure. Its artifacts and consumed authorization are not reused or salvaged.
+Because this correction changes the operational-design blob, attempt 4 cannot
+use this rule post hoc.
+
+The next live identity is `R3_RUNTIME_LOCK_ATTEMPT_5`. It requires this
+remediation's GPT exact-SHA PASS, a newly designated exact
 `R3_REVIEWED_BASELINE_SHA`, new exclusive durable roots, fresh remote
 prechecks, Phase A, a fresh one-shot authorization, a point-of-use remote
-check, exactly one Phase-B process, Phase C, and GPT R3 adjudication under V2.
-Attempts 1, 2, and 3 authorities and artifacts are never reused. Attempt 4
-is a new governance attempt, not a retry, reset, or salvage of attempt 3.
+check, exactly one Phase-B process, Phase C, and GPT R3 V2 adjudication.
+Attempts 1, 2, 3, and 4 authorities and artifacts are never reused. Attempt 5
+is a new governance attempt, not a retry, reset, or salvage.
 
 ### Future V2 runner evidence and baseline identity
 
