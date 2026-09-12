@@ -95,7 +95,24 @@ FULL_INSTALLED_DISTRIBUTION_TREE_BYTE_EQUALITY_REQUIRED=false
 Instead, V10A source identity is closed by three independent bindings:
 
 1. The preserved wheel archive has the exact filename and SHA-256 above.
-2. For each of exactly two scientific source files, raw wheel-entry bytes
+2. Before reading either scientific source entry, enumerate the ZIP
+   central-directory entry names deterministically. For each exact,
+   case-sensitive POSIX name below, `EXACT_ENTRY_OCCURRENCE_COUNT=1` is
+   mandatory:
+
+   ```text
+   pandas_market_calendars/calendars/jpx.py
+   pandas_market_calendars/holidays/jp.py
+   ```
+
+   An occurrence count of zero or greater than one fails closed. There is no
+   first-entry or last-entry selection. Entry selection performs no case
+   folding, slash/backslash normalization, URL decoding, Unicode
+   normalization, basename matching, suffix matching, or archive extraction.
+   If ZIP parsing cannot enumerate the central directory deterministically,
+   validation fails closed.
+3. Only after exact uniqueness is established, for each of exactly two
+   scientific source files, raw wheel-entry bytes
    equal raw installed-file bytes without decoding, whitespace normalization,
    newline normalization, AST comparison, or import-based reconstruction:
 
@@ -106,7 +123,7 @@ Instead, V10A source identity is closed by three independent bindings:
    installed_relative_path=pandas_market_calendars/holidays/jp.py
    ```
 
-3. The Git blob SHA-1 of each exact wheel-entry byte sequence equals the
+4. The Git blob SHA-1 of each exact wheel-entry byte sequence equals the
    corresponding `v5.4.0` release-tag blob above. The installed-file Git
    blob may also be computed and must equal that same expected value as a
    redundant fail-closed cross-check.
@@ -125,6 +142,10 @@ These source-entry checks prove source identity only. They do not substitute
 for the complete reviewed installed package-set/count, package versions,
 Python/platform requirements, provenance, or synthetic XLS/PDF readiness
 probes, all of which remain separate V10A requirements.
+
+The exact-entry uniqueness and raw-byte checks apply only to the two
+scientific source files. No alternate archive entry, transformed extraction,
+or reconstructed source is an accepted authority.
 
 The old V10 `jpx.py` blob `0c2041b1300d1dbbd505202b00ac0ada38c712e1` is never
 accepted as a V10A source match.
