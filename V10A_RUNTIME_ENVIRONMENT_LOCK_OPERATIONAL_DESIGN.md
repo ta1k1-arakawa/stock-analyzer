@@ -476,6 +476,150 @@ semantic calendar generation. Even after R5 PASS,
 `V10A_T0_AUTHORIZED`, and `V10A_HISTORICAL_EVALUATION_AUTHORIZED` remain
 false, and future profitability remains unestablished.
 
+### R3 attempt 3 terminal adjudication and future V2 contract
+
+R3 runtime-lock attempt 3 reached runtime `PASS` and its V1 R3 adjudication
+also reached `PASS`, but the R5 promotion review is terminally `BLOCK`. Fresh
+human authorization did in fact exist before Phase B; the R5 finding is not an
+unauthorized-execution finding. The wrapper's
+`authorization_consumed=true` is nevertheless not the source of proof for
+that fact. Attempt 3 is terminally non-promotable:
+
+```text
+R3_ATTEMPT_3_RUNTIME_RESULT=PASS
+R3_ATTEMPT_3_R3_ADJUDICATION_RESULT=PASS
+R3_ATTEMPT_3_R5_PROMOTION_RESULT=BLOCK
+R3_ATTEMPT_3_TERMINAL_NONPROMOTABLE=true
+R3_ATTEMPT_3_AUTHORIZATION_REUSABLE=false
+R3_ATTEMPT_3_RETRY_AUTHORIZED=false
+```
+
+The V1 attempt-3 adjudication, lock, and execution evidence remain immutable
+and are not deleted, rewritten, reused, or promoted under a post-hoc
+interpretation. No R4/R5 authority is salvaged from attempt 3.
+
+The original implementation review and a later execution baseline are
+different provenance concepts. For historical continuity, the substantive
+R2 implementation review is:
+
+```text
+R2_IMPLEMENTATION_REVIEWED_SHA=d094dfd8f3d3d8d7fedc2374ee35ac7d325a1217
+```
+
+For every future attempt, GPT must separately designate an exact
+`R3_REVIEWED_BASELINE_SHA`: the current branch SHA independently reviewed
+immediately before that attempt. A valid future baseline review requires
+`CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, exact runner/test/operational-design and
+frozen/protected blobs, no unresolved provenance finding, and authoritative
+remote HEAD equal to that SHA. The baseline may be a descendant of a
+terminal attempt or bookkeeping record, but it must inherit the exact reviewed
+runner and test blobs. No baseline SHA is inferred or fabricated here.
+
+For future attempts, the R3 adjudication artifact is schema V2. Its exact
+top-level fields, with no extra or missing fields, are the V1 fields listed
+above except that `r2_reviewed_sha` is replaced by `reviewed_baseline_sha`,
+plus the exact boolean field
+`fresh_human_authorization_proven_before_execution`:
+
+```text
+schema_version
+study_identity
+attempt_identity
+reviewed_baseline_sha
+runtime_lock_runner_git_blob_sha1
+runtime_lock_test_git_blob_sha1
+runtime_lock_design_git_blob_sha1
+remote_precheck_1
+phase_a
+remote_precheck_2
+point_of_use_remote_check
+phase_b
+phase_c
+authorization_consumed
+fresh_human_authorization_proven_before_execution
+retry_authorized
+process_start_attempted
+process_started
+process_exit_code
+runtime_lock_size
+runtime_lock_sha256
+execution_evidence_size
+execution_evidence_sha256
+execution_evidence_status
+execution_failure_code
+python_version
+runtime_distribution_count
+exact_package_mapping
+calendar_source_blob
+holiday_source_blob
+network_requests
+package_installations
+environment_mutations
+calendar_imports
+calendar_object_creations
+calendar_dates_inspected
+protected_private_research_reads
+t0_run
+runtime_result
+promotion_chain_result
+runtime_environment_lock_gpt_reviewed_pass
+execution_authorized
+calendar_generation_authorized
+t0_authorized
+historical_evaluation_authorized
+future_profitability_established
+```
+
+The V2 schema version is exactly
+`V10A_RUNTIME_ENVIRONMENT_LOCK_R3_ADJUDICATION_V2`. Its canonical bytes are
+UTF-8 with `ensure_ascii=false`, `sort_keys=true`,
+`separators=(',', ':')`, `allow_nan=false`, and exactly one final LF; it has
+no self-hash. The new boolean is frozen only from GPT's safe R3 adjudication
+after the explicit human authorization turn, point-of-use remote check,
+Phase B, and Phase C. It MUST NOT be inferred from
+`authorization_consumed`. R4 records the already-frozen boolean
+deterministically, and R5 requires it to be exactly `true` for a promotable
+PASS. No raw authorization text or identity is stored.
+
+For a V2 promotable PASS, `reviewed_baseline_sha` is the exact GPT-reviewed
+R3 baseline (not the original implementation-review SHA), all remote,
+Phase-A/B/C, and point-of-use fields are `PASS`, the fresh-authorization
+boolean and `authorization_consumed` are `true`, `retry_authorized=false`,
+the process was attempted and started once with integer exit code `0`, and
+all existing runtime/package/source/prohibited-counter PASS semantics and
+downstream-false semantics remain mandatory. Phase C remains read-only and
+may inspect only the durable lock, runner execution evidence, wrapper
+captures, stdout/stderr, and repository provenance. It MUST NOT inspect or
+create the V2 adjudication artifact; that artifact does not exist until R4.
+
+R4 creates the V2 adjudication only after GPT has adjudicated the corresponding
+R3 attempt `PASS`. R4 performs repository-only deterministic construction,
+does not infer or recalculate live facts, does not rerun the runner, does not
+read the environment, and consumes no human gate. A successful R4 commit has:
+
+```text
+R4_PARENT_SHA=exact_R3_REVIEWED_BASELINE_SHA
+ahead_by=1
+behind_by=0
+```
+
+There is no intermediate commit between that reviewed baseline and R4. R4
+must mechanically bind the exact reviewed runner/test/design blobs, all three
+durable artifact hashes and sizes, the frozen V2 adjudication values, and the
+exact repository parent/scope. R5 independently verifies the V2 key set and
+canonical bytes, the fresh-authorization boolean, all process/phase facts,
+all durable bindings, and all downstream-false/non-profitability semantics.
+Only R5 `PASS` with `CRITICAL=0`, `HIGH=0`, and `MEDIUM=0` may establish
+`V10A_RUNTIME_ENVIRONMENT_LOCK=GPT_REVIEWED_PASS`.
+
+The next live identity is `R3_RUNTIME_LOCK_ATTEMPT_4`. It requires a fresh
+implementation/design exact-SHA review, explicit GPT designation of the exact
+`R3_REVIEWED_BASELINE_SHA`, new exclusive durable roots, fresh remote
+prechecks, Phase A, a fresh one-shot authorization, a point-of-use remote
+check, exactly one Phase-B process, Phase C, and GPT R3 adjudication under V2.
+Attempts 1, 2, and 3 authorities and artifacts are never reused. Attempt 4
+is a new governance attempt, not a retry, reset, or salvage of attempt 3.
+
 ## 7. Result and failure contract
 
 The exact future safe receipt is
