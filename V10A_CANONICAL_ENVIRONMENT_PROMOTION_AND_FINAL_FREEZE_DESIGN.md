@@ -61,12 +61,30 @@ following ordered chain. Every stage is fail-closed, and a failure preserves
 its evidence without retry, rollback, reinstall, repair, environment
 recreation, alternate provider, or promotion.
 
-### P1 — promotion/freeze artifact preparation
+### P1 — promotion/freeze artifact and tooling preparation
 
-P1 is a documentation/artifact-preparation checkpoint only. It may read the
-repository's already-committed V10A evidence and source-authority records, but
-it must not read the live canonical environment or wheelhouse, launch Python,
-mutate software, consume authority, or perform a validation rerun.
+P1 is an offline implementation/artifact-preparation checkpoint. Its single
+future implementation commit must contain exactly the following new
+promotion-specific artifacts and minimal rolling-memory updates:
+
+```text
+V10A_CANONICAL_ENVIRONMENT_FINAL_FREEZE_RECORD_CANDIDATE.json
+scripts/v10a_environment_final_freeze_verification_runner.py
+tests/test_v10a_environment_final_freeze_verification_runner.py
+PROJECT_STATE.md
+PROJECT_DECISION_LOG.md
+```
+
+The P1 commit must bind the candidate, runner, and test Git blobs/hashes and
+the exact frozen V10A design, source, package, and already-reviewed attempt-1
+evidence identities. A naming collision must be resolved before P1; these
+filenames are otherwise fixed by this design. P1 synthetic tests may use
+temporary fixtures, but the production runner must not expose synthetic
+observations, injected process execution, or authority bypasses.
+
+P1 must not read the live canonical environment or wheelhouse, launch the
+canonical Python, access network data or package services, mutate software,
+create calendars, inspect dates, run T0/evaluation, or consume a human gate.
 
 P1 prepares a future freeze-record candidate whose unapproved state remains:
 
@@ -79,19 +97,26 @@ future_protected_execution_authorized=false
 The candidate binds the validation evidence SHA-256/blob, attempt-1
 adjudication blob, reviewed evidence-record commit, approved V10A design and
 freeze-record SHAs, and the frozen source/package identities. It must not
-invent live P3 values or any future commit SHA. P1 does not create promotion
-authority merely by creating this candidate.
+invent live P3 values or any future commit SHA, including the P1 commit's own
+SHA. P1 does not create promotion authority merely by creating this candidate.
 
 ### P2 — GPT exact-SHA review
 
-The complete P1 artifact-preparation commit is independently reviewed at its
-exact commit SHA. P2 is PASS only when GPT records `CRITICAL=0`, `HIGH=0`,
-and `MEDIUM=0`. A P2 PASS verifies artifact/design correctness only; it does
-not promote or freeze the environment and does not authorize P3.
+The complete P1 implementation/artifact commit is independently reviewed at
+its exact commit SHA. P2 must review the final-freeze-record candidate exact
+Git blob/hash, final-verification runner exact Git blob, targeted test source,
+production-entrypoint closure, absence of synthetic/injection production
+bypasses, exact frozen constants, fail-closed observation ordering, safe
+durable publication, and absence of any authority claim. P2 is PASS only when
+GPT records `CRITICAL=0`, `HIGH=0`, and `MEDIUM=0`. A P2 PASS verifies
+artifact/design/tooling correctness only; it does not promote or freeze the
+environment and does not authorize P3.
 
-The exact P2-reviewed commit SHA becomes a required input to P3. A moved
-branch, dirty checkout, missing commit, or mismatch between the reviewed
-checkout and the local execution checkout is a provenance failure.
+The exact P2-reviewed commit SHA, candidate blob/hash, and runner blob become
+required inputs to P3. P3 may use only those exact reviewed blobs; no later
+worktree or current-file substitution is allowed. A moved branch, dirty
+checkout, missing commit, or mismatch between the reviewed checkout and the
+local execution checkout is a provenance failure.
 
 ### P3 — fresh final no-network live freeze verification
 
@@ -99,6 +124,12 @@ P3 is permitted only after P2 PASS and a fresh point-of-use human
 authorization specifically for P3. The P3 authorization is distinct from the
 V10A attempt-1 authorization and cannot be inferred from, or reused from,
 that attempt.
+
+Because Phase A is no-network, a local `origin/<branch>` tracking ref is not
+authoritative proof of the GitHub branch head. Immediately before issuing or
+running Phase A, GPT must perform `P3-REMOTE-PRECHECK-1` through connected
+GitHub and verify that the authoritative branch head equals the exact
+P2-reviewed SHA. If it does not, stop with `EXPECTED_HEAD_MISMATCH`.
 
 P3 uses direct Windows PowerShell phased execution:
 
@@ -108,8 +139,17 @@ Phase B: one reviewed final-verification runner/check
 Phase C: no-network evidence inspection and durable capture
 ```
 
-Before Phase B, P3 must require the authoritative remote branch and local
-checkout to equal the exact P2-reviewed SHA, with a clean tree. The final
+Phase A then performs no-network local checks only: the correct branch, local
+HEAD equal to the exact P2-reviewed SHA, the local tracking ref equal to that
+SHA, a clean tree, exact candidate/runner/design/evidence blobs, and safe
+output/attempt roots. It must not read live content. After Phase A PASS and
+before the fresh human authorization or Phase B, GPT must perform
+`P3-REMOTE-PRECHECK-2` through connected GitHub and again verify that the
+authoritative branch head equals the exact P2-reviewed SHA. A mismatch at
+either external precheck is `EXPECTED_HEAD_MISMATCH` and stops the chain; no
+git fetch is required inside Phase A/B/C.
+
+Only then may fresh P3 authority be issued and Phase B run. The final
 verification runner binds:
 
 - the frozen V10A design and freeze-record identities;
@@ -131,13 +171,26 @@ inputs, or use network/package resolution.
 P3 failure stops the chain. There is no retry, rollback, reinstall, repair,
 environment recreation, alternate provider, or promotion after a P3
 failure. The fresh P3 authority is consumed only according to its own
-point-of-use one-shot boundary, never from attempt 1.
+point-of-use one-shot boundary, never from attempt 1. P3 performs no
+repository commit.
 
 ### P4 — final-verification evidence commit
 
 After a successful P3 capture, a separate repository-writing checkpoint
 commits the exact durable P3 evidence and minimal authorized state/log
 updates. P4 performs no rerun and no live-environment or wheelhouse read.
+P4 must have the exact P2-reviewed commit as its parent and be exactly one
+commit ahead: `P4_PARENT_SHA=<P2_REVIEWED_SHA>`, `ahead_by=1`, and
+`behind_by=0`. Before commit and push, P4 must mechanically verify that the
+P1 candidate and final-verification runner blobs still equal the P2-reviewed
+blobs.
+
+P4 changes are narrowly limited to the new final-verification evidence,
+optionally a separately frozen safe P3 adjudication JSON, and minimal
+`PROJECT_STATE.md`/`PROJECT_DECISION_LOG.md` updates. P4 must not modify the
+P1 candidate, final-verification runner or tests, frozen V10A scientific or
+promotion design, attempt-1 evidence/adjudication, or package/source
+authority files.
 The artifact is:
 
 ```text
@@ -155,7 +208,15 @@ remain false. P4 must not claim that its own future commit was reviewed.
 ### P5 — GPT exact-SHA final promotion review
 
 P5 independently reviews the exact P4 evidence commit and its final
-verification artifact. Only P5 PASS may transition the rolling state to:
+verification artifact. It must verify that P4 has the exact P2 parent and
+`ahead_by=1`/`behind_by=0`, only P4-authorized files changed, the P1
+candidate and final-verification runner blobs are unchanged, and P3 evidence
+binds the exact P2 SHA, reviewed candidate/runner blobs, one-shot process and
+fresh authority result. It must also verify all exact environment,
+package/source/probe requirements and zero prohibited-operation counters, and
+that P4 contains no promotion/freeze claim before adjudication. Only P5 PASS
+with `CRITICAL=0`, `HIGH=0`, and `MEDIUM=0` may transition the rolling state
+to:
 
 ```text
 V10A_CANONICAL_ENVIRONMENT_PROMOTED=true
@@ -174,6 +235,14 @@ V10A_HISTORICAL_EVALUATION_AUTHORIZED=false
 ```
 
 This document is not P5 evidence and does not make that transition.
+
+P5 is the authority-conferring adjudication. A later repository-only
+bookkeeping commit may record P5 PASS in `PROJECT_STATE.md` and
+`PROJECT_DECISION_LOG.md`, but it creates no new promotion authority, must
+not modify the candidate, runner, or final evidence, and must not rerun live
+verification. That recording commit must itself receive normal exact-SHA
+review as bookkeeping provenance before it is treated as the current rolling
+state record.
 
 ## 3. Self-reference and exact-SHA rules
 
