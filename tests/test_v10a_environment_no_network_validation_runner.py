@@ -280,3 +280,180 @@ def test_cli_calls_production_path_without_observations(tmp_path: Path, monkeypa
     assert captured["observations"] is None
     assert captured["publish"] is True
     assert json.loads(capsys.readouterr().out)["execution_authorized"] is False
+
+
+def _stub_production_stages(
+    monkeypatch: pytest.MonkeyPatch,
+    config: runner.V10AValidationConfig,
+    observations: dict[str, object],
+    order: list[str],
+    fail_stage: str | None = None,
+) -> None:
+    base = {key: observations[key] for key in observations if key in {
+        "repository_identity", "branch", "head", "clean", "approved_design_commit_exists",
+        "approved_design_blob_sha1", "freeze_record_commit_exists", "freeze_record_blob_sha1",
+        "current_frozen_design_blob_sha1", "current_design_matches_freeze_record",
+        "v10a_runner_commit_exists", "reviewed_v10a_runner_blob_sha1", "current_v10a_runner_blob_sha1",
+    }}
+
+    def provenance(_config: runner.V10AValidationConfig) -> dict[str, object]:
+        order.append("stage2")
+        return base
+
+    def repository(_config: runner.V10AValidationConfig, _obs: object) -> bool:
+        order.append("stage2_validate")
+        return fail_stage != "stage2"
+
+    def historical(_config: runner.V10AValidationConfig, obs: object) -> dict[str, object]:
+        order.append("stage3")
+        result = dict(obs)  # type: ignore[arg-type]
+        result.update(
+            historical_step4_provenance_valid=fail_stage != "stage3",
+            reviewed_wheelhouse_provenance_valid=fail_stage != "stage3",
+        )
+        return result
+
+    def historical_valid(obs: object) -> bool:
+        order.append("stage3_validate")
+        return fail_stage != "stage3"
+
+    def packages(_config: runner.V10AValidationConfig) -> dict[str, object]:
+        order.append("package")
+        return {"observed_packages": _packages()} if fail_stage != "package" else {"observed_packages": []}
+
+    def platform_observation(_config: runner.V10AValidationConfig) -> dict[str, object]:
+        order.append("platform")
+        return {
+            "interpreter_executable": str(config.canonical_interpreter.resolve()),
+            "python_version": "3.12.10",
+            "platform_system": "Windows" if fail_stage != "platform" else "Linux",
+            "platform_machine": "AMD64",
+            "sysconfig_platform": "win-amd64",
+        }
+
+    def versions(_config: runner.V10AValidationConfig) -> dict[str, object]:
+        order.append("versions")
+        return {
+            "pandas_market_calendars_version": "5.4.0" if fail_stage != "versions" else "0.0.0",
+            "exchange_calendars_version": "4.13.2",
+        }
+
+    def wheel(_config: runner.V10AValidationConfig, _obs: object, phase: dict[str, object]) -> str:
+        order.append("wheel_sha")
+        phase["_wheel_path"] = Path("synthetic-wheel.whl")
+        phase["official_wheel_filename"] = runner.OFFICIAL_WHEEL_FILENAME
+        phase["observed_official_wheel_sha256"] = runner.OFFICIAL_WHEEL_SHA256
+        phase["official_wheel_sha256_match"] = True
+        return "NONE" if fail_stage != "wheel" else "OFFICIAL_WHEEL_IDENTITY_MISMATCH"
+
+    def entries(phase: dict[str, object]) -> str:
+        order.append("entries")
+        phase["jpx_entry_occurrence_count"] = 1
+        phase["jp_entry_occurrence_count"] = 1
+        return "NONE" if fail_stage != "entries" else "WHEEL_SOURCE_ENTRY_UNIQUENESS_FAILURE"
+
+    def installed_paths(_config: runner.V10AValidationConfig) -> dict[str, object]:
+        order.append("source_paths")
+        return {"installed_jpx_path": "synthetic-jpx.py", "installed_jp_path": "synthetic-jp.py"}
+
+    def source(_config: runner.V10AValidationConfig, _obs: object, _phase: dict[str, object]) -> str:
+        order.append("source")
+        _phase.update(
+            jpx_installed_equals_wheel_entry=True,
+            jp_installed_equals_wheel_entry=True,
+            jpx_wheel_git_blob_sha1=runner.JPX_RELEASE_GIT_BLOB_SHA1,
+            jp_wheel_git_blob_sha1=runner.JP_RELEASE_GIT_BLOB_SHA1,
+            jpx_installed_git_blob_sha1=runner.JPX_RELEASE_GIT_BLOB_SHA1,
+            jp_installed_git_blob_sha1=runner.JP_RELEASE_GIT_BLOB_SHA1,
+            jpx_source_blob_match=True,
+            holiday_source_blob_match=True,
+        )
+        return "NONE"
+
+    def xls() -> str:
+        order.append("xls")
+        return "PASS" if fail_stage != "xls" else "FAIL"
+
+    def pdf() -> str:
+        order.append("pdf")
+        return "PASS"
+
+    monkeypatch.setattr(runner, "_default_provenance_observations", provenance)
+    monkeypatch.setattr(runner, "_validate_repository_provenance", repository)
+    monkeypatch.setattr(runner, "_default_historical_provenance_observations", historical)
+    monkeypatch.setattr(runner, "_validate_historical_provenance", historical_valid)
+    monkeypatch.setattr(runner, "_default_package_observations", packages)
+    monkeypatch.setattr(runner, "_default_platform_observations", platform_observation)
+    monkeypatch.setattr(runner, "_default_package_version_observations", versions)
+    monkeypatch.setattr(runner, "_validate_official_wheel_identity", wheel)
+    monkeypatch.setattr(runner, "_enumerate_unique_source_entries", entries)
+    monkeypatch.setattr(runner, "_default_installed_source_paths", installed_paths)
+    monkeypatch.setattr(runner, "_validate_source_entries", source)
+    monkeypatch.setattr(runner, "_default_xls_probe", xls)
+    monkeypatch.setattr(runner, "_default_pdf_probe", pdf)
+
+
+@pytest.mark.parametrize(
+    ("fail_stage", "forbidden"),
+    [
+        ("stage2", {"stage3", "package", "platform", "versions", "wheel_sha", "entries", "source_paths", "source", "xls", "pdf"}),
+        ("stage3", {"package", "platform", "versions", "wheel_sha", "entries", "source_paths", "source", "xls", "pdf"}),
+        ("package", {"platform", "versions", "wheel_sha", "entries", "source_paths", "source", "xls", "pdf"}),
+        ("platform", {"versions", "wheel_sha", "entries", "source_paths", "source", "xls", "pdf"}),
+        ("versions", {"wheel_sha", "entries", "source_paths", "source", "xls", "pdf"}),
+        ("wheel", {"entries", "source_paths", "source", "xls", "pdf"}),
+        ("entries", {"source_paths", "source", "xls", "pdf"}),
+        ("xls", {"pdf"}),
+    ],
+)
+def test_production_stage_failure_suppresses_later_observations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_stage: str,
+    forbidden: set[str],
+) -> None:
+    config, observations, _, _ = _fixture(tmp_path, monkeypatch)
+    order: list[str] = []
+    _stub_production_stages(monkeypatch, config, observations, order, fail_stage)
+    result = runner.run_validation(config, observations=None, publish=False)
+    assert result["status"] == "FAIL"
+    assert not forbidden.intersection(order)
+
+
+def test_production_pass_traverses_stages_in_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config, observations, _, _ = _fixture(tmp_path, monkeypatch)
+    order: list[str] = []
+    _stub_production_stages(monkeypatch, config, observations, order)
+    result = runner.run_validation(config, observations=None, publish=False)
+    assert result["status"] == "PASS"
+    assert order == [
+        "stage2", "stage2_validate", "stage3", "stage3_validate", "package",
+        "platform", "versions", "wheel_sha", "entries", "source_paths", "source", "xls", "pdf",
+    ]
+
+
+def test_production_wheel_hash_failure_never_opens_zip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config, observations, _, _ = _fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "OFFICIAL_WHEEL_SHA256", "0" * 64)
+
+    def forbidden_open(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("ZIP must not open after archive hash failure")
+
+    monkeypatch.setattr(zipfile, "ZipFile", forbidden_open)
+    result = runner.run_validation(config, observations, publish=False)
+    assert result["failure_code"] == "OFFICIAL_WHEEL_IDENTITY_MISMATCH"
+
+
+def test_production_uniqueness_failure_never_resolves_installed_source_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config, observations, _, _ = _fixture(tmp_path, monkeypatch)
+    wheel = Path(str(observations["official_wheel_path"]))
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(runner.JPX_ENTRY, b"duplicate")
+    monkeypatch.setattr(runner, "OFFICIAL_WHEEL_SHA256", _sha256(wheel.read_bytes()))
+
+    def forbidden_paths(_config: runner.V10AValidationConfig) -> dict[str, object]:
+        raise AssertionError("installed source paths must not resolve before unique entries")
+
+    monkeypatch.setattr(runner, "_default_installed_source_paths", forbidden_paths)
+    result = runner.run_validation(config, observations, publish=False)
+    assert result["failure_code"] == "WHEEL_SOURCE_ENTRY_UNIQUENESS_FAILURE"

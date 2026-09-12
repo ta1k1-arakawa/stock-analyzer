@@ -275,10 +275,14 @@ def _read_step4_inputs(config: V10AValidationConfig, obs: dict[str, Any]) -> Non
 
 
 def _default_provenance_observations(config: V10AValidationConfig) -> dict[str, Any]:
-    """Collect only repository, historical Step-4, and wheelhouse facts."""
-    obs = v10_live._default_provenance_observations(config)  # type: ignore[arg-type]
+    """Collect only Stage-2 repository/design/runner provenance."""
+    obs: dict[str, Any] = {}
     try:
         obs.update(
+            repository_identity=_run_git(config.repo_root, ["config", "--get", "remote.origin.url"]).decode().strip(),
+            branch=_run_git(config.repo_root, ["branch", "--show-current"]).decode().strip(),
+            head=_run_git(config.repo_root, ["rev-parse", "HEAD"]).decode().strip(),
+            clean=_run_git(config.repo_root, ["status", "--porcelain", "--untracked-files=all"]) == b"",
             approved_design_commit_exists=_git_exists(config.repo_root, APPROVED_DESIGN_SHA),
             approved_design_blob_sha1=_git_blob_at(config.repo_root, APPROVED_DESIGN_SHA, FROZEN_DESIGN_RELATIVE),
             freeze_record_commit_exists=_git_exists(config.repo_root, FREEZE_RECORD_SHA),
@@ -288,24 +292,68 @@ def _default_provenance_observations(config: V10AValidationConfig) -> dict[str, 
             v10a_runner_commit_exists=_git_exists(config.repo_root, config.expected_live_validation_runner_commit_sha),
             reviewed_v10a_runner_blob_sha1=_git_blob_at(config.repo_root, config.expected_live_validation_runner_commit_sha, RUNNER_RELATIVE),
             current_v10a_runner_blob_sha1=_run_git(config.repo_root, ["hash-object", "--", str(config.repo_root / RUNNER_RELATIVE)]).decode("ascii").strip(),
-            official_wheel_path=str(config.effective_wheelhouse / OFFICIAL_WHEEL_FILENAME),
         )
-        _read_step4_inputs(config, obs)
-        pc = _preflight_config(config)
-        historical = preflight._validate_provenance(pc, obs)
-        if historical is None:
-            return obs
-        lock_obs = {**obs, **preflight._default_successor_lock_observations(pc)}
-        if not preflight._validate_successor_lock(pc, lock_obs, historical["candidate"]):
-            return obs
-        wheel, _ = preflight._derive_wheelhouse(pc, historical["candidate"])
-        delta_paths = tuple(Path(path) for path in wheel["delta_wheel_paths"])
-        step4_valid = v10_live._validate_step4_evidence(config, obs, historical["candidate"], delta_paths)  # type: ignore[arg-type]
-        obs["historical_step4_provenance_valid"] = step4_valid
-        obs["reviewed_wheelhouse_provenance_valid"] = bool(wheel.get("wheelhouse_integrity_verified") and wheel.get("ok"))
-    except (ContractValidationError, OSError, UnicodeError, ValueError, KeyError, TypeError):
+    except (ContractValidationError, OSError, UnicodeError, ValueError, KeyError, TypeError, subprocess.CalledProcessError):
         return obs
     return obs
+
+
+def _validate_repository_provenance(config: V10AValidationConfig, obs: Mapping[str, Any]) -> bool:
+    """Validate only Stage 2; no Step-4 or wheelhouse facts are required."""
+    try:
+        _strict_sha(config.expected_current_head, SHA1_RE, "expected current head")
+        _strict_sha(config.expected_live_validation_runner_commit_sha, SHA1_RE, "runner commit")
+        _strict_sha(config.expected_live_validation_runner_blob_sha1, SHA1_RE, "runner blob")
+    except V10AValidationError:
+        return False
+    return all(
+        (
+            _repo_identity(obs.get("repository_identity")),
+            obs.get("branch") == AUTHORITATIVE_BRANCH,
+            obs.get("head") == config.expected_current_head,
+            obs.get("clean") is True,
+            obs.get("approved_design_commit_exists") is True,
+            obs.get("approved_design_blob_sha1") == APPROVED_DESIGN_BLOB_SHA1,
+            obs.get("freeze_record_commit_exists") is True,
+            obs.get("freeze_record_blob_sha1") == FREEZE_RECORD_BLOB_SHA1,
+            obs.get("current_frozen_design_blob_sha1") == FREEZE_RECORD_BLOB_SHA1,
+            obs.get("current_design_matches_freeze_record") is True,
+            obs.get("v10a_runner_commit_exists") is True,
+            obs.get("reviewed_v10a_runner_blob_sha1") == config.expected_live_validation_runner_blob_sha1,
+            obs.get("current_v10a_runner_blob_sha1") == config.expected_live_validation_runner_blob_sha1,
+            _output_root_safe(config),
+        )
+    )
+
+
+def _default_historical_provenance_observations(config: V10AValidationConfig, obs: Mapping[str, Any]) -> dict[str, Any]:
+    """Collect Stage-3 Step-4, generic-lock, and reviewed-wheelhouse facts."""
+    result = dict(obs)
+    try:
+        _read_step4_inputs(config, result)
+        pc = _preflight_config(config)
+        historical = preflight._default_provenance_observations(pc)
+        result.update(historical)
+        validated = preflight._validate_provenance(pc, result)
+        if validated is None:
+            return result
+        lock_obs = {**result, **preflight._default_successor_lock_observations(pc)}
+        if not preflight._validate_successor_lock(pc, lock_obs, validated["candidate"]):
+            return result
+        result.update(lock_obs)
+        wheel, _ = preflight._derive_wheelhouse(pc, validated["candidate"])
+        delta_paths = tuple(Path(path) for path in wheel["delta_wheel_paths"])
+        result["historical_step4_provenance_valid"] = v10_live._validate_step4_evidence(  # type: ignore[arg-type]
+            config, result, validated["candidate"], delta_paths
+        )
+        result["reviewed_wheelhouse_provenance_valid"] = bool(wheel.get("wheelhouse_integrity_verified") and wheel.get("ok"))
+    except (ContractValidationError, OSError, UnicodeError, ValueError, KeyError, TypeError, subprocess.CalledProcessError):
+        return result
+    return result
+
+
+def _validate_historical_provenance(obs: Mapping[str, Any]) -> bool:
+    return obs.get("historical_step4_provenance_valid") is True and obs.get("reviewed_wheelhouse_provenance_valid") is True
 
 
 def _unauthorized_observed(obs: Mapping[str, Any]) -> bool:
@@ -318,32 +366,20 @@ def _unauthorized_observed(obs: Mapping[str, Any]) -> bool:
     return False
 
 
+def _default_operation_observations() -> dict[str, Any]:
+    """Initialize Stage 1 counters without reading any later-stage input."""
+    return {
+        "package_index_network_requests": 0,
+        "package_installations": 0,
+        "calendar_object_creations": 0,
+        "calendar_dates_inspected": 0,
+        "protected_or_private_reads": 0,
+        "t0_run": False,
+    }
+
+
 def _validate_provenance(config: V10AValidationConfig, obs: Mapping[str, Any]) -> bool:
-    try:
-        _strict_sha(config.expected_current_head, SHA1_RE, "expected current head")
-        _strict_sha(config.expected_live_validation_runner_commit_sha, SHA1_RE, "runner commit")
-        _strict_sha(config.expected_live_validation_runner_blob_sha1, SHA1_RE, "runner blob")
-    except V10AValidationError:
-        return False
-    fixed = (
-        _repo_identity(obs.get("repository_identity")),
-        obs.get("branch") == AUTHORITATIVE_BRANCH,
-        obs.get("head") == config.expected_current_head,
-        obs.get("clean") is True,
-        obs.get("approved_design_commit_exists") is True,
-        obs.get("approved_design_blob_sha1") == APPROVED_DESIGN_BLOB_SHA1,
-        obs.get("freeze_record_commit_exists") is True,
-        obs.get("freeze_record_blob_sha1") == FREEZE_RECORD_BLOB_SHA1,
-        obs.get("current_frozen_design_blob_sha1") == FREEZE_RECORD_BLOB_SHA1,
-        obs.get("current_design_matches_freeze_record") is True,
-        obs.get("v10a_runner_commit_exists") is True,
-        obs.get("reviewed_v10a_runner_blob_sha1") == config.expected_live_validation_runner_blob_sha1,
-        obs.get("current_v10a_runner_blob_sha1") == config.expected_live_validation_runner_blob_sha1,
-        obs.get("historical_step4_provenance_valid") is True,
-        obs.get("reviewed_wheelhouse_provenance_valid") is True,
-        _output_root_safe(config),
-    )
-    return all(fixed)
+    return _validate_repository_provenance(config, obs) and _validate_historical_provenance(obs)
 
 
 def _normalize_packages(value: Any) -> tuple[tuple[str, str], ...]:
@@ -372,8 +408,8 @@ def _packages_json(value: Sequence[tuple[str, str]]) -> list[dict[str, str]]:
     return [{"name": name, "version": version} for name, version in value]
 
 
-def _default_live_observations(config: V10AValidationConfig) -> dict[str, Any]:
-    """Observe package metadata and platform only; source/probes are later gates."""
+def _default_package_observations(config: V10AValidationConfig) -> dict[str, Any]:
+    """Collect only Stage-4 installed distribution metadata."""
     observations: dict[str, Any] = {
         "package_index_network_requests": 0,
         "package_installations": 0,
@@ -381,34 +417,65 @@ def _default_live_observations(config: V10AValidationConfig) -> dict[str, Any]:
         "calendar_dates_inspected": 0,
         "protected_or_private_reads": 0,
         "t0_run": False,
-        "interpreter_executable": str(Path(sys.executable).resolve()),
-        "python_version": platform.python_version(),
-        "platform_system": platform.system(),
-        "platform_machine": platform.machine(),
-        "sysconfig_platform": sysconfig.get_platform(),
     }
     try:
         distributions = []
         for dist in importlib.metadata.distributions():
             distributions.append({"name": dist.metadata.get("Name"), "version": dist.version})
         observations["observed_packages"] = _packages_json(_normalize_packages(distributions))
-        observations["pandas_market_calendars_version"] = importlib.metadata.version("pandas-market-calendars")
-        observations["exchange_calendars_version"] = importlib.metadata.version("exchange-calendars")
-        pmc = importlib.metadata.distribution("pandas-market-calendars")
-        observations["installed_jpx_path"] = str(pmc.locate_file(JPX_ENTRY))
-        observations["installed_jp_path"] = str(pmc.locate_file(JP_ENTRY))
     except (OSError, ImportError, KeyError, TypeError, ValueError):
         observations.setdefault("observed_packages", None)
     return observations
 
 
-def _default_probe_observations() -> dict[str, Any]:
-    from scripts.check_real_execution_env import check_jpx_xls_parser_synthetic_probe, check_pdf_parser_synthetic_probe
-
+def _default_platform_observations(config: V10AValidationConfig) -> dict[str, Any]:
+    """Collect only Stage-5 interpreter/platform observations."""
     return {
-        "xls_probe_status": "PASS" if check_jpx_xls_parser_synthetic_probe().get("status") == "PASS" else "FAIL",
-        "pdf_probe_status": "PASS" if check_pdf_parser_synthetic_probe().get("status") == "PASS" else "FAIL",
+        "interpreter_executable": str(Path(sys.executable).resolve()),
+        "python_version": platform.python_version(),
+        "platform_system": platform.system(),
+        "platform_machine": platform.machine(),
+        "sysconfig_platform": sysconfig.get_platform(),
     }
+
+
+def _default_package_version_observations(config: V10AValidationConfig) -> dict[str, Any]:
+    """Collect only Stage-6 package-version observations."""
+    result: dict[str, Any] = {}
+    try:
+        result["pandas_market_calendars_version"] = importlib.metadata.version("pandas-market-calendars")
+        result["exchange_calendars_version"] = importlib.metadata.version("exchange-calendars")
+    except (OSError, ImportError, KeyError, TypeError, ValueError):
+        pass
+    return result
+
+
+def _default_installed_source_paths(config: V10AValidationConfig) -> dict[str, Any]:
+    """Resolve Stage-9 installed source paths after ZIP uniqueness passes."""
+    try:
+        pmc = importlib.metadata.distribution("pandas-market-calendars")
+        return {
+            "installed_jpx_path": str(pmc.locate_file(JPX_ENTRY)),
+            "installed_jp_path": str(pmc.locate_file(JP_ENTRY)),
+        }
+    except (OSError, ImportError, KeyError, TypeError, ValueError):
+        return {}
+
+
+def _default_live_observations(config: V10AValidationConfig) -> dict[str, Any]:
+    """Backward-compatible Stage-4-only alias; production uses granular gates."""
+    return _default_package_observations(config)
+
+
+def _default_xls_probe() -> str:
+    from scripts.check_real_execution_env import check_jpx_xls_parser_synthetic_probe
+    return "PASS" if check_jpx_xls_parser_synthetic_probe().get("status") == "PASS" else "FAIL"
+
+
+def _default_pdf_probe() -> str:
+    from scripts.check_real_execution_env import check_pdf_parser_synthetic_probe
+    return "PASS" if check_pdf_parser_synthetic_probe().get("status") == "PASS" else "FAIL"
+
 
 
 def _official_wheel_sha256(path: Path) -> str:
@@ -427,9 +494,14 @@ def _regular_file(path: Path) -> bool:
     return stat.S_ISREG(info.st_mode)
 
 
-def _validate_source_entries(config: V10AValidationConfig, obs: Mapping[str, Any], phase: dict[str, Any]) -> str:
+def _wheel_path(config: V10AValidationConfig, obs: Mapping[str, Any]) -> Path:
     wheel_value = obs.get("official_wheel_path") or str(config.effective_wheelhouse / OFFICIAL_WHEEL_FILENAME)
-    wheel_path = Path(wheel_value)
+    return Path(wheel_value)
+
+
+def _validate_official_wheel_identity(config: V10AValidationConfig, obs: Mapping[str, Any], phase: dict[str, Any]) -> str:
+    """Run Stage 7; do not open the ZIP on an archive-hash mismatch."""
+    wheel_path = _wheel_path(config, obs)
     if wheel_path.name != OFFICIAL_WHEEL_FILENAME or not _regular_file(wheel_path):
         return "OFFICIAL_WHEEL_IDENTITY_MISMATCH"
     try:
@@ -441,22 +513,65 @@ def _validate_source_entries(config: V10AValidationConfig, obs: Mapping[str, Any
     phase["official_wheel_sha256_match"] = observed_sha == OFFICIAL_WHEEL_SHA256
     if not phase["official_wheel_sha256_match"]:
         return "OFFICIAL_WHEEL_IDENTITY_MISMATCH"
+    phase["_wheel_path"] = wheel_path
+    return "NONE"
+
+
+def _zip_entry_name(info: zipfile.ZipInfo) -> str:
+    # ZipInfo.filename can present a backslash-bearing central-directory name
+    # with a normalized slash view.  orig_filename retains the exact decoded
+    # spelling that must be compared without any normalization here.
+    return info.orig_filename
+
+
+def _enumerate_unique_source_entries(phase: dict[str, Any]) -> str:
+    """Run Stage 8 and retain the unique ZipInfo objects for Stage 9."""
+    wheel_path = phase.get("_wheel_path")
+    if not isinstance(wheel_path, Path):
+        return "WHEEL_SOURCE_ENTRY_UNIQUENESS_FAILURE"
     try:
-        with zipfile.ZipFile(wheel_path, "r") as archive:
+        archive = zipfile.ZipFile(wheel_path, "r")
+        try:
             infos = archive.infolist()
             # ``ZipInfo.filename`` may expose a platform-normalized view of
             # backslash-bearing names.  ``orig_filename`` preserves the
             # decoded central-directory spelling, which is the identity that
             # must be compared without slash/backslash normalization.
-            jpx_infos = [info for info in infos if info.orig_filename == JPX_ENTRY]
-            jp_infos = [info for info in infos if info.orig_filename == JP_ENTRY]
+            jpx_infos = [info for info in infos if _zip_entry_name(info) == JPX_ENTRY]
+            jp_infos = [info for info in infos if _zip_entry_name(info) == JP_ENTRY]
             phase["jpx_entry_occurrence_count"] = len(jpx_infos)
             phase["jp_entry_occurrence_count"] = len(jp_infos)
             if len(jpx_infos) != 1 or len(jp_infos) != 1:
+                archive.close()
                 return "WHEEL_SOURCE_ENTRY_UNIQUENESS_FAILURE"
-            jpx_wheel_bytes = archive.read(jpx_infos[0])
-            jp_wheel_bytes = archive.read(jp_infos[0])
-    except (OSError, RuntimeError, zipfile.BadZipFile, KeyError, ValueError):
+            phase["_wheel_archive"] = archive
+            phase["_source_infos"] = (jpx_infos[0], jp_infos[0])
+            return "NONE"
+        except Exception:
+            archive.close()
+            raise
+    except (OSError, RuntimeError, zipfile.BadZipFile, KeyError, ValueError, AttributeError, UnicodeError):
+        return "WHEEL_SOURCE_ENTRY_UNIQUENESS_FAILURE"
+
+
+def _close_wheel_archive(phase: dict[str, Any]) -> None:
+    archive = phase.pop("_wheel_archive", None)
+    phase.pop("_source_infos", None)
+    phase.pop("_wheel_path", None)
+    if isinstance(archive, zipfile.ZipFile):
+        archive.close()
+
+
+def _validate_source_entries(config: V10AValidationConfig, obs: Mapping[str, Any], phase: dict[str, Any]) -> str:
+    """Run Stage 9; callers must complete Stages 7-8 first."""
+    archive = phase.get("_wheel_archive")
+    source_infos = phase.get("_source_infos")
+    if not isinstance(archive, zipfile.ZipFile) or not isinstance(source_infos, tuple) or len(source_infos) != 2:
+        return "WHEEL_SOURCE_ENTRY_UNIQUENESS_FAILURE"
+    try:
+        jpx_wheel_bytes = archive.read(source_infos[0])
+        jp_wheel_bytes = archive.read(source_infos[1])
+    except (OSError, RuntimeError, KeyError, ValueError, zipfile.BadZipFile):
         return "WHEEL_SOURCE_ENTRY_UNIQUENESS_FAILURE"
     jpx_path = Path(str(obs.get("installed_jpx_path", "")))
     jp_path = Path(str(obs.get("installed_jp_path", "")))
@@ -659,22 +774,37 @@ def _phase_from_observations(obs: Mapping[str, Any]) -> dict[str, Any]:
 
 def run_validation(config: V10AValidationConfig, observations: Mapping[str, Any] | None = None, *, publish: bool = True) -> dict[str, Any]:
     """Run the frozen V10A order; injected observations are test-only."""
-    obs = dict(_default_provenance_observations(config) if observations is None else observations)
+    injected = observations is not None
+    if injected:
+        obs = dict(observations)
+    else:
+        obs = _default_operation_observations()
     if _unauthorized_observed(obs):
         return _result(config, _base_evidence("UNAUTHORIZED_OPERATION_OBSERVED", _phase_from_observations(obs)), publish=publish)
-    if not _validate_provenance(config, obs):
-        return _result(config, _base_evidence("PROVENANCE_BINDING_FAILURE"), publish=publish)
-    if observations is None:
-        obs.update(_default_live_observations(config))
+
+    # Stage 2 is repository/design/runner provenance only.  Stage 3 is not
+    # entered until this validation succeeds, so it cannot read Step-4 or the
+    # wheelhouse after a base provenance failure.
+    if injected:
+        if not _validate_provenance(config, obs):
+            return _result(config, _base_evidence("PROVENANCE_BINDING_FAILURE"), publish=publish)
+    else:
+        obs.update(_default_provenance_observations(config))
+        if not _validate_repository_provenance(config, obs):
+            return _result(config, _base_evidence("PROVENANCE_BINDING_FAILURE"), publish=publish)
+        obs = _default_historical_provenance_observations(config, obs)
+        if not _validate_historical_provenance(obs):
+            return _result(config, _base_evidence("PROVENANCE_BINDING_FAILURE"), publish=publish)
+
     phase: dict[str, Any] = {
         **_phase_from_observations(obs),
-        "historical_step4_provenance_verified": True,
-        "reviewed_wheelhouse_provenance_verified": True,
-        "python_version": obs.get("python_version"),
-        "platform_system": obs.get("platform_system"),
-        "platform_machine": obs.get("platform_machine"),
-        "sysconfig_platform": obs.get("sysconfig_platform"),
+        "historical_step4_provenance_verified": obs.get("historical_step4_provenance_valid") if not injected else True,
+        "reviewed_wheelhouse_provenance_verified": obs.get("reviewed_wheelhouse_provenance_valid") if not injected else True,
     }
+
+    # Stage 4: package set only.
+    if not injected:
+        obs.update(_default_package_observations(config))
     try:
         normalized = _normalize_packages(obs.get("observed_packages"))
     except (V10AValidationError, TypeError, ValueError):
@@ -683,26 +813,59 @@ def run_validation(config: V10AValidationConfig, observations: Mapping[str, Any]
     phase["observed_package_count"] = len(normalized)
     if normalized != EXPECTED_SUCCESSOR_PACKAGES:
         return _result(config, _base_evidence("LIVE_PACKAGE_SET_MISMATCH", phase), publish=publish)
+
+    # Stage 5: interpreter/platform only.
+    if not injected:
+        obs.update(_default_platform_observations(config))
+    phase.update({key: obs.get(key) for key in ("python_version", "platform_system", "platform_machine", "sysconfig_platform")})
     if (
         obs.get("interpreter_executable") != str(config.canonical_interpreter.resolve())
         or (phase["python_version"], phase["platform_system"], phase["platform_machine"], phase["sysconfig_platform"])
         != ("3.12.10", "Windows", "AMD64", "win-amd64")
     ):
         return _result(config, _base_evidence("PYTHON_PLATFORM_MISMATCH", phase), publish=publish)
+
+    # Stage 6: package-specific versions only.
+    if not injected:
+        obs.update(_default_package_version_observations(config))
     phase["pandas_market_calendars_version"] = obs.get("pandas_market_calendars_version")
     if phase["pandas_market_calendars_version"] != PMC_VERSION:
         return _result(config, _base_evidence("PMC_VERSION_MISMATCH", phase), publish=publish)
     phase["exchange_calendars_version"] = obs.get("exchange_calendars_version")
     if phase["exchange_calendars_version"] != EXCHANGE_CALENDARS_VERSION:
         return _result(config, _base_evidence("EXCHANGE_CALENDARS_VERSION_MISMATCH", phase), publish=publish)
-    source_failure = _validate_source_entries(config, obs, phase)
+
+    # Stage 7: verify the archive bytes before opening the ZIP.
+    source_failure = _validate_official_wheel_identity(config, obs, phase)
     if source_failure != "NONE":
         return _result(config, _base_evidence(source_failure, phase), publish=publish)
-    if observations is None:
-        obs.update(_default_probe_observations())
+
+    # Stage 8: enumerate exact central-directory names.  No source bytes or
+    # installed paths are read until both exact names occur once.
+    source_failure = _enumerate_unique_source_entries(phase)
+    if source_failure != "NONE":
+        return _result(config, _base_evidence(source_failure, phase), publish=publish)
+
+    try:
+        # Stage 9: source paths are resolved only after Stage 8 succeeds.
+        if not injected:
+            obs.update(_default_installed_source_paths(config))
+        source_failure = _validate_source_entries(config, obs, phase)
+    finally:
+        _close_wheel_archive(phase)
+    if source_failure != "NONE":
+        return _result(config, _base_evidence(source_failure, phase), publish=publish)
+
+    # Stage 10: invoke and check XLS before making the PDF probe callable.
+    if not injected:
+        obs["xls_probe_status"] = _default_xls_probe()
     phase["xls_probe_status"] = obs.get("xls_probe_status", "FAIL")
     if phase["xls_probe_status"] != "PASS":
         return _result(config, _base_evidence("XLS_PROBE_FAILURE", phase), publish=publish)
+
+    # Stage 11: PDF is reachable only after XLS passes.
+    if not injected:
+        obs["pdf_probe_status"] = _default_pdf_probe()
     phase["pdf_probe_status"] = obs.get("pdf_probe_status", "FAIL")
     if phase["pdf_probe_status"] != "PASS":
         return _result(config, _base_evidence("PDF_PROBE_FAILURE", phase), publish=publish)
