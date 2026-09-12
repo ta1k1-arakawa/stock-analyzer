@@ -16,6 +16,8 @@ from scripts.v10_environment_extension_contract import PREDECESSOR_PACKAGE_SET
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LIVE_COMMIT = "a" * 40
 LIVE_BLOB = "b" * 40
+STEP5_CURRENT_HEAD = "c" * 40
+STEP4_EXECUTION_HEAD = runner.STEP4_EXECUTION_HEAD_SHA
 
 
 def _hash(raw: bytes) -> str:
@@ -57,7 +59,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[runner.Li
     monkeypatch.setattr(runner, "STEP4_STDERR_SHA256", _hash(stderr))
     state = {
         "schema_version": "V10_CANONICAL_ENVIRONMENT_EXACT_DELTA_MUTATION_ATTEMPT_V1",
-        "expected_current_head": "c" * 40,
+        "expected_current_head": STEP4_EXECUTION_HEAD,
         "mutation_runner_blob_sha1": runner.STEP4_MUTATION_RUNNER_BLOB_SHA1,
         "step3_receipt_sha256": runner.STEP3_RECEIPT_SHA256,
         "reviewed_successor_lock_candidate_sha256": runner.CANDIDATE_SHA256,
@@ -80,7 +82,7 @@ def _fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[runner.Li
     }
     config = runner.LiveValidationConfig(
         repo_root=REPO_ROOT,
-        expected_current_head="c" * 40,
+        expected_current_head=STEP5_CURRENT_HEAD,
         expected_live_validation_runner_commit_sha=LIVE_COMMIT,
         expected_live_validation_runner_blob_sha1=LIVE_BLOB,
         step4_attempt_root=attempt,
@@ -248,6 +250,55 @@ def test_step4_provenance_binding_failure(tmp_path: Path, monkeypatch: pytest.Mo
         observations["step4_state"]["mutation_runner_blob_sha1"] = "0" * 40
     result = runner.run_live_validation(config, observations, publish=False)
     assert result["failure_code"] == "PROVENANCE_BINDING_FAILURE"
+
+
+def test_step4_execution_head_is_historical_and_distinct_from_step5_head(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config, observations, _ = _fixture(tmp_path, monkeypatch)
+    _patch_wheel_gate(monkeypatch)
+
+    assert config.expected_current_head == STEP5_CURRENT_HEAD
+    assert observations["step4_state"]["expected_current_head"] == STEP4_EXECUTION_HEAD
+    assert STEP5_CURRENT_HEAD != STEP4_EXECUTION_HEAD
+
+    result = runner.run_live_validation(config, observations, publish=False)
+    assert result["status"] == "PASS"
+
+
+@pytest.mark.parametrize("bound_head", [STEP5_CURRENT_HEAD, "0" * 40])
+def test_wrong_step4_execution_head_fails_before_live_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bound_head: str
+) -> None:
+    config, observations, _ = _fixture(tmp_path, monkeypatch)
+    _patch_wheel_gate(monkeypatch)
+    observations["step4_state"]["expected_current_head"] = bound_head
+    called = False
+
+    def live(_config: runner.LiveValidationConfig) -> dict[str, object]:
+        nonlocal called
+        called = True
+        raise AssertionError("live observation must not run")
+
+    monkeypatch.setattr(runner, "_default_live_observations", live)
+    result = runner.run_live_validation(config, observations, publish=False)
+    assert result["failure_code"] == "PROVENANCE_BINDING_FAILURE"
+    assert called is False
+
+
+def test_step5_current_head_remains_independently_required(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config, observations, _ = _fixture(tmp_path, monkeypatch)
+    _patch_wheel_gate(monkeypatch)
+    observations["head"] = STEP4_EXECUTION_HEAD
+    called = False
+
+    def live(_config: runner.LiveValidationConfig) -> dict[str, object]:
+        nonlocal called
+        called = True
+        raise AssertionError("live observation must not run")
+
+    monkeypatch.setattr(runner, "_default_live_observations", live)
+    result = runner.run_live_validation(config, observations, publish=False)
+    assert result["failure_code"] == "PROVENANCE_BINDING_FAILURE"
+    assert called is False
 
 
 @pytest.mark.parametrize("field", ["candidate_sha256", "delta_wheel_count", "step3_receipt_sha256", "process_exit_code", "retry_authorized", "stdout_sha256"])

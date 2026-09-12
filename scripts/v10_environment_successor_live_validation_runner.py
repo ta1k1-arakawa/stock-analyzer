@@ -84,6 +84,9 @@ PREMUTATION_RUNNER_COMMIT_SHA = "9f37cc5c0c10db11a0164ab7a3d4d2dc9d311adb"
 PREMUTATION_RUNNER_BLOB_SHA1 = "21e9f94928f6e6ce315fa473bf52d65ff7537ffb"
 STEP3_RECEIPT_SHA256 = "0c15278d79f88110766a581aa3c14bdc03434b88806b8a7975327bbd6bee07ae"
 STEP4_MUTATION_RUNNER_COMMIT_SHA = "810ccf4bcb89ed7fdc2aea2cda287cfd3f278cb0"
+# This is the repository HEAD bound when Step 4 actually executed.  It is
+# intentionally distinct from the caller-bound current Step-5 HEAD.
+STEP4_EXECUTION_HEAD_SHA = "810ccf4bcb89ed7fdc2aea2cda287cfd3f278cb0"
 STEP4_MUTATION_RUNNER_BLOB_SHA1 = "60bd6b7cd527f89ee4ae20b45490a1acac2bdd59"
 STEP4_STDOUT_SHA256 = "af5b9f275a874c529d5db5648c5062298bccd79e386c9c62a3fd3485fe860553"
 STEP4_STDERR_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -373,7 +376,7 @@ def _validate_step4_evidence(config: LiveValidationConfig, obs: Mapping[str, Any
     try:
         mutation.validate_attempt_state(state)
         required = {
-            "expected_current_head": config.expected_current_head,
+            "expected_current_head": STEP4_EXECUTION_HEAD_SHA,
             "mutation_runner_blob_sha1": STEP4_MUTATION_RUNNER_BLOB_SHA1,
             "step3_receipt_sha256": STEP3_RECEIPT_SHA256,
             "reviewed_successor_lock_candidate_sha256": CANDIDATE_SHA256,
