@@ -620,6 +620,56 @@ check, exactly one Phase-B process, Phase C, and GPT R3 adjudication under V2.
 Attempts 1, 2, and 3 authorities and artifacts are never reused. Attempt 4
 is a new governance attempt, not a retry, reset, or salvage of attempt 3.
 
+### Future V2 runner evidence and baseline identity
+
+Before any future attempt 4, the runner/test implementation must receive its
+own exact-SHA implementation review after implementing the V2 evidence
+contract. The future runner configuration field is:
+
+```text
+reviewed_baseline_sha
+```
+
+The production CLI argument is exactly:
+
+```text
+--reviewed-baseline-sha
+```
+
+The future production runner and CLI MUST NOT use
+`expected_r2_reviewed_sha` or `--expected-r2-reviewed-sha`, including as an
+alias or fallback. Historical V1 artifacts may retain the legacy name only
+when they are being validated as historical records; no legacy-name
+reinterpretation is permitted in future production execution.
+
+The future runner-produced execution-evidence schema is exactly
+`V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE_V2`. Its top-level field set
+is the current execution-evidence V1 field set with exactly one replacement:
+remove `expected_r2_reviewed_sha` and add `reviewed_baseline_sha`. Every other
+field and semantic requirement remains unchanged. For a future PASS,
+`evidence.reviewed_baseline_sha` MUST equal the exact GPT-designated
+`R3_REVIEWED_BASELINE_SHA`.
+
+The V2 runner evidence and V2 R3 adjudication must carry the same exact
+`reviewed_baseline_sha`. R4 rejects any mismatch and records no promotion
+authority. R5 mechanically verifies the complete chain:
+
+```text
+R4_PARENT_SHA
+= V2 adjudication reviewed_baseline_sha
+= V2 runner evidence reviewed_baseline_sha
+= GPT-designated R3_REVIEWED_BASELINE_SHA
+```
+
+The original `R2_IMPLEMENTATION_REVIEWED_SHA` remains the historical
+substantive implementation-review identity only. A future updated runner and
+test implementation has a separately recorded exact implementation commit
+and reviewed runner/tooling blobs; that commit is not relabeled as the
+original R2 implementation SHA. Attempt 4 cannot begin until this V2
+implementation receives GPT exact-SHA `PASS` with `CRITICAL=0`, `HIGH=0`, and
+`MEDIUM=0`, followed by explicit designation of the exact R3 reviewed
+baseline.
+
 ## 7. Result and failure contract
 
 The exact future safe receipt is
