@@ -547,7 +547,7 @@ def validate_evidence(evidence: Mapping[str, Any], config: RuntimeLockConfig | N
         raise RuntimeLockError("EVIDENCE_STATUS_INVALID")
     if (evidence["status"] == "PASS") != (evidence["failure_code"] == "NONE"):
         raise RuntimeLockError("EVIDENCE_STATUS_INVALID")
-    for key in ("expected_r2_reviewed_sha", "runtime_lock_runner_git_blob_sha1", "runtime_lock_test_git_blob_sha1", "runtime_lock_design_git_blob_sha1", "frozen_v10a_design_sha", "v10a_freeze_record_sha", "p5_reviewed_p4_sha", "final_freeze_evidence_git_blob_sha1", "p3_adjudication_git_blob_sha1"):
+    for key in ("expected_r2_reviewed_sha", "runtime_lock_runner_git_blob_sha1", "runtime_lock_test_git_blob_sha1", "runtime_lock_design_git_blob_sha1", "frozen_v10a_design_sha", "v10a_freeze_record_sha", "p5_reviewed_p4_sha", "p5_bookkeeping_sha", "final_freeze_evidence_git_blob_sha1", "p3_adjudication_git_blob_sha1"):
         _strict_sha(evidence[key], SHA1_RE, key)
     _strict_sha(evidence["final_freeze_evidence_sha256"], SHA256_RE, "final_freeze_evidence_sha256")
     for key in ("canonical_interpreter_verified", "exact_package_mapping", "durable_lock_created", "t0_run", "execution_authorized", "calendar_generation_authorized", "t0_authorized", "historical_evaluation_authorized", "future_profitability_established"):
@@ -556,6 +556,22 @@ def validate_evidence(evidence: Mapping[str, Any], config: RuntimeLockConfig | N
         _strict_int(evidence[key], key)
     if evidence["runtime_lock_sha256"] is not None:
         _strict_sha(evidence["runtime_lock_sha256"], SHA256_RE, "runtime_lock_sha256")
+    if config is not None:
+        for key, expected in (
+            ("frozen_v10a_design_sha", APPROVED_DESIGN_SHA),
+            ("v10a_freeze_record_sha", FREEZE_RECORD_SHA),
+            ("p5_reviewed_p4_sha", P5_REVIEWED_P4_SHA),
+            ("p5_bookkeeping_sha", P5_BOOKKEEPING_SHA),
+            ("final_freeze_evidence_git_blob_sha1", FINAL_EVIDENCE_BLOB_SHA1),
+            ("final_freeze_evidence_sha256", FINAL_EVIDENCE_SHA256),
+            ("p3_adjudication_git_blob_sha1", P3_ADJUDICATION_BLOB_SHA1),
+            ("expected_r2_reviewed_sha", config.expected_r2_reviewed_sha),
+            ("runtime_lock_runner_git_blob_sha1", config.expected_runner_blob_sha1),
+            ("runtime_lock_test_git_blob_sha1", config.expected_test_blob_sha1),
+            ("runtime_lock_design_git_blob_sha1", config.expected_design_blob_sha1),
+        ):
+            if evidence[key] != expected:
+                raise RuntimeLockError("EVIDENCE_PROVENANCE_INVALID")
     if evidence["status"] == "PASS":
         if evidence["python_version"] != PYTHON_VERSION or evidence["canonical_interpreter_verified"] is not True:
             raise RuntimeLockError("EVIDENCE_INTERPRETER_INVALID")
@@ -577,15 +593,6 @@ def validate_evidence(evidence: Mapping[str, Any], config: RuntimeLockConfig | N
             raise RuntimeLockError("EVIDENCE_LOCK_INVALID")
         if evidence["t0_run"] is not False:
             raise RuntimeLockError("EVIDENCE_T0_INVALID")
-        if config is not None:
-            for key, expected in (
-                ("expected_r2_reviewed_sha", config.expected_r2_reviewed_sha),
-                ("runtime_lock_runner_git_blob_sha1", config.expected_runner_blob_sha1),
-                ("runtime_lock_test_git_blob_sha1", config.expected_test_blob_sha1),
-                ("runtime_lock_design_git_blob_sha1", config.expected_design_blob_sha1),
-            ):
-                if evidence[key] != expected:
-                    raise RuntimeLockError("EVIDENCE_PROVENANCE_INVALID")
     else:
         if evidence["failure_code"] == "NONE":
             raise RuntimeLockError("EVIDENCE_STATUS_INVALID")

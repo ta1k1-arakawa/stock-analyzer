@@ -489,6 +489,71 @@ def test_pass_evidence_must_match_dynamic_config_provenance(monkeypatch: pytest.
         runner.validate_evidence(mutated, config)
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("frozen_v10a_design_sha", "f" * 40),
+        ("v10a_freeze_record_sha", "e" * 40),
+        ("p5_reviewed_p4_sha", "d" * 40),
+        ("p5_bookkeeping_sha", "c" * 40),
+        ("final_freeze_evidence_git_blob_sha1", "b" * 40),
+        ("final_freeze_evidence_sha256", "a" * 64),
+        ("p3_adjudication_git_blob_sha1", "9" * 40),
+    ],
+)
+def test_pass_evidence_rejects_each_frozen_provenance_drift(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, field: str, value: str
+) -> None:
+    config, result = _successful_evidence(monkeypatch, tmp_path)
+    mutated = dict(result)
+    mutated[field] = value
+    with pytest.raises(runner.RuntimeLockError):
+        runner.validate_evidence(mutated, config)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "expected_r2_reviewed_sha",
+        "runtime_lock_runner_git_blob_sha1",
+        "runtime_lock_test_git_blob_sha1",
+        "runtime_lock_design_git_blob_sha1",
+    ],
+)
+def test_pass_evidence_rejects_each_dynamic_config_provenance_drift(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, field: str
+) -> None:
+    config, result = _successful_evidence(monkeypatch, tmp_path)
+    mutated = dict(result)
+    mutated[field] = "f" * 40
+    with pytest.raises(runner.RuntimeLockError):
+        runner.validate_evidence(mutated, config)
+
+
+@pytest.mark.parametrize("bad_sha", ["F" * 40, "f" * 39, "f" * 41, "not-a-sha"])
+def test_p5_bookkeeping_sha_requires_lowercase_40_hex(tmp_path: Path, bad_sha: str) -> None:
+    config = _config(tmp_path)
+    evidence = runner._base_evidence(config, "PACKAGE_SET_MISMATCH")
+    evidence["p5_bookkeeping_sha"] = bad_sha
+    with pytest.raises(runner.RuntimeLockError):
+        runner.validate_evidence(evidence)
+
+
+def test_post_provenance_fail_binding_rejects_before_any_evidence_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config = _config(tmp_path)
+    config.output_root.mkdir()
+    evidence = runner._base_evidence(config, "PACKAGE_SET_MISMATCH")
+    evidence["p5_bookkeeping_sha"] = "f" * 40
+    writes: list[Path] = []
+    monkeypatch.setattr(runner, "_exclusive_write", lambda path, raw: writes.append(path))
+    with pytest.raises(runner.RuntimeLockError):
+        runner._publish_evidence_once(config, evidence)
+    assert writes == []
+    assert not (config.output_root / runner.EVIDENCE_NAME).exists()
+
+
 def test_fail_evidence_rejects_positive_counter_for_non_unauthorized_failure(tmp_path: Path) -> None:
     config = _config(tmp_path)
     evidence = runner._base_evidence(config, "PACKAGE_SET_MISMATCH")
