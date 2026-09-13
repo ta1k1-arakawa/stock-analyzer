@@ -54,6 +54,19 @@ FAILURE_CODES = (
     "CANONICALIZATION_FAILURE",
     "DURABLE_ARTIFACT_WRITE_FAILURE",
 )
+FAILURE_ANCHOR_STATES = {
+    "NONE": ("INELIGIBLE", "ELIGIBLE"),
+    "RUNTIME_CALENDAR_PROVENANCE_MISMATCH": ("NOT_CHECKED", "NOT_CHECKED"),
+    "CALENDAR_GENERATOR_FAILURE": ("NOT_CHECKED", "NOT_CHECKED"),
+    "DUPLICATE_SESSION_LABEL": ("NOT_CHECKED", "NOT_CHECKED"),
+    "MALFORMED_SESSION_LABEL": ("NOT_CHECKED", "NOT_CHECKED"),
+    "OUT_OF_COVERAGE_SESSION_LABEL": ("NOT_CHECKED", "NOT_CHECKED"),
+    "INVALID_MARKET_CLOSE": ("NOT_CHECKED", "NOT_CHECKED"),
+    "ANCHOR_2020_10_01_FAILURE": ("ELIGIBLE", "NOT_CHECKED"),
+    "ANCHOR_2020_10_02_FAILURE": ("INELIGIBLE", "INELIGIBLE"),
+    "CANONICALIZATION_FAILURE": ("INELIGIBLE", "ELIGIBLE"),
+    "DURABLE_ARTIFACT_WRITE_FAILURE": ("INELIGIBLE", "ELIGIBLE"),
+}
 
 ARTIFACT_KEYS = (
     "schema_version", "calendar_method", "calendar_package",
@@ -342,12 +355,10 @@ def validate_safe_receipt(receipt: Mapping[str, Any]) -> None:
         raise ValueError("invalid first anchor")
     if receipt["anchor_2020_10_02"] not in {"INELIGIBLE", "ELIGIBLE", "NOT_CHECKED"}:
         raise ValueError("invalid second anchor")
-    if (receipt["anchor_2020_10_01"] == "NOT_CHECKED"
-            and receipt["anchor_2020_10_02"] != "NOT_CHECKED"):
-        raise ValueError("anchor ordering mismatch")
-    if (receipt["anchor_2020_10_01"] == "ELIGIBLE"
-            and receipt["anchor_2020_10_02"] != "NOT_CHECKED"):
-        raise ValueError("anchor ordering mismatch")
+    expected_anchors = FAILURE_ANCHOR_STATES[receipt["failure_code"]]
+    observed_anchors = (receipt["anchor_2020_10_01"], receipt["anchor_2020_10_02"])
+    if observed_anchors != expected_anchors:
+        raise ValueError("receipt failure-code anchor state mismatch")
 
 
 def validate_persisted_pass_artifacts(
@@ -421,6 +432,8 @@ def run_feasibility(repo_root: Path, output_root: Path, generator_implementation
     try:
         artifact = build_canonical_artifact(result.trading_dates, generator_implementation_git_sha)
     except CalendarFeasibilityError as exc:
+        if exc.code == "CANONICALIZATION_FAILURE":
+            exc = CalendarFeasibilityError(exc.code, result.anchor_2020_10_01, result.anchor_2020_10_02)
         return publish_pre_artifact_failure(exc)
 
     output_root.mkdir(parents=True)

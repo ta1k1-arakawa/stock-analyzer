@@ -151,6 +151,37 @@ def test_safe_receipt_exact_keys_and_fixed_non_authority_counters():
     assert receipt["t0_run"] == "NOT_RUN"
 
 
+def receipt_for_failure_code(code):
+    anchors = runner.FAILURE_ANCHOR_STATES[code]
+    is_pass = code == "NONE"
+    prepared = code in {"NONE", "DURABLE_ARTIFACT_WRITE_FAILURE"}
+    return runner.build_safe_receipt(
+        IMPLEMENTATION_SHA,
+        status="PASS" if is_pass else "FAIL",
+        failure_code=code,
+        calendar_artifact_created=is_pass,
+        canonical_calendar_sha256="a" * 64 if prepared else None,
+        trading_date_count=2 if prepared else None,
+        anchor_2020_10_01=anchors[0],
+        anchor_2020_10_02=anchors[1],
+    )
+
+
+@pytest.mark.parametrize("code", runner.FAILURE_ANCHOR_STATES)
+def test_every_failure_code_accepts_only_its_frozen_anchor_state(code):
+    runner.validate_safe_receipt(receipt_for_failure_code(code))
+
+
+@pytest.mark.parametrize("code", runner.FAILURE_ANCHOR_STATES)
+@pytest.mark.parametrize("field", ["anchor_2020_10_01", "anchor_2020_10_02"])
+def test_every_failure_code_rejects_either_mutated_anchor(code, field):
+    receipt = receipt_for_failure_code(code)
+    expected = receipt[field]
+    receipt[field] = next(value for value in ("NOT_CHECKED", "INELIGIBLE", "ELIGIBLE") if value != expected)
+    with pytest.raises(ValueError):
+        runner.validate_safe_receipt(receipt)
+
+
 def test_receipt_validator_rejects_extra_field_and_invalid_pass_semantics():
     receipt = runner.build_safe_receipt(IMPLEMENTATION_SHA, status="FAIL", failure_code="INVALID_MARKET_CLOSE",
                                         calendar_artifact_created=False, canonical_calendar_sha256=None,
@@ -324,6 +355,23 @@ def test_calendar_feasibility_errors_preserve_frozen_code_and_anchor_state(tmp_p
 
     assert receipt["failure_code"] == "ANCHOR_2020_10_02_FAILURE"
     assert (receipt["anchor_2020_10_01"], receipt["anchor_2020_10_02"]) == ("INELIGIBLE", "INELIGIBLE")
+
+
+def test_canonicalization_failure_after_schedule_preserves_observed_anchor_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "verify_runtime_lock_bytes", lambda raw: None)
+    monkeypatch.setattr(runner, "_generate_fixed_jpx_schedule", valid_schedule)
+    monkeypatch.setattr(
+        runner, "build_canonical_artifact",
+        lambda dates, sha: (_ for _ in ()).throw(runner.CalendarFeasibilityError("CANONICALIZATION_FAILURE")),
+    )
+
+    receipt = runner.run_feasibility(synthetic_repo_root(tmp_path), tmp_path / "output", IMPLEMENTATION_SHA)
+
+    assert receipt["failure_code"] == "CANONICALIZATION_FAILURE"
+    assert (receipt["anchor_2020_10_01"], receipt["anchor_2020_10_02"]) == ("INELIGIBLE", "ELIGIBLE")
+    assert receipt["calendar_artifact_created"] is False
+    assert receipt["canonical_calendar_sha256"] is None
+    assert receipt["trading_date_count"] is None
 
 
 @pytest.mark.parametrize("stage, failure", [
