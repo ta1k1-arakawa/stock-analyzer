@@ -121,7 +121,54 @@ produce `NO_VERDICT_DATA_INCOMPATIBLE` or the distinct fixed input-binding
 failure path. It must not be collapsed into `STOP`, profitability, or any
 scientific result; it must not trigger repair, fallback, or retry.
 
-## 6. Inherited causal derivation
+## 6. Exact failure classification
+
+The bridge has three disjoint failure classes. Classification is determined by
+the stage and origin of the failure; no class may be silently relabeled as
+another class.
+
+### A. Pre-T0 governance / provenance failure
+
+Failure of repository identity, authoritative branch, expected reviewed HEAD,
+clean-tree state, or bridge-design provenance is a `GOVERNANCE/PREFLIGHT
+FAILURE`. It must stop before T0 computation, read no cache or outcome, and
+write no T0 safe-result JSON. It must never be mapped to
+`NO_VERDICT_DATA_INCOMPATIBLE`, `T0_RESULT=STOP`, or `T0_RESULT=CONTINUE`.
+
+### B. Expected calendar input-binding contract failure
+
+After governance preflight passes, an anticipated failure of the fixed V10A
+artifact/receipt contract is a calendar input-binding failure with the
+existing `T0DataIncompatible` external semantics. This includes a missing or
+non-file artifact/receipt, unsafe symlink or junction/path resolution, file
+SHA or Git-blob mismatch, JSON/schema/fieldset or fixed-provenance mismatch,
+artifact self-digest or artifact/receipt cross-binding mismatch,
+trading-date structural/count/coverage mismatch, frozen-anchor mismatch, or
+deterministic calendar-grid derivation incompatibility.
+
+This class must stop before any training/evaluation cache, universe content,
+price, outcome, target, label, return, or model-relevant read. It emits the
+existing validated safe result `T0_RESULT=NO_VERDICT_DATA_INCOMPATIBLE` with
+`cache_identity=false` and `exact_semantics=false`, using the existing
+zero/synthetic provenance representation because research caches were not
+opened. It never emits `T0_RESULT=STOP` or `T0_RESULT=CONTINUE`, and never
+retries, repairs, or falls back.
+
+### C. Implementation / wrapper failure
+
+An unexpected programming/runtime exception from the bridge validator, an
+unexpected serializer or result-construction failure, or a wrapper defect is
+an `IMPLEMENTATION_FAILURE`. It must not be converted to `T0DataIncompatible`,
+must not emit `NO_VERDICT_DATA_INCOMPATIBLE`, and must not emit `STOP` or
+`CONTINUE`. It uses the existing nonzero implementation-failure path and has
+no retry.
+
+`T0_RESULT=STOP` remains reserved for a later separately authorized
+scientific T0 kill-screen result, after exact calendar inputs have passed and
+the authorized research data has been accessed. This classification section
+does not change any inherited V9 methodology.
+
+## 7. Inherited causal derivation
 
 Only the exact validated `trading_dates` sequence may supply the inherited:
 
@@ -132,7 +179,7 @@ Only the exact validated `trading_dates` sequence may supply the inherited:
 The implementation must make no post-observation calendar modification,
 neighboring-date repair, omission repair, or outcome-dependent decision.
 
-## 7. Future implementation and authority chain
+## 8. Future implementation and authority chain
 
 This design grants no T0 or historical-evaluation authority. A later task
 must first implement the fixed CLI/input-binding change with synthetic targeted
