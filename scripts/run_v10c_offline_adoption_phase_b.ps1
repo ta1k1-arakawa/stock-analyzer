@@ -67,6 +67,9 @@ function Invoke-GitValue([string[]]$Arguments) {
         if ($LASTEXITCODE -ne 0) {
             throw "GIT_FAILURE"
         }
+        if ($null -eq $output) {
+            return ""
+        }
         return ([string]::Join([Environment]::NewLine, [string[]]$output)).Trim()
     }
     catch {
