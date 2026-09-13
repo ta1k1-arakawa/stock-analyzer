@@ -2493,3 +2493,10 @@ transitions. This public log must not contain protected material.
 - Added the distinct `V10C_OFFLINE_ADOPTION_GATE_RECEIPT_V1` as deterministic, exclusive, fsynced proof of the one-shot authorization boundary. Its path is derived from the validated external final receipt path and both destinations are prevalidated before any locked payload read.
 - Gate publication now precedes the first locked payload byte read. Post-gate integrity and implementation failures attempt a bounded `V10C_OFFLINE_ADOPTION_EXECUTION_RECEIPT_V1` with `BLOCK` and consumed authorization; final-receipt publication failure preserves the immutable gate evidence.
 - Synthetic coverage confirms gate ordering, zero payload reads on gate failure, durable failure receipts, no overwrite/auto-mkdir, bounded receipt contents, and candidate/repository immutability. No real candidate, payload, network, T0, model, evaluation, private/sealed, or human-gate activity occurred.
+
+## 2026-09-13 — V10C validator MEDIUM-1 V10B network-audit retry semantics parity remediation
+
+- Recorded GPT exact-SHA review of `7728beedb84102508fb5c7be0e37131b92e73ed2` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`. HIGH-1 and HIGH-2 are resolved; MEDIUM-1 is remediated here and awaits review.
+- Aligned the V10C historical audit validator with the reviewed V10B retry predicate: `TRANSPORT_EXCEPTION`, nonredirect 429, and nonredirect integer 500–599 are retryable before attempt 3; redirects and attempt 3 are terminal no-retry.
+- V10C now accepts the frozen V10B `status="TRANSPORT_EXCEPTION"` / `error_type="TRANSPORT_EXCEPTION"` audit representation and enforces the reviewed terminal/ordering closure without changing any acquisition behavior.
+- Added synthetic parity coverage against the reviewed V10B predicate and malformed transport-exception sequences. No real candidate, payload, network, T0, model, evaluation, private/sealed, or human-gate activity occurred.

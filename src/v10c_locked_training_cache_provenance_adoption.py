@@ -261,7 +261,7 @@ def _read_json_file(path: Path, failure_cls: type[V10CError]) -> tuple[bytes, An
 def _retry_allowed(status: Any, redirect_detected: bool, attempt: int) -> bool:
     if redirect_detected or attempt >= 3:
         return False
-    return status == 429 or (isinstance(status, int) and not isinstance(status, bool) and 500 <= status <= 599)
+    return status == "TRANSPORT_EXCEPTION" or (type(status) is int and (status == 429 or 500 <= status <= 599))
 
 
 def _validate_audit_records(audit: Any, ticker_order: Sequence[str]) -> None:
@@ -288,8 +288,6 @@ def _validate_audit_records(audit: Any, ticker_order: Sequence[str]) -> None:
         if any(type(item[key]) is not bool for key in ("retry", "final", "success", "redirect_detected")):
             raise LockedArtifactIntegrityFailure("NETWORK_AUDIT_BOOLEAN_INVALID")
         status = item["status"]
-        if status is not None and (type(status) is not int or not 100 <= status <= 999):
-            raise LockedArtifactIntegrityFailure("NETWORK_AUDIT_STATUS_INVALID")
         if item["retry"] != _retry_allowed(status, item["redirect_detected"], attempt):
             raise LockedArtifactIntegrityFailure("NETWORK_AUDIT_RETRY_INVALID")
         if item["success"]:
@@ -325,6 +323,8 @@ def _validate_audit_records(audit: Any, ticker_order: Sequence[str]) -> None:
             raise LockedArtifactIntegrityFailure("NETWORK_AUDIT_ATTEMPT_SEQUENCE_INVALID")
         if sum(record["final"] for record in records) != 1 or records[-1]["final"] is not True:
             raise LockedArtifactIntegrityFailure("NETWORK_AUDIT_TERMINAL_STATE_INVALID")
+        if any(record["final"] for record in records[:-1]):
+            raise LockedArtifactIntegrityFailure("NETWORK_AUDIT_EARLY_FINAL_INVALID")
         successes = [record for record in records if record["success"]]
         if len(successes) > 1 or (successes and successes[0] is not records[-1]):
             raise LockedArtifactIntegrityFailure("NETWORK_AUDIT_SUCCESS_SEQUENCE_INVALID")

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import src.v10b_training_cache_reacquisition as v10b
 import src.v10c_locked_training_cache_provenance_adoption as v10c
 
 
@@ -33,6 +34,28 @@ def _audit_entry(ticker: str, *, accepted: bool) -> dict[str, object]:
         "retry": False,
         "final": True,
         "success": accepted,
+    }
+
+
+def _transport_audit_entry(
+    ticker: str, attempt: int, *, retry: bool, final: bool, redirect: bool = False,
+    status: object = "TRANSPORT_EXCEPTION", error_type: object = "TRANSPORT_EXCEPTION",
+) -> dict[str, object]:
+    return {
+        "ticker": ticker,
+        "attempt": attempt,
+        "scheme": v10c.YAHOO_SCHEME,
+        "host": v10c.YAHOO_HOST,
+        "path": f"{v10c.YAHOO_PATH_PREFIX}{ticker}.T",
+        "query_specification": v10c._query_as_lists(),
+        "status": status,
+        "error_type": error_type,
+        "redirect_detected": redirect,
+        "body_byte_count": 0,
+        "payload_sha256": None,
+        "retry": retry,
+        "final": final,
+        "success": False,
     }
 
 
@@ -342,6 +365,54 @@ def test_audit_invalid_rejected(synthetic_candidate: dict[str, object]) -> None:
     manifest["network_audit"][0]["retry"] = True
     with pytest.raises(v10c.LockedArtifactIntegrityFailure):
         v10c.validate_manifest_structure(manifest, synthetic_candidate["order"])
+
+
+def test_transport_exception_audit_sequence_matches_frozen_v10b() -> None:
+    audit = [
+        _transport_audit_entry("T000", 1, retry=True, final=False),
+        _transport_audit_entry("T000", 2, retry=True, final=False),
+        _transport_audit_entry("T000", 3, retry=False, final=True),
+    ]
+    v10c._validate_audit_records(audit, ["T000"])
+
+
+def test_transport_exception_wrong_retry_and_terminal_sequences_rejected() -> None:
+    wrong_retry = [_transport_audit_entry("T000", 1, retry=False, final=True)]
+    with pytest.raises(v10c.LockedArtifactIntegrityFailure):
+        v10c._validate_audit_records(wrong_retry, ["T000"])
+
+    malformed = [
+        _transport_audit_entry("T000", 1, retry=True, final=False),
+        _transport_audit_entry("T000", 3, retry=False, final=True),
+    ]
+    with pytest.raises(v10c.LockedArtifactIntegrityFailure):
+        v10c._validate_audit_records(malformed, ["T000"])
+
+
+def test_retry_predicate_is_equal_to_reviewed_v10b_matrix() -> None:
+    statuses = ["TRANSPORT_EXCEPTION", 429, 500, 599, 600, 404, None]
+    for status in statuses:
+        for redirect in (False, True):
+            for attempt in (1, 2, 3):
+                assert v10c._retry_allowed(status, redirect, attempt) == v10b._retry_allowed(status, redirect, attempt)
+
+
+@pytest.mark.parametrize(
+    ("status", "attempt", "redirect", "expected"),
+    [
+        ("TRANSPORT_EXCEPTION", 1, False, True),
+        ("TRANSPORT_EXCEPTION", 2, False, True),
+        ("TRANSPORT_EXCEPTION", 3, False, False),
+        (429, 1, False, True),
+        (500, 2, False, True),
+        (599, 2, False, True),
+        (404, 1, False, False),
+        (500, 1, True, False),
+        (429, 3, False, False),
+    ],
+)
+def test_frozen_retry_matrix(status: object, attempt: int, redirect: bool, expected: bool) -> None:
+    assert v10c._retry_allowed(status, redirect, attempt) is expected
 
 
 def test_missing_extra_and_payload_metadata_failures(synthetic_candidate: dict[str, object]) -> None:
