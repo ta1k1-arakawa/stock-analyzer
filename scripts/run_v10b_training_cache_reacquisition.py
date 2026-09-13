@@ -27,7 +27,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run one bounded V10B fixed-universe Yahoo acquisition."
     )
-    parser.add_argument("--repo-root", required=True, type=Path)
     parser.add_argument("--attempt-root", required=True, type=Path)
     parser.add_argument("--implementation-sha", required=True)
     return parser
@@ -36,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        run_production(args.repo_root, args.attempt_root, args.implementation_sha)
+        run_production(REPO_SOURCE_ROOT, args.attempt_root, args.implementation_sha)
     except GovernanceFailure:
         print(PREFLIGHT_FAILURE_TOKEN, file=sys.stderr)
         return 4

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
-import importlib.util
 from pathlib import Path
 
 
@@ -19,7 +19,7 @@ def test_production_cli_exposes_only_operational_arguments():
         check=False,
     )
     assert result.returncode == 0
-    assert "--repo-root" in result.stdout
+    assert "--repo-root" not in result.stdout
     assert "--attempt-root" in result.stdout
     assert "--implementation-sha" in result.stdout
     for forbidden in (
@@ -36,13 +36,11 @@ def test_production_cli_exposes_only_operational_arguments():
 
 
 def test_legacy_or_methodology_override_arguments_are_rejected_without_network():
-    for argument in ("--provider", "--universe", "--expected-r2-reviewed-sha"):
+    for argument in ("--repo-root", "--provider", "--universe", "--expected-r2-reviewed-sha"):
         result = subprocess.run(
             [
                 sys.executable,
                 str(SCRIPT),
-                "--repo-root",
-                str(REPO_ROOT),
                 "--attempt-root",
                 str(REPO_ROOT.parent / "synthetic-attempt"),
                 "--implementation-sha",
@@ -65,6 +63,7 @@ def test_cli_source_binds_fixed_endpoint_and_no_fallback_branch():
         encoding="utf-8"
     )
     assert "run_production" in source
+    assert "--repo-root" not in source
     assert "query1.finance.yahoo.com" in core_source
     assert "fallback" not in source.lower()
     assert "provider" not in source.lower()
@@ -72,13 +71,37 @@ def test_cli_source_binds_fixed_endpoint_and_no_fallback_branch():
     assert "--implementation-sha" in source
 
 
+def test_cli_validates_the_same_checkout_that_supplies_the_executing_source(monkeypatch, tmp_path):
+    spec = importlib.util.spec_from_file_location("v10b_cli_binding_under_test", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    observed = {}
+
+    def fake_run_production(repo_root, attempt_root, implementation_sha):
+        observed["repo_root"] = repo_root
+        observed["attempt_root"] = attempt_root
+        observed["implementation_sha"] = implementation_sha
+        return {}
+
+    monkeypatch.setattr(cli, "run_production", fake_run_production)
+    assert cli.main(
+        [
+            "--attempt-root",
+            str(tmp_path / "attempt"),
+            "--implementation-sha",
+            "0" * 40,
+        ]
+    ) == 0
+    assert observed["repo_root"] == cli.REPO_SOURCE_ROOT == REPO_ROOT
+    assert observed["attempt_root"] == tmp_path / "attempt"
+
+
 def test_cli_governance_failure_is_bounded_and_does_not_emit_manifest(tmp_path):
     result = subprocess.run(
         [
             sys.executable,
             str(SCRIPT),
-            "--repo-root",
-            str(tmp_path / "not-a-repository"),
             "--attempt-root",
             str(tmp_path / "attempt"),
             "--implementation-sha",
@@ -109,8 +132,6 @@ def test_cli_maps_explicit_post_boundary_failure_to_implementation_token(monkeyp
     monkeypatch.setattr(cli, "run_production", fail_after_boundary)
     result = cli.main(
         [
-            "--repo-root",
-            str(tmp_path / "repo"),
             "--attempt-root",
             str(tmp_path / "attempt"),
             "--implementation-sha",
