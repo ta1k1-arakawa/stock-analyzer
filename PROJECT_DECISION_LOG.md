@@ -2465,3 +2465,10 @@ transitions. This public log must not contain protected material.
 - The parser import-closure HIGH-1 remediation is technically resolved and the urllib/parser semantics are accepted. The overall review remains blocked solely by the MEDIUM-1 state-coherence finding; the current state is normalized without claiming an overall PASS.
 - Phase-A factual values are preserved with one current-state occurrence per normalized key, and the transport remediation is recorded as `URLLIB_CORE_ACCEPTABLE_OVERALL_CC37_BLOCKED_BY_PARSER_IMPORT_CLOSURE`.
 - No network request, cache read, T0 run, model fit, evaluation, private/sealed access, or human-gate consumption occurred. V10B network acquisition, T0, historical evaluation, and future profitability authorities remain false.
+
+## 2026-09-13 — V10C design-freeze approval record
+
+- Recorded GPT exact-SHA review of `f88a748f6f5e3fa39bfe57f1720316415b961c0b` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`; the frozen V10C design blob is `d4e6e9b15dfee423aabc0a4052e68e4970739319`.
+- Fresh V10C design-freeze approval was received for the exact reviewed design commit and blob with scope `DESIGN_FREEZE_ONLY`. The approval record is now durably recorded without raw human identity or authorization text.
+- The approval authorizes implementation phase only after approval-record GPT review. Offline adoption execution and the first locked raw-payload byte read require separate fresh point-of-use human authority; network access, Yahoo refetch, T0, evaluation, private/sealed access, model fitting, backtesting, and manifest promotion remain unauthorized.
+- V10C design is frozen, V10C provenance remains `NOT_ADOPTED`/`NOT_PROMOTED`, V10B remains terminal `BLOCK`, and future profitability remains unestablished. No network, raw-payload, T0, model, evaluation, private, or human-gate execution activity occurred.
