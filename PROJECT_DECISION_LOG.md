@@ -2410,3 +2410,10 @@ transitions. This public log must not contain protected material.
 - Added a dependency-minimal V10B parser shim using only standard-library typing support, NumPy, and pandas. Its `validate_ohlcv`, `validate_v4_ohlcv`, and `parse_v4_yahoo_chart` function ASTs are mechanically equivalent to the reviewed legacy implementations, with the reviewed date constants bound unchanged.
 - Production parser resolution now targets the shim before acquisition. Isolated import coverage verifies that requests, LightGBM, scikit-learn, SciPy, and the heavyweight legacy modules are not required on the production parser path. Legacy source files remain immutable semantic authorities.
 - Targeted results: shim `18 passed`; existing V10B core `61 passed, 1 skipped`; CLI `7 passed`. No real network, cache/price read, T0, evaluation, model fit, backtest, private/sealed read, package installation, environment mutation, or human-gate consumption occurred. V10B network acquisition, T0, historical evaluation, and future profitability authorities remain false.
+
+## 2026-09-13 — V10B parser import closure review state coherence remediation
+
+- Recorded GPT exact-SHA review of `820cdab812d91bbfea51b3b264c890ec136571f3` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`; the sole finding is `PROJECT_STATE_REVIEW_PROVENANCE_NOT_SELF_CONSISTENT`.
+- The parser import-closure HIGH-1 remediation is technically resolved and the urllib/parser semantics are accepted. The overall review remains blocked solely by the MEDIUM-1 state-coherence finding; the current state is normalized without claiming an overall PASS.
+- Phase-A factual values are preserved with one current-state occurrence per normalized key, and the transport remediation is recorded as `URLLIB_CORE_ACCEPTABLE_OVERALL_CC37_BLOCKED_BY_PARSER_IMPORT_CLOSURE`.
+- No network request, cache read, T0 run, model fit, evaluation, private/sealed access, or human-gate consumption occurred. V10B network acquisition, T0, historical evaluation, and future profitability authorities remain false.
