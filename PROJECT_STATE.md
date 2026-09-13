@@ -2285,3 +2285,23 @@ private/sealed read, or historical-evaluation authority exists.
 - [V9 cross-sectional close-auction charter](V9_CROSS_SECTIONAL_CLOSE_AUCTION_CHARTER.md)
 
 Detailed immutable history remains in its study documents and Git history.
+
+## 2026-09-13 — V10B training-cache reacquisition synthetic implementation
+
+- `V10B_DESIGN_FREEZE_APPROVAL_REVIEWED_SHA=a9d0a22e572a4998ee8ec81b432f36f2a40fcebb`, approval blob `dde0418589088932559b289b3ed26a40e29b62b6`, and review result `PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0` are recorded. The V10B design is frozen and implementation phase authority is true; network acquisition, T0, historical evaluation, and private/sealed authority remain false.
+- A dedicated V10B acquisition core, production CLI, and synthetic targeted tests were added. The fixed Yahoo source/query/range, V4 universe and order, three-attempt transport policy, terminal complete semantics, exact manifest/audit contracts, exclusive attempt root, attempt-start receipt, and first-complete-payload byte lock remain bound to the frozen design.
+- Targeted result: `23 passed, 1 skipped`; the skip is the host-permission-dependent directory-symlink case. No network acquisition, cache creation/content read, price read, T0, evaluation, model fit, backtest, package/environment operation, private/sealed read, or human-gate consumption occurred.
+- `V10B_TRAINING_CACHE_REACQUISITION_IMPLEMENTATION=IMPLEMENTED_AWAITING_GPT_REVIEW`; current stage is `V10B_TRAINING_CACHE_REACQUISITION_IMPLEMENTATION_AWAITING_GPT_REVIEW`.
+
+V10B_DESIGN_FREEZE_APPROVAL_REVIEWED_SHA=a9d0a22e572a4998ee8ec81b432f36f2a40fcebb
+V10B_DESIGN_FREEZE_APPROVAL_GIT_BLOB_SHA1=dde0418589088932559b289b3ed26a40e29b62b6
+V10B_DESIGN_FREEZE_APPROVAL_REVIEW_RESULT=PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0
+V10B_DESIGN_FROZEN=true
+V10B_HUMAN_DESIGN_FREEZE_APPROVED=true
+V10B_IMPLEMENTATION_AUTHORIZED=true
+V10B_NETWORK_ACQUISITION_AUTHORIZED=false
+V10B_T0_AUTHORIZED=false
+V10B_HISTORICAL_EVALUATION_AUTHORIZED=false
+future_profitability_established=false
+V10B_TRAINING_CACHE_REACQUISITION_IMPLEMENTATION=IMPLEMENTED_AWAITING_GPT_REVIEW
+current_stage=V10B_TRAINING_CACHE_REACQUISITION_IMPLEMENTATION_AWAITING_GPT_REVIEW
