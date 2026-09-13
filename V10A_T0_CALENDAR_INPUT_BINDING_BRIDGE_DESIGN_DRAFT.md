@@ -116,10 +116,21 @@ The future real-T0 implementation must perform these stages in order:
    training/evaluation caches, universe content, prices, outcomes, targets,
    labels, returns, or invoke model-relevant work.
 
-Any failure through stage 7 must stop before research-data/outcome access and
-produce `NO_VERDICT_DATA_INCOMPATIBLE` or the distinct fixed input-binding
-failure path. It must not be collapsed into `STOP`, profitability, or any
-scientific result; it must not trigger repair, fallback, or retry.
+Stage-1 repository, branch, reviewed-HEAD, clean-tree, or bridge-design
+provenance failures are `GOVERNANCE/PREFLIGHT FAILURE`: they stop before T0,
+read no research data, and emit no T0 safe-result JSON. After governance
+preflight passes, any anticipated failure in stages 2–7 is an expected
+calendar input-binding contract failure and must use `T0DataIncompatible`
+external semantics, emitting exactly `T0_RESULT=NO_VERDICT_DATA_INCOMPATIBLE`
+with `cache_identity=false`, `exact_semantics=false`, and the existing
+zero/synthetic provenance representation. Unexpected programming, runtime,
+wrapper, or result-construction exceptions are `IMPLEMENTATION_FAILURE`, emit
+no `NO_VERDICT_DATA_INCOMPATIBLE` safe result, and use the existing nonzero
+implementation-failure path. None of these failures may emit
+`T0_RESULT=STOP` or `T0_RESULT=CONTINUE`; `T0_RESULT=STOP` is reserved for a
+later authorized scientific T0 result after exact input binding passes and
+authorized research data is accessed. No failure may trigger repair, fallback,
+or retry.
 
 ## 6. Exact failure classification
 
