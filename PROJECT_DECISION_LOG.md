@@ -2500,3 +2500,11 @@ transitions. This public log must not contain protected material.
 - Aligned the V10C historical audit validator with the reviewed V10B retry predicate: `TRANSPORT_EXCEPTION`, nonredirect 429, and nonredirect integer 500–599 are retryable before attempt 3; redirects and attempt 3 are terminal no-retry.
 - V10C now accepts the frozen V10B `status="TRANSPORT_EXCEPTION"` / `error_type="TRANSPORT_EXCEPTION"` audit representation and enforces the reviewed terminal/ordering closure without changing any acquisition behavior.
 - Added synthetic parity coverage against the reviewed V10B predicate and malformed transport-exception sequences. No real candidate, payload, network, T0, model, evaluation, private/sealed, or human-gate activity occurred.
+
+## 2026-09-13 — V10C Phase-B attempt-1 entrypoint and exit-capture remediation
+
+- Recorded the GPT exact-SHA implementation review of `79309ff30ab4ac71c57aec91234e17ed20917965` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`. The V10C validator implementation, including the receipt/gate path and audit-parity remediations, is now GPT-reviewed acceptable.
+- Recorded Phase A as `PASS` with zero locked raw-payload bytes read, zero network requests, and no human gate consumed.
+- Recorded V10C Phase-B attempt 1 as a pre-gate implementation/wrapper entrypoint failure caused by direct-script `src` import failure. No gate receipt or final receipt was created; authorization was not consumed, is not reusable, and the attempt may not be rerun. The process exit code was not durably captured.
+- Added an execution-only PowerShell wrapper that derives the repository and canonical Python executable, invokes the reviewed CLI by module from the repository root, captures stdout/stderr separately, persists `V10C_PHASE_B_WRAPPER_EVIDENCE_V2` with the exact child exit code and no automatic retry, and never creates or modifies authorization markers.
+- No real candidate root or payload was read, no network/refetch, T0, model, evaluation, private/sealed, or human-gate activity occurred. A fresh V10C offline-adoption authorization remains required only after this remediation receives exact-SHA PASS and a new Phase-A PASS at the reviewed implementation SHA.
