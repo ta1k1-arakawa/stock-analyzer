@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -216,6 +218,119 @@ def test_audit_validator_rejects_redirect_retry_even_for_retryable_status(tmp_pa
     audit[0] = dict(audit[0], retry=True, final=False)
     with pytest.raises(v10b.ManifestValidationError):
         v10b.validate_manifest(dict(manifest, network_audit=audit), tmp_path / "attempt", TICKERS)
+
+
+class _SyntheticHTTPResponse:
+    def __init__(self, status: int, body: bytes, headers=None):
+        self._status = status
+        self._body = body
+        self.headers = {} if headers is None else headers
+
+    def getcode(self):
+        return self._status
+
+    def read(self):
+        return self._body
+
+
+class _SyntheticURLOpener:
+    def __init__(self, outcome):
+        self.outcome = outcome
+        self.calls = []
+
+    def open(self, request, timeout):
+        self.calls.append((request, timeout))
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome
+
+
+def test_production_urllib_transport_returns_exact_success_bytes(monkeypatch):
+    opener = _SyntheticURLOpener(_SyntheticHTTPResponse(200, b"exact-body"))
+    monkeypatch.setattr(v10b, "_FIXED_NO_REDIRECT_OPENER", opener)
+
+    status, body, redirect = v10b._production_yahoo_transport(v10b.yahoo_url(TICKERS[0]), 1)
+
+    assert (status, body, redirect) == (200, b"exact-body", False)
+    assert len(opener.calls) == 1
+    assert opener.calls[0][1] == 45
+
+
+@pytest.mark.parametrize("status", [429, 500, 599, 600])
+def test_production_urllib_transport_preserves_http_error_status_and_body(monkeypatch, status):
+    error = HTTPError(
+        v10b.yahoo_url(TICKERS[0]),
+        status,
+        "synthetic HTTP error",
+        {},
+        io.BytesIO(f"body-{status}".encode()),
+    )
+    opener = _SyntheticURLOpener(error)
+    monkeypatch.setattr(v10b, "_FIXED_NO_REDIRECT_OPENER", opener)
+
+    result = v10b._production_yahoo_transport(v10b.yahoo_url(TICKERS[0]), 1)
+
+    assert result == (status, f"body-{status}".encode(), False)
+    assert v10b._retry_allowed(status, False, 1) is (status in (429, 500, 599))
+    assert len(opener.calls) == 1
+
+
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+def test_production_urllib_transport_never_follows_redirect(monkeypatch, status):
+    target_called = []
+
+    class RedirectResponse(_SyntheticHTTPResponse):
+        def read(self):
+            target_called.append("original-response-read")
+            return super().read()
+
+    opener = _SyntheticURLOpener(
+        RedirectResponse(status, b"redirect-body", {"Location": "https://example.invalid/target"})
+    )
+    monkeypatch.setattr(v10b, "_FIXED_NO_REDIRECT_OPENER", opener)
+
+    result = v10b._production_yahoo_transport(v10b.yahoo_url(TICKERS[0]), 1)
+
+    assert result == (status, b"redirect-body", True)
+    assert len(opener.calls) == 1
+    assert target_called == ["original-response-read"]
+    assert v10b._NoRedirectHandler().redirect_request(None, None, status, "", {}, "https://example.invalid/target") is None
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "http://query1.finance.yahoo.com/v8/finance/chart/0000.T?period1=1420070400&period2=1577836800&interval=1d&events=div,splits&includeAdjustedClose=true",
+        "https://query2.finance.yahoo.com/v8/finance/chart/0000.T?period1=1420070400&period2=1577836800&interval=1d&events=div,splits&includeAdjustedClose=true",
+        "https://query1.finance.yahoo.com/other/0000.T?period1=1420070400&period2=1577836800&interval=1d&events=div,splits&includeAdjustedClose=true",
+        "https://query1.finance.yahoo.com/v8/finance/chart/0000.T?period2=1577836800&period1=1420070400&interval=1d&events=div,splits&includeAdjustedClose=true",
+    ],
+)
+def test_production_urllib_transport_rejects_nonfixed_url_before_opener(monkeypatch, bad_url):
+    opener = _SyntheticURLOpener(_SyntheticHTTPResponse(200, b"unexpected"))
+    monkeypatch.setattr(v10b, "_FIXED_NO_REDIRECT_OPENER", opener)
+
+    with pytest.raises(v10b.ManifestValidationError):
+        v10b._production_yahoo_transport(bad_url, 1)
+
+    assert opener.calls == []
+
+
+@pytest.mark.parametrize("failure", [URLError("synthetic transport"), TimeoutError(), OSError()])
+def test_production_urllib_transport_propagates_no_response_transport_failures(monkeypatch, failure):
+    opener = _SyntheticURLOpener(failure)
+    monkeypatch.setattr(v10b, "_FIXED_NO_REDIRECT_OPENER", opener)
+
+    with pytest.raises(type(failure)):
+        v10b._production_yahoo_transport(v10b.yahoo_url(TICKERS[0]), 1)
+
+    assert len(opener.calls) == 1
+
+
+def test_production_transport_has_no_requests_runtime_dependency():
+    source = Path(v10b.__file__).read_text(encoding="utf-8")
+    assert "import requests" not in source
+    assert "requests.get" not in source
 
 
 def test_first_complete_body_is_locked_before_semantic_use(tmp_path):

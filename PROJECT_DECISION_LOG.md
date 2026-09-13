@@ -2390,6 +2390,13 @@ transitions. This public log must not contain protected material.
 - Added synthetic coverage for redirect statuses 301, 302, 307, 308, 429, 500, and 599, forged redirect retries, normal retryable statuses, and status 600 non-retry. Targeted result: `44 passed, 1 skipped`; the only skip is the host-permission-dependent directory-symlink case.
 - No network acquisition, real cache/price read, T0, evaluation, model fit, backtest, private/sealed read, package/environment mutation, or human-gate consumption occurred. MEDIUM 2 remains intentionally unremediated; V10B network acquisition, T0, historical evaluation, and future profitability authorities remain false. Next action is `GPT_EXACT_SHA_V10B_IMPLEMENTATION_MEDIUM_1_REVIEW`.
 
+## 2026-09-13 — V10B urllib transport dependency remediation
+
+- Recorded Phase-A attempt 1 as `STOP_PRE_GATE_ENVIRONMENT_BLOCK`: zero network requests, no attempt root, and no human-gate consumption. The reviewed real-execution environment lacked the production `requests` dependency; the separate raw universe-hash observation was classified as checker-semantics mismatch, not data adjudication.
+- Replaced the production Yahoo transport's third-party HTTP dependency with Python standard-library `urllib`, retaining the fixed endpoint/query, 45-second timeout, User-Agent, exact response tuple, HTTPError status/body preservation, no-redirect behavior, and fixed URL validation. No requirements or reviewed environment artifacts were changed.
+- Redirect responses remain terminal no-retry through the existing shared predicate; nonredirect 429 and 500–599 retain retry semantics, while no-response `URLError`, timeout, and OS transport failures retain the existing transport-exception path. Targeted result: `68 passed, 1 skipped`; the skip is the host-permission-dependent directory-symlink case.
+- No real network request, cache or price read, T0, evaluation, model fit, backtest, private/sealed read, package installation, environment mutation, or human-gate consumption occurred. V10B network acquisition, T0, historical evaluation, and future profitability authorities remain false.
+
 ## 2026-09-13 — V10B implementation MEDIUM 2 semantic versus implementation failure boundary remediation
 
 - Recorded GPT exact-SHA review of `16dacd7f52db37702b27276f387c187de59e9b5c` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`. HIGH 1, HIGH 2, and MEDIUM 1 are resolved; MEDIUM 2 is `IMPLEMENTATION_OR_ENVIRONMENT_ERROR_CAN_BE_RELABELED_AS_PAYLOAD_FAILURE`.

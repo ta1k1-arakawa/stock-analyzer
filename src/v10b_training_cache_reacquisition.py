@@ -3,7 +3,7 @@
 The production entrypoint binds every source and retry choice to constants in
 this module.  The narrow transport and semantic-validator arguments on the
 internal acquisition function exist only so synthetic tests can exercise the
-same manifest closure without making HTTP requests.
+same manifest closure without making live HTTP calls.
 """
 from __future__ import annotations
 
@@ -18,7 +18,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
-from urllib.parse import urlparse
+from urllib import error as urllib_error
+from urllib import request as urllib_request
+from urllib.parse import parse_qsl, urlparse
 
 
 STUDY_IDENTITY = "V10B_T0_TRAINING_CACHE_REACQUISITION_SUCCESSOR"
@@ -367,18 +369,61 @@ def _default_semantic_validator(body: bytes) -> None:
     _semantic_validator_for_parser(_resolve_inherited_parser())(body)
 
 
-def _production_yahoo_transport(url: str, attempt: int) -> tuple[Any, bytes, bool]:
-    import requests
+class _NoRedirectHandler(urllib_request.HTTPRedirectHandler):
+    """Prevent urllib from issuing any request to a redirect target."""
 
-    response = requests.get(
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_FIXED_NO_REDIRECT_OPENER = urllib_request.build_opener(_NoRedirectHandler)
+
+
+def _validate_fixed_transport_url(url: str) -> None:
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise ManifestValidationError("FIXED_TRANSPORT_URL_INVALID") from exc
+    if (
+        parsed.scheme != YAHOO_SCHEME
+        or parsed.hostname != YAHOO_HOST
+        or port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or not parsed.path.startswith(YAHOO_PATH_PREFIX)
+        or not parsed.path.endswith(".T")
+        or len(parsed.path[len(YAHOO_PATH_PREFIX) : -2]) != 4
+        or not parsed.path[len(YAHOO_PATH_PREFIX) : -2].isalnum()
+        or tuple(parse_qsl(parsed.query, keep_blank_values=True)) != QUERY_SPECIFICATION
+    ):
+        raise ManifestValidationError("FIXED_TRANSPORT_URL_INVALID")
+
+
+def _response_headers_contain_redirect(headers: Any) -> bool:
+    return bool(headers is not None and headers.get("Location"))
+
+
+def _production_yahoo_transport(url: str, attempt: int) -> tuple[Any, bytes, bool]:
+    """Issue one fixed Yahoo request without following redirects."""
+    _validate_fixed_transport_url(url)
+    request = urllib_request.Request(
         url,
-        timeout=45,
-        allow_redirects=False,
         headers={"User-Agent": "stock-analyzer-v10b-training-cache/1.0"},
+        method="GET",
     )
-    body = response.content
-    redirect = bool(300 <= response.status_code < 400 or response.headers.get("Location"))
-    return int(response.status_code), body, redirect
+    try:
+        response = _FIXED_NO_REDIRECT_OPENER.open(request, timeout=45)
+    except urllib_error.HTTPError as exc:
+        body = exc.read()
+        status = int(exc.code)
+        redirect = bool(300 <= status < 400 or _response_headers_contain_redirect(exc.headers))
+        return status, body, redirect
+    status = int(response.getcode())
+    body = response.read()
+    redirect = bool(300 <= status < 400 or _response_headers_contain_redirect(response.headers))
+    return status, body, redirect
 
 
 def _audit_entry(
