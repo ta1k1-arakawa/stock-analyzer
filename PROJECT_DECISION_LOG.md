@@ -2430,6 +2430,13 @@ transitions. This public log must not contain protected material.
 - The sole failure is `IMPLEMENTATION_FAILURE` / `WRAPPER_EVIDENCE_PROVENANCE_FAILURE` because direct Phase-B process-exit capture is missing. This is not a data-quality, strategy, or profitability failure, and the matching successful count does not recover the historical V9_009 cache.
 - A second V10B acquisition, network retry/refetch, durable-attempt deletion/reset/overwrite, T0, historical evaluation, private/sealed access, and future-profitability claim are prohibited or unauthorized. No such activity occurred in this bookkeeping task.
 
+## 2026-09-13 — V10B terminal active-state coherence remediation
+
+- Recorded GPT exact-SHA review of `77ac5f907fbde1dae6d58b7f8e7fde3ae2e8db16` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`. The terminal adjudication artifact and terminal acquisition content are accepted as mechanically valid.
+- The overall V10B adjudication remains blocked solely because direct Phase-B process-exit-code evidence is missing; the active `PROJECT_STATE.md` result is now explicitly `TERMINAL_CONTENT_VALID_OVERALL_ADJUDICATION_BLOCK`.
+- Observed manifest provenance is recorded as unpromoted with successful count `283`, failed count `17`, and total `300`. This does not recover or relabel the historical V9_009 cache, and no second acquisition or refetch is authorized.
+- No network, private/sealed, T0, model, evaluation, or human-gate operation occurred in this remediation. Network acquisition, T0, historical evaluation, private/sealed access, and future profitability remain unauthorized or unestablished.
+
 ## 2026-09-13 — V10B parser import closure review state coherence remediation
 
 - Recorded GPT exact-SHA review of `820cdab812d91bbfea51b3b264c890ec136571f3` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`; the sole finding is `PROJECT_STATE_REVIEW_PROVENANCE_NOT_SELF_CONSISTENT`.
