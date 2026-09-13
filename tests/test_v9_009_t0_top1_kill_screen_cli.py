@@ -11,6 +11,7 @@ from scripts import run_v9_009_t0_top1_kill_screen as bridge
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run_v9_009_t0_top1_kill_screen.py"
+INDEPENDENT_REPOSITORY_IDENTITY = "ta1k1-arakawa/stock-analyzer"
 
 
 def _valid_artifact() -> dict:
@@ -36,7 +37,7 @@ def _main_args(tmp_path: Path) -> list[str]:
 
 def _preflight_git_values(implementation_sha: str) -> dict[tuple[str, ...], str]:
     return {
-        ("remote", "get-url", "origin"): bridge.EXPECTED_REPOSITORY_URL,
+        ("remote", "get-url", "origin"): "https://github.com/ta1k1-arakawa/stock-analyzer.git",
         ("rev-parse", "--abbrev-ref", "HEAD"): bridge.AUTHORITATIVE_BRANCH,
         ("rev-parse", "HEAD"): implementation_sha,
         ("status", "--porcelain", "--untracked-files=all"): "",
@@ -136,6 +137,41 @@ def test_valid_repo_provenance_accepts_reviewed_head(monkeypatch):
     values = _preflight_git_values(implementation_sha)
     monkeypatch.setattr(bridge, "_git_value", lambda _root, *parts: values[parts])
     bridge.validate_repository_preflight(ROOT, implementation_sha)
+
+
+def test_repository_identity_matches_independent_canonical_literal():
+    expected_url = f"https://github.com/{INDEPENDENT_REPOSITORY_IDENTITY}.git"
+    assert bridge.EXPECTED_REPOSITORY_URL == expected_url
+
+
+@pytest.mark.parametrize(
+    "remote_url",
+    [
+        "https://github.com/taiki-arakawa/stock-analyzer.git",
+        "https://github.com/ta1k1-arakawa/other-repository.git",
+    ],
+)
+def test_wrong_owner_or_repository_name_fails_governance(monkeypatch, remote_url):
+    implementation_sha = "a" * 40
+    values = _preflight_git_values(implementation_sha)
+    values[("remote", "get-url", "origin")] = remote_url
+    monkeypatch.setattr(bridge, "_git_value", lambda _root, *parts: values[parts])
+    with pytest.raises(bridge.GovernanceFailure):
+        bridge.validate_repository_preflight(ROOT, implementation_sha)
+
+
+def test_repository_mismatch_never_calls_cache_or_emits_t0_json(monkeypatch, tmp_path, capsys):
+    implementation_sha = "a" * 40
+    values = _preflight_git_values(implementation_sha)
+    values[("remote", "get-url", "origin")] = "https://github.com/taiki-arakawa/stock-analyzer.git"
+    calls = []
+    monkeypatch.setattr(bridge, "_git_value", lambda _root, *parts: values[parts])
+    monkeypatch.setattr(bridge, "run_from_cache", lambda *args: calls.append(args))
+    assert bridge.main(_main_args(tmp_path)) == 4
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == bridge.PREFLIGHT_FAILURE + "\n"
+    assert calls == []
 
 
 def test_wrong_head_is_governance_failure(monkeypatch):

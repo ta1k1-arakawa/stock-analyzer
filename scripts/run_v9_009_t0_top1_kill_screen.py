@@ -30,7 +30,7 @@ from src.v9_009_t0_top1_kill_screen import (  # noqa: E402
 
 
 AUTHORITATIVE_BRANCH = "v9-cross-sectional-close-auction-design"
-EXPECTED_REPOSITORY_URL = "https://github.com/ta1ki-arakawa/stock-analyzer.git"
+EXPECTED_REPOSITORY_URL = "https://github.com/ta1k1-arakawa/stock-analyzer.git"
 BRIDGE_DESIGN_PATH = "V10A_T0_CALENDAR_INPUT_BINDING_BRIDGE_DESIGN_DRAFT.md"
 BRIDGE_DESIGN_GIT_BLOB_SHA1 = "6df95aa8354c3d335a51747ee98ed9f2741c2410"
 
