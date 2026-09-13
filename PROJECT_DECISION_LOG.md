@@ -2437,6 +2437,14 @@ transitions. This public log must not contain protected material.
 - V10C preserves the inherited V4/V9 scientific methodology, prohibits payload/price/outcome/target/label/model inspection, and defines disjoint governance, locked-artifact-integrity, and implementation failure classes. No failure authorizes reacquisition.
 - V10C design is not frozen; implementation and adoption execution are unauthorized pending GPT exact-SHA design review, explicit human design-freeze approval, durable approval-record review, later synthetic implementation review, and the specified offline governance sequence. No network, refetch, raw scientific inspection, T0, evaluation, model fit, backtest, private/sealed access, or human-gate consumption occurred.
 
+## 2026-09-13 — V10C HIGH-1 offline adoption authority-chain remediation
+
+- Recorded GPT exact-SHA review of `b590e348df067138fec09b99aa7ced8bbbdda515` as `BLOCK` with `CRITICAL=0`, `HIGH=1`, `MEDIUM=1`, and `LOW=0`. The HIGH finding is `V10C_OFFLINE_ADOPTION_EXECUTION_AND_PROMOTION_AUTHORITY_CHAIN_NOT_MECHANICALLY_CLOSED`; the MEDIUM finding `TOP_LEVEL_GPT_REVIEW_PROVENANCE_STALE` remains open and is not remediated here.
+- Clarified that the V10B acquisition implementation SHA is predecessor provenance only. Future V10C offline-adoption execution must bind to a separate exact GPT-reviewed V10C validator implementation SHA and must validate repository, branch, clean tree, local/remote SHA, design/freeze provenance, and V10B ancestry before any locked payload byte read.
+- Froze fresh V10C offline-adoption authorization as required after Phase-A adjudication PASS and before the first locked payload-byte integrity read. It is distinct from design-freeze approval and V10B network authority, consumed once, and non-reusable.
+- Closed the raw-byte boundary to byte-count/SHA-256/manifest-closure checks only, defined candidate-root safety semantics, and specified the durable adoption-record schema plus post-adjudication GPT exact-SHA review required before any V10C provenance promotion.
+- V10C remains unfrozen and unauthorized. No network, raw-payload, T0, model, evaluation, private/sealed, or human-gate activity occurred.
+
 ## 2026-09-13 — V10B terminal active-state coherence remediation
 
 - Recorded GPT exact-SHA review of `77ac5f907fbde1dae6d58b7f8e7fde3ae2e8db16` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`. The terminal adjudication artifact and terminal acquisition content are accepted as mechanically valid.

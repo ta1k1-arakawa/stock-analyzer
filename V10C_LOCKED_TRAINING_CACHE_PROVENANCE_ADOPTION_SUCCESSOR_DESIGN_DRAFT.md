@@ -89,6 +89,22 @@ The validator must confirm that these are the exact candidate bytes. It may
 inspect metadata and hashes only; it does not need to parse raw price
 payloads.
 
+The V10B acquisition implementation SHA
+`b2172723df28b3edfce386c77ee79ce38a716925` is predecessor provenance only.
+It is not the reviewed implementation SHA of a future V10C offline-adoption
+validator. Every future real V10C adoption execution must bind its executing
+validator to a separate exact GPT-reviewed V10C implementation SHA. That
+SHA is unknown at design time and may be supplied only after the V10C
+validator implementation receives GPT exact-SHA PASS.
+
+Before any locked payload byte is read, the future validator must verify the
+authoritative repository identity, authoritative branch, clean working tree,
+local HEAD equal to that exact GPT-reviewed V10C validator SHA, and the
+authoritative remote branch/ref equal to the same SHA. It must also verify
+the frozen V10C design blob, reviewed freeze-approval provenance, and the
+complete V10B predecessor/candidate ancestry listed above. No unreviewed
+validator implementation may execute adoption.
+
 ### 4.2 Manifest and fixed-source binding
 
 The candidate manifest must validate its exact frozen V10B schema and field
@@ -127,6 +143,25 @@ ticker order must remain intact where ordering applies.
 This is a byte-integrity check only. V10C does not parse, transform, or
 inspect the payload contents, prices, outcomes, targets, labels, returns, or
 model features.
+
+The future Phase-B adoption validator may read the exact 283 locked payload
+files only to calculate byte count and SHA-256 and to establish exact
+manifest closure. It must not JSON-parse payload price contents, inspect
+OHLCV/prices, derive features, inspect labels/targets/outcomes/returns,
+invoke the V4 Yahoo semantic parser, fit models, or perform T0/evaluation.
+Safe stdout, stderr, state, logs, and receipts may contain only hashes,
+counts, booleans, and bounded safe enums; they must not contain ticker
+identities, raw payloads, prices, absolute machine paths, raw URLs, or human
+authorization identity.
+
+The candidate root is one future operational locator supplied to the
+reviewed validator. It is not part of the scientific identity. The validator
+must reject a missing or non-directory root, reject symlink/junction/reparse
+escapes, inspect the full existing ancestor chain for reparse points as
+required by repository governance, and never search or guess arbitrary
+roots. It must never copy, move, delete, reset, overwrite, or resume the
+candidate. Identity is established exclusively through the frozen content
+and provenance hashes and bindings.
 
 ### 4.4 Network-audit closure
 
@@ -189,6 +224,65 @@ successor input-binding implementation requiring the exact promoted
 manifest, GPT exact-SHA review, Phase-A preflight, and any fresh point-of-use
 authority required by the applicable governance.
 
+Promotion is mechanically closed by a separate durable
+`V10C_TRAINING_PROVENANCE_ADOPTION_RECORD.json`; this record is not created
+by this design remediation. The required sequence is:
+
+```text
+Phase B offline execution
+-> Phase C safe inspection
+-> GPT adoption adjudication
+-> only if GPT adjudication PASS, create the adoption record in a separate
+   bookkeeping/promotion task
+-> commit
+-> GPT exact-SHA review of that adoption record
+-> only if that review PASS, mark V10C provenance ADOPTED
+```
+
+Before that final adoption-record GPT PASS, the state must remain
+`V10C_TRAINING_INPUT_PROVENANCE=NOT_ADOPTED` and
+`V10C_MANIFEST_ADOPTION_SHA256=NOT_PROMOTED`. Only after PASS may it become
+`V10C_TRAINING_INPUT_PROVENANCE=ADOPTED_FROM_V10B_LOCKED_ARTIFACT_SET` with
+manifest SHA-256
+`887c031a004f91a080fa53ab511711fff92c92527cb119878ab2c295ee13cd44`.
+
+The adoption-record schema is frozen at design level as
+`V10C_TRAINING_PROVENANCE_ADOPTION_RECORD_V1` and must contain at least:
+
+```text
+schema_version=V10C_TRAINING_PROVENANCE_ADOPTION_RECORD_V1
+study=V10C_LOCKED_TRAINING_CACHE_PROVENANCE_ADOPTION_SUCCESSOR
+artifact_role=TRAINING_PROVENANCE_ADOPTION_RECORD
+frozen_v10c_design_commit=<exact future GPT-reviewed PASS design SHA>
+frozen_v10c_design_blob_sha=<exact design blob>
+v10c_validator_reviewed_implementation_sha=<exact future GPT-reviewed implementation SHA>
+predecessor_study=V10B_T0_TRAINING_CACHE_REACQUISITION_SUCCESSOR
+predecessor_status=TERMINAL_BLOCK_NONREUSABLE
+v10b_acquisition_implementation_sha=b2172723df28b3edfce386c77ee79ce38a716925
+v10b_terminal_adjudication_commit=77ac5f907fbde1dae6d58b7f8e7fde3ae2e8db16
+v10b_terminal_adjudication_blob_sha1=5d1d83fb6bdf1fbe0630e9158c9d039b2e486796
+manifest_sha256=887c031a004f91a080fa53ab511711fff92c92527cb119878ab2c295ee13cd44
+attempt_receipt_sha256=44387e68bfc5de8bf54de8ca9694ba9f12bad2be779224946888eaea36d96eb7
+successful_ticker_count=283
+failed_ticker_count=17
+ticker_count=300
+manifest_validation=PASS
+locked_payload_hash_closure=PASS
+network_requests=0
+semantic_payload_parsing=false
+t0_authorized=false
+historical_evaluation_authorized=false
+private_sealed_access_authorized=false
+future_profitability_established=false
+adoption_adjudication_result=PASS
+promotion_status=ADOPTED_V10C_PROVENANCE_ONLY
+historical_v9_009_cache_recovered=false
+```
+
+If a future safe execution receipt is defined, the record must additionally
+bind its exact SHA-256. The record never authorizes T0 or changes the
+scientific methodology.
+
 ## 7. Frozen methodology and research integrity
 
 V10C leaves unchanged the V4 universe and ticker-list identities, V9_009
@@ -214,6 +308,7 @@ V10C_ADOPTION_EXECUTION_AUTHORIZED=false
 V10C_T0_AUTHORIZED=false
 V10C_HISTORICAL_EVALUATION_AUTHORIZED=false
 V10C_PRIVATE_SEALED_ACCESS_AUTHORIZED=false
+FRESH_V10C_OFFLINE_ADOPTION_AUTHORIZATION_REQUIRED=true
 ```
 
 The frozen sequence is:
@@ -229,14 +324,22 @@ DESIGN
 -> synthetic tests
 -> GPT implementation review
 -> Phase A NO-NETWORK durable-state preflight
--> separately authorized point-of-use offline adoption execution, if required
+-> GPT Phase-A adjudication PASS
+-> fresh explicit human authorization scoped only to one V10C offline
+   provenance-adoption execution
+-> Phase B offline adoption execution exactly once
 -> Phase C safe inspection
 -> GPT adoption adjudication
 ```
 
 The design-freeze authority and any later adoption-execution authority are
-distinct and cannot be reused for each other. V10B network authority, if
-any, does not transfer to V10C.
+distinct and cannot be reused for each other. The fresh offline-adoption
+authorization is required before the first locked payload byte read, is
+consumed at that point-of-use boundary, and is not reusable for a second
+adoption execution. It does not authorize network access, Yahoo refetch,
+T0, evaluation, model fitting, backtesting, or private/sealed access.
+V10B network authority, if any, does not transfer to V10C. After authority
+consumption there is no retry, reset, delete, overwrite, or second attempt.
 
 No step in this design grants T0, historical evaluation, private/sealed
 access, network acquisition, or a profitability claim.
