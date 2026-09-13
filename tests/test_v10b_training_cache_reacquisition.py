@@ -183,6 +183,41 @@ def test_redirect_and_empty_200_do_not_retry(tmp_path):
     assert manifest["failed_tickers"][:2] == TICKERS[:2]
 
 
+@pytest.mark.parametrize("status", [301, 302, 307, 308, 429, 500, 599])
+def test_redirect_always_terminal_regardless_of_http_status(tmp_path, status):
+    calls: dict[str, int] = {}
+
+    def transport(url: str, attempt: int):
+        ticker = url.split("/chart/", 1)[1].split(".T?", 1)[0]
+        calls[ticker] = calls.get(ticker, 0) + 1
+        if ticker == TICKERS[0]:
+            return status, b"redirect-body", True
+        return 200, b"ok", False
+
+    manifest = _acquire(tmp_path, transport)
+    assert calls[TICKERS[0]] == 1
+    first_audit = manifest["network_audit"][0]
+    assert first_audit["ticker"] == TICKERS[0]
+    assert first_audit["retry"] is False
+    assert first_audit["final"] is True
+    assert first_audit["success"] is False
+    assert first_audit["error_type"] == "REDIRECT"
+
+
+def test_audit_validator_rejects_redirect_retry_even_for_retryable_status(tmp_path):
+    def transport(url: str, attempt: int):
+        ticker = url.split("/chart/", 1)[1].split(".T?", 1)[0]
+        if ticker == TICKERS[0]:
+            return 500, b"redirect-body", True
+        return 200, b"ok", False
+
+    manifest = _acquire(tmp_path, transport)
+    audit = list(manifest["network_audit"])
+    audit[0] = dict(audit[0], retry=True, final=False)
+    with pytest.raises(v10b.ManifestValidationError):
+        v10b.validate_manifest(dict(manifest, network_audit=audit), tmp_path / "attempt", TICKERS)
+
+
 def test_first_complete_body_is_locked_before_semantic_use(tmp_path):
     observed: list[bytes] = []
     attempt_root = tmp_path / "attempt"

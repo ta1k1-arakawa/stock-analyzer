@@ -178,7 +178,10 @@ def _query_as_lists() -> list[list[str]]:
     return [[key, value] for key, value in QUERY_SPECIFICATION]
 
 
-def _is_retryable_status(status: Any) -> bool:
+def _retry_allowed(status: Any, redirect_detected: bool, attempt: int) -> bool:
+    """Apply the one frozen retry predicate used by acquisition and audit."""
+    if redirect_detected or attempt >= MAX_TRANSPORT_ATTEMPTS:
+        return False
     return status == "TRANSPORT_EXCEPTION" or (
         type(status) is int and (status == 429 or 500 <= status <= 599)
     )
@@ -390,8 +393,8 @@ def _validate_audit_records(audit: Any, ticker_order: Sequence[str]) -> None:
         if any(type(item[key]) is not bool for key in ("retry", "final", "success", "redirect_detected")):
             raise ManifestValidationError("NETWORK_AUDIT_BOOLEAN_INVALID")
         status = item["status"]
-        retryable = _is_retryable_status(status)
-        if item["retry"] != (retryable and attempt < MAX_TRANSPORT_ATTEMPTS):
+        retryable = _retry_allowed(status, item["redirect_detected"], attempt)
+        if item["retry"] != retryable:
             raise ManifestValidationError("NETWORK_AUDIT_RETRY_INVALID")
         if item["success"]:
             if (
@@ -406,6 +409,16 @@ def _validate_audit_records(audit: Any, ticker_order: Sequence[str]) -> None:
             ):
                 raise ManifestValidationError("NETWORK_AUDIT_SUCCESS_INVALID")
         else:
+            if item["redirect_detected"]:
+                if (
+                    item["retry"]
+                    or not item["final"]
+                    or item["success"]
+                    or item["error_type"] != "REDIRECT"
+                ):
+                    raise ManifestValidationError("NETWORK_AUDIT_REDIRECT_INVALID")
+            elif item["error_type"] == "REDIRECT":
+                raise ManifestValidationError("NETWORK_AUDIT_REDIRECT_INVALID")
             if item["final"] is False and not item["retry"]:
                 raise ManifestValidationError("NETWORK_AUDIT_NONFINAL_INVALID")
             if item["final"] and item["retry"]:
@@ -547,7 +560,7 @@ def _run_acquisition_loop(
                     }
                 )
                 break
-            retry = _is_retryable_status(status) and attempt < MAX_TRANSPORT_ATTEMPTS
+            retry = _retry_allowed(status, redirect, attempt)
             if redirect:
                 error_type = "REDIRECT"
             elif status == 200:
