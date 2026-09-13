@@ -2445,6 +2445,13 @@ transitions. This public log must not contain protected material.
 - Closed the raw-byte boundary to byte-count/SHA-256/manifest-closure checks only, defined candidate-root safety semantics, and specified the durable adoption-record schema plus post-adjudication GPT exact-SHA review required before any V10C provenance promotion.
 - V10C remains unfrozen and unauthorized. No network, raw-payload, T0, model, evaluation, private/sealed, or human-gate activity occurred.
 
+## 2026-09-13 — V10C design MEDIUM-1 top-level review provenance remediation
+
+- Recorded the GPT exact-SHA review of `dd41b214f0b27b807fb86fafc71052412b0cd3aa` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`. The V10B terminal active-state coherence remediation passed; V10B itself remained terminal `BLOCK`, its manifest remained unpromoted, and no second acquisition, refetch, or T0 authorization resulted.
+- Recorded the GPT exact-SHA review of `b590e348df067138fec09b99aa7ced8bbbdda515` as `BLOCK` with `CRITICAL=0`, `HIGH=1`, `MEDIUM=1`, and `LOW=0`. HIGH-1 was `V10C_OFFLINE_ADOPTION_EXECUTION_AND_PROMOTION_AUTHORITY_CHAIN_NOT_MECHANICALLY_CLOSED`; MEDIUM-1 was `TOP_LEVEL_GPT_REVIEW_PROVENANCE_STALE`.
+- Recorded the GPT exact-SHA review of `5ad67039216dbf660fc276a10cd18aca79c4dc17` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`. HIGH-1 is resolved; MEDIUM-1 remains solely `TOP_LEVEL_GPT_REVIEW_PROVENANCE_STALE`. The reviewed V10C design blob is `d4e6e9b15dfee423aabc0a4052e68e4970739319`; the design remains unfrozen pending this remediation review and no implementation/adoption execution authority exists.
+- No network, cache read, T0, model fit, evaluation, private/sealed access, or human-gate activity occurred. V10C remains `NOT_ADOPTED`/`NOT_PROMOTED` and all execution authorities remain false.
+
 ## 2026-09-13 — V10B terminal active-state coherence remediation
 
 - Recorded GPT exact-SHA review of `77ac5f907fbde1dae6d58b7f8e7fde3ae2e8db16` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`. The terminal adjudication artifact and terminal acquisition content are accepted as mechanically valid.
