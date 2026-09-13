@@ -273,9 +273,35 @@ price_from=2015-01-01
 price_to=2019-12-31
 ```
 
-`complete` is true only when all `ticker_count` fixed tickers have accepted
-complete payloads under the frozen policy and `failed_tickers` is empty. It
-is an observed completeness fact, not a minimum-success threshold.
+`complete=false` means that acquisition has not terminally processed every
+one of the `ticker_count` fixed tickers under the frozen retry policy, or
+that a crash or interruption occurred before the full fixed universe reached
+terminal transport states. `complete=true` means that every fixed canonical
+ticker reached exactly one terminal transport outcome under the frozen
+policy. It does not require `ticker_count` successful payloads, and
+`failed_tickers` may be non-empty.
+
+The terminal manifest must mechanically satisfy all of the following:
+
+```text
+successful_ticker_count + len(failed_tickers) == 300
+accepted_ticker_set ∩ failed_ticker_set == ∅
+accepted_ticker_set ∪ failed_ticker_set == exact FIXED_V4_300 ticker set
+```
+
+The accepted-payload ticker set and failed-ticker set are the exact observed
+partition produced after all 300 fixed tickers reach terminal states. Both
+lists preserve canonical V4 order where ordering applies, and no ticker may
+be manually added or removed. `successful_ticker_count` is the exact
+observed count of accepted first-complete payloads; acquisition imposes no
+minimum success count and does not require the historical count `283`.
+
+This preserves the inherited V4 acquisition meaning of `complete` and does
+not change inclusion or exclusion methodology. After terminal acquisition,
+the cache identity, observed success count, failed membership, and exact
+payload bytes are frozen as provenance. Whether that cache can support the
+inherited T0 semantics is a later `DATA_INCOMPATIBLE`/input-binding
+decision, and that decision can never trigger reacquisition or refetch.
 
 Each accepted payload entry binds exactly:
 
