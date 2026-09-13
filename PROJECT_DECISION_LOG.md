@@ -2411,6 +2411,12 @@ transitions. This public log must not contain protected material.
 - Production parser resolution now targets the shim before acquisition. Isolated import coverage verifies that requests, LightGBM, scikit-learn, SciPy, and the heavyweight legacy modules are not required on the production parser path. Legacy source files remain immutable semantic authorities.
 - Targeted results: shim `18 passed`; existing V10B core `61 passed, 1 skipped`; CLI `7 passed`. No real network, cache/price read, T0, evaluation, model fit, backtest, private/sealed read, package installation, environment mutation, or human-gate consumption occurred. V10B network acquisition, T0, historical evaluation, and future profitability authorities remain false.
 
+## 2026-09-13 — V10B active-state canonicalization remediation
+
+- Recorded GPT exact-SHA review of `9116f00e80755c7251e853d692d321b0a112b176` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`; the prior parser/state-coherence MEDIUM is resolved and the parser import-closure code remains acceptable.
+- The new block is solely `ACTIVE_V10B_STATE_REMAINS_MULTI_VALUED_AND_CONTRADICTORY`. Active V10B authority and provenance assignments were canonicalized to one current assignment each; historical detail remains in this append-only log and Git history.
+- No network request, cache read, T0 run, model fit, evaluation, private/sealed access, or human-gate activity occurred. V10B implementation authority remains implementation-phase only; network acquisition, T0, historical evaluation, and private/sealed authorities remain false.
+
 ## 2026-09-13 — V10B parser import closure review state coherence remediation
 
 - Recorded GPT exact-SHA review of `820cdab812d91bbfea51b3b264c890ec136571f3` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`; the sole finding is `PROJECT_STATE_REVIEW_PROVENANCE_NOT_SELF_CONSISTENT`.
