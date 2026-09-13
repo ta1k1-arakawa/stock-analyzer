@@ -44,6 +44,7 @@ ATTEMPT_RECEIPT_SCHEMA = "V10B_ACQUISITION_ATTEMPT_RECEIPT_V1"
 AUTHORIZATION_MARKER_SCHEMA = "V10C_OFFLINE_ADOPTION_AUTHORIZATION_MARKER_V1"
 AUTHORIZATION_SCOPE = "ONE_V10C_OFFLINE_PROVENANCE_ADOPTION_EXECUTION_ONLY"
 RECEIPT_SCHEMA = "V10C_OFFLINE_ADOPTION_EXECUTION_RECEIPT_V1"
+GATE_RECEIPT_SCHEMA = "V10C_OFFLINE_ADOPTION_GATE_RECEIPT_V1"
 UNIVERSE_FILE = "V4_UNIVERSE.csv"
 UNIVERSE_CSV_SHA256 = "d40b1fcfd824822c7511f0d4f99445640706b7f5dfae08155636624704c41997"
 TICKER_LIST_SHA256 = "12777a83f259cd885ebb828e0ce895a5bf53be37c27928c1a487f629002ce4f7"
@@ -198,6 +199,21 @@ def validate_receipt_output_path(receipt_path: Path, repo_root: Path, candidate_
         if resolved == protected_root or resolved.is_relative_to(protected_root):
             raise GovernanceProvenanceFailure("RECEIPT_PATH_NOT_EXTERNAL")
     return receipt_path
+
+
+def derive_gate_receipt_path(receipt_path: Path) -> Path:
+    """Derive the one-shot gate evidence path from the final receipt path."""
+    return Path(str(receipt_path) + ".gate.json")
+
+
+def validate_receipt_paths(receipt_path: Path, repo_root: Path, candidate_root: Path) -> Path:
+    """Validate both external, exclusive receipt destinations before Phase B."""
+    gate_path = derive_gate_receipt_path(receipt_path)
+    validate_receipt_output_path(receipt_path, repo_root, candidate_root)
+    validate_receipt_output_path(gate_path, repo_root, candidate_root)
+    if gate_path == receipt_path:
+        raise GovernanceProvenanceFailure("RECEIPT_PATHS_NOT_DISTINCT")
+    return gate_path
 
 
 def assert_candidate_root_safe(candidate_root: Path, repo_root: Path) -> Path:
@@ -551,7 +567,7 @@ def phase_a_preflight(
         _assert_external_existing_file(marker_path, repo_root, safe_root)
         validate_authorization_marker(marker_path, implementation_sha)
     if receipt_path is not None:
-        validate_receipt_output_path(receipt_path, repo_root, safe_root)
+        validate_receipt_paths(receipt_path, repo_root, safe_root)
     manifest = _validate_candidate_metadata(safe_root, ticker_order)
     return {"candidate_root": safe_root, "ticker_order": ticker_order, "manifest": manifest, "locked_raw_bytes_read": 0}
 
@@ -654,6 +670,50 @@ def build_safe_receipt(implementation_sha: str, manifest: Mapping[str, Any], *, 
     }
 
 
+def build_gate_receipt(implementation_sha: str) -> dict[str, Any]:
+    return {
+        "schema_version": GATE_RECEIPT_SCHEMA,
+        "study": STUDY_IDENTITY,
+        "reviewed_v10c_implementation_sha": implementation_sha,
+        "frozen_v10c_design_commit": FROZEN_V10C_DESIGN_COMMIT,
+        "frozen_v10c_design_blob_sha": FROZEN_V10C_DESIGN_BLOB,
+        "design_freeze_approval_blob_sha": DESIGN_FREEZE_APPROVAL_BLOB,
+        "candidate_manifest_sha256": CANDIDATE_MANIFEST_SHA256,
+        "candidate_attempt_receipt_sha256": CANDIDATE_ATTEMPT_RECEIPT_SHA256,
+        "authorization_scope": AUTHORIZATION_SCOPE,
+        "authorization_consumed": True,
+        "network_requests": 0,
+        "semantic_payload_parsing": False,
+        "t0_authorized": False,
+        "historical_evaluation_authorized": False,
+        "private_sealed_access_authorized": False,
+    }
+
+
+def _build_blocked_receipt(
+    implementation_sha: str,
+    manifest: Mapping[str, Any],
+    *,
+    failure_class: str,
+    manifest_validation: str,
+    locked_payload_hash_closure: str,
+) -> dict[str, Any]:
+    if failure_class not in {"LOCKED_ARTIFACT_INTEGRITY_FAILURE", "IMPLEMENTATION_FAILURE"}:
+        raise ImplementationFailure("RECEIPT_FAILURE_CLASS_INVALID")
+    if manifest_validation not in {"PASS", "FAIL", "NOT_REACHED"} or locked_payload_hash_closure not in {"PASS", "FAIL", "NOT_REACHED"}:
+        raise ImplementationFailure("RECEIPT_FAILURE_STATE_INVALID")
+    receipt = build_safe_receipt(implementation_sha, manifest, authorization_consumed=True)
+    receipt.update(
+        {
+            "manifest_validation": manifest_validation,
+            "locked_payload_hash_closure": locked_payload_hash_closure,
+            "execution_result": "BLOCK",
+            "failure_class": failure_class,
+        }
+    )
+    return receipt
+
+
 def _write_exclusive(path: Path, body: bytes) -> None:
     try:
         if not path.parent.is_dir():
@@ -682,13 +742,46 @@ def phase_b_offline_adoption(
         repo_root=repo_root,
         candidate_root=candidate_root if repo_root is not None else None,
     )
-    if receipt_path is not None:
-        if repo_root is None:
-            raise GovernanceProvenanceFailure("RECEIPT_REPO_BINDING_REQUIRED")
-        validate_receipt_output_path(receipt_path, repo_root, candidate_root)
+    if repo_root is None or receipt_path is None:
+        raise GovernanceProvenanceFailure("RECEIPT_OUTPUT_BINDING_REQUIRED")
+    gate_path = validate_receipt_paths(receipt_path, repo_root, candidate_root)
     manifest = _validate_candidate_metadata(candidate_root, ticker_order)
-    validate_locked_payload_closure(candidate_root, manifest)
-    receipt = build_safe_receipt(implementation_sha, manifest, authorization_consumed=True)
-    if receipt_path is not None:
-        _write_exclusive(receipt_path, canonical_json_bytes(receipt))
+    gate_receipt = build_gate_receipt(implementation_sha)
+    _write_exclusive(gate_path, canonical_json_bytes(gate_receipt))
+    try:
+        validate_locked_payload_closure(candidate_root, manifest)
+    except LockedArtifactIntegrityFailure:
+        failure_receipt = _build_blocked_receipt(
+            implementation_sha,
+            manifest,
+            failure_class="LOCKED_ARTIFACT_INTEGRITY_FAILURE",
+            manifest_validation="PASS",
+            locked_payload_hash_closure="FAIL",
+        )
+        _write_exclusive(receipt_path, canonical_json_bytes(failure_receipt))
+        raise
+    except Exception as exc:
+        failure_receipt = _build_blocked_receipt(
+            implementation_sha,
+            manifest,
+            failure_class="IMPLEMENTATION_FAILURE",
+            manifest_validation="PASS",
+            locked_payload_hash_closure="NOT_REACHED",
+        )
+        _write_exclusive(receipt_path, canonical_json_bytes(failure_receipt))
+        raise ImplementationFailure("POST_GATE_IMPLEMENTATION_FAILURE") from exc
+    try:
+        receipt = build_safe_receipt(implementation_sha, manifest, authorization_consumed=True)
+        receipt_body = canonical_json_bytes(receipt)
+    except Exception as exc:
+        failure_receipt = _build_blocked_receipt(
+            implementation_sha,
+            manifest,
+            failure_class="IMPLEMENTATION_FAILURE",
+            manifest_validation="PASS",
+            locked_payload_hash_closure="PASS",
+        )
+        _write_exclusive(receipt_path, canonical_json_bytes(failure_receipt))
+        raise ImplementationFailure("POST_GATE_IMPLEMENTATION_FAILURE") from exc
+    _write_exclusive(receipt_path, receipt_body)
     return receipt

@@ -122,7 +122,7 @@ def test_valid_synthetic_closure_pass_and_300_success_not_required(synthetic_can
     assert manifest["successful_ticker_count"] + len(manifest["failed_tickers"]) == 300
     marker = tmp_path / "marker.json"
     _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
-    receipt = v10c.phase_b_offline_adoption(root, marker, "a" * 40, order, repo_root=synthetic_candidate["repo_root"])
+    receipt = v10c.phase_b_offline_adoption(root, marker, "a" * 40, order, repo_root=synthetic_candidate["repo_root"], receipt_path=tmp_path / "receipt.json")
     assert receipt["execution_result"] == "PASS"
     assert receipt["semantic_payload_parsing"] is False
 
@@ -158,6 +158,146 @@ def test_phase_b_authorization_precedes_payload_read(synthetic_candidate: dict[s
     assert not any(v10c.LOCKED_RAW_DIRECTORY in path for path in observed)
 
 
+def test_marker_alone_does_not_consume_authorization(synthetic_candidate: dict[str, object], tmp_path: Path) -> None:
+    marker = tmp_path / "marker.json"
+    _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
+    v10c.validate_authorization_marker(marker, "a" * 40)
+    assert not v10c.derive_gate_receipt_path(tmp_path / "receipt.json").exists()
+
+
+def test_gate_path_is_preflight_ready_and_absent(synthetic_candidate: dict[str, object], tmp_path: Path) -> None:
+    receipt_path = tmp_path / "receipt.json"
+    gate_path = v10c.validate_receipt_paths(receipt_path, synthetic_candidate["repo_root"], synthetic_candidate["root"])
+    assert gate_path == Path(str(receipt_path) + ".gate.json")
+    assert not receipt_path.exists()
+    assert not gate_path.exists()
+
+
+def test_gate_receipt_is_published_before_first_locked_raw_read(
+    synthetic_candidate: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "marker.json"
+    receipt_path = tmp_path / "receipt.json"
+    _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
+    gate_path = v10c.derive_gate_receipt_path(receipt_path)
+    original = Path.read_bytes
+    payload_observations: list[bool] = []
+
+    def recording(path: Path) -> bytes:
+        if v10c.LOCKED_RAW_DIRECTORY in str(path):
+            payload_observations.append(gate_path.is_file())
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", recording)
+    v10c.phase_b_offline_adoption(
+        synthetic_candidate["root"], marker, "a" * 40, synthetic_candidate["order"],
+        repo_root=synthetic_candidate["repo_root"], receipt_path=receipt_path,
+    )
+    assert payload_observations and all(payload_observations)
+
+
+def test_gate_publication_failure_reads_zero_locked_raw_bytes(
+    synthetic_candidate: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "marker.json"
+    receipt_path = tmp_path / "receipt.json"
+    _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
+    original_write = v10c._write_exclusive
+    payload_reads: list[str] = []
+    original_read = Path.read_bytes
+
+    def write_gate_failure(path: Path, body: bytes) -> None:
+        if path == v10c.derive_gate_receipt_path(receipt_path):
+            raise v10c.ImplementationFailure("synthetic gate write failure")
+        original_write(path, body)
+
+    def recording(path: Path) -> bytes:
+        if v10c.LOCKED_RAW_DIRECTORY in str(path):
+            payload_reads.append(str(path))
+        return original_read(path)
+
+    monkeypatch.setattr(v10c, "_write_exclusive", write_gate_failure)
+    monkeypatch.setattr(Path, "read_bytes", recording)
+    with pytest.raises(v10c.ImplementationFailure):
+        v10c.phase_b_offline_adoption(
+            synthetic_candidate["root"], marker, "a" * 40, synthetic_candidate["order"],
+            repo_root=synthetic_candidate["repo_root"], receipt_path=receipt_path,
+        )
+    assert payload_reads == []
+    assert not receipt_path.exists()
+    assert not v10c.derive_gate_receipt_path(receipt_path).exists()
+
+
+def test_payload_failure_leaves_gate_and_blocked_final_receipt(
+    synthetic_candidate: dict[str, object], tmp_path: Path
+) -> None:
+    marker = tmp_path / "marker.json"
+    receipt_path = tmp_path / "receipt.json"
+    _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
+    first = synthetic_candidate["root"] / synthetic_candidate["payloads"][0]["relative_path"]
+    first.write_bytes(b"tampered")
+    with pytest.raises(v10c.LockedArtifactIntegrityFailure):
+        v10c.phase_b_offline_adoption(
+            synthetic_candidate["root"], marker, "a" * 40, synthetic_candidate["order"],
+            repo_root=synthetic_candidate["repo_root"], receipt_path=receipt_path,
+        )
+    assert v10c.derive_gate_receipt_path(receipt_path).is_file()
+    final = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert final["authorization_consumed"] is True
+    assert final["execution_result"] == "BLOCK"
+    assert final["failure_class"] == "LOCKED_ARTIFACT_INTEGRITY_FAILURE"
+    assert final["manifest_validation"] == "PASS"
+    assert final["locked_payload_hash_closure"] == "FAIL"
+
+
+def test_unexpected_post_gate_failure_leaves_implementation_receipt(
+    synthetic_candidate: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "marker.json"
+    receipt_path = tmp_path / "receipt.json"
+    _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
+
+    def fail(*args: object, **kwargs: object) -> int:
+        raise RuntimeError("unexpected tooling failure")
+
+    monkeypatch.setattr(v10c, "validate_locked_payload_closure", fail)
+    with pytest.raises(v10c.ImplementationFailure):
+        v10c.phase_b_offline_adoption(
+            synthetic_candidate["root"], marker, "a" * 40, synthetic_candidate["order"],
+            repo_root=synthetic_candidate["repo_root"], receipt_path=receipt_path,
+        )
+    assert v10c.derive_gate_receipt_path(receipt_path).is_file()
+    final = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert final["authorization_consumed"] is True
+    assert final["execution_result"] == "BLOCK"
+    assert final["failure_class"] == "IMPLEMENTATION_FAILURE"
+    assert final["locked_payload_hash_closure"] == "NOT_REACHED"
+
+
+def test_final_receipt_publication_failure_preserves_gate(
+    synthetic_candidate: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "marker.json"
+    receipt_path = tmp_path / "receipt.json"
+    gate_path = v10c.derive_gate_receipt_path(receipt_path)
+    _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
+    original_write = v10c._write_exclusive
+
+    def fail_final(path: Path, body: bytes) -> None:
+        if path == receipt_path:
+            raise v10c.ImplementationFailure("synthetic final receipt failure")
+        original_write(path, body)
+
+    monkeypatch.setattr(v10c, "_write_exclusive", fail_final)
+    with pytest.raises(v10c.ImplementationFailure):
+        v10c.phase_b_offline_adoption(
+            synthetic_candidate["root"], marker, "a" * 40, synthetic_candidate["order"],
+            repo_root=synthetic_candidate["repo_root"], receipt_path=receipt_path,
+        )
+    assert gate_path.is_file()
+    assert not receipt_path.exists()
+
+
 def test_hash_only_closure_does_not_parse_payload_json(synthetic_candidate: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     marker = tmp_path / "marker.json"
     _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
@@ -168,7 +308,7 @@ def test_hash_only_closure_does_not_parse_payload_json(synthetic_candidate: dict
         return original_loads(value, *args, **kwargs)
 
     monkeypatch.setattr(v10c.json, "loads", guarded)
-    receipt = v10c.phase_b_offline_adoption(synthetic_candidate["root"], marker, "a" * 40, synthetic_candidate["order"], repo_root=synthetic_candidate["repo_root"])
+    receipt = v10c.phase_b_offline_adoption(synthetic_candidate["root"], marker, "a" * 40, synthetic_candidate["order"], repo_root=synthetic_candidate["repo_root"], receipt_path=tmp_path / "receipt.json")
     assert receipt["locked_payload_hash_closure"] == "PASS"
 
 
@@ -364,7 +504,55 @@ def test_external_receipt_path_succeeds_and_candidate_is_unchanged(
     assert receipt["execution_result"] == "PASS"
     assert before == after
     assert receipt_path.is_file()
+    assert v10c.derive_gate_receipt_path(receipt_path).is_file()
     assert not (repo_root / "receipt.json").exists()
+
+
+def test_receipts_are_deterministic_and_bounded(synthetic_candidate: dict[str, object], tmp_path: Path) -> None:
+    marker = tmp_path / "marker.json"
+    receipt_path = tmp_path / "receipt.json"
+    _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
+    manifest = v10c.validate_candidate_metadata(synthetic_candidate["root"], synthetic_candidate["order"])
+    gate = v10c.build_gate_receipt("a" * 40)
+    assert v10c.canonical_json_bytes(gate) == v10c.canonical_json_bytes(v10c.build_gate_receipt("a" * 40))
+    v10c.phase_b_offline_adoption(
+        synthetic_candidate["root"], marker, "a" * 40, synthetic_candidate["order"],
+        repo_root=synthetic_candidate["repo_root"], receipt_path=receipt_path,
+    )
+    final = json.loads(receipt_path.read_text(encoding="utf-8"))
+    for rendered in (json.dumps(gate), json.dumps(final)):
+        assert str(synthetic_candidate["root"]) not in rendered
+        assert "T000" not in rendered
+        assert "not-json" not in rendered
+        assert "human" not in rendered
+    assert manifest["successful_ticker_count"] == 283
+
+
+@pytest.mark.parametrize("existing_kind", ["gate", "final"])
+def test_existing_receipt_blocks_before_payload_read(
+    synthetic_candidate: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_kind: str
+) -> None:
+    marker = tmp_path / "marker.json"
+    receipt_path = tmp_path / "receipt.json"
+    _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
+    existing_path = v10c.derive_gate_receipt_path(receipt_path) if existing_kind == "gate" else receipt_path
+    existing_path.write_bytes(b"immutable")
+    payload_reads: list[str] = []
+    original = Path.read_bytes
+
+    def recording(path: Path) -> bytes:
+        if v10c.LOCKED_RAW_DIRECTORY in str(path):
+            payload_reads.append(str(path))
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", recording)
+    with pytest.raises(v10c.GovernanceProvenanceFailure):
+        v10c.phase_b_offline_adoption(
+            synthetic_candidate["root"], marker, "a" * 40, synthetic_candidate["order"],
+            repo_root=synthetic_candidate["repo_root"], receipt_path=receipt_path,
+        )
+    assert payload_reads == []
+    assert existing_path.read_bytes() == b"immutable"
 
 
 @pytest.mark.parametrize("location", ["candidate", "repo"])
