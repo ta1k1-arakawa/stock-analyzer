@@ -116,6 +116,22 @@ class PayloadSemanticFailure(V10BError):
     pass
 
 
+# These are the only parser-side exceptions that represent malformed payload
+# content for the reviewed V4 Yahoo-chart parser.  In particular, generic
+# RuntimeError/AssertionError/NameError exceptions remain implementation
+# failures and must not become failed tickers.
+PAYLOAD_CONTENT_EXCEPTIONS = (
+    UnicodeDecodeError,
+    json.JSONDecodeError,
+    ValueError,
+    KeyError,
+    IndexError,
+    TypeError,
+    AttributeError,
+    OverflowError,
+)
+
+
 @dataclass(frozen=True)
 class AttemptBinding:
     frozen_design_commit: str
@@ -315,15 +331,40 @@ def _payload_hash_list_sha256(payloads: Sequence[Mapping[str, Any]]) -> str:
     return sha256_bytes(canonical_json_bytes(list(payloads)))
 
 
-def _default_semantic_validator(body: bytes) -> None:
-    """Run the inherited V4 Yahoo parser only after raw bytes are locked."""
+def _resolve_inherited_parser() -> Callable[[Mapping[str, Any]], Any]:
+    """Resolve the reviewed parser before production transport begins."""
     try:
-        payload = json.loads(body.decode("utf-8"))
         from src.v4_meta_label_formal import parse_v4_yahoo_chart
-
-        parse_v4_yahoo_chart(payload)
     except Exception as exc:
-        raise PayloadSemanticFailure("PAYLOAD_SEMANTIC_FAILURE") from exc
+        raise GovernanceFailure("INHERITED_PARSER_UNAVAILABLE") from exc
+    if not callable(parse_v4_yahoo_chart):
+        raise GovernanceFailure("INHERITED_PARSER_UNCALLABLE")
+    return parse_v4_yahoo_chart
+
+
+def _semantic_validator_for_parser(
+    parser: Callable[[Mapping[str, Any]], Any],
+) -> Callable[[bytes], None]:
+    """Build a validator with a closed semantic/data-error boundary."""
+    if not callable(parser):
+        raise GovernanceFailure("INHERITED_PARSER_UNCALLABLE")
+
+    def validate(body: bytes) -> None:
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PayloadSemanticFailure("PAYLOAD_SEMANTIC_FAILURE") from exc
+        try:
+            parser(payload)
+        except PAYLOAD_CONTENT_EXCEPTIONS as exc:
+            raise PayloadSemanticFailure("PAYLOAD_SEMANTIC_FAILURE") from exc
+
+    return validate
+
+
+def _default_semantic_validator(body: bytes) -> None:
+    """Compatibility helper; production resolves the parser before transport."""
+    _semantic_validator_for_parser(_resolve_inherited_parser())(body)
 
 
 def _production_yahoo_transport(url: str, attempt: int) -> tuple[Any, bytes, bool]:
@@ -718,12 +759,13 @@ def validate_repository_preflight(repo_root: Path, implementation_sha: str) -> l
 
 def run_production(repo_root: Path, attempt_root: Path, implementation_sha: str) -> dict[str, Any]:
     ticker_order = validate_repository_preflight(repo_root, implementation_sha)
+    parser = _resolve_inherited_parser()
     binding = AttemptBinding(FROZEN_DESIGN_COMMIT, FROZEN_DESIGN_BLOB, FREEZE_APPROVAL_BLOB, implementation_sha)
     return acquire_cache(
         repo_root,
         attempt_root,
         ticker_order,
         transport=_production_yahoo_transport,
-        semantic_validator=_default_semantic_validator,
+        semantic_validator=_semantic_validator_for_parser(parser),
         binding=binding,
     )

@@ -142,3 +142,28 @@ def test_cli_maps_explicit_post_boundary_failure_to_implementation_token(monkeyp
     assert result == 3
     assert captured.out == ""
     assert captured.err.strip() == "V10B_ACQUISITION_IMPLEMENTATION_FAILURE"
+
+
+def test_cli_maps_unexpected_post_transport_parser_error_to_implementation_token(monkeypatch, capsys, tmp_path):
+    spec = importlib.util.spec_from_file_location("v10b_cli_unexpected_parser_under_test", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    def fail_after_transport(*args, **kwargs):
+        raise RuntimeError("unexpected parser implementation failure")
+
+    monkeypatch.setattr(cli, "run_production", fail_after_transport)
+    result = cli.main(
+        [
+            "--attempt-root",
+            str(tmp_path / "attempt"),
+            "--implementation-sha",
+            "0" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert result == 3
+    assert captured.out == ""
+    assert captured.err.strip() == "V10B_ACQUISITION_IMPLEMENTATION_FAILURE"
+    assert captured.err.strip() != "V10B_ACQUISITION_PREFLIGHT_FAILURE"

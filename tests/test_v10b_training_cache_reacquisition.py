@@ -331,6 +331,109 @@ def test_repository_preflight_failure_never_calls_acquisition(monkeypatch, tmp_p
     assert called is False
 
 
+def test_inherited_parser_readiness_failure_is_preflight_before_attempt_creation(monkeypatch, tmp_path):
+    transport_calls = 0
+
+    def fail_acquisition(*args, **kwargs):
+        nonlocal transport_calls
+        transport_calls += 1
+        raise AssertionError("acquisition must not begin")
+
+    monkeypatch.setattr(v10b, "validate_repository_preflight", lambda repo_root, implementation_sha: TICKERS)
+    monkeypatch.setattr(
+        v10b,
+        "_resolve_inherited_parser",
+        lambda: (_ for _ in ()).throw(v10b.GovernanceFailure("synthetic parser readiness failure")),
+    )
+    monkeypatch.setattr(v10b, "acquire_cache", fail_acquisition)
+
+    with pytest.raises(v10b.GovernanceFailure):
+        v10b.run_production(tmp_path / "repo", tmp_path / "attempt", "d" * 40)
+
+    assert transport_calls == 0
+    assert not (tmp_path / "attempt").exists()
+
+
+def test_default_validator_maps_malformed_utf8_after_lock_without_refetch(tmp_path):
+    calls: list[tuple[str, int]] = []
+
+    def transport(url: str, attempt: int):
+        ticker = url.split("/chart/", 1)[1].split(".T?", 1)[0]
+        calls.append((ticker, attempt))
+        if ticker == TICKERS[0]:
+            return 200, b"\xff", False
+        return 404, b"", False
+
+    manifest = _acquire(
+        tmp_path,
+        transport,
+        v10b._semantic_validator_for_parser(lambda payload: None),
+    )
+
+    assert calls[0] == (TICKERS[0], 1)
+    assert calls.count((TICKERS[0], 1)) == 1
+    assert manifest["failed_tickers"][0] == TICKERS[0]
+    assert (tmp_path / "attempt" / "locked_raw" / "0000.json").read_bytes() == b"\xff"
+
+
+def test_default_validator_maps_malformed_json_after_lock_without_refetch(tmp_path):
+    calls: list[tuple[str, int]] = []
+
+    def transport(url: str, attempt: int):
+        ticker = url.split("/chart/", 1)[1].split(".T?", 1)[0]
+        calls.append((ticker, attempt))
+        if ticker == TICKERS[0]:
+            return 200, b"{", False
+        return 404, b"", False
+
+    manifest = _acquire(
+        tmp_path,
+        transport,
+        v10b._semantic_validator_for_parser(lambda payload: None),
+    )
+
+    assert calls.count((TICKERS[0], 1)) == 1
+    assert manifest["failed_tickers"][0] == TICKERS[0]
+    assert (tmp_path / "attempt" / "locked_raw" / "0000.json").read_bytes() == b"{"
+
+
+def test_inherited_parser_value_error_is_payload_failure_without_refetch(tmp_path):
+    calls: list[tuple[str, int]] = []
+
+    def transport(url: str, attempt: int):
+        ticker = url.split("/chart/", 1)[1].split(".T?", 1)[0]
+        calls.append((ticker, attempt))
+        return 200, b"{}", False
+
+    def parser(payload):
+        if len(calls) == 1:
+            raise ValueError("malformed parser input")
+
+    manifest = _acquire(tmp_path, transport, v10b._semantic_validator_for_parser(parser))
+
+    assert calls.count((TICKERS[0], 1)) == 1
+    assert manifest["failed_tickers"][0] == TICKERS[0]
+
+
+@pytest.mark.parametrize("error", [RuntimeError("unexpected parser error"), AssertionError("unexpected parser assertion")])
+def test_unexpected_parser_errors_abort_without_failed_ticker_or_terminal_manifest(tmp_path, error):
+    calls: list[tuple[str, int]] = []
+
+    def transport(url: str, attempt: int):
+        ticker = url.split("/chart/", 1)[1].split(".T?", 1)[0]
+        calls.append((ticker, attempt))
+        return 200, b"{}", False
+
+    def parser(payload):
+        raise error
+
+    with pytest.raises(type(error), match="unexpected parser"):
+        _acquire(tmp_path, transport, v10b._semantic_validator_for_parser(parser))
+
+    assert calls == [(TICKERS[0], 1)]
+    assert not (tmp_path / "attempt" / v10b.MANIFEST_FILE).exists()
+
+
 def test_attempt_receipt_failure_is_preflight_with_zero_transport_calls(monkeypatch, tmp_path):
     calls = 0
     original = v10b._write_exclusive
