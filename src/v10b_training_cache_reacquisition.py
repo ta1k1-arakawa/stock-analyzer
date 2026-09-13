@@ -336,7 +336,7 @@ def _payload_hash_list_sha256(payloads: Sequence[Mapping[str, Any]]) -> str:
 def _resolve_inherited_parser() -> Callable[[Mapping[str, Any]], Any]:
     """Resolve the reviewed parser before production transport begins."""
     try:
-        from src.v4_meta_label_formal import parse_v4_yahoo_chart
+        from src.v10b_v4_yahoo_parser_shim import parse_v4_yahoo_chart
     except Exception as exc:
         raise GovernanceFailure("INHERITED_PARSER_UNAVAILABLE") from exc
     if not callable(parse_v4_yahoo_chart):
