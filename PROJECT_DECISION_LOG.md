@@ -2472,3 +2472,10 @@ transitions. This public log must not contain protected material.
 - Fresh V10C design-freeze approval was received for the exact reviewed design commit and blob with scope `DESIGN_FREEZE_ONLY`. The approval record is now durably recorded without raw human identity or authorization text.
 - The approval authorizes implementation phase only after approval-record GPT review. Offline adoption execution and the first locked raw-payload byte read require separate fresh point-of-use human authority; network access, Yahoo refetch, T0, evaluation, private/sealed access, model fitting, backtesting, and manifest promotion remain unauthorized.
 - V10C design is frozen, V10C provenance remains `NOT_ADOPTED`/`NOT_PROMOTED`, V10B remains terminal `BLOCK`, and future profitability remains unestablished. No network, raw-payload, T0, model, evaluation, private, or human-gate execution activity occurred.
+
+## 2026-09-13 — V10C offline provenance-adoption validator implementation
+
+- Recorded the GPT exact-SHA review of `14df47f1e5ea0448042a0b929150bb34f0702fd8` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`; the V10C design-freeze approval record is accepted with blob `4676eb87c10dfc47fc19be387bfcb2ca17ebc59d`.
+- Implementation-phase authority is recorded for the dedicated offline validator and synthetic tests. The implementation binds the frozen V10C design and approval provenance, validates the V10B predecessor and locked candidate metadata without raw payload parsing in Phase A, requires a fresh narrow authorization marker before Phase B, and performs only byte-count/SHA-256 closure checks in Phase B.
+- V10C adoption execution, raw locked-payload read authority, network access, T0, historical evaluation, model fitting, backtesting, private/sealed access, and manifest promotion remain unauthorized or not adopted. V10B remains terminal `BLOCK` and is not reinterpreted or recovered.
+- No real candidate root was inspected, no real raw payload was read, no network/cache/T0/model/evaluation/private activity occurred, and no human gate was consumed in this synthetic implementation task. Future profitability remains unestablished.
