@@ -267,3 +267,81 @@ def test_receipt_canonical_json_round_trips_without_extra_fields():
                                         trading_date_count=None, anchor_2020_10_01="INELIGIBLE",
                                         anchor_2020_10_02="INELIGIBLE")
     assert set(json.loads(runner.canonical_json_bytes(receipt))) == set(runner.RECEIPT_KEYS)
+
+
+def synthetic_repo_root(tmp_path):
+    (tmp_path / "V10A_RUNTIME_ENVIRONMENT_LOCK.json").write_bytes(b"synthetic-runtime-lock")
+    return tmp_path
+
+
+def test_generator_exception_is_the_only_unexpected_exception_converted_to_generator_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "verify_runtime_lock_bytes", lambda raw: None)
+    monkeypatch.setattr(runner, "_generate_fixed_jpx_schedule", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    output_root = tmp_path / "output"
+
+    receipt = runner.run_feasibility(synthetic_repo_root(tmp_path), output_root, IMPLEMENTATION_SHA)
+
+    assert receipt["failure_code"] == "CALENDAR_GENERATOR_FAILURE"
+    assert receipt["calendar_artifact_created"] is False
+    assert receipt["canonical_calendar_sha256"] is None
+    assert receipt["trading_date_count"] is None
+    assert (receipt["anchor_2020_10_01"], receipt["anchor_2020_10_02"]) == ("NOT_CHECKED", "NOT_CHECKED")
+    assert not (output_root / runner.CANONICAL_ARTIFACT_NAME).exists()
+    assert (output_root / runner.SAFE_RECEIPT_NAME).exists()
+
+
+def test_unexpected_schedule_validation_exception_propagates_without_receipt(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "verify_runtime_lock_bytes", lambda raw: None)
+    monkeypatch.setattr(runner, "_generate_fixed_jpx_schedule", valid_schedule)
+    monkeypatch.setattr(runner, "validate_schedule", lambda schedule: (_ for _ in ()).throw(RuntimeError("validation bug")))
+    output_root = tmp_path / "output"
+
+    with pytest.raises(RuntimeError, match="validation bug"):
+        runner.run_feasibility(synthetic_repo_root(tmp_path), output_root, IMPLEMENTATION_SHA)
+
+    assert not output_root.exists()
+
+
+def test_unexpected_artifact_build_exception_propagates_without_receipt(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "verify_runtime_lock_bytes", lambda raw: None)
+    monkeypatch.setattr(runner, "_generate_fixed_jpx_schedule", valid_schedule)
+    monkeypatch.setattr(runner, "build_canonical_artifact", lambda dates, sha: (_ for _ in ()).throw(RuntimeError("artifact bug")))
+    output_root = tmp_path / "output"
+
+    with pytest.raises(RuntimeError, match="artifact bug"):
+        runner.run_feasibility(synthetic_repo_root(tmp_path), output_root, IMPLEMENTATION_SHA)
+
+    assert not output_root.exists()
+
+
+def test_calendar_feasibility_errors_preserve_frozen_code_and_anchor_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "verify_runtime_lock_bytes", lambda raw: None)
+    monkeypatch.setattr(runner, "_generate_fixed_jpx_schedule", valid_schedule)
+    failure = runner.CalendarFeasibilityError("ANCHOR_2020_10_02_FAILURE", "INELIGIBLE", "INELIGIBLE")
+    monkeypatch.setattr(runner, "validate_schedule", lambda schedule: (_ for _ in ()).throw(failure))
+
+    receipt = runner.run_feasibility(synthetic_repo_root(tmp_path), tmp_path / "output", IMPLEMENTATION_SHA)
+
+    assert receipt["failure_code"] == "ANCHOR_2020_10_02_FAILURE"
+    assert (receipt["anchor_2020_10_01"], receipt["anchor_2020_10_02"]) == ("INELIGIBLE", "INELIGIBLE")
+
+
+@pytest.mark.parametrize("stage, failure", [
+    ("runtime", runner.CalendarFeasibilityError("RUNTIME_CALENDAR_PROVENANCE_MISMATCH")),
+    ("schedule", runner.CalendarFeasibilityError("INVALID_MARKET_CLOSE")),
+    ("artifact", runner.CalendarFeasibilityError("CANONICALIZATION_FAILURE")),
+])
+def test_domain_failure_codes_are_preserved_by_their_execution_stage(tmp_path, monkeypatch, stage, failure):
+    if stage == "runtime":
+        monkeypatch.setattr(runner, "verify_runtime_lock_bytes", lambda raw: (_ for _ in ()).throw(failure))
+    else:
+        monkeypatch.setattr(runner, "verify_runtime_lock_bytes", lambda raw: None)
+        monkeypatch.setattr(runner, "_generate_fixed_jpx_schedule", valid_schedule)
+        if stage == "schedule":
+            monkeypatch.setattr(runner, "validate_schedule", lambda schedule: (_ for _ in ()).throw(failure))
+        else:
+            monkeypatch.setattr(runner, "build_canonical_artifact", lambda dates, sha: (_ for _ in ()).throw(failure))
+
+    receipt = runner.run_feasibility(synthetic_repo_root(tmp_path), tmp_path / "output", IMPLEMENTATION_SHA)
+
+    assert receipt["failure_code"] == failure.code

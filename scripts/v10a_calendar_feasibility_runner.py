@@ -392,13 +392,8 @@ def run_feasibility(repo_root: Path, output_root: Path, generator_implementation
     _require_sha1(generator_implementation_git_sha)
     if output_root.exists():
         raise FileExistsError("exclusive output root already exists")
-    lock_bytes = (repo_root / "V10A_RUNTIME_ENVIRONMENT_LOCK.json").read_bytes()
-    try:
-        verify_runtime_lock_bytes(lock_bytes)
-        schedule = _generate_fixed_jpx_schedule()
-        result = validate_schedule(schedule)
-        artifact = build_canonical_artifact(result.trading_dates, generator_implementation_git_sha)
-    except CalendarFeasibilityError as exc:
+
+    def publish_pre_artifact_failure(exc: CalendarFeasibilityError) -> dict[str, Any]:
         output_root.mkdir(parents=True)
         receipt = build_safe_receipt(generator_implementation_git_sha, status="FAIL", failure_code=exc.code,
                                      calendar_artifact_created=False, canonical_calendar_sha256=None,
@@ -406,14 +401,27 @@ def run_feasibility(repo_root: Path, output_root: Path, generator_implementation
                                      anchor_2020_10_02=exc.anchor_2020_10_02)
         _write_new(output_root / SAFE_RECEIPT_NAME, canonical_json_bytes(receipt))
         return receipt
+
+    lock_bytes = (repo_root / "V10A_RUNTIME_ENVIRONMENT_LOCK.json").read_bytes()
+    try:
+        verify_runtime_lock_bytes(lock_bytes)
+    except CalendarFeasibilityError as exc:
+        return publish_pre_artifact_failure(exc)
+
+    try:
+        schedule = _generate_fixed_jpx_schedule()
     except Exception:
-        output_root.mkdir(parents=True)
-        receipt = build_safe_receipt(generator_implementation_git_sha, status="FAIL",
-                                     failure_code="CALENDAR_GENERATOR_FAILURE", calendar_artifact_created=False,
-                                     canonical_calendar_sha256=None, trading_date_count=None,
-                                     anchor_2020_10_01="NOT_CHECKED", anchor_2020_10_02="NOT_CHECKED")
-        _write_new(output_root / SAFE_RECEIPT_NAME, canonical_json_bytes(receipt))
-        return receipt
+        return publish_pre_artifact_failure(CalendarFeasibilityError("CALENDAR_GENERATOR_FAILURE"))
+
+    try:
+        result = validate_schedule(schedule)
+    except CalendarFeasibilityError as exc:
+        return publish_pre_artifact_failure(exc)
+
+    try:
+        artifact = build_canonical_artifact(result.trading_dates, generator_implementation_git_sha)
+    except CalendarFeasibilityError as exc:
+        return publish_pre_artifact_failure(exc)
 
     output_root.mkdir(parents=True)
     artifact_bytes = canonical_json_bytes(artifact)
