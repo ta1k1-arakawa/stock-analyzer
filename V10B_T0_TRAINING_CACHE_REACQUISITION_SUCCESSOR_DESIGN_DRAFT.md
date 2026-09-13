@@ -140,25 +140,88 @@ The complete successor sequence is:
 ```text
 1  DESIGN
 2  GPT exact-SHA design review
-3  acquisition implementation/reuse audit
-4  targeted synthetic tests
-5  GPT exact-SHA implementation review
-6  Phase A NO-NETWORK preflight
-7  fresh human authorization for V10B public acquisition
-8  Phase B bounded real Yahoo acquisition exactly once
-9  Phase C NO-NETWORK safe inspection
-10 GPT acquisition adjudication
-11 promote exact new training-cache provenance
-12 successor T0 input-binding implementation requiring that exact manifest
-13 GPT exact-SHA review of that successor implementation
-14 only then a fresh T0 Phase A may be considered
+3  DESIGN_REVIEW_PASS only if CRITICAL=0/HIGH=0/MEDIUM=0
+4  explicit human V10B design-freeze approval bound to that exact reviewed design commit
+5  durable V10B design-freeze approval record committed to Git
+6  GPT exact-SHA review of the freeze-approval record/provenance
+7  acquisition implementation/reuse audit
+8  targeted synthetic tests
+9  GPT exact-SHA implementation review
+10 Phase A NO-NETWORK preflight
+11 fresh point-of-use human authorization for V10B public acquisition
+12 Phase B bounded real Yahoo acquisition exactly once
+13 Phase C NO-NETWORK safe inspection
+14 GPT acquisition adjudication
+15 promote exact new training-cache provenance
+16 successor T0 input-binding implementation requiring that exact manifest
+17 GPT exact-SHA review of that successor implementation
+18 only then a fresh T0 Phase A may be considered
 ```
 
 No T0, evaluation, model fit, backtest, outcome read, or profitability
-calculation is permitted in steps 1--13. This design itself consumes no
+calculation is permitted in steps 1--17. This design itself consumes no
 human gate and grants no network authority.
 
-### Phase A: no-network preflight
+### Design review and human freeze approval
+
+V10B is a new successor study. GPT must first independently review the exact
+design commit and return `CRITICAL=0`, `HIGH=0`, and `MEDIUM=0`; only that
+result is `DESIGN_REVIEW_PASS`. A GPT PASS alone does not freeze the design
+and does not authorize implementation.
+
+After that PASS, an explicit human V10B design-freeze approval must bind all
+of the following safe values to the exact reviewed design:
+
+```text
+study_identity=V10B_T0_TRAINING_CACHE_REACQUISITION_SUCCESSOR
+exact_gpt_reviewed_design_commit=<exact GPT-reviewed PASS design SHA>
+exact_design_git_blob=<exact reviewed design blob SHA>
+approval_scope=DESIGN_FREEZE_ONLY
+implementation_phase_only=true
+network_acquisition_authorized=false
+T0_authorized=false
+historical_evaluation_authorized=false
+private_sealed_access_authorized=false
+```
+
+Vague approval of a latest design, branch, or task is not sufficient. The
+approval must be recorded as a durable `V10B_DESIGN_FREEZE_APPROVAL.json`
+artifact committed separately from the frozen design commit. This artifact
+is not created in this design task. Its required future schema is:
+
+```text
+schema_version=V10B_DESIGN_FREEZE_APPROVAL_V1
+study=V10B_T0_TRAINING_CACHE_REACQUISITION_SUCCESSOR
+artifact_role=DESIGN_FREEZE_APPROVAL
+frozen_design_git_commit=<same exact GPT-reviewed PASS design SHA>
+frozen_design_git_blob_sha=<same exact reviewed design blob SHA>
+design_document=V10B_T0_TRAINING_CACHE_REACQUISITION_SUCCESSOR_DESIGN_DRAFT.md
+final_independent_review_result=PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0
+final_independent_review_design_commit=<same exact design SHA>
+approval_status=APPROVED
+human_design_freeze_complete=true
+approval_scope=DESIGN_FREEZE_ONLY
+approval_artifact_authorizes_implementation_phase_only=true
+network_acquisition_authorized=false
+t0_authorized=false
+historical_evaluation_authorized=false
+private_sealed_access_authorized=false
+implementation_performed_by_this_artifact=false
+methodology_change_after_freeze_requires=NEW_STUDY_REQUIRED
+```
+
+The approval artifact's own Git commit is not the frozen design commit. GPT
+must independently exact-SHA review the approval artifact and its
+provenance. Only that review PASS permits the acquisition implementation/
+reuse audit and synthetic-test work. The design-freeze authority and the
+later real-network acquisition authority are distinct and cannot be reused
+for each other.
+
+Once frozen, any semantic change to provider, query, range, retry policy,
+universe, content locking, T0 methodology, or another frozen design element
+requires `NEW_STUDY_REQUIRED`.
+
+### Phase A: no-network acquisition preflight
 
 Before the fresh authorization and before any Yahoo request, a future
 reviewed implementation must verify, without reading research payload
@@ -378,10 +441,11 @@ V10A_T0_AUTHORIZED=false
 future_profitability_established=false
 ```
 
-Implementation reuse/audit, synthetic tests, and GPT exact-SHA review are
-required before any Phase A. A future fresh point-of-use human authority is
-required immediately before the single Phase-B public acquisition. No
-authorization from V9, V10, or V10A is reused.
+The design-freeze approval plus its GPT exact-SHA PASS are required before
+acquisition implementation/reuse audit and synthetic tests begin. A future
+fresh point-of-use human authority is required immediately before the single
+Phase-B public acquisition. No authorization from V9, V10, or V10A is
+reused, and design-freeze approval is not network authority.
 
 Training-cache reacquisition has zero profitability evidential capacity. No
 T0 outcome, strategy result, data-quality strategy failure, or profitability
@@ -392,17 +456,21 @@ conclusion is established by this design or by the metadata-only recovery.
 GPT exact-SHA review must verify that the fixed provider/query/range,
 universe identity/order, per-ticker retry boundary, first-complete-payload
 content lock, deterministic manifest, safe evidence surface, no-refetch
-stopping rule, and successor stage sequence are mechanically closed without
-changing V9/V10A methodology.
+stopping rule, successor stage sequence, exact design-freeze approval
+binding, and separation of design-freeze versus acquisition authority are
+mechanically closed without changing V9/V10A methodology.
 
-After design PASS, the next action is the separately reviewed acquisition
-implementation/reuse audit and synthetic test task. Until those steps and a
-fresh human gate are complete, no network request, cache creation, T0,
-historical evaluation, private/sealed read, or profitability operation may
-occur.
+After design PASS, the next action is explicit human design-freeze approval
+for the exact reviewed design, followed by its durable approval record and
+GPT exact-SHA provenance review. Only then may the separately reviewed
+acquisition implementation/reuse audit and synthetic tests begin. Until all
+of those steps and a fresh acquisition human gate are complete, no network
+request, cache creation, T0, historical evaluation, private/sealed read, or
+profitability operation may occur.
 
 ```text
 V10B_DESIGN_FROZEN=false
+V10B_HUMAN_DESIGN_FREEZE_APPROVED=false
 V10B_NETWORK_ACQUISITION_AUTHORIZED=false
 V10B_T0_AUTHORIZED=false
 V10B_HISTORICAL_EVALUATION_AUTHORIZED=false
