@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import importlib.util
 from pathlib import Path
 
 
@@ -92,3 +93,31 @@ def test_cli_governance_failure_is_bounded_and_does_not_emit_manifest(tmp_path):
     assert result.stdout == ""
     assert result.stderr.strip() == "V10B_ACQUISITION_PREFLIGHT_FAILURE"
     assert not (tmp_path / "attempt" / "cache_manifest.json").exists()
+
+
+def test_cli_maps_explicit_post_boundary_failure_to_implementation_token(monkeypatch, capsys, tmp_path):
+    spec = importlib.util.spec_from_file_location("v10b_cli_under_test", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    def fail_after_boundary(*args, **kwargs):
+        raise __import__("src.v10b_training_cache_reacquisition", fromlist=["PostBoundaryFailure"]).PostBoundaryFailure(
+            "synthetic post-boundary failure"
+        )
+
+    monkeypatch.setattr(cli, "run_production", fail_after_boundary)
+    result = cli.main(
+        [
+            "--repo-root",
+            str(tmp_path / "repo"),
+            "--attempt-root",
+            str(tmp_path / "attempt"),
+            "--implementation-sha",
+            "0" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert result == 3
+    assert captured.out == ""
+    assert captured.err.strip() == "V10B_ACQUISITION_IMPLEMENTATION_FAILURE"

@@ -104,6 +104,10 @@ class GovernanceFailure(V10BError):
     pass
 
 
+class PostBoundaryFailure(V10BError):
+    """Operational failure after at least one transport invocation."""
+
+
 class ManifestValidationError(V10BError):
     pass
 
@@ -118,6 +122,22 @@ class AttemptBinding:
     frozen_design_blob: str
     freeze_approval_blob: str
     implementation_sha: str
+
+
+@dataclass
+class _TransportBoundary:
+    crossed: bool = False
+
+    def invoke(
+        self,
+        transport: Callable[[str, int], tuple[Any, bytes, bool]],
+        url: str,
+        attempt: int,
+    ) -> tuple[Any, bytes, bool]:
+        # The boundary is crossed before calling transport so an exception
+        # raised by that invocation is still post-boundary for classification.
+        self.crossed = True
+        return transport(url, attempt)
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -236,7 +256,12 @@ def _assert_child_path(root: Path, relative_path: str) -> Path:
     return candidate
 
 
-def _write_exclusive(path: Path, body: bytes) -> None:
+def _write_exclusive(
+    path: Path,
+    body: bytes,
+    *,
+    failure_cls: type[V10BError] = GovernanceFailure,
+) -> None:
     path.parent.mkdir(exist_ok=True)
     try:
         with path.open("xb") as handle:
@@ -244,9 +269,20 @@ def _write_exclusive(path: Path, body: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
     except FileExistsError as exc:
-        raise GovernanceFailure("DURABLE_OVERWRITE_PROHIBITED") from exc
+        raise failure_cls("DURABLE_OVERWRITE_PROHIBITED") from exc
     except OSError as exc:
-        raise GovernanceFailure("DURABLE_WRITE_FAILED") from exc
+        raise failure_cls("DURABLE_WRITE_FAILED") from exc
+
+
+def _write_post_boundary(path: Path, body: bytes) -> None:
+    try:
+        _write_exclusive(path, body, failure_cls=PostBoundaryFailure)
+    except PostBoundaryFailure:
+        raise
+    except GovernanceFailure as exc:
+        # A lower-level helper must not be able to turn a post-transport
+        # durable failure back into a preflight classification.
+        raise PostBoundaryFailure("POST_BOUNDARY_DURABLE_WRITE_FAILURE") from exc
 
 
 def _write_attempt_receipt(attempt_root: Path, binding: AttemptBinding) -> None:
@@ -475,20 +511,24 @@ def _run_acquisition_loop(
 ) -> dict[str, Any]:
     order = _require_fixed_ticker_order(ticker_order)
     locked_raw = attempt_root / LOCKED_RAW_DIRECTORY
-    locked_raw.mkdir()
+    try:
+        locked_raw.mkdir()
+    except OSError as exc:
+        raise GovernanceFailure("LOCKED_RAW_DIRECTORY_CREATE_FAILED") from exc
+    boundary = _TransportBoundary()
     payloads: list[dict[str, Any]] = []
     audit: list[dict[str, Any]] = []
     failed: list[str] = []
     for ticker in order:
         for attempt in range(1, MAX_TRANSPORT_ATTEMPTS + 1):
             try:
-                status, body, redirect = transport(yahoo_url(ticker), attempt)
+                status, body, redirect = boundary.invoke(transport, yahoo_url(ticker), attempt)
             except Exception:
                 status, body, redirect = "TRANSPORT_EXCEPTION", b"", False
             if status == 200 and isinstance(body, bytes) and body and not redirect:
                 digest = sha256_bytes(body)
                 target = locked_raw / f"{ticker}.json"
-                _write_exclusive(target, body)
+                _write_post_boundary(target, body)
                 try:
                     accepted = semantic_validator(body)
                     if accepted is False:
@@ -539,8 +579,14 @@ def _run_acquisition_loop(
         "failed_tickers": failed,
         "payload_hash_list_sha256": _payload_hash_list_sha256(payloads),
     }
-    validate_manifest(manifest, attempt_root, order)
-    _write_exclusive(attempt_root / MANIFEST_FILE, canonical_json_bytes(manifest))
+    try:
+        validate_manifest(manifest, attempt_root, order)
+    except GovernanceFailure as exc:
+        raise PostBoundaryFailure("POST_BOUNDARY_CLOSURE_FAILURE") from exc
+    _write_post_boundary(
+        attempt_root / MANIFEST_FILE,
+        canonical_json_bytes(manifest),
+    )
     return manifest
 
 

@@ -296,6 +296,92 @@ def test_repository_preflight_failure_never_calls_acquisition(monkeypatch, tmp_p
     assert called is False
 
 
+def test_attempt_receipt_failure_is_preflight_with_zero_transport_calls(monkeypatch, tmp_path):
+    calls = 0
+    original = v10b._write_exclusive
+
+    def fail_receipt(path, body, *, failure_cls=v10b.GovernanceFailure):
+        if path.name == v10b.ATTEMPT_RECEIPT_FILE:
+            raise v10b.GovernanceFailure("synthetic receipt failure")
+        return original(path, body, failure_cls=failure_cls)
+
+    def transport(url: str, attempt: int):
+        nonlocal calls
+        calls += 1
+        return 200, b"unexpected", False
+
+    monkeypatch.setattr(v10b, "_write_exclusive", fail_receipt)
+    with pytest.raises(v10b.GovernanceFailure):
+        _acquire(tmp_path, transport)
+    assert calls == 0
+
+
+def test_raw_lock_failure_after_response_is_post_boundary_and_not_retried(monkeypatch, tmp_path):
+    calls: list[tuple[str, int]] = []
+    original = v10b._write_exclusive
+
+    def fail_raw(path, body, *, failure_cls=v10b.GovernanceFailure):
+        if path.name == "0000.json":
+            raise v10b.PostBoundaryFailure("synthetic raw lock failure")
+        return original(path, body, failure_cls=failure_cls)
+
+    def transport(url: str, attempt: int):
+        ticker = url.split("/chart/", 1)[1].split(".T?", 1)[0]
+        calls.append((ticker, attempt))
+        return 200, b"first-complete-body", False
+
+    monkeypatch.setattr(v10b, "_write_exclusive", fail_raw)
+    with pytest.raises(v10b.PostBoundaryFailure):
+        _acquire(tmp_path, transport)
+    assert calls == [("0000", 1)]
+
+
+def test_legacy_governance_write_error_after_response_is_reclassified(monkeypatch, tmp_path):
+    original = v10b._write_exclusive
+
+    def legacy_failure(path, body, *, failure_cls=v10b.GovernanceFailure):
+        if path.name == "0000.json":
+            raise v10b.GovernanceFailure("legacy helper failure")
+        return original(path, body, failure_cls=failure_cls)
+
+    monkeypatch.setattr(v10b, "_write_exclusive", legacy_failure)
+    with pytest.raises(v10b.PostBoundaryFailure):
+        _acquire(tmp_path)
+
+
+def test_manifest_write_failure_after_loop_is_post_boundary_without_second_acquisition(monkeypatch, tmp_path):
+    calls = 0
+    original = v10b._write_exclusive
+
+    def fail_manifest(path, body, *, failure_cls=v10b.GovernanceFailure):
+        if path.name == v10b.MANIFEST_FILE:
+            raise v10b.PostBoundaryFailure("synthetic manifest write failure")
+        return original(path, body, failure_cls=failure_cls)
+
+    def transport(url: str, attempt: int):
+        nonlocal calls
+        calls += 1
+        return 200, b"ok", False
+
+    monkeypatch.setattr(v10b, "_write_exclusive", fail_manifest)
+    with pytest.raises(v10b.PostBoundaryFailure):
+        _acquire(tmp_path, transport)
+    assert calls == 300
+
+
+def test_post_network_payload_closure_failure_is_not_preflight(monkeypatch, tmp_path):
+    original = v10b._safe_regular_file
+
+    def fail_payload_stat(path: Path):
+        if v10b.LOCKED_RAW_DIRECTORY in path.parts:
+            raise v10b.GovernanceFailure("synthetic payload stat failure")
+        return original(path)
+
+    monkeypatch.setattr(v10b, "_safe_regular_file", fail_payload_stat)
+    with pytest.raises(v10b.PostBoundaryFailure):
+        _acquire(tmp_path)
+
+
 def test_attempt_receipt_has_only_safe_governance_facts(tmp_path):
     _acquire(tmp_path)
     receipt = json.loads((tmp_path / "attempt" / v10b.ATTEMPT_RECEIPT_FILE).read_text())
