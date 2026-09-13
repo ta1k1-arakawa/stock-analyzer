@@ -59,14 +59,6 @@ function Assert-NewFile([string]$PathValue) {
     if ([IO.File]::Exists($PathValue) -or [IO.Directory]::Exists($PathValue)) {
         throw "CAPTURE_TARGET_EXISTS"
     }
-    try {
-        $existing = Get-Item -LiteralPath $PathValue -Force -ErrorAction Stop
-        if ($null -ne $existing) {
-            throw "CAPTURE_TARGET_EXISTS"
-        }
-    }
-    catch [System.Management.Automation.ItemNotFoundException] {
-    }
 }
 
 function Invoke-GitValue([string[]]$Arguments) {
