@@ -30,12 +30,19 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        phase_a = phase_a_preflight(RUNNER_REPO_ROOT, Path(args.candidate_root), args.implementation_sha)
+        phase_a = phase_a_preflight(
+            RUNNER_REPO_ROOT,
+            Path(args.candidate_root),
+            args.implementation_sha,
+            marker_path=Path(args.authorization_marker),
+            receipt_path=Path(args.receipt_path),
+        )
         receipt = phase_b_offline_adoption(
             phase_a["candidate_root"],
             Path(args.authorization_marker),
             args.implementation_sha,
             phase_a["ticker_order"],
+            repo_root=RUNNER_REPO_ROOT,
             receipt_path=Path(args.receipt_path),
         )
         sys.stdout.write(json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")

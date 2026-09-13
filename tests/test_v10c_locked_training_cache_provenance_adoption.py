@@ -83,6 +83,8 @@ def synthetic_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict
         "payload_hash_list_sha256": v10c.sha256_bytes(v10c.canonical_json_bytes(payloads)),
     }
     root = tmp_path / "candidate"
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
     locked_raw = root / v10c.LOCKED_RAW_DIRECTORY
     locked_raw.mkdir(parents=True)
     for item in payloads:
@@ -95,7 +97,7 @@ def synthetic_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict
     (root / v10c.ATTEMPT_RECEIPT_FILE).write_bytes(receipt_raw)
     monkeypatch.setattr(v10c, "CANDIDATE_MANIFEST_SHA256", v10c.sha256_bytes(manifest_raw))
     monkeypatch.setattr(v10c, "CANDIDATE_ATTEMPT_RECEIPT_SHA256", v10c.sha256_bytes(receipt_raw))
-    return {"root": root, "manifest": manifest, "order": TICKERS, "payloads": payloads, "accepted": accepted, "failed": failed}
+    return {"root": root, "repo_root": repo_root, "manifest": manifest, "order": TICKERS, "payloads": payloads, "accepted": accepted, "failed": failed}
 
 
 def _marker(path: Path, implementation_sha: str, manifest_sha: str) -> None:
@@ -120,7 +122,7 @@ def test_valid_synthetic_closure_pass_and_300_success_not_required(synthetic_can
     assert manifest["successful_ticker_count"] + len(manifest["failed_tickers"]) == 300
     marker = tmp_path / "marker.json"
     _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
-    receipt = v10c.phase_b_offline_adoption(root, marker, "a" * 40, order)
+    receipt = v10c.phase_b_offline_adoption(root, marker, "a" * 40, order, repo_root=synthetic_candidate["repo_root"])
     assert receipt["execution_result"] == "PASS"
     assert receipt["semantic_payload_parsing"] is False
 
@@ -152,7 +154,7 @@ def test_phase_b_authorization_precedes_payload_read(synthetic_candidate: dict[s
 
     monkeypatch.setattr(Path, "read_bytes", recording)
     with pytest.raises(v10c.GovernanceProvenanceFailure):
-        v10c.phase_b_offline_adoption(root, tmp_path / "missing-marker.json", "a" * 40, synthetic_candidate["order"])
+        v10c.phase_b_offline_adoption(root, tmp_path / "missing-marker.json", "a" * 40, synthetic_candidate["order"], repo_root=synthetic_candidate["repo_root"])
     assert not any(v10c.LOCKED_RAW_DIRECTORY in path for path in observed)
 
 
@@ -166,7 +168,7 @@ def test_hash_only_closure_does_not_parse_payload_json(synthetic_candidate: dict
         return original_loads(value, *args, **kwargs)
 
     monkeypatch.setattr(v10c.json, "loads", guarded)
-    receipt = v10c.phase_b_offline_adoption(synthetic_candidate["root"], marker, "a" * 40, synthetic_candidate["order"])
+    receipt = v10c.phase_b_offline_adoption(synthetic_candidate["root"], marker, "a" * 40, synthetic_candidate["order"], repo_root=synthetic_candidate["repo_root"])
     assert receipt["locked_payload_hash_closure"] == "PASS"
 
 
@@ -303,6 +305,104 @@ def test_marker_mismatch_is_governance_failure(synthetic_candidate: dict[str, ob
     _marker(marker, "b" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
     with pytest.raises(v10c.GovernanceProvenanceFailure):
         v10c.validate_authorization_marker(marker, "a" * 40)
+
+
+@pytest.mark.parametrize("location", ["candidate", "locked_raw", "repo"])
+def test_receipt_path_is_rejected_before_payload_read(
+    synthetic_candidate: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, location: str
+) -> None:
+    root = synthetic_candidate["root"]
+    repo_root = synthetic_candidate["repo_root"]
+    marker = tmp_path / "marker.json"
+    _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
+    if location == "candidate":
+        receipt_path = root / "receipt.json"
+    elif location == "locked_raw":
+        receipt_path = root / v10c.LOCKED_RAW_DIRECTORY / "receipt.json"
+    else:
+        receipt_path = repo_root / "receipt.json"
+    original = Path.read_bytes
+    payload_reads: list[str] = []
+
+    def recording(path: Path) -> bytes:
+        if v10c.LOCKED_RAW_DIRECTORY in str(path):
+            payload_reads.append(str(path))
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", recording)
+    with pytest.raises(v10c.GovernanceProvenanceFailure):
+        v10c.phase_b_offline_adoption(root, marker, "a" * 40, synthetic_candidate["order"], repo_root=repo_root, receipt_path=receipt_path)
+    assert payload_reads == []
+
+
+def test_existing_or_missing_parent_receipt_path_rejected_without_mkdir(
+    synthetic_candidate: dict[str, object], tmp_path: Path
+) -> None:
+    root = synthetic_candidate["root"]
+    repo_root = synthetic_candidate["repo_root"]
+    existing = tmp_path / "existing-receipt.json"
+    existing.write_bytes(b"old")
+    with pytest.raises(v10c.GovernanceProvenanceFailure):
+        v10c.validate_receipt_output_path(existing, repo_root, root)
+    missing_parent = tmp_path / "not-created" / "receipt.json"
+    with pytest.raises(v10c.GovernanceProvenanceFailure):
+        v10c.validate_receipt_output_path(missing_parent, repo_root, root)
+    assert not missing_parent.parent.exists()
+
+
+def test_external_receipt_path_succeeds_and_candidate_is_unchanged(
+    synthetic_candidate: dict[str, object], tmp_path: Path
+) -> None:
+    root = synthetic_candidate["root"]
+    repo_root = synthetic_candidate["repo_root"]
+    before = sorted((path.relative_to(root).as_posix(), path.read_bytes()) for path in root.rglob("*") if path.is_file())
+    marker = tmp_path / "marker.json"
+    _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
+    receipt_path = tmp_path / "receipt.json"
+    receipt = v10c.phase_b_offline_adoption(root, marker, "a" * 40, synthetic_candidate["order"], repo_root=repo_root, receipt_path=receipt_path)
+    after = sorted((path.relative_to(root).as_posix(), path.read_bytes()) for path in root.rglob("*") if path.is_file())
+    assert receipt["execution_result"] == "PASS"
+    assert before == after
+    assert receipt_path.is_file()
+    assert not (repo_root / "receipt.json").exists()
+
+
+@pytest.mark.parametrize("location", ["candidate", "repo"])
+def test_marker_path_is_rejected_before_payload_read(
+    synthetic_candidate: dict[str, object], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, location: str
+) -> None:
+    root = synthetic_candidate["root"]
+    repo_root = synthetic_candidate["repo_root"]
+    marker = (root if location == "candidate" else repo_root) / "marker.json"
+    _marker(marker, "a" * 40, v10c.CANDIDATE_MANIFEST_SHA256)
+    payload_reads: list[str] = []
+    original = Path.read_bytes
+
+    def recording(path: Path) -> bytes:
+        if v10c.LOCKED_RAW_DIRECTORY in str(path):
+            payload_reads.append(str(path))
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", recording)
+    with pytest.raises(v10c.GovernanceProvenanceFailure):
+        v10c.phase_b_offline_adoption(root, marker, "a" * 40, synthetic_candidate["order"], repo_root=repo_root)
+    assert payload_reads == []
+
+
+def test_receipt_reparse_ancestor_is_rejected_when_supported(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    candidate_root = tmp_path / "candidate"
+    repo_root.mkdir()
+    candidate_root.mkdir()
+    target = tmp_path / "external"
+    target.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("directory symlinks unavailable")
+    with pytest.raises(v10c.GovernanceProvenanceFailure):
+        v10c.validate_receipt_output_path(link / "receipt.json", repo_root, candidate_root)
 
 
 def test_safe_receipt_is_bounded_and_deterministic(synthetic_candidate: dict[str, object], tmp_path: Path) -> None:

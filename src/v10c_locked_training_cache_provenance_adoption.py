@@ -160,6 +160,46 @@ def _assert_existing_ancestor_chain(path: Path) -> None:
         current = parent
 
 
+def _assert_external_existing_file(path: Path, repo_root: Path, candidate_root: Path) -> Path:
+    """Validate an existing operational file without erasing reparse ancestry."""
+    if not path.is_absolute():
+        raise GovernanceProvenanceFailure("OPERATIONAL_PATH_NOT_ABSOLUTE")
+    _assert_existing_ancestor_chain(path)
+    _safe_regular_file(path, GovernanceProvenanceFailure)
+    resolved = path.resolve(strict=True)
+    for protected_root in (repo_root.resolve(strict=True), candidate_root.resolve(strict=True)):
+        if resolved == protected_root or resolved.is_relative_to(protected_root):
+            raise GovernanceProvenanceFailure("OPERATIONAL_PATH_NOT_EXTERNAL")
+    return path
+
+
+def validate_receipt_output_path(receipt_path: Path, repo_root: Path, candidate_root: Path) -> Path:
+    """Validate a new external receipt destination without filesystem mutation."""
+    if not receipt_path.is_absolute():
+        raise GovernanceProvenanceFailure("RECEIPT_PATH_NOT_ABSOLUTE")
+    parent = receipt_path.parent
+    _assert_existing_ancestor_chain(parent)
+    try:
+        parent_stat = parent.lstat()
+    except (FileNotFoundError, OSError) as exc:
+        raise GovernanceProvenanceFailure("RECEIPT_PARENT_UNAVAILABLE") from exc
+    if parent.is_symlink() or _is_reparse(parent_stat) or not parent.is_dir():
+        raise GovernanceProvenanceFailure("RECEIPT_PARENT_UNSAFE")
+    try:
+        receipt_path.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise GovernanceProvenanceFailure("RECEIPT_PATH_UNAVAILABLE") from exc
+    else:
+        raise GovernanceProvenanceFailure("RECEIPT_PATH_EXISTS")
+    resolved = receipt_path.resolve(strict=False)
+    for protected_root in (repo_root.resolve(strict=True), candidate_root.resolve(strict=True)):
+        if resolved == protected_root or resolved.is_relative_to(protected_root):
+            raise GovernanceProvenanceFailure("RECEIPT_PATH_NOT_EXTERNAL")
+    return receipt_path
+
+
 def assert_candidate_root_safe(candidate_root: Path, repo_root: Path) -> Path:
     if not candidate_root.is_absolute():
         raise GovernanceProvenanceFailure("CANDIDATE_ROOT_NOT_ABSOLUTE")
@@ -497,9 +537,21 @@ def _validate_candidate_metadata(candidate_root: Path, ticker_order: Sequence[st
     return validate_manifest_structure(manifest, ticker_order)
 
 
-def phase_a_preflight(repo_root: Path, candidate_root: Path, implementation_sha: str) -> dict[str, Any]:
+def phase_a_preflight(
+    repo_root: Path,
+    candidate_root: Path,
+    implementation_sha: str,
+    *,
+    marker_path: Path | None = None,
+    receipt_path: Path | None = None,
+) -> dict[str, Any]:
     ticker_order = validate_repository_preflight(repo_root, implementation_sha)
     safe_root = assert_candidate_root_safe(candidate_root, repo_root)
+    if marker_path is not None:
+        _assert_external_existing_file(marker_path, repo_root, safe_root)
+        validate_authorization_marker(marker_path, implementation_sha)
+    if receipt_path is not None:
+        validate_receipt_output_path(receipt_path, repo_root, safe_root)
     manifest = _validate_candidate_metadata(safe_root, ticker_order)
     return {"candidate_root": safe_root, "ticker_order": ticker_order, "manifest": manifest, "locked_raw_bytes_read": 0}
 
@@ -516,7 +568,15 @@ def validate_candidate_metadata(candidate_root: Path, ticker_order: Sequence[str
     return _validate_candidate_metadata(safe_root, ticker_order)
 
 
-def validate_authorization_marker(marker_path: Path, implementation_sha: str) -> dict[str, Any]:
+def validate_authorization_marker(
+    marker_path: Path,
+    implementation_sha: str,
+    *,
+    repo_root: Path | None = None,
+    candidate_root: Path | None = None,
+) -> dict[str, Any]:
+    if repo_root is not None and candidate_root is not None:
+        _assert_external_existing_file(marker_path, repo_root, candidate_root)
     raw, marker = _read_json_file(marker_path, GovernanceProvenanceFailure)
     del raw
     expected_fields = {
@@ -596,7 +656,8 @@ def build_safe_receipt(implementation_sha: str, manifest: Mapping[str, Any], *, 
 
 def _write_exclusive(path: Path, body: bytes) -> None:
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.parent.is_dir():
+            raise OSError("receipt parent is not an existing directory")
         with path.open("xb") as handle:
             handle.write(body)
             handle.flush()
@@ -611,10 +672,20 @@ def phase_b_offline_adoption(
     implementation_sha: str,
     ticker_order: Sequence[str],
     *,
+    repo_root: Path | None = None,
     receipt_path: Path | None = None,
 ) -> dict[str, Any]:
     """Read locked payloads only after marker validation, for hash closure."""
-    validate_authorization_marker(marker_path, implementation_sha)
+    validate_authorization_marker(
+        marker_path,
+        implementation_sha,
+        repo_root=repo_root,
+        candidate_root=candidate_root if repo_root is not None else None,
+    )
+    if receipt_path is not None:
+        if repo_root is None:
+            raise GovernanceProvenanceFailure("RECEIPT_REPO_BINDING_REQUIRED")
+        validate_receipt_output_path(receipt_path, repo_root, candidate_root)
     manifest = _validate_candidate_metadata(candidate_root, ticker_order)
     validate_locked_payload_closure(candidate_root, manifest)
     receipt = build_safe_receipt(implementation_sha, manifest, authorization_consumed=True)
