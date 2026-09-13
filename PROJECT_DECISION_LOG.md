@@ -2430,6 +2430,13 @@ transitions. This public log must not contain protected material.
 - The sole failure is `IMPLEMENTATION_FAILURE` / `WRAPPER_EVIDENCE_PROVENANCE_FAILURE` because direct Phase-B process-exit capture is missing. This is not a data-quality, strategy, or profitability failure, and the matching successful count does not recover the historical V9_009 cache.
 - A second V10B acquisition, network retry/refetch, durable-attempt deletion/reset/overwrite, T0, historical evaluation, private/sealed access, and future-profitability claim are prohibited or unauthorized. No such activity occurred in this bookkeeping task.
 
+## 2026-09-13 — V10C locked training-cache provenance adoption successor design
+
+- Created the new successor design `V10C_LOCKED_TRAINING_CACHE_PROVENANCE_ADOPTION_SUCCESSOR`. V10B remains terminal `BLOCK` and nonreusable because direct Phase-B process-exit-code evidence is missing; the V10B content is not retroactively promoted or reinterpreted.
+- The design freezes a no-network, no-reacquisition offline adoption contract binding the exact observed V10B manifest SHA-256, attempt-receipt SHA-256, terminal-adjudication Git blob, locked payload closure, fixed 283/17 partition, and fixed 300-ticker universe. The observed count is provenance only, never an acceptance threshold.
+- V10C preserves the inherited V4/V9 scientific methodology, prohibits payload/price/outcome/target/label/model inspection, and defines disjoint governance, locked-artifact-integrity, and implementation failure classes. No failure authorizes reacquisition.
+- V10C design is not frozen; implementation and adoption execution are unauthorized pending GPT exact-SHA design review, explicit human design-freeze approval, durable approval-record review, later synthetic implementation review, and the specified offline governance sequence. No network, refetch, raw scientific inspection, T0, evaluation, model fit, backtest, private/sealed access, or human-gate consumption occurred.
+
 ## 2026-09-13 — V10B terminal active-state coherence remediation
 
 - Recorded GPT exact-SHA review of `77ac5f907fbde1dae6d58b7f8e7fde3ae2e8db16` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`. The terminal adjudication artifact and terminal acquisition content are accepted as mechanically valid.
