@@ -148,8 +148,6 @@ def validate_schedule(schedule: pd.DataFrame) -> ScheduleResult:
     """Apply the frozen V10/V10A session and anchor semantics to a schedule."""
     if not isinstance(schedule, pd.DataFrame):
         raise CalendarFeasibilityError("CALENDAR_GENERATOR_FAILURE")
-    if "market_close" not in schedule.columns:
-        raise CalendarFeasibilityError("INVALID_MARKET_CLOSE")
 
     labels = [_canonical_label(label) for label in schedule.index]
     valid_labels = [label for label in labels if label is not None]
@@ -159,6 +157,9 @@ def validate_schedule(schedule: pd.DataFrame) -> ScheduleResult:
         raise CalendarFeasibilityError("MALFORMED_SESSION_LABEL")
     if any(label < COVERAGE_START or label > COVERAGE_END for label in valid_labels):
         raise CalendarFeasibilityError("OUT_OF_COVERAGE_SESSION_LABEL")
+
+    if "market_close" not in schedule.columns:
+        raise CalendarFeasibilityError("INVALID_MARKET_CLOSE")
 
     invalid_close = False
     for value in schedule["market_close"]:
@@ -221,7 +222,9 @@ def validate_canonical_artifact(artifact: Mapping[str, Any]) -> None:
     if _sha256(canonical_json_bytes(without_digest)) != digest:
         raise CalendarFeasibilityError("CANONICALIZATION_FAILURE")
     dates = artifact["trading_dates"]
-    if not isinstance(dates, list) or artifact["trading_date_count"] != len(dates) or dates != sorted(set(dates)):
+    count = artifact["trading_date_count"]
+    if (not isinstance(dates, list) or type(count) is not int or count <= 0
+            or count != len(dates) or dates != sorted(set(dates))):
         raise CalendarFeasibilityError("CANONICALIZATION_FAILURE")
     fixed = {
         "schema_version": CANONICAL_SCHEMA,
@@ -240,7 +243,17 @@ def validate_canonical_artifact(artifact: Mapping[str, Any]) -> None:
     }
     if any(artifact[key] != value for key, value in fixed.items()):
         raise CalendarFeasibilityError("CANONICALIZATION_FAILURE")
-    if any(not isinstance(date, str) or date < COVERAGE_START or date > COVERAGE_END for date in dates):
+    if (not isinstance(artifact["generator_implementation_git_sha"], str)
+            or not SHA1_RE.fullmatch(artifact["generator_implementation_git_sha"])):
+        raise CalendarFeasibilityError("CANONICALIZATION_FAILURE")
+    if any(
+        not isinstance(date, str)
+        or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)
+        or _canonical_label(date) != date
+        or date < COVERAGE_START
+        or date > COVERAGE_END
+        for date in dates
+    ):
         raise CalendarFeasibilityError("CANONICALIZATION_FAILURE")
 
 
@@ -303,19 +316,62 @@ def validate_safe_receipt(receipt: Mapping[str, Any]) -> None:
         raise ValueError("receipt fixed value mismatch")
     if receipt["status"] not in {"PASS", "FAIL"} or receipt["failure_code"] not in FAILURE_CODES:
         raise ValueError("receipt status mismatch")
+    if (not isinstance(receipt["generator_implementation_git_sha"], str)
+            or not SHA1_RE.fullmatch(receipt["generator_implementation_git_sha"])):
+        raise ValueError("receipt implementation SHA mismatch")
+    digest = receipt["canonical_calendar_sha256"]
+    count = receipt["trading_date_count"]
+    if digest is not None and (not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)):
+        raise ValueError("receipt calendar hash mismatch")
+    if count is not None and (type(count) is not int or count <= 0):
+        raise ValueError("receipt trading-date count mismatch")
     if receipt["status"] == "PASS":
         if (receipt["failure_code"] != "NONE" or not receipt["calendar_artifact_created"]
-                or not isinstance(receipt["canonical_calendar_sha256"], str)
-                or not isinstance(receipt["trading_date_count"], int)
+                or digest is None or count is None
                 or receipt["anchor_2020_10_01"] != "INELIGIBLE"
                 or receipt["anchor_2020_10_02"] != "ELIGIBLE"):
             raise ValueError("receipt pass semantics mismatch")
     elif receipt["failure_code"] == "NONE" or receipt["calendar_artifact_created"]:
         raise ValueError("receipt failure semantics mismatch")
+    elif receipt["failure_code"] == "DURABLE_ARTIFACT_WRITE_FAILURE":
+        if digest is None or count is None:
+            raise ValueError("receipt durable-write failure semantics mismatch")
+    elif digest is not None or count is not None:
+        raise ValueError("receipt pre-artifact failure semantics mismatch")
     if receipt["anchor_2020_10_01"] not in {"INELIGIBLE", "ELIGIBLE", "NOT_CHECKED"}:
         raise ValueError("invalid first anchor")
     if receipt["anchor_2020_10_02"] not in {"INELIGIBLE", "ELIGIBLE", "NOT_CHECKED"}:
         raise ValueError("invalid second anchor")
+    if (receipt["anchor_2020_10_01"] == "NOT_CHECKED"
+            and receipt["anchor_2020_10_02"] != "NOT_CHECKED"):
+        raise ValueError("anchor ordering mismatch")
+    if (receipt["anchor_2020_10_01"] == "ELIGIBLE"
+            and receipt["anchor_2020_10_02"] != "NOT_CHECKED"):
+        raise ValueError("anchor ordering mismatch")
+
+
+def validate_persisted_pass_artifacts(
+    artifact: Mapping[str, Any], receipt: Mapping[str, Any], expected_generator_implementation_git_sha: str,
+) -> None:
+    """Pure Phase-C-style validation of a persisted PASS artifact pair."""
+    if (not isinstance(expected_generator_implementation_git_sha, str)
+            or not SHA1_RE.fullmatch(expected_generator_implementation_git_sha)):
+        raise ValueError("expected implementation SHA mismatch")
+    validate_canonical_artifact(artifact)
+    validate_safe_receipt(receipt)
+    if receipt["status"] != "PASS" or receipt["failure_code"] != "NONE":
+        raise ValueError("persisted receipt is not PASS")
+    if artifact["canonical_calendar_sha256"] != receipt["canonical_calendar_sha256"]:
+        raise ValueError("artifact/receipt calendar hash mismatch")
+    if (artifact["trading_date_count"] != receipt["trading_date_count"]
+            or artifact["trading_date_count"] != len(artifact["trading_dates"])):
+        raise ValueError("artifact/receipt trading-date count mismatch")
+    if artifact["runtime_environment_lock_sha256"] != receipt["runtime_environment_lock_sha256"]:
+        raise ValueError("artifact/receipt runtime-lock mismatch")
+    if artifact["generator_implementation_git_sha"] != receipt["generator_implementation_git_sha"]:
+        raise ValueError("artifact/receipt implementation SHA mismatch")
+    if artifact["generator_implementation_git_sha"] != expected_generator_implementation_git_sha:
+        raise ValueError("unexpected implementation SHA")
 
 
 def _generate_fixed_jpx_schedule() -> pd.DataFrame:

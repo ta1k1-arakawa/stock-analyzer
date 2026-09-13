@@ -2,6 +2,7 @@ import hashlib
 import inspect
 import json
 import sys
+from copy import deepcopy
 
 import pandas as pd
 import pytest
@@ -66,6 +67,15 @@ def test_missing_or_invalid_market_close_fails(frame):
     assert_failure(frame, "INVALID_MARKET_CLOSE")
 
 
+@pytest.mark.parametrize("frame, code", [
+    (pd.DataFrame(index=["2020-10-02", "2020-10-02"]), "DUPLICATE_SESSION_LABEL"),
+    (pd.DataFrame(index=["not-a-date"]), "MALFORMED_SESSION_LABEL"),
+    (pd.DataFrame(index=["2026-02-01"]), "OUT_OF_COVERAGE_SESSION_LABEL"),
+])
+def test_missing_market_close_does_not_bypass_higher_precedence_label_failures(frame, code):
+    assert_failure(frame, code)
+
+
 def test_anchor_failures_are_ordered_after_session_checks():
     assert_failure(schedule(["2020-10-01"]), "ANCHOR_2020_10_01_FAILURE")
     assert_failure(schedule(["2020-10-03"]), "ANCHOR_2020_10_02_FAILURE")
@@ -108,6 +118,26 @@ def test_canonicalization_failure_for_unsorted_or_duplicate_dates():
         runner.build_canonical_artifact(("2020-10-02", "2019-12-30"), IMPLEMENTATION_SHA)
 
 
+def reseal_artifact(artifact):
+    without_digest = dict(artifact)
+    without_digest.pop("canonical_calendar_sha256")
+    artifact["canonical_calendar_sha256"] = hashlib.sha256(runner.canonical_json_bytes(without_digest)).hexdigest()
+
+
+@pytest.mark.parametrize("field, value", [
+    ("generator_implementation_git_sha", "A" * 40),
+    ("trading_dates", ["2020-1-02"]),
+    ("trading_date_count", True),
+    ("trading_date_count", 0),
+])
+def test_canonical_artifact_validator_rejects_frozen_contract_violations(field, value):
+    artifact = deepcopy(runner.build_canonical_artifact(("2019-12-30", "2020-10-02"), IMPLEMENTATION_SHA))
+    artifact[field] = value
+    reseal_artifact(artifact)
+    with pytest.raises(runner.CalendarFeasibilityError, match="CANONICALIZATION_FAILURE"):
+        runner.validate_canonical_artifact(artifact)
+
+
 def test_safe_receipt_exact_keys_and_fixed_non_authority_counters():
     receipt = runner.build_safe_receipt(IMPLEMENTATION_SHA, status="FAIL", failure_code="INVALID_MARKET_CLOSE",
                                         calendar_artifact_created=False, canonical_calendar_sha256=None,
@@ -129,6 +159,75 @@ def test_receipt_validator_rejects_extra_field_and_invalid_pass_semantics():
     receipt["extra"] = True
     with pytest.raises(ValueError, match="field set"):
         runner.validate_safe_receipt(receipt)
+
+
+@pytest.mark.parametrize("mutator", [
+    lambda receipt: receipt.__setitem__("canonical_calendar_sha256", "not-a-hash"),
+    lambda receipt: receipt.__setitem__("trading_date_count", 0),
+    lambda receipt: receipt.__setitem__("trading_date_count", True),
+])
+def test_pass_receipt_validator_rejects_malformed_hash_and_invalid_counts(mutator):
+    receipt = runner.build_safe_receipt(IMPLEMENTATION_SHA, status="PASS", failure_code="NONE",
+                                        calendar_artifact_created=True, canonical_calendar_sha256="a" * 64,
+                                        trading_date_count=2, anchor_2020_10_01="INELIGIBLE",
+                                        anchor_2020_10_02="ELIGIBLE")
+    mutator(receipt)
+    with pytest.raises(ValueError):
+        runner.validate_safe_receipt(receipt)
+
+
+@pytest.mark.parametrize("field, value", [
+    ("canonical_calendar_sha256", "a" * 64),
+    ("trading_date_count", 2),
+])
+def test_pre_artifact_failure_rejects_non_null_prepared_values(field, value):
+    receipt = runner.build_safe_receipt(IMPLEMENTATION_SHA, status="FAIL", failure_code="INVALID_MARKET_CLOSE",
+                                        calendar_artifact_created=False, canonical_calendar_sha256=None,
+                                        trading_date_count=None, anchor_2020_10_01="NOT_CHECKED",
+                                        anchor_2020_10_02="NOT_CHECKED")
+    receipt[field] = value
+    with pytest.raises(ValueError, match="pre-artifact"):
+        runner.validate_safe_receipt(receipt)
+
+
+@pytest.mark.parametrize("field", ["canonical_calendar_sha256", "trading_date_count"])
+def test_durable_write_failure_requires_prepared_hash_and_count(field):
+    receipt = runner.build_safe_receipt(IMPLEMENTATION_SHA, status="FAIL",
+                                        failure_code="DURABLE_ARTIFACT_WRITE_FAILURE",
+                                        calendar_artifact_created=False, canonical_calendar_sha256="a" * 64,
+                                        trading_date_count=2, anchor_2020_10_01="INELIGIBLE",
+                                        anchor_2020_10_02="ELIGIBLE")
+    receipt[field] = None
+    with pytest.raises(ValueError, match="durable-write"):
+        runner.validate_safe_receipt(receipt)
+
+
+def valid_artifact_and_receipt():
+    artifact = runner.build_canonical_artifact(("2019-12-30", "2020-10-02"), IMPLEMENTATION_SHA)
+    receipt = runner.build_safe_receipt(IMPLEMENTATION_SHA, status="PASS", failure_code="NONE",
+                                        calendar_artifact_created=True,
+                                        canonical_calendar_sha256=artifact["canonical_calendar_sha256"],
+                                        trading_date_count=artifact["trading_date_count"],
+                                        anchor_2020_10_01="INELIGIBLE", anchor_2020_10_02="ELIGIBLE")
+    return artifact, receipt
+
+
+def test_cross_artifact_pass_validator_accepts_exact_synthetic_pair():
+    artifact, receipt = valid_artifact_and_receipt()
+    runner.validate_persisted_pass_artifacts(artifact, receipt, IMPLEMENTATION_SHA)
+
+
+@pytest.mark.parametrize("target, field, value", [
+    ("receipt", "canonical_calendar_sha256", "b" * 64),
+    ("receipt", "trading_date_count", 3),
+    ("receipt", "generator_implementation_git_sha", "2" * 40),
+])
+def test_cross_artifact_pass_validator_rejects_independent_mismatches(target, field, value):
+    artifact, receipt = valid_artifact_and_receipt()
+    selected = artifact if target == "artifact" else receipt
+    selected[field] = value
+    with pytest.raises((ValueError, runner.CalendarFeasibilityError)):
+        runner.validate_persisted_pass_artifacts(artifact, receipt, IMPLEMENTATION_SHA)
 
 
 def test_failure_precedence_runtime_then_duplicate_then_malformed():
