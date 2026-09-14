@@ -311,25 +311,57 @@ network endpoint, cache fallback, requirements file, package resolver,
 alternate environment, or general `.venv` may be used.
 
 The durable state records the process-launch boundary, and stdout/stderr are
-captured only in the reserved attempt-root files. Once that state is published
-or the install process is crossed, the one-shot mutation authority is
-consumed. There is exactly one bounded install process. The process may not
-reinstall, upgrade, downgrade, or uninstall any predecessor package.
+captured only in the reserved attempt-root files. Once the durable mutation
+receipt/state establishing the attempt is published, or process launch is
+attempted/crossed, the one-shot mutation authority is consumed. There is
+exactly one bounded install process. The process may not reinstall, upgrade,
+downgrade, or uninstall any predecessor package. Every post-boundary outcome
+must proceed to the mandatory Phase-C safe result inspection in section 6.
 
 No automatic retry is allowed. A launch error, nonzero exit, partial install,
-or interrupted process is preserved. It never restores authority or permits
-rollback, reset, deletion, environment recreation, predecessor reinstall,
-alternate version, second resolution, or T0. Network is prohibited under all
-conditions.
+interrupted process, or unknown completion status is preserved and must not
+skip Phase C. It never restores authority or permits rollback, reset,
+deletion, environment recreation, predecessor reinstall, alternate version,
+second installation, second resolution, or T0. Network is prohibited under
+all conditions.
 
-## 6. Phase C — no-network validation
+## 6. Phase C — mandatory no-network safe result inspection
 
-Phase C runs only after the Phase B process has completed and uses the
-canonical interpreter. It never calls pip, an index, a wheel root, a market
-payload, training/evaluation payload, or T0 code.
+After the Phase-B mutation boundary, Phase C is mandatory regardless of
+process-launch success or failure, process exit code, interruption, partial
+installation, or known/unknown completion status. It is a no-network safe
+result inspection layer, not a retry path. It never calls pip, an index, a
+wheel root, a market payload, training/evaluation payload, or T0 code.
 
-The implementation must use `importlib.metadata`, normalized distribution
-names, and exact versions to require all of the following simultaneously:
+Phase C must inspect and publish privacy-safe evidence for every
+post-boundary outcome. Where available and safely observable without
+mutation, it records:
+
+1. the mutation receipt/state and durable state/evidence integrity;
+2. whether process launch was attempted and whether it started;
+3. the process exit code or `UNKNOWN`;
+4. stdout/stderr existence, sizes, and SHA-256 values;
+5. canonical interpreter identity;
+6. live package metadata and exact predecessor/delta/successor state; and
+7. `authority_consumed=true` and `retry_authorized=false`.
+
+Missing, unreadable, malformed, or unavailable post-boundary fields are safe
+inspection results, not permission to retry, overwrite, delete, repair, or
+launch another process. The inspection preserves the attempt and records the
+closed failure state without machine-local paths or protected content.
+
+### 6.1 Conditional full live validation
+
+The full successor package validation and the invented LightGBM/Ridge probes
+run only when Phase C can safely establish that the Phase-B mutation completed
+and all required interpreter, durable-state, and package-metadata
+prerequisites are available. They are not required merely to produce safe
+failure evidence after a launch error, interruption, partial installation,
+nonzero exit, or unknown completion status.
+
+When those prerequisites hold, the implementation must use
+`importlib.metadata`, normalized distribution names, and exact versions to
+require all of the following simultaneously:
 
 1. The live set is exactly the 27-entry successor lock: no missing, extra,
    duplicate-normalized, or version-drifted distribution.
@@ -358,10 +390,11 @@ and requires one finite prediction. These probes do not read any file or
 network source and are not research-model fitting or T0.
 
 Phase C publishes only deterministic privacy-safe evidence: fixed bindings,
-pass/fail status, closed failure class, package counts, normalized package
-identities/versions, interpreter version, bounded-probe booleans, and hashes
-of the reserved durable outputs. It must not emit machine-local paths, raw
-payloads, credentials, ticker identities, prices, or private information.
+inspection and validation status, closed failure class, package counts where
+observable, normalized package identities/versions where safely determined,
+interpreter version, bounded-probe booleans when run, and hashes of the
+reserved durable outputs. It must not emit machine-local paths, raw payloads,
+credentials, ticker identities, prices, or private information.
 
 ## 7. Closed failure discipline
 
@@ -370,8 +403,9 @@ The implementation must use these distinct non-scientific classes:
 | Condition | Class | Consequence |
 | --- | --- | --- |
 | Any failed Phase A predicate before the mutation boundary | `PRE_GATE_ENVIRONMENT_BLOCK` | No authority consumed; no installation or retry. |
-| Launch, installation, or interruption after the Phase B boundary | `CANONICAL_MUTATION_FAILURE` | Authority consumed; preserve state; no retry/rollback/reset. |
-| Phase C metadata or synthetic-readiness failure | `LIVE_ENVIRONMENT_VALIDATION_FAILURE` | Authority remains consumed; preserve state; no retry/rollback/reset. |
+| Any failed launch/install, nonzero exit, interruption, or unknown post-boundary Phase-B outcome | `CANONICAL_MUTATION_FAILURE` | Mandatory safe inspection; authority consumed; preserve state; no retry/rollback/reset. |
+| Completed mutation followed by exact package, interpreter, or synthetic-readiness validation failure | `LIVE_ENVIRONMENT_VALIDATION_FAILURE` | Authority remains consumed; preserve state; no retry/rollback/reset. |
+| Completed mutation followed by full Phase-C validation PASS | `PASS` | Readiness evidence only; GPT exact-SHA review still required. |
 
 None of these is a scientific T0 STOP/CONTINUE result. None authorizes
 alternate versions, re-resolution, predecessor reinstallation, environment
