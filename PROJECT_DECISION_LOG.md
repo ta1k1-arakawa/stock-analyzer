@@ -2578,3 +2578,10 @@ transitions. This public log must not contain protected material.
 - The sole finding was omission of the required exact approval-record field `evaluation_payload_read_authorized`; all other approval bindings and false authority values were accepted.
 - Added only `evaluation_payload_read_authorized=false` to the canonical record. The human `DESIGN_FREEZE_ONLY` scope and all package-resolution, network, mutation, payload, model, T0, and private/sealed prohibitions remain unchanged.
 - No package resolution, network request, environment mutation, payload read, model fit, T0 run, or human-gate consumption occurred.
+
+## 2026-09-14 — V10C canonical ML-environment successor resolution implementation
+
+- Recorded the GPT exact-SHA approval review of `588614f48987d5b10729dabd66b50f6aac40c83e` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`; the approval-record blob is `0df6ad1ae9000cafc09bab08c31195a51a346a07`.
+- The V10C canonical ML-environment successor design is now frozen, and implementation-phase authority is recorded. The successor implementation adds the exact direct pins `lightgbm==4.6.0` and `scikit-learn==1.9.0` to a separately bound direct specification while preserving the reviewed 20-package predecessor lock exactly.
+- Added synthetic-only successor contract and resolution runner coverage for exact provenance, wheel-only package closure, one bounded resolver invocation, sanitized `PIP_*` environment, null exit-code launch failure semantics, exact nonzero exit capture, and offline Phase-C candidate/evidence validation.
+- No package-index resolution, network request, wheel acquisition, installation, canonical environment mutation, payload read, model fit, T0 run, private/sealed access, or human-gate consumption occurred. Resolution, mutation, and T0 authorities remain false; transitive versions remain unresolved and future profitability remains unestablished.
