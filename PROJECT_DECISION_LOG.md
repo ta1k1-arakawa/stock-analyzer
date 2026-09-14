@@ -2619,3 +2619,10 @@ transitions. This public log must not contain protected material.
 - The live pip-freeze normalization and closed Phase-A failure-classification implementation itself was accepted; the sole finding was stale `PROJECT_STATE` status for the already-resolved fail-atomic publication MEDIUM-1.
 - Corrected the prior fail-atomic publication finding to `RESOLVED` and recorded the current Phase-A normalization state finding as `REMEDIATED_AWAITING_GPT_REVIEW`.
 - No code, methodology, package-selection, or authority change was made. No real resolution, network request, installation, environment mutation, model fit, T0 run, or payload read occurred; Phase-A attempt-1 authority remains unconsumed.
+
+## 2026-09-14 — V10C Phase-A state duplicate-key MEDIUM-1 remediation
+
+- Recorded the GPT exact-SHA review of `e53b8a0fafb3c16f2230780548aa106054f0bdd8` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`.
+- Protected code remained unchanged and acceptable; the prior stale publication-status remediation was substantively correct.
+- The sole new finding was duplicate conflicting `V10C_T0_ML_RESOLUTION_PHASE_A_NORMALIZATION_FINDING` keys in `PROJECT_STATE`. The canonical value is `RESOLVED_CODE_ACCEPTABLE`; the duplicate was removed and the prior bookkeeping state finding was marked `RESOLVED`.
+- No network, resolution, installation, environment mutation, model fit, T0 run, or payload access occurred. Phase-A attempt-1 human authority remains unconsumed.
