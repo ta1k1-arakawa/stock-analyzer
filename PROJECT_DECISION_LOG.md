@@ -2657,3 +2657,10 @@ transitions. This public log must not contain protected material.
 - HIGH-1 identified an offline readjudication self-blob production-path attribute error caused by hashing `file.read_bytes()` on a string instead of reading `Path(file)` bytes.
 - MEDIUM-1 identified that the reviewed readjudication SHA was only syntactically validated and was not bound to the current HEAD or to the reviewed runner, contract, and source-provenance blobs.
 - The remediation reads the current runner bytes correctly and requires current HEAD, origin, expected current head, expected reviewed SHA, reviewed objects, current objects, and working runner bytes to bind to the expected provenance blobs. No network, second resolution, installation, environment mutation, model fit, T0 run, payload read, or source-provenance modification occurred.
+
+## 2026-09-14 — V10C offline readjudication state MEDIUM-1 bookkeeping remediation
+
+- Recorded the GPT exact-SHA review of `740d4bee375682aa97a32ee603cbbc8c00dde458` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`.
+- Production provenance code was accepted; HIGH-1 and the prior production MEDIUM-1 were resolved by the reviewed implementation.
+- The sole finding was stale `V10C_T0_ML_RESOLUTION_INACTIVE_EXTRA_VALIDATOR_FINDING` state after the `5ab0c847c4482ebec228f53d59701f539161cef7` review. Corrected it to `RESOLVED` and recorded the bookkeeping remediation as awaiting review.
+- No code, tests, methodology, package, source-provenance, resolution, network, installation, environment mutation, model fit, T0, or payload activity occurred. Resolution authority remains consumed, retry authorization remains false, and future profitability remains unestablished.
