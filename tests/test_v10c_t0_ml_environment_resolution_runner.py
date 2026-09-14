@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -85,6 +86,25 @@ class _FakeProcess:
         return self.exit_code
 
 
+def _metadata_probe_payload(
+    packages: list[dict[str, str | None]], *, pip_version: str = "25.0.1"
+) -> bytes:
+    return json.dumps(
+        {
+            "interpreter_executable": "C:/canonical/.venv-real-execution/Scripts/python.exe",
+            "python_implementation": "CPython",
+            "python_version": "3.12.10",
+            "platform_system": "Windows",
+            "platform_machine": "AMD64",
+            "sysconfig_platform": "win-amd64",
+            "pip_version": pip_version,
+            "live_packages": packages,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
 def test_phase_a_is_metadata_only_and_passes_synthetic_observations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config(tmp_path)
     observations = _observations(config)
@@ -93,48 +113,123 @@ def test_phase_a_is_metadata_only_and_passes_synthetic_observations(tmp_path: Pa
     assert result["status"] == "PASS"
     assert result["network_requests"] == 0
     assert result["writes"] == 0
+    assert result["human_authority_consumed"] is False
     assert not config.durable_root.exists()
 
 
+def test_canonical_child_observation_returns_exact_predecessor_20(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    packages = [{"name": name, "version": version} for name, version in contract.PREDECESSOR_PACKAGE_SET]
+
+    def fake_run(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append(argv)
+        return SimpleNamespace(stdout=_metadata_probe_payload(packages))
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    result = runner._probe_environment(tmp_path / "python.exe")
+    assert result["live_packages"] == packages
+    assert result["pip_version"] == "25.0.1"
+    assert len(calls) == 1
+    assert calls[0][0] == str(tmp_path / "python.exe")
+    assert calls[0][1:3] == ["-c", runner._CANONICAL_METADATA_PROBE]
+
+
 @pytest.mark.parametrize(
-    ("raw", "expected"),
+    ("raw_name", "expected"),
     [
-        (b"pdfminer.six==20260107\n", [{"name": "pdfminer-six", "version": "20260107"}]),
-        (b"pandas_market_calendars==5.4.0\n", [{"name": "pandas-market-calendars", "version": "5.4.0"}]),
-        (b"foo-bar==1.0\n", [{"name": "foo-bar", "version": "1.0"}]),
+        ("pdfminer.six", "pdfminer-six"),
+        ("pandas_market_calendars", "pandas-market-calendars"),
     ],
 )
-def test_live_freeze_parser_uses_reviewed_distribution_normalization(raw: bytes, expected: list[dict[str, str]]) -> None:
-    assert runner._parse_live_freeze_packages(raw) == expected
-
-
-def test_live_freeze_hyphen_underscore_dot_names_normalize_identically() -> None:
-    assert runner._parse_live_freeze_packages(b"foo-bar==1.0\n") == runner._parse_live_freeze_packages(b"foo_bar==1.0\n")
-    assert runner._parse_live_freeze_packages(b"foo.bar==1.0\n") == runner._parse_live_freeze_packages(b"foo-bar==1.0\n")
+def test_installed_metadata_name_uses_reviewed_normalization(raw_name: str, expected: str) -> None:
+    assert runner._parse_installed_metadata_packages([{"name": raw_name, "version": "1.0"}]) == [
+        {"name": expected, "version": "1.0"}
+    ]
 
 
 @pytest.mark.parametrize(
-    "raw",
+    "packages",
     [
-        b"foo.bar==1.0\nfoo-bar==1.0\n",
-        b"not-a-freeze-line\n",
-        b"-e git+https://example.invalid/foo.git\n",
-        b"foo==file:///tmp/foo.whl\n",
+        [{"name": "foo.bar", "version": "1.0"}, {"name": "foo-bar", "version": "1.0"}],
+        [{"name": None, "version": "1.0"}],
+        [{"name": "foo", "version": ""}],
     ],
 )
-def test_live_freeze_parser_rejects_unparseable_or_direct_reference_lines(raw: bytes) -> None:
+def test_installed_metadata_malformed_identity_fails_closed(packages: list[dict[str, str | None]]) -> None:
     with pytest.raises(runner.RunnerValidationError, match="LIVE_PACKAGE_SET_UNPARSEABLE"):
-        runner._parse_live_freeze_packages(raw)
+        runner._parse_installed_metadata_packages(packages)
 
 
-def test_phase_a_accepts_pdfminer_dot_name_after_normalization(tmp_path: Path) -> None:
+def test_phase_a_exact_predecessor_metadata_passes(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    assert runner.run_phase_a(config, _observations(config))["status"] == "PASS"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda packages: packages[:-1],
+        lambda packages: packages + [{"name": "unrelated", "version": "1.0"}],
+        lambda packages: [{"name": item["name"], "version": "9.9.9"} if item["name"] == "cffi" else item for item in packages],
+    ],
+)
+def test_phase_a_installed_metadata_set_drift_is_predecessor_pin_drift(
+    tmp_path: Path, mutation: object
+) -> None:
     config = _config(tmp_path)
     observations = _observations(config)
-    raw = b"\n".join(
-        f"{name}=={version}".encode("utf-8") for name, version in contract.PREDECESSOR_PACKAGE_SET
-    ).replace(b"pdfminer-six==20260107", b"pdfminer.six==20260107")
-    observations["live_packages"] = runner._parse_live_freeze_packages(raw)
-    assert runner.run_phase_a(config, observations)["status"] == "PASS"
+    observations["live_packages"] = mutation(observations["live_packages"])  # type: ignore[operator]
+    assert runner.run_phase_a(config, observations)["failure_code"] == "PREDECESSOR_PIN_DRIFT"
+
+
+def test_probe_pip_version_is_installed_metadata_value(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    packages = [{"name": name, "version": version} for name, version in contract.PREDECESSOR_PACKAGE_SET]
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=_metadata_probe_payload(packages, pip_version="25.0.1")),
+    )
+    assert runner._probe_environment(tmp_path / "python.exe")["pip_version"] == "25.0.1"
+
+
+def test_phase_a_rejects_installed_metadata_pip_version_drift(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    observations = _observations(config)
+    observations["pip_version"] = "24.0.0"
+    assert runner.run_phase_a(config, observations)["failure_code"] == "CANONICAL_INTERPRETER_BINDING_FAILURE"
+
+
+@pytest.mark.parametrize("raw", [b"not-json", _metadata_probe_payload([]).replace(b"\"live_packages\":[]", b"\"live_packages\":null")])
+def test_malformed_child_json_or_probe_shape_is_invalid(raw: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=raw))
+    with pytest.raises(runner.RunnerValidationError, match="CANONICAL_INTERPRETER_PROBE_INVALID"):
+        runner._probe_environment(tmp_path / "python.exe")
+
+
+def test_production_probe_has_no_pip_freeze_path() -> None:
+    source = Path(runner.__file__).read_text(encoding="utf-8")
+    assert "pip freeze" not in source
+    assert "freeze --all" not in source
+    assert "importlib.metadata" in runner._CANONICAL_METADATA_PROBE
+    assert "lightgbm" not in runner._CANONICAL_METADATA_PROBE
+    assert "sklearn" not in runner._CANONICAL_METADATA_PROBE
+
+
+def test_direct_reference_presentation_is_irrelevant_to_production_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    packages = [{"name": name, "version": version} for name, version in contract.PREDECESSOR_PACKAGE_SET]
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append(argv)
+        return SimpleNamespace(stdout=_metadata_probe_payload(packages))
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    result = runner._probe_environment(tmp_path / "python.exe")
+    assert result["live_packages"] == packages
+    assert len(calls) == 1
+    assert "freeze" not in " ".join(calls[0])
 
 
 @pytest.mark.parametrize(

@@ -325,47 +325,32 @@ def _git_output(repo_root: Path, args: Sequence[str]) -> bytes:
     return subprocess.run(["git", "-C", str(repo_root), *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, shell=False).stdout
 
 
-def _probe_environment(interpreter: Path) -> dict[str, Any]:
-    probe = subprocess.run(
-        [str(interpreter), "-c", "import platform,sys,sysconfig; print('|'.join((sys.executable,platform.python_implementation(),platform.python_version(),platform.system(),platform.machine(),sysconfig.get_platform())))"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, shell=False,
-    ).stdout.decode("utf-8").strip().split("|")
-    pip_output = subprocess.run([str(interpreter), "-m", "pip", "--version"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, shell=False).stdout.decode("utf-8")
-    freeze = subprocess.run([str(interpreter), "-m", "pip", "freeze", "--all"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, shell=False).stdout
-    match = re.search(r"\bpip\s+([0-9][^\s]*)", pip_output)
-    packages = _parse_live_freeze_packages(freeze)
-    if len(probe) != 6 or match is None:
-        raise RunnerValidationError("CANONICAL_INTERPRETER_PROBE_INVALID")
-    return {
-        "interpreter_executable": probe[0], "python_implementation": probe[1],
-        "python_version": probe[2], "platform_system": probe[3],
-        "platform_machine": probe[4], "sysconfig_platform": probe[5],
-        "pip_version": match.group(1), "live_packages": sorted(packages, key=lambda item: item["name"]),
-    }
+_CANONICAL_METADATA_PROBE = (
+    "import importlib.metadata,json,platform,sys,sysconfig;"
+    "print(json.dumps({"
+    "'interpreter_executable':sys.executable,"
+    "'python_implementation':platform.python_implementation(),"
+    "'python_version':platform.python_version(),"
+    "'platform_system':platform.system(),"
+    "'platform_machine':platform.machine(),"
+    "'sysconfig_platform':sysconfig.get_platform(),"
+    "'pip_version':importlib.metadata.version('pip'),"
+    "'live_packages':[{'name':dist.metadata.get('Name'),'version':dist.version} "
+    "for dist in importlib.metadata.distributions()]"
+    "},sort_keys=True,separators=(',',':')))"
+)
 
 
-def _parse_live_freeze_packages(raw: bytes) -> list[dict[str, str]]:
-    """Parse pip-freeze bytes into the reviewed normalized package form."""
-
-    try:
-        text = raw.decode("utf-8")
-    except (AttributeError, UnicodeDecodeError) as error:
-        raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE") from error
+def _parse_installed_metadata_packages(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE")
     packages: list[dict[str, str]] = []
     normalized_names: set[str] = set()
-    for line in text.splitlines():
-        if not line:
-            continue
-        if line.count("==") != 1 or line.startswith("-"):
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"name", "version"}:
             raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE")
-        raw_name, version = line.split("==", 1)
-        if (
-            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", raw_name) is None
-            or not version
-            or any(character.isspace() for character in version)
-            or "@" in version
-            or "://" in version
-        ):
+        raw_name, version = item["name"], item["version"]
+        if not isinstance(raw_name, str) or not raw_name or not isinstance(version, str) or not version:
             raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE")
         try:
             normalized_name = normalize_distribution_name(raw_name)
@@ -376,6 +361,44 @@ def _parse_live_freeze_packages(raw: bytes) -> list[dict[str, str]]:
         normalized_names.add(normalized_name)
         packages.append({"name": normalized_name, "version": version})
     return sorted(packages, key=lambda package: package["name"])
+
+
+def _probe_environment(interpreter: Path) -> dict[str, Any]:
+    try:
+        raw = subprocess.run(
+            [str(interpreter), "-c", _CANONICAL_METADATA_PROBE],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, shell=False,
+        ).stdout
+        probe = json.loads(raw.decode("utf-8"))
+    except (OSError, subprocess.CalledProcessError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise RunnerValidationError("CANONICAL_INTERPRETER_PROBE_INVALID")
+    expected_keys = {
+        "interpreter_executable", "python_implementation", "python_version",
+        "platform_system", "platform_machine", "sysconfig_platform", "pip_version", "live_packages",
+    }
+    if not isinstance(probe, dict) or set(probe) != expected_keys:
+        raise RunnerValidationError("CANONICAL_INTERPRETER_PROBE_INVALID")
+    for key in expected_keys - {"live_packages"}:
+        if not isinstance(probe[key], str) or not probe[key]:
+            raise RunnerValidationError("CANONICAL_INTERPRETER_PROBE_INVALID")
+    if not isinstance(probe["live_packages"], list):
+        raise RunnerValidationError("CANONICAL_INTERPRETER_PROBE_INVALID")
+    try:
+        packages = _parse_installed_metadata_packages(probe["live_packages"])
+    except RunnerValidationError:
+        raise
+    except (TypeError, ValueError) as error:
+        raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE") from error
+    return {
+        "interpreter_executable": probe["interpreter_executable"],
+        "python_implementation": probe["python_implementation"],
+        "python_version": probe["python_version"],
+        "platform_system": probe["platform_system"],
+        "platform_machine": probe["platform_machine"],
+        "sysconfig_platform": probe["sysconfig_platform"],
+        "pip_version": probe["pip_version"],
+        "live_packages": packages,
+    }
 
 
 def _default_phase_a_observations(config: PhaseAConfig) -> dict[str, Any]:

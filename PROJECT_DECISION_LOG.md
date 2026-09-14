@@ -2626,3 +2626,11 @@ transitions. This public log must not contain protected material.
 - Protected code remained unchanged and acceptable; the prior stale publication-status remediation was substantively correct.
 - The sole new finding was duplicate conflicting `V10C_T0_ML_RESOLUTION_PHASE_A_NORMALIZATION_FINDING` keys in `PROJECT_STATE`. The canonical value is `RESOLVED_CODE_ACCEPTABLE`; the duplicate was removed and the prior bookkeeping state finding was marked `RESOLVED`.
 - No network, resolution, installation, environment mutation, model fit, T0 run, or payload access occurred. Phase-A attempt-1 human authority remains unconsumed.
+
+## 2026-09-14 — V10C Phase-A installed metadata observer remediation
+
+- Recorded the exact-SHA review of `d4afeb9c1a8f81bb88e10d03202a46f248e3d105` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`.
+- Phase-A attempt 2 failed pre-gate with `LIVE_PACKAGE_SET_UNPARSEABLE`; no authority was consumed and there were zero network requests, writes, package-resolution runs, installations, environment mutations, model fits, T0 runs, or payload reads.
+- The no-network diagnostic found 20 freeze lines: 15 exact pins and 5 direct-reference presentations. The direct-reference distributions were recorded by name only: `exchange-calendars`, `korean-lunar-calendar`, `pandas-market-calendars`, `pyluach`, and `toolz`; no local file URLs or paths were recorded.
+- Independent installed metadata observation found exactly 20 predecessor distributions with no missing, extra, duplicate, or version drift. The root cause was pip-freeze presentation, not package-set drift.
+- Production Phase-A observation now uses one canonical-interpreter `importlib.metadata` child probe, with reviewed distribution-name normalization and closed malformed metadata handling. No package-selection or methodology change was made; future profitability remains unestablished.
