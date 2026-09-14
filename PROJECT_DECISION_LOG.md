@@ -2557,3 +2557,10 @@ transitions. This public log must not contain protected material.
 - The sole finding was successor design provenance misbinding: the implementation had used the earlier V10C adoption-design commit/blob instead of the reviewed successor design commit `0e65b170caef9958c31b7efa6802aa0313571d57` and blob `52572c53934f9de1a182a7f580df91e52086de9c`.
 - Corrected the binding and added independent literal Git-provenance regression tests, including rejection of the old adoption-design blob. Implementation functionality otherwise remains unchanged; no methodology change was made.
 - No real candidate, training/evaluation payload, network, T0, model, historical evaluation, private/sealed, or human-gate activity occurred. T0 authority remains false and future profitability remains unestablished.
+
+## 2026-09-14 — V10C canonical ML-environment successor design
+
+- Recorded the reviewed V10C successor input-binding implementation `be9d3f1e7429df4f0e0a8626807b01c4040a9494` as exact-SHA `PASS` in the new environment-successor design chronology.
+- The first V10C T0 Phase-A attempt stopped before the protected boundary because the canonical protected interpreter lacked the reviewed T0 ML dependency closure. No training/evaluation payload bytes, model fits, T0 runs, network requests, or human-gate consumption occurred.
+- Defined a prospective canonical ML-environment successor retaining the reviewed 20-package lock exactly and adding only the pre-outcome direct pins `lightgbm==4.6.0` and `scikit-learn==1.9.0`. Transitive versions remain unresolved pending a reviewed Windows/AMD64 wheel-only resolution.
+- No package import for readiness, dependency resolution, installation, environment mutation, T0, network, cache/payload read, model, evaluation, private/sealed, or human-gate activity occurred in this design task. No profitability conclusion is made; the next action is exact-SHA GPT design review.
