@@ -191,10 +191,10 @@ def test_phase_c_accepts_first_synthetic_wheel_resolution(tmp_path: Path) -> Non
     result = runner.run_phase_c(config)
     assert result["status"] == "PASS"
     assert result["candidate_artifact_created"] is True
-    candidate = json.loads((config.durable_root / runner.CANDIDATE_NAME).read_text(encoding="utf-8"))
+    candidate = json.loads(runner.published_candidate_path(config.durable_root).read_text(encoding="utf-8"))
     assert candidate["resolved_package_count"] == 22
     assert candidate["lightgbm_version"] == "4.6.0"
-    evidence = json.loads((config.durable_root / runner.EVIDENCE_NAME).read_text(encoding="utf-8"))
+    evidence = json.loads(runner.published_evidence_path(config.durable_root).read_text(encoding="utf-8"))
     assert evidence["package_installations"] == 0
     assert evidence["t0_runs"] == 0
     assert evidence["payload_reads"] == 0
@@ -209,13 +209,23 @@ def test_phase_c_rejects_source_distribution_without_t0_or_network(tmp_path: Pat
     result = runner.run_phase_c(config)
     assert result["status"] == "FAIL"
     assert result["failure_code"] == "SOURCE_DISTRIBUTION_REQUIRED"
+    assert runner.published_evidence_path(config.durable_root).is_file()
+    assert {entry.name for entry in runner.published_artifact_directory(config.durable_root).iterdir()} == {runner.EVIDENCE_NAME}
+    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
+    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
 
 
-def _phase_c_with_populated_wheelhouse(tmp_path: Path, mutate: object) -> dict[str, object]:
+def _prepare_phase_c_attempt(tmp_path: Path, mutate: object | None = None) -> runner.PhaseAConfig:
     config = _config(tmp_path)
     runner.run_phase_b(config, execute_resolution=True, fresh_human_authority_confirmed=True, observations=_observations(config), popen_factory=lambda *args, **kwargs: _FakeProcess(0))
     _populate_wheelhouse(config.durable_root)
-    mutate(config.durable_root / runner.WHEELHOUSE_NAME)
+    if mutate is not None:
+        mutate(config.durable_root / runner.WHEELHOUSE_NAME)
+    return config
+
+
+def _phase_c_with_populated_wheelhouse(tmp_path: Path, mutate: object) -> dict[str, object]:
+    config = _prepare_phase_c_attempt(tmp_path, mutate)
     return runner.run_phase_c(config)
 
 
@@ -244,7 +254,7 @@ def test_candidate_rejects_unrelated_extra_package(tmp_path: Path) -> None:
     runner.run_phase_b(config, execute_resolution=True, fresh_human_authority_confirmed=True, observations=_observations(config), popen_factory=lambda *args, **kwargs: _FakeProcess(0))
     _populate_wheelhouse(config.durable_root)
     assert runner.run_phase_c(config)["status"] == "PASS"
-    candidate = json.loads((config.durable_root / runner.CANDIDATE_NAME).read_text(encoding="utf-8"))
+    candidate = json.loads(runner.published_candidate_path(config.durable_root).read_text(encoding="utf-8"))
     extra_wheelhouse = config.durable_root / "extra"
     extra_wheelhouse.mkdir()
     _write_wheel(extra_wheelhouse, "unrelated", "1.0.0")
@@ -358,6 +368,135 @@ def test_phase_c_failure_precedence_installation_precedes_alternate_environment(
     state_path.write_text(json.dumps(state), encoding="utf-8")
     result = runner.run_phase_c(config)
     assert result["failure_code"] == "UNAUTHORIZED_INSTALLATION"
+
+
+def test_phase_c_candidate_staging_failure_leaves_no_final_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _prepare_phase_c_attempt(tmp_path)
+    original_write = runner._write_bytes
+
+    def fail_candidate(path: Path, raw: bytes, *, exclusive: bool = False) -> None:
+        if path == runner.staging_artifact_directory(config.durable_root) / runner.CANDIDATE_NAME:
+            raise OSError("synthetic candidate staging failure")
+        original_write(path, raw, exclusive=exclusive)
+
+    monkeypatch.setattr(runner, "_write_bytes", fail_candidate)
+    with pytest.raises(runner.RunnerValidationError):
+        runner.run_phase_c(config)
+    assert not runner.published_artifact_directory(config.durable_root).exists()
+    assert runner.staging_artifact_directory(config.durable_root).is_dir()
+    assert not runner.published_candidate_path(config.durable_root).exists()
+
+
+def test_phase_c_evidence_staging_failure_leaves_candidate_staged_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _prepare_phase_c_attempt(tmp_path)
+    original_write = runner._write_bytes
+
+    def fail_evidence(path: Path, raw: bytes, *, exclusive: bool = False) -> None:
+        if path == runner.staging_artifact_directory(config.durable_root) / runner.EVIDENCE_NAME:
+            raise OSError("synthetic evidence staging failure")
+        original_write(path, raw, exclusive=exclusive)
+
+    monkeypatch.setattr(runner, "_write_bytes", fail_evidence)
+    with pytest.raises(runner.RunnerValidationError):
+        runner.run_phase_c(config)
+    assert not runner.published_artifact_directory(config.durable_root).exists()
+    assert runner.staging_artifact_directory(config.durable_root).is_dir()
+    assert (runner.staging_artifact_directory(config.durable_root) / runner.CANDIDATE_NAME).is_file()
+    assert not runner.published_candidate_path(config.durable_root).exists()
+
+
+def test_phase_c_rename_failure_preserves_staging_and_publishes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _prepare_phase_c_attempt(tmp_path)
+    original_rename = runner.os.rename
+
+    def fail_rename(source: str | bytes | Path, destination: str | bytes | Path) -> None:
+        if Path(source) == runner.staging_artifact_directory(config.durable_root):
+            raise OSError("synthetic rename failure")
+        original_rename(source, destination)
+
+    monkeypatch.setattr(runner.os, "rename", fail_rename)
+    with pytest.raises(runner.RunnerValidationError):
+        runner.run_phase_c(config)
+    assert not runner.published_artifact_directory(config.durable_root).exists()
+    assert runner.staging_artifact_directory(config.durable_root).is_dir()
+
+
+def test_phase_c_existing_final_directory_fails_without_overwrite(tmp_path: Path) -> None:
+    config = _prepare_phase_c_attempt(tmp_path)
+    final = runner.published_artifact_directory(config.durable_root)
+    final.mkdir()
+    sentinel = final / "sentinel"
+    sentinel.write_bytes(b"preserve")
+    with pytest.raises(runner.RunnerValidationError):
+        runner.run_phase_c(config)
+    assert sentinel.read_bytes() == b"preserve"
+
+
+def test_phase_c_existing_staging_directory_fails_without_resume(tmp_path: Path) -> None:
+    config = _prepare_phase_c_attempt(tmp_path)
+    staging = runner.staging_artifact_directory(config.durable_root)
+    staging.mkdir()
+    sentinel = staging / "sentinel"
+    sentinel.write_bytes(b"preserve")
+    with pytest.raises(runner.RunnerValidationError):
+        runner.run_phase_c(config)
+    assert sentinel.read_bytes() == b"preserve"
+
+
+@pytest.mark.parametrize("target_name", [runner.ARTIFACT_DIRECTORY_NAME, runner.ARTIFACT_STAGING_DIRECTORY_NAME])
+def test_phase_c_rejects_artifact_namespace_symlink(tmp_path: Path, target_name: str) -> None:
+    config = _prepare_phase_c_attempt(tmp_path)
+    target = config.durable_root / target_name
+    link_target = tmp_path / "link-target"
+    link_target.mkdir()
+    try:
+        target.symlink_to(link_target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    with pytest.raises(runner.RunnerValidationError):
+        runner.run_phase_c(config)
+    assert target.is_symlink()
+
+
+def test_phase_c_pass_final_file_set_is_exact(tmp_path: Path) -> None:
+    config = _prepare_phase_c_attempt(tmp_path)
+    assert runner.run_phase_c(config)["status"] == "PASS"
+    assert {entry.name for entry in runner.published_artifact_directory(config.durable_root).iterdir()} == {runner.CANDIDATE_NAME, runner.EVIDENCE_NAME}
+    assert not (config.durable_root / runner.CANDIDATE_NAME).exists()
+    assert not (config.durable_root / runner.EVIDENCE_NAME).exists()
+
+
+def test_phase_c_fail_final_file_set_is_evidence_only(tmp_path: Path) -> None:
+    config = _prepare_phase_c_attempt(tmp_path, lambda wheelhouse: (wheelhouse / "extra.tar.gz").write_bytes(b"source"))
+    assert runner.run_phase_c(config)["status"] == "FAIL"
+    assert {entry.name for entry in runner.published_artifact_directory(config.durable_root).iterdir()} == {runner.EVIDENCE_NAME}
+
+
+def test_phase_c_staged_byte_reread_mismatch_fails_before_publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _prepare_phase_c_attempt(tmp_path)
+    original_reread = runner._reread_staged_bytes
+
+    def mismatch(path: Path) -> bytes:
+        if path.name == runner.EVIDENCE_NAME:
+            return b"mismatch"
+        return original_reread(path)
+
+    monkeypatch.setattr(runner, "_reread_staged_bytes", mismatch)
+    with pytest.raises(runner.RunnerValidationError):
+        runner.run_phase_c(config)
+    assert not runner.published_artifact_directory(config.durable_root).exists()
+    assert runner.staging_artifact_directory(config.durable_root).is_dir()
+
+
+def test_phase_c_second_invocation_cannot_overwrite_published_bundle(tmp_path: Path) -> None:
+    config = _prepare_phase_c_attempt(tmp_path)
+    assert runner.run_phase_c(config)["status"] == "PASS"
+    candidate_before = runner.published_candidate_path(config.durable_root).read_bytes()
+    evidence_before = runner.published_evidence_path(config.durable_root).read_bytes()
+    with pytest.raises(runner.RunnerValidationError):
+        runner.run_phase_c(config)
+    assert runner.published_candidate_path(config.durable_root).read_bytes() == candidate_before
+    assert runner.published_evidence_path(config.durable_root).read_bytes() == evidence_before
 
 
 def test_runner_has_no_t0_or_ml_import_path() -> None:

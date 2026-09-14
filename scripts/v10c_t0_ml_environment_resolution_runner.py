@@ -63,6 +63,8 @@ STDOUT_NAME = "stdout.txt"
 STDERR_NAME = "stderr.txt"
 CANDIDATE_NAME = "V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json"
 EVIDENCE_NAME = "V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_WINDOWS_RESOLUTION_EVIDENCE.json"
+ARTIFACT_DIRECTORY_NAME = "resolution_artifacts"
+ARTIFACT_STAGING_DIRECTORY_NAME = "resolution_artifacts.staging"
 ATTEMPT_STATE_SCHEMA = "V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_ATTEMPT_STATE_V1"
 ATTEMPT_STATE_KEYS = frozenset(
     {
@@ -395,6 +397,89 @@ def _write_bytes(path: Path, raw: bytes, *, exclusive: bool = False) -> None:
         os.fsync(handle.fileno())
 
 
+def published_artifact_directory(root: Path) -> Path:
+    return Path(root) / ARTIFACT_DIRECTORY_NAME
+
+
+def staging_artifact_directory(root: Path) -> Path:
+    return Path(root) / ARTIFACT_STAGING_DIRECTORY_NAME
+
+
+def published_candidate_path(root: Path) -> Path:
+    return published_artifact_directory(root) / CANDIDATE_NAME
+
+
+def published_evidence_path(root: Path) -> Path:
+    return published_artifact_directory(root) / EVIDENCE_NAME
+
+
+def _publication_namespace_is_safe(root: Path) -> None:
+    final = published_artifact_directory(root)
+    staging = staging_artifact_directory(root)
+    if _unsafe_existing_ancestor(final) or _unsafe_existing_ancestor(staging):
+        raise RunnerValidationError("ARTIFACT_PUBLICATION_PATH_UNSAFE")
+    if any(
+        os.path.lexists(path)
+        for path in (
+            final,
+            staging,
+            Path(root) / CANDIDATE_NAME,
+            Path(root) / EVIDENCE_NAME,
+        )
+    ):
+        raise RunnerValidationError("ARTIFACT_PUBLICATION_COLLISION")
+
+
+def _reread_staged_bytes(path: Path) -> bytes:
+    return path.read_bytes()
+
+
+def _ensure_exact_artifact_file_set(directory: Path, expected_names: set[str]) -> None:
+    try:
+        entries = list(directory.iterdir())
+    except OSError as error:
+        raise RunnerValidationError("ARTIFACT_PUBLICATION_FAILURE") from error
+    if any(_is_reparse_or_symlink(entry) or not entry.is_file() for entry in entries):
+        raise RunnerValidationError("ARTIFACT_PUBLICATION_FAILURE")
+    if {entry.name for entry in entries} != expected_names:
+        raise RunnerValidationError("ARTIFACT_PUBLICATION_FILESET_MISMATCH")
+
+
+def _publish_artifact_bundle(
+    root: Path,
+    *,
+    candidate_bytes: bytes | None,
+    evidence_bytes: bytes,
+) -> None:
+    """Publish a complete Phase-C artifact namespace with one directory rename."""
+
+    _publication_namespace_is_safe(root)
+    final = published_artifact_directory(root)
+    staging = staging_artifact_directory(root)
+    artifacts = {}
+    if candidate_bytes is not None:
+        artifacts[CANDIDATE_NAME] = candidate_bytes
+    artifacts[EVIDENCE_NAME] = evidence_bytes
+    expected_names = set(artifacts)
+    try:
+        staging.mkdir()
+        if _is_reparse_or_symlink(staging):
+            raise RunnerValidationError("ARTIFACT_PUBLICATION_PATH_UNSAFE")
+        for name in (CANDIDATE_NAME, EVIDENCE_NAME):
+            raw = artifacts.get(name)
+            if raw is not None:
+                _write_bytes(staging / name, raw, exclusive=True)
+        _ensure_exact_artifact_file_set(staging, expected_names)
+        for name, raw in artifacts.items():
+            if _reread_staged_bytes(staging / name) != raw:
+                raise RunnerValidationError("STAGED_ARTIFACT_BYTES_MISMATCH")
+        os.rename(staging, final)
+    except RunnerValidationError:
+        raise
+    except OSError as error:
+        raise RunnerValidationError("ARTIFACT_PUBLICATION_FAILURE") from error
+
+
 def _write_state(root: Path, state: Mapping[str, Any]) -> None:
     temporary = root / f".{STATE_NAME}.tmp"
     _write_bytes(temporary, canonical_json_bytes(state))
@@ -538,6 +623,7 @@ def run_phase_c(config: PhaseAConfig, *, expected_candidate_sha256: str | None =
         _validate_attempt_state(config, state)
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, RunnerValidationError) as error:
         raise RunnerValidationError("RESOLUTION_REPORT_INVALID") from error
+    _publication_namespace_is_safe(root)
     started = state["process_started"]
     exit_code = state["process_exit_code"]
     invocations = state["package_resolution_process_invocations"]
@@ -567,10 +653,9 @@ def run_phase_c(config: PhaseAConfig, *, expected_candidate_sha256: str | None =
         evidence = _base_evidence(config, status="PASS", failure_code="NONE", process_started=True, process_exit_code=0, resolution_completed=True, candidate_created=True, candidate_sha=candidate_sha, package_count=candidate["resolved_package_count"], invocations=invocations, package_installations=package_installations, alternate_venv_created=alternate_venv_created)
         validate_lock_candidate(candidate, expected_reviewed_sha=config.expected_reviewed_runner_sha, expected_direct_blob=config.expected_direct_spec_git_blob_sha1, expected_direct_sha=config.expected_direct_spec_sha256)
         validate_evidence(evidence, expected_reviewed_sha=config.expected_reviewed_runner_sha, expected_direct_blob=config.expected_direct_spec_git_blob_sha1, expected_direct_sha=config.expected_direct_spec_sha256, expected_candidate_sha=candidate_sha)
-        _write_bytes(root / CANDIDATE_NAME, candidate_bytes, exclusive=True)
-        _write_bytes(root / EVIDENCE_NAME, canonical_json_bytes(evidence), exclusive=True)
+        _publish_artifact_bundle(root, candidate_bytes=candidate_bytes, evidence_bytes=canonical_json_bytes(evidence))
         return {"status": "PASS", "failure_code": "NONE", "candidate_artifact_created": True, "candidate_sha256": candidate_sha, "resolved_package_count": candidate["resolved_package_count"]}
     evidence = _base_evidence(config, status="FAIL", failure_code=failure_code, process_started=bool(started), process_exit_code=exit_code, resolution_completed=bool(state["resolution_completed"]), candidate_created=False, candidate_sha=None, package_count=None, invocations=invocations, package_installations=package_installations, alternate_venv_created=alternate_venv_created)
     validate_evidence(evidence, expected_reviewed_sha=config.expected_reviewed_runner_sha, expected_direct_blob=config.expected_direct_spec_git_blob_sha1, expected_direct_sha=config.expected_direct_spec_sha256)
-    _write_bytes(root / EVIDENCE_NAME, canonical_json_bytes(evidence), exclusive=True)
+    _publish_artifact_bundle(root, candidate_bytes=None, evidence_bytes=canonical_json_bytes(evidence))
     return {"status": "FAIL", "failure_code": failure_code, "candidate_artifact_created": False}
