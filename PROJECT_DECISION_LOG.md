@@ -2509,6 +2509,13 @@ transitions. This public log must not contain protected material.
 - Recorded GPT adoption adjudication as `PASS` and created `V10C_TRAINING_PROVENANCE_ADOPTION_RECORD.json` with the exact candidate, gate, execution, and wrapper evidence hashes. Its promotion status is `ADOPTED_V10C_PROVENANCE_ONLY`, while project state remains `V10C_TRAINING_INPUT_PROVENANCE=NOT_ADOPTED` and `V10C_MANIFEST_ADOPTION_SHA256=NOT_PROMOTED` pending exact-SHA review of this commit.
 - V10B remains terminal `BLOCK` and is not relabeled as recovered. T0, historical evaluation, private/sealed access, and future profitability remain unauthorized or unestablished. No candidate/raw-payload inspection, network, T0, model, evaluation, or private activity occurred in this bookkeeping task.
 
+## 2026-09-14 — V10C adoption-record latest-review provenance remediation
+
+- Recorded the GPT exact-SHA review of `71c663ef5e870380e4af261f52e6067fd32ce1f8` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`. The adoption-record content itself passed schema, provenance, and hash review; the sole finding was stale top-level durable latest-review provenance.
+- Preserved the prior wrapper review at `33c817c26770d9a66505e8f9332971cc2c65b732` as `PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_1`, including the safely deferred `STDOUT_STDERR_ABSENCE_PRECHECK_REDIRECTION_NOT_ATOMIC_SAFE_DEFERRED` low finding.
+- Adoption provenance remains `NOT_ADOPTED`/`NOT_PROMOTED` pending this remediation review. Attempt 2 PASS, adoption adjudication PASS, process/manifest/receipt/evidence facts, and all T0/evaluation/private authority boundaries remain unchanged.
+- No execution, candidate or raw-payload read, external durable-evidence read, network, T0, evaluation, model, private/sealed, or human-gate activity occurred in this bookkeeping remediation.
+
 ## 2026-09-13 — V10C Phase-B attempt-1 entrypoint and exit-capture remediation
 
 - Recorded the GPT exact-SHA implementation review of `79309ff30ab4ac71c57aec91234e17ed20917965` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`. The V10C validator implementation, including the receipt/gate path and audit-parity remediations, is now GPT-reviewed acceptable.
