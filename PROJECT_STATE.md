@@ -5,7 +5,7 @@ document_role=PROJECT_LEVEL_EXTERNAL_MEMORY
 as_of_base_sha=3791dfa421c54555acc066346c810ee4cf8c95b5
 
 current_study=V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR
-current_stage=V10C_T0_ML_CANONICAL_MUTATION_DESIGN_HIGH_1_HIGH_2_REMEDIATION_AWAITING_GPT_REVIEW
+current_stage=V10C_T0_ML_CANONICAL_MUTATION_DESIGN_HIGH_REMEDIATION_AWAITING_GPT_REVIEW
 authoritative_branch=v9-cross-sectional-close-auction-design
 last_gpt_reviewed_sha=eb5b9818e1fffd424a0307eb1e9e8903ee62cb7e
 last_gpt_review_result=BLOCK_CRITICAL_0_HIGH_2_MEDIUM_1_LOW_0
@@ -65,10 +65,18 @@ V10C_T0_ML_OFFLINE_READJUDICATION_RESOLVED_PACKAGE_COUNT=27
 V10C_T0_ML_RESOLUTION_PROMOTION=GPT_REVIEWED_PASS
 V10C_T0_ML_SUCCESSOR_LOCK_PROMOTED=true
 V10C_T0_ML_SUCCESSOR_LOCK_SHA256=f38dd4c7319465bb7e6ff429e8dff4a476d9966c744b19e50264dcc0b18e8300
-V10C_T0_ML_CANONICAL_MUTATION_DESIGN=DRAFT_AWAITING_GPT_REVIEW
+V10C_T0_ML_CANONICAL_MUTATION_DESIGN=IMPLEMENTED_AWAITING_GPT_REVIEW
 V10C_T0_ML_CANONICAL_MUTATION_DESIGN_HIGH_1=REMEDIATED_AWAITING_GPT_REVIEW
 V10C_T0_ML_CANONICAL_MUTATION_DESIGN_HIGH_2=REMEDIATED_AWAITING_GPT_REVIEW
 V10C_T0_ML_CANONICAL_MUTATION_DESIGN_MEDIUM_1=PHASE_C_NOT_MANDATORY_AFTER_ALL_POST_BOUNDARY_PHASE_B_FAILURES
+V10C_T0_ML_CANONICAL_MUTATION_DESIGN_PRIOR_HIGH_1_STATUS=RESOLVED
+V10C_T0_ML_CANONICAL_MUTATION_DESIGN_HIGH_STATUS=REMEDIATED_AWAITING_GPT_REVIEW
+V10C_T0_ML_CANONICAL_MUTATION_DESIGN_STALE_15_PACKAGE_GENERIC_CHECKER_REMOVED_AS_CURRENT_AUTHORITY=true
+V10C_T0_ML_CANONICAL_MUTATION_DESIGN_CURRENT_20_PACKAGE_V10A_AUTHORITY_BOUND=true
+V10C_T0_ML_CANONICAL_MUTATION_DESIGN_PHASE_A_READ_ONLY=true
+V10C_T0_ML_CANONICAL_MUTATION_DESIGN_PHASE_A_DURABLE_PROBE_NAMESPACE=PROHIBITED
+V10C_T0_ML_CANONICAL_MUTATION_DESIGN_PRE_GATE_MUTATION_READINESS_REQUIRED=true
+V10C_T0_ML_CANONICAL_MUTATION_DESIGN_GLOBAL_T0_READINESS=NO
 V10C_T0_ML_RESOLUTION_PHASE_A_ATTEMPT_3=PASS
 V10C_T0_ML_RESOLUTION_PHASE_A_ATTEMPT_3_NETWORK_REQUESTS=0
 V10C_T0_ML_RESOLUTION_PHASE_A_ATTEMPT_3_WRITES=0
@@ -2564,3 +2572,33 @@ V10B_IMPLEMENTATION_REVIEW_RESULT=BLOCK_CRITICAL_0_HIGH_2_MEDIUM_2_LOW_0
 
 V10B_IMPLEMENTATION_HIGH_2_FINDING=EXECUTED_SOURCE_TREE_NOT_BOUND_TO_VALIDATED_REPO_ROOT
 future_profitability_established=false
+
+## 2026-09-14 — V10C canonical-mutation design stale-predecessor authority remediation
+
+- Remediated the GPT HIGH finding that Phase-A readiness was bound to the
+  stale 15-package `scripts/check_real_execution_env.py` generic checker.
+  That checker and its historical 15-package freeze artifacts are no longer
+  treated as current V10C predecessor authority.
+- Bound Phase-A baseline readiness to the reviewed/promoted V10A chain:
+  `V10A_CANONICAL_ENVIRONMENT_PROMOTED=true`,
+  `V10A_ENVIRONMENT_FROZEN=true`,
+  `V10A_ENVIRONMENT_STATE=CANONICAL_FROZEN`, the exact V10A final-freeze
+  evidence and runtime-lock provenance, and the exact 20-package predecessor
+  lock `99395e7a5be752fb3ea92fd31be0334f38792261` /
+  `eb325ac5e3417e6407400b18c8d90ca734a32e852056926e5bcd2a635e43c444`.
+- Phase A now requires canonical-interpreter `importlib.metadata` observation
+  of the exact 20-package mapping with no missing, extra, duplicate, or
+  version drift and Python `3.12.10`; operation-specific readiness still
+  requires the exact reviewed 27-wheel source set, seven-package delta,
+  canonical no-network pip reachability, read-only attempt-root checks, and
+  exact implementation-reviewed durable publication semantics.
+- Phase A remains no-network and read-only: it creates or preserves no
+  durable probe namespace. Publication behavior is proven only by the future
+  implementation's targeted synthetic tests and GPT exact-SHA review.
+- The operation-specific pre-gate readiness result remains required to be
+  `YES`; `NO` or `UNKNOWN` is `PRE_GATE_ENVIRONMENT_BLOCK`. The global T0
+  readiness remains `NO`, mutation/T0 authority remains false, MEDIUM-1
+  remains open and out of scope, and future profitability remains
+  unestablished. No network, pip invocation, package import/readiness
+  execution, installation, environment mutation, model fit, T0, payload
+  read, private/sealed access, or human-gate consumption occurred.

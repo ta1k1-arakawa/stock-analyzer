@@ -76,7 +76,62 @@ threadpoolctl==3.6.0
 
 No package outside that seven-package set is installable under this design.
 
-### 2.1 Future execution-time implementation binding
+### 2.1 Current V10A canonical predecessor authority
+
+The Phase-A baseline authority is the reviewed and promoted V10A canonical
+chain, not the historical generic 15-package readiness closure. The exact
+bindings are:
+
+```text
+V10A_CANONICAL_ENVIRONMENT_PROMOTED=true
+V10A_ENVIRONMENT_FROZEN=true
+V10A_ENVIRONMENT_STATE=CANONICAL_FROZEN
+V10A_APPROVED_DESIGN_SHA=b14cc5510685210e928000af0815e188bc1aadc0
+V10A_FREEZE_RECORD_SHA=86ceda3dee531b08afa5db4df7af1298ca770fad
+V10A_FINAL_FREEZE_VERIFICATION_EVIDENCE_FILE=V10A_CANONICAL_ENVIRONMENT_FINAL_FREEZE_VERIFICATION_EVIDENCE.json
+V10A_FINAL_FREEZE_VERIFICATION_EVIDENCE_GIT_BLOB_SHA1=d880b84fa00233e58653739fd510385fdf94de4e
+V10A_FINAL_FREEZE_VERIFICATION_EVIDENCE_SHA256=658e264a70ab15ba402e7bf56d5e4b8abe5d81f2f7bb22f28bc797b7b8062b01
+V10A_RUNTIME_ENVIRONMENT_LOCK_FILE=V10A_RUNTIME_ENVIRONMENT_LOCK.json
+V10A_RUNTIME_ENVIRONMENT_LOCK_GIT_BLOB_SHA1=9dfe03cf807b3580d432146839e8eb013bfa3c63
+V10A_RUNTIME_ENVIRONMENT_LOCK_SHA256=d7f54bc69029ba9b25a9920e867fe6487745af6ef985898bad91bd951003fc3a
+V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE_FILE=V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE.json
+V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE_GIT_BLOB_SHA1=e07040f75a92ef0669215f4a7e2e98b71ea29d36
+V10A_PREDECESSOR_LOCK_FILE=requirements-real-execution.lock.txt
+V10A_PREDECESSOR_LOCK_GIT_BLOB_SHA1=99395e7a5be752fb3ea92fd31be0334f38792261
+V10A_PREDECESSOR_LOCK_SHA256=eb325ac5e3417e6407400b18c8d90ca734a32e852056926e5bcd2a635e43c444
+V10A_PREDECESSOR_PACKAGE_COUNT=20
+```
+
+The exact 20-entry predecessor mapping bound by that lock is:
+
+```text
+cffi==2.1.1
+charset-normalizer==3.5.1
+cryptography==50.0.1
+exchange-calendars==4.13.2
+korean-lunar-calendar==0.4.0
+numpy==2.5.2
+pandas==3.0.5
+pandas-market-calendars==5.4.0
+pdfminer-six==20260107
+pdfplumber==0.11.10
+pillow==12.3.0
+pip==25.0.1
+pycparser==3.0
+pyluach==2.3.0
+pypdfium2==5.13.0
+python-dateutil==2.9.0.post0
+six==1.17.0
+toolz==1.1.0
+tzdata==2026.3
+xlrd==2.0.2
+```
+
+The historical generic 15-package checker/lock and its historical freeze
+artifacts are not current V10C predecessor authority and must not be treated
+as a required Phase-A PASS source.
+
+### 2.2 Future execution-time implementation binding
 
 The reviewed promotion commit is immutable provenance only. It is not an
 execution-time repository-head target and it must never be used to reset the
@@ -170,37 +225,52 @@ selection.
 
 Before requesting or accepting fresh mutation authority, Phase A must
 mechanically establish readiness for every software and durable mechanism
-reachable after the mutation gate. It reuses the existing reviewed canonical
-environment readiness machinery wherever applicable; it does not redefine
-the existing interpreter, environment-lock/fingerprint, parser-probe, or
-filesystem-readiness semantics.
+reachable after the mutation gate. The historical
+`scripts/check_real_execution_env.py` generic readiness checker is bound to
+the stale 15-package closure and is not the current V10C predecessor
+authority; Phase A must not require that checker itself to PASS as the
+20-package baseline. Phase A instead binds the reviewed/promoted V10A chain
+and the exact 20-package predecessor lock in section 2.1, while preserving
+the relevant interpreter, environment-lock/fingerprint, and filesystem
+readiness semantics in the operation-specific checks below.
 
 The required closure is all of the following:
 
-1. The existing reviewed canonical-environment readiness checker is run using
-   the canonical interpreter and must pass every applicable pre-mutation
-   interpreter, baseline predecessor-lock/fingerprint, and filesystem/durable
-   readiness predicate. Its established semantics are reused rather than
-   duplicated.
-2. The future reviewed mutation implementation's canonical subprocess builder
+1. The V10A promotion/freeze chain in section 2.1 is bound exactly,
+   including the approved V10A design, freeze record, final-freeze
+   verification evidence, runtime lock, runtime-lock execution evidence, and
+   their recorded Git/SHA-256 provenance. The historical generic 15-package
+   freeze/checker artifacts are not substituted for any of these bindings.
+2. The canonical interpreter resolves uniquely to
+   `.venv-real-execution\Scripts\python.exe`, is not the general `.venv`,
+   reports exactly Python `3.12.10`, and uses `importlib.metadata` to observe
+   exactly the 20 normalized predecessor `name==version` entries from
+   section 2.1. The observer must reject any missing, extra,
+   duplicate-normalized, or version-drifted distribution.
+3. The future reviewed mutation implementation's canonical subprocess builder
    is statically bound to the resolved canonical interpreter and exactly
    `-m pip install --no-deps --no-index`. A no-network canonical
    `python -m pip --version` probe confirms that the `pip` invocation
    machinery itself is reachable before the gate; it must not install,
    download, resolve, or contact an index.
-3. The reviewed mutation implementation's durable publication protocol is
-   mechanically validated pre-gate: the planned attempt root is fresh and
-   non-reparse, all reserved output names are exclusive/no-overwrite, and the
-   state/stdout/stderr/evidence protocol is bound to one parent volume and
-   atomic publication semantics. A deterministic privacy-safe pre-gate probe
-   may use only a distinct fresh probe namespace under that same protected
-   audit root; it must never overlap the real attempt root and is preserved
-   rather than deleted. Any uncertain stat, permission, volume, reparse, or
-   exclusivity result fails closed.
-4. The exact future reviewed implementation SHA, its protected source blobs,
-   the promotion provenance, the seven-wheel selection rule, canonical
-   interpreter, and the durable protocol are all bound in the Phase-A safe
-   evidence.
+4. The reviewed 27-wheel source set is bound exactly to its frozen manifest,
+   and exactly one reviewed wheel is selected for each of the seven delta
+   entries. No alternate wheel, version, wheel root, or resolver selection is
+   permitted.
+5. The planned attempt root and all reserved output names are checked
+   read-only for collision, reparse/symlink/junction status, non-regular
+   entries, failed stat/read, parent-volume ambiguity, and overlap with prior
+   namespaces. The exact future reviewed implementation SHA, its protected
+   source blobs, the promotion provenance, the seven-wheel selection rule,
+   canonical interpreter, and these read-only root checks are bound in the
+   Phase-A safe evidence.
+6. The implementation-reviewed durable stdout/stderr/state/evidence
+   publication semantics are bound to the future implementation's exact
+   GPT-reviewed SHA and targeted synthetic tests. Phase A itself creates or
+   preserves no durable probe namespace and performs no live filesystem
+   write/delete probe; it only observes the existing machine state
+   read-only. Any uncertain permission, volume, reparse, exclusivity, or
+   publication-contract result fails closed.
 
 Only when every item is mechanically proven may Phase A emit the required
 operation-specific predicate:
