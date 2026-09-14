@@ -2746,3 +2746,9 @@ transitions. This public log must not contain protected material.
 - Recorded exact-SHA review `033bcf3960b0b284abebb32278817e612e614c68` as `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_2_LOW_0`; HIGH-1 and HIGH-2 remain open, as do HIGH-3 and MEDIUM-1.
 - Preserved the prior `492763a0540c83b80e8bdc73896c20834bcbe848` PASS specifically as the MEDIUM-2 bookkeeping-remediation review, not as implementation approval.
 - MEDIUM-2 is resolved by this state correction. The implementation PASS binding remains `UNESTABLISHED`; no execution authority changed.
+
+## 2026-09-14 — V10C duplicate latest-review bookkeeping correction
+
+- Recorded exact-SHA review `645841ac9e5d45a7f4b54a0c4eae2560c6dfc5ce` as `BLOCK_CRITICAL_0_HIGH_0_MEDIUM_1_LOW_0`.
+- The sole finding was duplicate `LAST_REVIEWED` bookkeeping keys. Removed the older `a4556820da229826e6c9e74b9423d81cc04f3a0c` pair; `033bcf3960b0b284abebb32278817e612e614c68` remains the sole latest implementation review attempt.
+- The implementation PASS SHA remains `UNESTABLISHED`; no execution authority changed. MEDIUM-2 is `REMEDIATED_AWAITING_GPT_REVIEW`.
