@@ -2536,3 +2536,10 @@ transitions. This public log must not contain protected material.
 - Recorded V10C Phase-B attempt 1 as a pre-gate implementation/wrapper entrypoint failure caused by direct-script `src` import failure. No gate receipt or final receipt was created; authorization was not consumed, is not reusable, and the attempt may not be rerun. The process exit code was not durably captured.
 - Added an execution-only PowerShell wrapper that derives the repository and canonical Python executable, invokes the reviewed CLI by module from the repository root, captures stdout/stderr separately, persists `V10C_PHASE_B_WRAPPER_EVIDENCE_V2` with the exact child exit code and no automatic retry, and never creates or modifies authorization markers.
 - No real candidate root or payload was read, no network/refetch, T0, model, evaluation, private/sealed, or human-gate activity occurred. A fresh V10C offline-adoption authorization remains required only after this remediation receives exact-SHA PASS and a new Phase-A PASS at the reviewed implementation SHA.
+
+## 2026-09-14 — V10C successor T0 training-input binding design
+
+- Recorded the exact-SHA review of `44ea1be420c69cabd91f3ab3da150e131dcee2b5` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`. V10C training provenance is complete and promoted from the fixed V10B locked artifact set.
+- Defined a successor T0 input-binding design whose only training identity is the promoted manifest `887c031a004f91a080fa53ab511711fff92c92527cb119878ab2c295ee13cd44`, with direct reads of `locked_raw/{ticker}.json`; no copy, cache reconstruction, refetch, or favorable substitution is permitted.
+- The unrecoverable historical training manifest remains rejected and is not relabeled as recovered. The design preserves the inherited V9_009 methodology, V10A calendar authority, evaluation identity, and disjoint governance/data/implementation/scientific failure classes.
+- No T0, network, candidate/raw-payload read, model fit, evaluation, private/sealed access, or human gate occurred. T0 and historical-evaluation authority remain false and future profitability remains unestablished.
