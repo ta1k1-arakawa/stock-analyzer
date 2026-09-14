@@ -2764,3 +2764,9 @@ transitions. This public log must not contain protected material.
 - Recorded GPT exact-SHA review `b1ace61ea119b5c653c4465f21515fb68848e7d2` as `PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0`; MEDIUM-2 and MEDIUM-3 remain resolved.
 - Implemented mechanical design/approval commit-vs-blob and JSON semantic checks, lock/provenance bindings, V10A evidence semantics, canonical metadata/pip observations, and read-only ancestor safety checks. The HIGH-2 wheel manifest remains explicitly open and is not claimed closed.
 - No real Phase-A/B/C execution, installation, mutation, network/package-index access, model fit, T0, payload/private access, or human mutation authorization occurred.
+
+## 2026-09-14 — V10C H1/H2 production observation contract closure
+
+- Recorded review `381f02de555d4927ff9d4154b58ac1618a3f2fd5` as `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_2_LOW_0`; HIGH-1 and HIGH-2 are remediated awaiting review, HIGH-3 and MEDIUM-1 remain open, and MEDIUM-2/MEDIUM-3 remain resolved.
+- Corrected V10A runtime-lock versus final-freeze evidence semantics and strengthened the read-only Phase-A observation path for actual approval JSON, lock/provenance bindings, canonical interpreter metadata, and existing-ancestor safety. The implementation PASS SHA remains `UNESTABLISHED`; the 27-wheel manifest remains governed by the existing open H2 boundary.
+- Targeted synthetic tests: `8 passed` using the disposable repo-local basetemp, which was removed. No real Phase-A/B/C execution, installation, mutation, package-index access, model fit, T0, payload/private access, or human mutation authorization occurred.
