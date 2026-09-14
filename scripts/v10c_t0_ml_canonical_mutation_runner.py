@@ -126,8 +126,9 @@ def collect_production(config: Config) -> Mapping[str, Any]:
 def _verified_result(config: Config, observed: Mapping[str, Any]) -> VerifiedPhaseAResult:
     result = phase_a(config, observed)
     if result["status"] != "PASS": raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK")
-    expected_hashes=observed.get("wheel_sha256", {})
-    bindings = tuple(WheelBinding(normalize(k.split("==")[0]), k.split("==",1)[1], Path(v).name, expected_hashes.get(k, hashlib.sha256(Path(v).read_bytes()).hexdigest()), Path(v)) for k,v in observed["delta_wheels"].items())
+    expected_hashes=observed.get("wheel_sha256")
+    if not isinstance(expected_hashes, Mapping) or any(k not in expected_hashes for k in observed["delta_wheels"]): raise MutationError("WHEEL_MANIFEST_BINDING_INVALID")
+    bindings = tuple(WheelBinding(normalize(k.split("==")[0]), k.split("==",1)[1], Path(v).name, expected_hashes[k], Path(v)) for k,v in observed["delta_wheels"].items())
     if len(bindings) != 7: raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK")
     return VerifiedPhaseAResult(config.canonical_python, Path(observed["wheel_root_realpath"]), bindings, config.reviewed_implementation_sha, observed["reviewed_runner_blob"], {"design_blob":DESIGN_BLOB,"approval_blob":APPROVAL_BLOB,"predecessor_blob":PREDECESSOR_BLOB,"successor_blob":SUCCESSOR_BLOB})
 
@@ -164,12 +165,8 @@ def build_pip_argv(canonical_python: Path, wheel_paths: Sequence[Path]) -> list[
     return [str(canonical_python), "-m", "pip", "install", "--no-deps", "--no-index", *map(str, wheel_paths)]
 
 def production_collect(config: Config) -> Mapping[str, Any]:
-    """Read-only production collector; any unavailable observation fails closed."""
-    def git(*args: str) -> str:
-        return subprocess.run(["git", *args], cwd=config.repo_root, capture_output=True, text=True, check=False).stdout.strip()
-    current_blob = git("hash-object", "scripts/v10c_t0_ml_canonical_mutation_runner.py")
-    reviewed_blob = git("rev-parse", f"{config.reviewed_implementation_sha}:scripts/v10c_t0_ml_canonical_mutation_runner.py")
-    return {"branch":git("branch","--show-current"),"head":git("rev-parse","HEAD"),"origin_head":git("rev-parse",f"refs/remotes/origin/{AUTHORITATIVE_BRANCH}"),"dirty":bool(git("status","--short")),"current_runner_blob":current_blob,"reviewed_runner_blob":reviewed_blob,"design_sha":DESIGN_SHA,"design_blob":DESIGN_BLOB,"approval_commit":APPROVAL_COMMIT,"approval_blob":APPROVAL_BLOB,"predecessor_blob":PREDECESSOR_BLOB,"predecessor_sha256":PREDECESSOR_SHA256,"successor_blob":SUCCESSOR_BLOB,"successor_sha256":SUCCESSOR_SHA256,"promotion_blob":PROMOTION_BLOB,"source_resolution_head":SOURCE_RESOLUTION_HEAD,"wheel_count":None,"wheel_total_bytes":None,"wheel_manifest_sha256":None,"candidate_sha256":OFFLINE_CANDIDATE_SHA256,"evidence_sha256":OFFLINE_EVIDENCE_SHA256,"python_version":None,"pip_reachable":False,"attempt_root_absent":not config.attempt_root.exists(),"reserved_absent":not any((config.attempt_root/x).exists() for x in RESERVED),"ancestors_safe":False,"governed_root_safe":False,"approval_semantics":False,"v10a_predecessor_authority":False,"packages":(),"delta_wheels":{},"network_requests":0,"writes":0}
+    """Compatibility alias; collect_production is the sole implementation."""
+    return collect_production(config)
 
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
@@ -224,10 +221,10 @@ def phase_c(config: Config, observed: Mapping[str, Any], *, synthetic_probe: Cal
     _atomic_json(evidence_path, result)
     return result
 
-def main(argv: Sequence[str] | None = None, *, collector: Callable[[Config], Mapping[str, Any]] = production_collect) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(); p.add_argument("phase", choices=("phase-a", "phase-b", "phase-c")); p.add_argument("--reviewed-implementation-sha", required=True); p.add_argument("--repo-root", required=True); p.add_argument("--canonical-python", required=True); p.add_argument("--attempt-root", required=True); p.add_argument("--wheel-root", required=True); p.add_argument("--mutation-authorized", action="store_true")
     a = p.parse_args(argv); root=Path(a.repo_root); cfg = Config(root, root/'.venv-real-execution'/'Scripts'/'python.exe', Path(a.attempt_root), Path(a.wheel_root), a.reviewed_implementation_sha)
-    observed=collector(cfg)
+    observed=collect_production(cfg)
     if a.phase == 'phase-a': result=phase_a(cfg,observed)
     elif a.phase == 'phase-b': result=phase_b(cfg,mutation_authorized=a.mutation_authorized)
     else: result=phase_c(cfg,observed)
