@@ -2664,3 +2664,10 @@ transitions. This public log must not contain protected material.
 - Production provenance code was accepted; HIGH-1 and the prior production MEDIUM-1 were resolved by the reviewed implementation.
 - The sole finding was stale `V10C_T0_ML_RESOLUTION_INACTIVE_EXTRA_VALIDATOR_FINDING` state after the `5ab0c847c4482ebec228f53d59701f539161cef7` review. Corrected it to `RESOLVED` and recorded the bookkeeping remediation as awaiting review.
 - No code, tests, methodology, package, source-provenance, resolution, network, installation, environment mutation, model fit, T0, or payload activity occurred. Resolution authority remains consumed, retry authorization remains false, and future profitability remains unestablished.
+
+## 2026-09-14 — V10C offline readjudication PASS and successor-lock promotion
+
+- Recorded GPT exact-SHA review `a70525c54e5c294f1f0052565a09127580ee4ee0` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`; the offline readjudication of source resolution `3aee6c2772f30c6dc35d2a7efb862ae15091febc` is `PASS`.
+- Recorded candidate SHA-256 `893881cbb9612e3402b0f4e1e434edfc4283da81a0f6a6d264d019ae5573c48e` and offline-readjudication evidence SHA-256 `b4398e32be354de03e64202148dc6933ed45ef888657e909de1f52a4a051206b`.
+- Created the proposed 27-package successor lock and promotion record for GPT exact-SHA review. Its exact delta from the immutable 20-package predecessor lock is seven packages: `cloudpickle==3.1.2`, `joblib==1.6.0`, `lightgbm==4.6.0`, `narwhals==2.26.0`, `scikit-learn==1.9.0`, `scipy==1.18.1`, and `threadpoolctl==3.6.0`.
+- Resolution authority remains consumed and no retry is authorized. There were zero network requests, resolution reruns, installations, environment mutations, model fits, T0 runs, and payload reads. Installation, mutation, and T0 remain unauthorized; future profitability remains unestablished.
