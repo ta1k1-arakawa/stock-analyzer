@@ -244,10 +244,16 @@ def test_successful_binding_passes_only_fixed_dates_to_cache_runner(monkeypatch,
             exact_semantics=False,
         )
 
-    monkeypatch.setattr(bridge, "run_from_cache", fake_run)
+    monkeypatch.setattr(bridge, "run_successor_from_cache", fake_run)
     assert bridge.main(_main_args(tmp_path)) == 0
-    assert seen["args"][3] is fixed_dates
+    assert seen["args"][4] is fixed_dates
     assert json.loads(capsys.readouterr().out)["T0_RESULT"] == "CONTINUE"
+
+
+def test_production_route_uses_successor_loader_not_legacy_training_loader():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "run_successor_from_cache(" in source
+    assert "run_from_cache(" not in source
 
 
 def test_cli_has_no_caller_calendar_selection():

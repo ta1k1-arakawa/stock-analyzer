@@ -2543,3 +2543,10 @@ transitions. This public log must not contain protected material.
 - Defined a successor T0 input-binding design whose only training identity is the promoted manifest `887c031a004f91a080fa53ab511711fff92c92527cb119878ab2c295ee13cd44`, with direct reads of `locked_raw/{ticker}.json`; no copy, cache reconstruction, refetch, or favorable substitution is permitted.
 - The unrecoverable historical training manifest remains rejected and is not relabeled as recovered. The design preserves the inherited V9_009 methodology, V10A calendar authority, evaluation identity, and disjoint governance/data/implementation/scientific failure classes.
 - No T0, network, candidate/raw-payload read, model fit, evaluation, private/sealed access, or human gate occurred. T0 and historical-evaluation authority remain false and future profitability remains unestablished.
+
+## 2026-09-14 — V10C successor T0 training-input binding synthetic implementation
+
+- Recorded the exact-SHA design review of `0e65b170caef9958c31b7efa6802aa0313571d57` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`; the successor design blob remains `52572c53934f9de1a182a7f580df91e52086de9c`.
+- Added a dedicated successor input-binding adapter and routed the production CLI through it. Phase-A metadata validation binds the promoted V10C adoption record, fixed V4 universe, promoted V10B manifest/attempt receipt, evaluation manifest, exact payload descriptor/file sets, and reviewed provenance without reading payload bytes.
+- The later full-load boundary reuses the reviewed V10B hash-closure validator and inherited V9 T0 parser semantics, with no refetch, fallback, substitution, or cache reconstruction. The old unrecoverable training manifest remains rejected.
+- Targeted synthetic/CLI result: `53 passed, 1 skipped`; the skip is host-permission-dependent symlink coverage. No real candidate, training/evaluation payload, network, T0, model, historical evaluation, private/sealed, or human-gate activity occurred. T0 authority remains false and future profitability remains unestablished.

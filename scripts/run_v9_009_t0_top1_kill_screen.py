@@ -22,10 +22,14 @@ from src.v9_009_t0_top1_kill_screen import (  # noqa: E402
     T0DataIncompatible,
     T0ImplementationFailure,
     make_safe_result,
-    run_from_cache,
+    run_from_cache,  # compatibility symbol for legacy bridge tests; main never calls it
     signal_grid,
     synthetic_provenance,
     validate_safe_result,
+)
+from src.v10c_t0_successor_training_input_binding import (  # noqa: E402
+    SuccessorPreflightFailure,
+    run_successor_from_cache,
 )
 
 
@@ -346,10 +350,11 @@ def main(argv: list[str] | None = None) -> int:
         validate_repository_preflight(REPOSITORY_ROOT, args.implementation_sha)
         calendar_dates = load_fixed_calendar_binding(REPOSITORY_ROOT, args.implementation_sha)
         try:
-            result = run_from_cache(
-                args.training_cache,
-                args.evaluation_cache,
-                args.universe_csv,
+            result = run_successor_from_cache(
+                REPOSITORY_ROOT,
+                Path(args.training_cache),
+                Path(args.evaluation_cache),
+                Path(args.universe_csv),
                 calendar_dates,
                 args.implementation_sha,
             )
@@ -366,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             return 0
-    except GovernanceFailure:
+    except (GovernanceFailure, SuccessorPreflightFailure):
         sys.stderr.write(PREFLIGHT_FAILURE + "\n")
         return 4
     except T0DataIncompatible:
