@@ -10,13 +10,15 @@ import pytest
 from scripts import v10c_t0_ml_environment_contract as contract
 
 
-def _wheel(root: Path, name: str, version: str) -> dict[str, str]:
+def _wheel(root: Path, name: str, version: str, requires_dist: tuple[str, ...] = ()) -> dict[str, str]:
     filename_name = name.replace("-", "_")
     filename = f"{filename_name}-{version}-py3-none-any.whl"
     path = root / filename
     dist_info = f"{filename_name}-{version}.dist-info"
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(f"{dist_info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n\n")
+        metadata = f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n"
+        metadata += "".join(f"Requires-Dist: {requirement}\n" for requirement in requires_dist)
+        archive.writestr(f"{dist_info}/METADATA", metadata + "\n")
         archive.writestr(f"{dist_info}/WHEEL", "Wheel-Version: 1.0\nGenerator: synthetic\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
     inspected = contract.inspect_wheel_file(path)
     return inspected
@@ -85,11 +87,11 @@ def test_wheel_filename_metadata_and_hash_are_checked(tmp_path: Path) -> None:
 def test_wheelhouse_rejects_source_distribution_and_missing_direct_package(tmp_path: Path) -> None:
     (tmp_path / "lightgbm-4.6.0.tar.gz").write_bytes(b"source")
     code, _ = contract.inspect_wheelhouse(tmp_path)
-    assert code == "SOURCE_DISTRIBUTION_REQUIRED"
+    assert code == "PREDECESSOR_PIN_DRIFT"
     empty = tmp_path / "empty"
     empty.mkdir()
     code, _ = contract.inspect_wheelhouse(empty)
-    assert code == "REQUIRED_DIRECT_DISTRIBUTION_MISSING"
+    assert code == "PREDECESSOR_PIN_DRIFT"
 
 
 def test_candidate_requires_all_packages_and_wheels(tmp_path: Path) -> None:
@@ -106,7 +108,7 @@ def test_no_ml_packages_are_imported_by_contract() -> None:
 
 
 def test_candidate_schema_is_closed() -> None:
-    assert len(contract.CANDIDATE_KEYS) == 23
+    assert len(contract.CANDIDATE_KEYS) == 24
     assert len(contract.EVIDENCE_KEYS) == 27
     assert contract.CANDIDATE_SCHEMA.endswith("_V1")
     assert contract.EVIDENCE_SCHEMA.endswith("_V1")

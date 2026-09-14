@@ -73,6 +73,7 @@ ATTEMPT_STATE_KEYS = frozenset(
         "resolution_policy_id", "package_index_id", "attempt_boundary_crossed",
         "human_authority_consumed", "process_started", "process_exit_code",
         "package_resolution_process_invocations", "resolution_completed",
+        "package_installations", "alternate_venv_created",
     }
 )
 
@@ -414,6 +415,7 @@ def _initial_state(config: PhaseAConfig) -> dict[str, Any]:
         "attempt_boundary_crossed": False, "human_authority_consumed": False,
         "process_started": None, "process_exit_code": None,
         "package_resolution_process_invocations": 0, "resolution_completed": False,
+        "package_installations": 0, "alternate_venv_created": False,
     }
 
 
@@ -424,6 +426,8 @@ def _validate_attempt_state(config: PhaseAConfig, state: Mapping[str, Any]) -> N
     for key in ("expected_current_head", "frozen_design_git_sha", "frozen_design_git_blob_sha1", "approval_record_git_blob_sha1", "reviewed_resolution_implementation_git_sha", "direct_spec_git_blob_sha1", "direct_spec_sha256", "predecessor_lock_git_blob_sha1", "predecessor_lock_sha256", "resolution_policy_id", "package_index_id"):
         _require(state[key] == expected[key], "ATTEMPT_STATE_PROVENANCE_MISMATCH")
     _require(state["attempt_boundary_crossed"] is True and state["human_authority_consumed"] is True, "ATTEMPT_STATE_AUTHORITY_MISSING")
+    _require(isinstance(state["package_installations"], int) and not isinstance(state["package_installations"], bool) and state["package_installations"] >= 0, "ATTEMPT_STATE_INSTALLATION_INVALID")
+    _require(isinstance(state["alternate_venv_created"], bool), "ATTEMPT_STATE_ALTERNATE_ENVIRONMENT_INVALID")
     invocations = state["package_resolution_process_invocations"]
     _require(isinstance(invocations, int) and not isinstance(invocations, bool) and invocations in (0, 1), "ATTEMPT_STATE_INVOCATION_INVALID")
     started = state["process_started"]
@@ -478,7 +482,7 @@ def run_phase_b(config: PhaseAConfig, *, execute_resolution: bool, fresh_human_a
         raise
 
 
-def _base_evidence(config: PhaseAConfig, *, status: str, failure_code: str, process_started: bool, process_exit_code: int | None, resolution_completed: bool, candidate_created: bool, candidate_sha: str | None, package_count: int | None, invocations: int) -> dict[str, Any]:
+def _base_evidence(config: PhaseAConfig, *, status: str, failure_code: str, process_started: bool, process_exit_code: int | None, resolution_completed: bool, candidate_created: bool, candidate_sha: str | None, package_count: int | None, invocations: int, package_installations: int = 0, alternate_venv_created: bool = False) -> dict[str, Any]:
     return {
         "schema_version": EVIDENCE_SCHEMA, "artifact_status": "WINDOWS_RESOLUTION_EVIDENCE", "status": status,
         "failure_code": failure_code, "study": STUDY, "frozen_design_git_sha": FROZEN_DESIGN_SHA,
@@ -492,13 +496,13 @@ def _base_evidence(config: PhaseAConfig, *, status: str, failure_code: str, proc
         "process_exit_code": process_exit_code, "resolution_completed": resolution_completed,
         "candidate_artifact_created": candidate_created, "successor_lock_candidate_sha256": candidate_sha,
         "resolved_package_count": package_count, "package_resolution_process_invocations": invocations,
-        "human_authority_consumed": True, "package_installations": 0,
-        "alternate_venv_created": False, "t0_runs": 0, "payload_reads": 0,
+        "human_authority_consumed": True, "package_installations": package_installations,
+        "alternate_venv_created": alternate_venv_created, "t0_runs": 0, "payload_reads": 0,
     }
 
 
 def _build_candidate(config: PhaseAConfig, wheels: Sequence[Mapping[str, str]]) -> dict[str, Any]:
-    resolved_wheels = [dict(item) for item in wheels]
+    resolved_wheels = [{key: item[key] for key in ("name", "version", "filename", "sha256")} for item in wheels]
     packages = [{"name": item["name"], "version": item["version"]} for item in resolved_wheels]
     package_sets = validate_resolved_packages(packages)
     candidate: dict[str, Any] = {
@@ -510,6 +514,14 @@ def _build_candidate(config: PhaseAConfig, wheels: Sequence[Mapping[str, str]]) 
         "predecessor_package_count": len(PREDECESSOR_PACKAGE_SET), "python_version": "3.12.10", "platform_system": "Windows",
         "platform_machine": "AMD64", "sysconfig_platform": "win-amd64", "resolution_policy_id": RESOLUTION_POLICY_ID,
         "resolved_packages": packages, "resolved_package_count": len(packages), "resolved_wheels": resolved_wheels,
+        "resolved_dependency_metadata": [
+            {
+                "name": item["name"], "version": item["version"],
+                "requires_dist": list(item["requires_dist"]),
+                "requires_python": item["requires_python"],
+            }
+            for item in wheels
+        ],
         "predecessor_pin_drift_count": 0, "lightgbm_version": dict(package_sets["successor"])["lightgbm"],
         "scikit_learn_version": dict(package_sets["successor"])["scikit-learn"],
     }
@@ -525,13 +537,19 @@ def run_phase_c(config: PhaseAConfig, *, expected_candidate_sha256: str | None =
         state = json.loads((root / STATE_NAME).read_text(encoding="utf-8"))
         _validate_attempt_state(config, state)
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, RunnerValidationError) as error:
-        raise RunnerValidationError("ATTEMPT_STATE_INVALID") from error
+        raise RunnerValidationError("RESOLUTION_REPORT_INVALID") from error
     started = state["process_started"]
     exit_code = state["process_exit_code"]
     invocations = state["package_resolution_process_invocations"]
+    package_installations = state["package_installations"]
+    alternate_venv_created = state["alternate_venv_created"]
     candidate: dict[str, Any] | None = None
     wheels: tuple[dict[str, str], ...] | None = None
-    if started is False:
+    if package_installations > 0:
+        failure_code = "UNAUTHORIZED_INSTALLATION"
+    elif alternate_venv_created:
+        failure_code = "UNAUTHORIZED_ALTERNATE_ENVIRONMENT"
+    elif started is False:
         failure_code = "RESOLUTION_PROCESS_FAILURE"
     elif exit_code != 0:
         failure_code = "RESOLUTION_PROCESS_FAILURE"
@@ -541,18 +559,18 @@ def run_phase_c(config: PhaseAConfig, *, expected_candidate_sha256: str | None =
             try:
                 candidate = _build_candidate(config, wheels)
             except ContractValidationError as error:
-                failure_code = str(error) if str(error) in {"PREDECESSOR_PIN_DRIFT", "REQUIRED_DIRECT_DISTRIBUTION_MISSING"} else "WHEEL_PROVENANCE_FAILURE"
+                failure_code = str(error) if str(error) in {"PREDECESSOR_PIN_DRIFT", "REQUIRED_DIRECT_DISTRIBUTION_MISSING"} else "RESOLUTION_REPORT_INVALID"
                 candidate = None
     if failure_code == "NONE" and candidate is not None:
         candidate_bytes = canonical_json_bytes(candidate)
         candidate_sha = hashlib.sha256(candidate_bytes).hexdigest()
-        evidence = _base_evidence(config, status="PASS", failure_code="NONE", process_started=True, process_exit_code=0, resolution_completed=True, candidate_created=True, candidate_sha=candidate_sha, package_count=candidate["resolved_package_count"], invocations=invocations)
+        evidence = _base_evidence(config, status="PASS", failure_code="NONE", process_started=True, process_exit_code=0, resolution_completed=True, candidate_created=True, candidate_sha=candidate_sha, package_count=candidate["resolved_package_count"], invocations=invocations, package_installations=package_installations, alternate_venv_created=alternate_venv_created)
         validate_lock_candidate(candidate, expected_reviewed_sha=config.expected_reviewed_runner_sha, expected_direct_blob=config.expected_direct_spec_git_blob_sha1, expected_direct_sha=config.expected_direct_spec_sha256)
         validate_evidence(evidence, expected_reviewed_sha=config.expected_reviewed_runner_sha, expected_direct_blob=config.expected_direct_spec_git_blob_sha1, expected_direct_sha=config.expected_direct_spec_sha256, expected_candidate_sha=candidate_sha)
         _write_bytes(root / CANDIDATE_NAME, candidate_bytes, exclusive=True)
         _write_bytes(root / EVIDENCE_NAME, canonical_json_bytes(evidence), exclusive=True)
         return {"status": "PASS", "failure_code": "NONE", "candidate_artifact_created": True, "candidate_sha256": candidate_sha, "resolved_package_count": candidate["resolved_package_count"]}
-    evidence = _base_evidence(config, status="FAIL", failure_code=failure_code, process_started=bool(started), process_exit_code=exit_code, resolution_completed=bool(state["resolution_completed"]), candidate_created=False, candidate_sha=None, package_count=None, invocations=invocations)
+    evidence = _base_evidence(config, status="FAIL", failure_code=failure_code, process_started=bool(started), process_exit_code=exit_code, resolution_completed=bool(state["resolution_completed"]), candidate_created=False, candidate_sha=None, package_count=None, invocations=invocations, package_installations=package_installations, alternate_venv_created=alternate_venv_created)
     validate_evidence(evidence, expected_reviewed_sha=config.expected_reviewed_runner_sha, expected_direct_blob=config.expected_direct_spec_git_blob_sha1, expected_direct_sha=config.expected_direct_spec_sha256)
     _write_bytes(root / EVIDENCE_NAME, canonical_json_bytes(evidence), exclusive=True)
     return {"status": "FAIL", "failure_code": failure_code, "candidate_artifact_created": False}

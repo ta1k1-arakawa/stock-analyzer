@@ -73,7 +73,7 @@ CANDIDATE_KEYS = frozenset(
         "platform_system", "platform_machine", "sysconfig_platform",
         "resolution_policy_id", "resolved_packages", "resolved_package_count",
         "resolved_wheels", "predecessor_pin_drift_count", "lightgbm_version",
-        "scikit_learn_version",
+        "scikit_learn_version", "resolved_dependency_metadata",
     }
 )
 EVIDENCE_KEYS = frozenset(
@@ -118,6 +118,18 @@ FAILURE_CODES = frozenset(
     }
 )
 WHEEL_FIELDS = frozenset({"name", "version", "filename", "sha256"})
+DEPENDENCY_METADATA_FIELDS = frozenset({"name", "version", "requires_dist", "requires_python"})
+TARGET_ENVIRONMENT = {
+    "python_version": "3.12",
+    "python_full_version": "3.12.10",
+    "platform_system": "Windows",
+    "platform_machine": "AMD64",
+    "platform_python_implementation": "CPython",
+    "implementation_name": "cpython",
+    "sys_platform": "win32",
+    "os_name": "nt",
+    "extra": "",
+}
 
 
 class ContractValidationError(ValueError):
@@ -171,6 +183,233 @@ def _strict_int(value: Any, label: str) -> int:
 def _strict_bool(value: Any, label: str) -> bool:
     _require(isinstance(value, bool), f"{label} invalid")
     return value
+
+
+def _version_key(value: str) -> tuple[Any, ...]:
+    match = re.fullmatch(
+        r"(?i)(\d+(?:\.\d+)*)(?:(a|alpha|b|beta|rc|c)(\d*))?(?:(?:\.|-)?(post|rev|r)(\d*))?(?:(?:\.|-)?dev(\d*))?",
+        value,
+    )
+    _require(match is not None, "unsupported version syntax")
+    release_parts = [int(part) for part in match.group(1).split(".")]
+    while len(release_parts) > 1 and release_parts[-1] == 0:
+        release_parts.pop()
+    release = tuple(release_parts)
+    stage = {None: 3, "a": 1, "alpha": 1, "b": 2, "beta": 2, "rc": 2, "c": 2}[match.group(2)]
+    stage_serial = int(match.group(3) or 0)
+    post = int(match.group(5) or 0)
+    dev = match.group(6)
+    return (release, stage, stage_serial, post, -1 if dev is not None else 0, int(dev or 0))
+
+
+def _version_satisfies(version: str, specifier: str) -> bool:
+    actual = _version_key(version)
+    for raw_part in specifier.split(","):
+        part = raw_part.strip()
+        _require(bool(part), "empty version specifier")
+        match = re.fullmatch(r"(===|==|!=|<=|>=|~=|<|>)[ ]*(.+)", part)
+        _require(match is not None, "unsupported version specifier")
+        operator, expected_text = match.groups()
+        if operator in {"==", "!="} and expected_text.endswith(".*"):
+            prefix = expected_text[:-2].split(".")
+            equal = tuple(str(item) for item in _version_key(version)[0][: len(prefix)]) == tuple(prefix)
+            if (operator == "==") != equal:
+                return False
+            continue
+        expected = _version_key(expected_text)
+        if operator == "==" or operator == "===":
+            result = actual == expected
+        elif operator == "!=":
+            result = actual != expected
+        elif operator == ">=":
+            result = actual >= expected
+        elif operator == ">":
+            result = actual > expected
+        elif operator == "<=":
+            result = actual <= expected
+        elif operator == "<":
+            result = actual < expected
+        else:
+            expected_release = expected[0]
+            upper = (expected_release[:-1] + (expected_release[-1] + 1,)) if len(expected_release) > 1 else (expected_release[0] + 1,)
+            result = actual >= expected and actual < (upper, 3, 0, 0, 0, 0)
+        if not result:
+            return False
+    return True
+
+
+_MARKER_TOKEN = re.compile(r"\s*(?:(and|or|not|in)|(!=|==|<=|>=|~=|<|>|\(|\))|([A-Za-z_][A-Za-z0-9_]*)|('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"))")
+
+
+def _marker_value(token: tuple[str, str], environment: Mapping[str, str]) -> str:
+    kind, value = token
+    if kind == "identifier":
+        _require(value in environment, "unsupported environment marker variable")
+        return environment[value]
+    if kind == "string":
+        import ast
+
+        parsed = ast.literal_eval(value)
+        _require(isinstance(parsed, str), "invalid environment marker string")
+        return parsed
+    raise ContractValidationError("invalid environment marker operand")
+
+
+class _MarkerParser:
+    def __init__(self, raw: str, environment: Mapping[str, str]) -> None:
+        self.environment = environment
+        self.tokens: list[tuple[str, str]] = []
+        position = 0
+        while position < len(raw):
+            match = _MARKER_TOKEN.match(raw, position)
+            _require(match is not None, "invalid environment marker")
+            if match.group(1):
+                self.tokens.append(("word", match.group(1)))
+            elif match.group(2):
+                self.tokens.append(("operator", match.group(2)))
+            elif match.group(3):
+                self.tokens.append(("identifier", match.group(3)))
+            else:
+                self.tokens.append(("string", match.group(4)))
+            position = match.end()
+        self.index = 0
+
+    def _peek(self, value: str | None = None) -> bool:
+        if self.index >= len(self.tokens):
+            return False
+        return value is None or self.tokens[self.index][1] == value
+
+    def _take(self, value: str | None = None) -> tuple[str, str]:
+        _require(self.index < len(self.tokens), "unexpected end of environment marker")
+        token = self.tokens[self.index]
+        _require(value is None or token[1] == value, "invalid environment marker grammar")
+        self.index += 1
+        return token
+
+    def parse(self) -> bool:
+        result = self._parse_or()
+        _require(self.index == len(self.tokens), "trailing environment marker")
+        return result
+
+    def _parse_or(self) -> bool:
+        result = self._parse_and()
+        while self._peek("or"):
+            self._take("or")
+            right = self._parse_and()
+            result = result or right
+        return result
+
+    def _parse_and(self) -> bool:
+        result = self._parse_not()
+        while self._peek("and"):
+            self._take("and")
+            right = self._parse_not()
+            result = result and right
+        return result
+
+    def _parse_not(self) -> bool:
+        if self._peek("not"):
+            self._take("not")
+            return not self._parse_not()
+        return self._parse_atom()
+
+    def _parse_atom(self) -> bool:
+        if self._peek("("):
+            self._take("(")
+            result = self._parse_or()
+            self._take(")")
+            return result
+        left = _marker_value(self._take(), self.environment)
+        if self._peek():
+            operator = self._take()[1]
+            if operator == "not":
+                self._take("in")
+                operator = "not in"
+            elif operator == "in":
+                pass
+            else:
+                _require(operator in {"!=", "==", "<=", ">=", "~=", "<", ">"}, "invalid marker operator")
+            right = _marker_value(self._take(), self.environment)
+            if operator == "in":
+                return left in right
+            if operator == "not in":
+                return left not in right
+            if operator in {"<", "<=", ">", ">=", "~="} and re.fullmatch(r"\d+(?:\.\d+)*", left) and re.fullmatch(r"\d+(?:\.\d+)*", right):
+                left_key = _version_key(left)
+                right_key = _version_key(right)
+                if operator == "<":
+                    return left_key < right_key
+                if operator == "<=":
+                    return left_key <= right_key
+                if operator == ">":
+                    return left_key > right_key
+                if operator == ">=":
+                    return left_key >= right_key
+                if operator == "~=":
+                    return _version_satisfies(left, "~=" + right)
+            return {"==": left == right, "!=": left != right, "<": left < right, "<=": left <= right, ">": left > right, ">=": left >= right, "~=": left == right}[operator]
+        return bool(left)
+
+
+def _marker_applies(raw: str | None) -> bool:
+    return True if raw is None else _MarkerParser(raw.strip(), TARGET_ENVIRONMENT).parse()
+
+
+def _parse_requirement(raw: str) -> tuple[str, str, str | None]:
+    _require(isinstance(raw, str) and bool(raw.strip()), "invalid dependency requirement")
+    requirement, separator, marker = raw.partition(";")
+    match = re.fullmatch(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[([^]]+)\])?\s*(.*)\s*", requirement)
+    _require(match is not None, "invalid dependency requirement")
+    extras = match.group(2)
+    _require(extras is None, "dependency extras are not closed")
+    specifier = match.group(3).strip()
+    if specifier.startswith("(") and specifier.endswith(")"):
+        specifier = specifier[1:-1].strip()
+    _require(not separator or bool(marker.strip()), "invalid dependency marker")
+    return normalize_distribution_name(match.group(1)), specifier, marker.strip() if separator else None
+
+
+def _validate_dependency_closure(packages: Sequence[Mapping[str, Any]], metadata: Any) -> None:
+    package_pairs = tuple((item["name"], item["version"]) for item in packages)
+    _require(isinstance(metadata, list), "RESOLUTION_REPORT_INVALID")
+    parsed: list[tuple[str, str, tuple[str, ...], str | None]] = []
+    for item in metadata:
+        _exact_keys(item, DEPENDENCY_METADATA_FIELDS, "dependency metadata")
+        name = _string(item["name"], "dependency name")
+        version = _string(item["version"], "dependency version")
+        _require(name == normalize_distribution_name(name), "dependency name is not normalized")
+        requirements = item["requires_dist"]
+        _require(isinstance(requirements, list) and all(isinstance(value, str) and bool(value) for value in requirements), "dependency requirements invalid")
+        _require(tuple(requirements) == tuple(sorted(requirements)), "dependency requirements are not sorted")
+        requires_python = item["requires_python"]
+        _require(requires_python is None or (isinstance(requires_python, str) and bool(requires_python)), "Requires-Python invalid")
+        parsed.append((name, version, tuple(requirements), requires_python))
+    _require(tuple((name, version) for name, version, _, _ in parsed) == package_pairs, "dependency metadata/package mismatch")
+    package_map = dict(package_pairs)
+    metadata_map = {(name, version): (requirements, requires_python) for name, version, requirements, requires_python in parsed}
+    roots = {name for name, _ in PREDECESSOR_PACKAGE_SET} | {"lightgbm", "scikit-learn"}
+    reachable: set[str] = set()
+    pending = sorted(roots)
+    while pending:
+        name = pending.pop(0)
+        if name in reachable:
+            continue
+        _require(name in package_map, "RESOLUTION_REPORT_INVALID")
+        reachable.add(name)
+        requirements, requires_python = metadata_map[(name, package_map[name])]
+        if requires_python is not None:
+            _require(_version_satisfies("3.12.10", requires_python), "RESOLUTION_REPORT_INVALID")
+        for raw in requirements:
+            dependency, specifier, marker = _parse_requirement(raw)
+            if not _marker_applies(marker):
+                continue
+            _require(dependency in package_map, "RESOLUTION_REPORT_INVALID")
+            if specifier:
+                _require(_version_satisfies(package_map[dependency], specifier), "RESOLUTION_REPORT_INVALID")
+            if dependency not in reachable:
+                pending.append(dependency)
+                pending.sort()
+    _require(reachable == set(package_map), "RESOLUTION_REPORT_INVALID")
 
 
 def validate_direct_spec_bytes(raw: bytes) -> str:
@@ -253,8 +492,8 @@ def validate_resolved_packages(packages: Any) -> dict[str, tuple[tuple[str, str]
     package_map = dict(parsed)
     drift = [name for name, version in PREDECESSOR_PACKAGE_SET if package_map.get(name) != version]
     _require(not drift, "PREDECESSOR_PIN_DRIFT")
-    _require(package_map.get("lightgbm") == LIGHTGBM_PIN, "required lightgbm pin")
-    _require(package_map.get("scikit-learn") == SCIKIT_LEARN_PIN, "required scikit-learn pin")
+    _require(package_map.get("lightgbm") == LIGHTGBM_PIN, "REQUIRED_DIRECT_DISTRIBUTION_MISSING")
+    _require(package_map.get("scikit-learn") == SCIKIT_LEARN_PIN, "REQUIRED_DIRECT_DISTRIBUTION_MISSING")
     delta = tuple(pair for pair in parsed if pair[0] not in {name for name, _ in PREDECESSOR_PACKAGE_SET})
     return {"predecessor": PREDECESSOR_PACKAGE_SET, "successor": tuple(parsed), "delta": delta}
 
@@ -338,6 +577,7 @@ def validate_lock_candidate(candidate: Mapping[str, Any], *, expected_reviewed_s
     _require(candidate["scikit_learn_version"] == SCIKIT_LEARN_PIN == package_map["scikit-learn"], "scikit-learn version")
     wheels = validate_wheel_manifest(candidate["resolved_wheels"])
     _require(tuple((item["name"], item["version"]) for item in wheels) == packages["successor"], "wheel/package identity")
+    _validate_dependency_closure(candidate["resolved_packages"], candidate["resolved_dependency_metadata"])
     return packages
 
 
@@ -359,7 +599,8 @@ def validate_evidence(evidence: Mapping[str, Any], *, expected_reviewed_sha: str
         _require(exit_code is None, "unstarted process exit code")
     for key in ("resolution_completed", "candidate_artifact_created", "human_authority_consumed", "alternate_venv_created"):
         _strict_bool(evidence[key], key)
-    _require(_strict_int(evidence["package_installations"], "package installations") == 0, "package installations")
+    installation_count = _strict_int(evidence["package_installations"], "package installations")
+    _require(installation_count >= 0, "package installations")
     _require(_strict_int(evidence["t0_runs"], "t0 runs") == 0, "t0 runs")
     _require(_strict_int(evidence["payload_reads"], "payload reads") == 0, "payload reads")
     invocations = _strict_int(evidence["package_resolution_process_invocations"], "process invocations")
@@ -371,10 +612,21 @@ def validate_evidence(evidence: Mapping[str, Any], *, expected_reviewed_sha: str
     if package_count is not None:
         _strict_int(package_count, "resolved package count")
     if evidence["status"] == "PASS":
+        _require(installation_count == 0 and evidence["alternate_venv_created"] is False, "PASS unauthorized activity")
         _require(started and exit_code == 0 and invocations == 1, "PASS process semantics")
         _require(evidence["failure_code"] == "NONE", "PASS failure code")
         _require(evidence["human_authority_consumed"] and evidence["resolution_completed"] and evidence["candidate_artifact_created"], "PASS completion")
         _require(candidate_sha is not None and expected_candidate_sha is not None and candidate_sha == expected_candidate_sha, "PASS candidate binding")
+    elif evidence["failure_code"] == "UNAUTHORIZED_INSTALLATION":
+        _require(installation_count > 0, "installation failure precedence")
+        _require(evidence["human_authority_consumed"] and not evidence["candidate_artifact_created"], "installation failure completion")
+        _require(candidate_sha is None and package_count is None, "installation failure candidate fields")
+        _require(started and exit_code == 0 and invocations == 1 and evidence["resolution_completed"] is True, "installation failure process semantics")
+    elif evidence["failure_code"] == "UNAUTHORIZED_ALTERNATE_ENVIRONMENT":
+        _require(installation_count == 0 and evidence["alternate_venv_created"] is True, "alternate environment failure precedence")
+        _require(evidence["human_authority_consumed"] and not evidence["candidate_artifact_created"], "alternate environment failure completion")
+        _require(candidate_sha is None and package_count is None, "alternate environment failure candidate fields")
+        _require(started and exit_code == 0 and invocations == 1 and evidence["resolution_completed"] is True, "alternate environment failure process semantics")
     elif evidence["failure_code"] == "RESOLUTION_PROCESS_FAILURE":
         _require(evidence["human_authority_consumed"] and not evidence["candidate_artifact_created"], "process failure completion")
         _require(candidate_sha is None and package_count is None, "process failure candidate fields")
@@ -383,13 +635,14 @@ def validate_evidence(evidence: Mapping[str, Any], *, expected_reviewed_sha: str
         else:
             _require(exit_code is None and invocations == 0 and evidence["resolution_completed"] is False, "launch failure semantics")
     else:
+        _require(installation_count == 0 and evidence["alternate_venv_created"] is False, "offline inspection unauthorized activity")
         _require(evidence["failure_code"] != "NONE", "failed evidence failure code")
         _require(evidence["human_authority_consumed"] and not evidence["candidate_artifact_created"], "failed evidence completion")
         _require(started and exit_code == 0 and invocations == 1 and evidence["resolution_completed"] is True, "offline inspection failure semantics")
         _require(candidate_sha is None and package_count is None, "offline inspection candidate fields")
 
 
-def inspect_wheel_file(wheel_path: str | Path) -> dict[str, str]:
+def _inspect_wheel_file_metadata(wheel_path: str | Path) -> dict[str, Any]:
     path = Path(wheel_path)
     parsed_name, parsed_version = _parse_wheel_filename(path.name)
     raw = path.read_bytes()
@@ -411,33 +664,57 @@ def inspect_wheel_file(wheel_path: str | Path) -> dict[str, str]:
     metadata_name = normalize_distribution_name(str(names[0]))
     metadata_version = str(versions[0])
     _require(metadata_name == parsed_name and metadata_version == parsed_version, "wheel identity mismatch")
-    return {"name": parsed_name, "version": parsed_version, "filename": path.name, "sha256": digest}
+    requires_python_values = metadata.get_all("Requires-Python") or []
+    _require(len(requires_python_values) <= 1, "duplicate Requires-Python")
+    requirements = tuple(sorted(str(value).strip() for value in (metadata.get_all("Requires-Dist") or [])))
+    _require(all(requirements), "empty dependency requirement")
+    return {
+        "name": parsed_name,
+        "version": parsed_version,
+        "filename": path.name,
+        "sha256": digest,
+        "requires_dist": requirements,
+        "requires_python": str(requires_python_values[0]).strip() if requires_python_values else None,
+    }
 
 
-def inspect_wheelhouse(wheelhouse: str | Path) -> tuple[str, tuple[dict[str, str], ...] | None]:
+def inspect_wheel_file(wheel_path: str | Path) -> dict[str, str]:
+    inspected = _inspect_wheel_file_metadata(wheel_path)
+    return {key: inspected[key] for key in WHEEL_FIELDS}
+
+
+def inspect_wheelhouse(wheelhouse: str | Path) -> tuple[str, tuple[dict[str, Any], ...] | None]:
     root = Path(wheelhouse)
     try:
         entries = list(root.iterdir())
     except OSError:
-        return "REQUIRED_DIRECT_DISTRIBUTION_MISSING", None
+        return "RESOLUTION_REPORT_INVALID", None
     if not entries:
-        return "REQUIRED_DIRECT_DISTRIBUTION_MISSING", None
+        return "PREDECESSOR_PIN_DRIFT", None
     if any(not entry.is_file() for entry in entries):
         return "RESOLUTION_REPORT_INVALID", None
-    if any(not entry.name.lower().endswith(".whl") for entry in entries):
-        return "SOURCE_DISTRIBUTION_REQUIRED", None
+    source_present = any(not entry.name.lower().endswith(".whl") for entry in entries)
     try:
-        wheels = tuple(sorted((inspect_wheel_file(entry) for entry in entries), key=lambda item: (item["name"], item["version"])))
-        validate_wheel_manifest(list(wheels))
-        package_sets = validate_resolved_packages([{"name": item["name"], "version": item["version"]} for item in wheels])
-        if len(package_sets["successor"]) <= len(PREDECESSOR_PACKAGE_SET):
-            return "REQUIRED_DIRECT_DISTRIBUTION_MISSING", wheels
-        return "NONE", wheels
-    except ContractValidationError as error:
-        code = str(error)
-        if code not in FAILURE_CODES or code == "NONE":
-            code = "WHEEL_PROVENANCE_FAILURE"
-        return code, None
+        wheels = tuple(sorted((_inspect_wheel_file_metadata(entry) for entry in entries if entry.name.lower().endswith(".whl")), key=lambda item: (item["name"], item["version"])))
+        public_wheels = [{key: item[key] for key in WHEEL_FIELDS} for item in wheels]
+        validate_wheel_manifest(public_wheels)
+    except (ContractValidationError, OSError, ValueError, KeyError):
+        return "RESOLUTION_REPORT_INVALID", None
+    package_map = {item["name"]: item["version"] for item in wheels}
+    if any(package_map.get(name) != version for name, version in PREDECESSOR_PACKAGE_SET):
+        return "PREDECESSOR_PIN_DRIFT", wheels
+    if package_map.get("lightgbm") != LIGHTGBM_PIN or package_map.get("scikit-learn") != SCIKIT_LEARN_PIN:
+        return "REQUIRED_DIRECT_DISTRIBUTION_MISSING", wheels
+    try:
+        _validate_dependency_closure(
+            [{"name": item["name"], "version": item["version"]} for item in wheels],
+            [{"name": item["name"], "version": item["version"], "requires_dist": list(item["requires_dist"]), "requires_python": item["requires_python"]} for item in wheels],
+        )
+    except ContractValidationError:
+        return "RESOLUTION_REPORT_INVALID", None
+    if source_present:
+        return "SOURCE_DISTRIBUTION_REQUIRED", wheels
+    return "NONE", wheels
 
 
 def verify_wheelhouse(wheelhouse: str | Path, expected_wheels: Sequence[Mapping[str, Any]]) -> tuple[dict[str, str], ...]:
