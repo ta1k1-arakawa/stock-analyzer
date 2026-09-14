@@ -38,6 +38,7 @@ from scripts.v10c_t0_ml_environment_contract import (
     git_blob_sha1,
     inspect_wheel_file,
     inspect_wheelhouse,
+    normalize_distribution_name,
     validate_approval_record,
     validate_direct_spec_bytes,
     validate_evidence,
@@ -311,6 +312,10 @@ def run_phase_a(config: PhaseAConfig, observations: Mapping[str, Any] | None = N
             "DIRECT_SPEC_BYTES_MISMATCH", "DIRECT_SPEC_SHA256_MISMATCH", "DIRECT_SPEC_PROVENANCE_FAILURE",
             "PREDECESSOR_LOCK_PROVENANCE_FAILURE", "PREDECESSOR_LOCK_UNREADABLE", "PREDECESSOR_LOCK_INVALID",
             "PREDECESSOR_PIN_DRIFT", "CANONICAL_INTERPRETER_BINDING_FAILURE",
+            "LIVE_PACKAGE_SET_UNPARSEABLE", "CANONICAL_INTERPRETER_PROBE_INVALID",
+            "DURABLE_ROOT_NOT_ABSOLUTE", "DURABLE_ROOT_ALREADY_EXISTS",
+            "DURABLE_ROOT_REPARSE_OR_SYMLINK", "DURABLE_ROOT_SAFETY_UNDETERMINED",
+            "DURABLE_ROOT_GOVERNED_PATH_OVERLAP", "DURABLE_ROOT_PARENT_MISSING",
         }
         code = error_code if error_code in allowed_codes else "PHASE_A_PRECHECK_FAILURE"
         return _phase_a_failure(code)
@@ -328,11 +333,7 @@ def _probe_environment(interpreter: Path) -> dict[str, Any]:
     pip_output = subprocess.run([str(interpreter), "-m", "pip", "--version"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, shell=False).stdout.decode("utf-8")
     freeze = subprocess.run([str(interpreter), "-m", "pip", "freeze", "--all"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True, shell=False).stdout
     match = re.search(r"\bpip\s+([0-9][^\s]*)", pip_output)
-    packages: list[dict[str, str]] = []
-    for line in freeze.decode("utf-8").splitlines():
-        if line and line.count("==") == 1:
-            name, version = line.split("==", 1)
-            packages.append({"name": name.lower().replace("_", "-"), "version": version})
+    packages = _parse_live_freeze_packages(freeze)
     if len(probe) != 6 or match is None:
         raise RunnerValidationError("CANONICAL_INTERPRETER_PROBE_INVALID")
     return {
@@ -341,6 +342,40 @@ def _probe_environment(interpreter: Path) -> dict[str, Any]:
         "platform_machine": probe[4], "sysconfig_platform": probe[5],
         "pip_version": match.group(1), "live_packages": sorted(packages, key=lambda item: item["name"]),
     }
+
+
+def _parse_live_freeze_packages(raw: bytes) -> list[dict[str, str]]:
+    """Parse pip-freeze bytes into the reviewed normalized package form."""
+
+    try:
+        text = raw.decode("utf-8")
+    except (AttributeError, UnicodeDecodeError) as error:
+        raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE") from error
+    packages: list[dict[str, str]] = []
+    normalized_names: set[str] = set()
+    for line in text.splitlines():
+        if not line:
+            continue
+        if line.count("==") != 1 or line.startswith("-"):
+            raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE")
+        raw_name, version = line.split("==", 1)
+        if (
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", raw_name) is None
+            or not version
+            or any(character.isspace() for character in version)
+            or "@" in version
+            or "://" in version
+        ):
+            raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE")
+        try:
+            normalized_name = normalize_distribution_name(raw_name)
+        except ContractValidationError as error:
+            raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE") from error
+        if normalized_name in normalized_names:
+            raise RunnerValidationError("LIVE_PACKAGE_SET_UNPARSEABLE")
+        normalized_names.add(normalized_name)
+        packages.append({"name": normalized_name, "version": version})
+    return sorted(packages, key=lambda package: package["name"])
 
 
 def _default_phase_a_observations(config: PhaseAConfig) -> dict[str, Any]:
@@ -364,6 +399,8 @@ def _default_phase_a_observations(config: PhaseAConfig) -> dict[str, Any]:
         lock_bytes = _git_output(config.repo_root, ["show", f"HEAD:{LOCK_RELATIVE.as_posix()}"])
         obs.update(predecessor_lock_bytes=lock_bytes, predecessor_lock_blob=git_blob_sha1(lock_bytes), predecessor_lock_sha256=hashlib.sha256(lock_bytes).hexdigest())
         obs.update(_probe_environment(config.canonical_interpreter))
+    except RunnerValidationError:
+        raise
     except (OSError, subprocess.CalledProcessError, UnicodeError, ValueError):
         pass
     return obs

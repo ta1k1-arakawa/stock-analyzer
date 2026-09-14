@@ -96,6 +96,87 @@ def test_phase_a_is_metadata_only_and_passes_synthetic_observations(tmp_path: Pa
     assert not config.durable_root.exists()
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (b"pdfminer.six==20260107\n", [{"name": "pdfminer-six", "version": "20260107"}]),
+        (b"pandas_market_calendars==5.4.0\n", [{"name": "pandas-market-calendars", "version": "5.4.0"}]),
+        (b"foo-bar==1.0\n", [{"name": "foo-bar", "version": "1.0"}]),
+    ],
+)
+def test_live_freeze_parser_uses_reviewed_distribution_normalization(raw: bytes, expected: list[dict[str, str]]) -> None:
+    assert runner._parse_live_freeze_packages(raw) == expected
+
+
+def test_live_freeze_hyphen_underscore_dot_names_normalize_identically() -> None:
+    assert runner._parse_live_freeze_packages(b"foo-bar==1.0\n") == runner._parse_live_freeze_packages(b"foo_bar==1.0\n")
+    assert runner._parse_live_freeze_packages(b"foo.bar==1.0\n") == runner._parse_live_freeze_packages(b"foo-bar==1.0\n")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"foo.bar==1.0\nfoo-bar==1.0\n",
+        b"not-a-freeze-line\n",
+        b"-e git+https://example.invalid/foo.git\n",
+        b"foo==file:///tmp/foo.whl\n",
+    ],
+)
+def test_live_freeze_parser_rejects_unparseable_or_direct_reference_lines(raw: bytes) -> None:
+    with pytest.raises(runner.RunnerValidationError, match="LIVE_PACKAGE_SET_UNPARSEABLE"):
+        runner._parse_live_freeze_packages(raw)
+
+
+def test_phase_a_accepts_pdfminer_dot_name_after_normalization(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    observations = _observations(config)
+    raw = b"\n".join(
+        f"{name}=={version}".encode("utf-8") for name, version in contract.PREDECESSOR_PACKAGE_SET
+    ).replace(b"pdfminer-six==20260107", b"pdfminer.six==20260107")
+    observations["live_packages"] = runner._parse_live_freeze_packages(raw)
+    assert runner.run_phase_a(config, observations)["status"] == "PASS"
+
+
+@pytest.mark.parametrize(
+    "failure_code",
+    [
+        "DURABLE_ROOT_NOT_ABSOLUTE",
+        "DURABLE_ROOT_ALREADY_EXISTS",
+        "DURABLE_ROOT_REPARSE_OR_SYMLINK",
+        "DURABLE_ROOT_SAFETY_UNDETERMINED",
+        "DURABLE_ROOT_GOVERNED_PATH_OVERLAP",
+        "DURABLE_ROOT_PARENT_MISSING",
+    ],
+)
+def test_phase_a_preserves_closed_durable_root_failure_codes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_code: str
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(runner, "validate_durable_root", lambda *args, **kwargs: failure_code)
+    result = runner.run_phase_a(config, _observations(config))
+    assert result["failure_code"] == failure_code
+
+
+def test_phase_a_preserves_canonical_interpreter_probe_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        runner,
+        "_default_phase_a_observations",
+        lambda config: (_ for _ in ()).throw(runner.RunnerValidationError("CANONICAL_INTERPRETER_PROBE_INVALID")),
+    )
+    result = runner.run_phase_a(_config(tmp_path))
+    assert result["failure_code"] == "CANONICAL_INTERPRETER_PROBE_INVALID"
+
+
+def test_phase_a_unknown_failure_remains_generic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        runner,
+        "_default_phase_a_observations",
+        lambda config: (_ for _ in ()).throw(runner.RunnerValidationError("UNEXPECTED_INTERNAL_FAILURE")),
+    )
+    result = runner.run_phase_a(_config(tmp_path))
+    assert result["failure_code"] == "PHASE_A_PRECHECK_FAILURE"
+
+
 @pytest.mark.parametrize("field", ["branch", "origin_head", "head", "clean"])
 def test_phase_a_rejects_governance_mismatch(tmp_path: Path, field: str) -> None:
     config = _config(tmp_path)
@@ -117,7 +198,7 @@ def test_phase_a_rejects_frozen_provenance_mismatch(tmp_path: Path, field: str) 
 def test_phase_a_rejects_existing_root_and_unsafe_ancestor(tmp_path: Path) -> None:
     config = _config(tmp_path)
     config.durable_root.mkdir()
-    assert runner.run_phase_a(config, _observations(config))["status"] == "FAIL"
+    assert runner.run_phase_a(config, _observations(config))["failure_code"] == "DURABLE_ROOT_ALREADY_EXISTS"
     unsafe_parent = tmp_path / "unsafe"
     unsafe_parent.mkdir()
     link = tmp_path / "reparse"
@@ -127,7 +208,7 @@ def test_phase_a_rejects_existing_root_and_unsafe_ancestor(tmp_path: Path) -> No
         pytest.skip("symlinks unavailable")
     unsafe_config = runner.PhaseAConfig(**{**config.__dict__, "durable_root": link / "future"})
     result = runner.run_phase_a(unsafe_config, _observations(unsafe_config))
-    assert result["status"] == "FAIL"
+    assert result["failure_code"] == "DURABLE_ROOT_REPARSE_OR_SYMLINK"
 
 
 def test_exact_resolution_argv_and_environment_sanitization(tmp_path: Path) -> None:

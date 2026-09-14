@@ -2603,3 +2603,12 @@ transitions. This public log must not contain protected material.
 - Added synthetic coverage for PASS/FAIL exact filesets, no root-level partial publication, candidate/evidence staging failures, rename failure preservation, collision/no-overwrite behavior, symlink rejection, byte reread mismatch, second-invocation collision, and retained HIGH-1/MEDIUM-2 regressions. No contract, direct spec, frozen design, approval, predecessor lock, or T0 code was modified.
 - Targeted result: `52 passed, 3 skipped`; no real package resolution, network request, package installation, environment mutation, model fit, T0 run, payload read, or private/sealed access occurred. Resolution, mutation, and T0 authorities remain false; `CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE=NO`; `future_profitability_established=false`.
 - MEDIUM-1 is `REMEDIATED_AWAITING_GPT_REVIEW`. Next action is `GPT_EXACT_SHA_V10C_T0_ML_RESOLUTION_MEDIUM_1_REVIEW`.
+
+## 2026-09-14 — V10C Phase-A live package normalization and failure classification remediation
+
+- Recorded the resolver implementation exact-SHA review of `094fac2a857e9af4a04a8ec7d456ad41534b6e54` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`.
+- The first real resolver Phase-A attempt failed pre-gate with generic `PHASE_A_PRECHECK_FAILURE`; there were zero network requests, writes, package resolution, wheel downloads, installations, environment mutations, model fits, T0 runs, or payload reads, and human authority was not consumed.
+- The review identified incomplete live pip-freeze normalization: underscores were normalized but dots were not, so `pdfminer.six` did not mechanically match the frozen `pdfminer-six` identity.
+- The successor remediation reuses the reviewed `normalize_distribution_name` semantics through a dedicated strict live-freeze parser, rejecting malformed, duplicate-normalized, option, editable, and direct-reference lines with closed `LIVE_PACKAGE_SET_UNPARSEABLE` classification.
+- Known durable-root and canonical-interpreter probe failures are now preserved as closed, auditable Phase-A failure classes; unknown failures remain generic `PHASE_A_PRECHECK_FAILURE`.
+- No scientific methodology, predecessor pin, direct pin, dependency-selection, authority, or package-selection change was made. Future profitability remains unestablished.
