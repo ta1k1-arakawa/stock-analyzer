@@ -2634,3 +2634,10 @@ transitions. This public log must not contain protected material.
 - The no-network diagnostic found 20 freeze lines: 15 exact pins and 5 direct-reference presentations. The direct-reference distributions were recorded by name only: `exchange-calendars`, `korean-lunar-calendar`, `pandas-market-calendars`, `pyluach`, and `toolz`; no local file URLs or paths were recorded.
 - Independent installed metadata observation found exactly 20 predecessor distributions with no missing, extra, duplicate, or version drift. The root cause was pip-freeze presentation, not package-set drift.
 - Production Phase-A observation now uses one canonical-interpreter `importlib.metadata` child probe, with reviewed distribution-name normalization and closed malformed metadata handling. No package-selection or methodology change was made; future profitability remains unestablished.
+
+## 2026-09-14 — V10C Phase-A metadata observer state MEDIUM-1 bookkeeping remediation
+
+- Recorded the GPT exact-SHA review of `96c6ff056b00cf2ea4074225ebb99e8b571bb830` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`.
+- The installed-metadata observer implementation was accepted; production Phase-A package authority uses canonical-interpreter `importlib.metadata`, not pip freeze.
+- The sole finding was stale status for the prior duplicate-key MEDIUM-1, already resolved by the `d4afeb9c1a8f81bb88e10d03202a46f248e3d105` `PASS` review. Corrected that prior finding to `RESOLVED`; the current metadata-observer finding remains awaiting exact-SHA review.
+- No real resolution, network request, installation, environment mutation, model fit, T0 run, or payload read occurred. Phase-A attempt-2 human authority remains unconsumed.
