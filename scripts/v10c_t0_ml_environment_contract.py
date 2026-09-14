@@ -355,18 +355,17 @@ def _marker_applies(raw: str | None) -> bool:
     return True if raw is None else _MarkerParser(raw.strip(), TARGET_ENVIRONMENT).parse()
 
 
-def _parse_requirement(raw: str) -> tuple[str, str, str | None]:
+def _parse_requirement(raw: str) -> tuple[str, str, str | None, str | None]:
     _require(isinstance(raw, str) and bool(raw.strip()), "invalid dependency requirement")
     requirement, separator, marker = raw.partition(";")
     match = re.fullmatch(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[([^]]+)\])?\s*(.*)\s*", requirement)
     _require(match is not None, "invalid dependency requirement")
     extras = match.group(2)
-    _require(extras is None, "dependency extras are not closed")
     specifier = match.group(3).strip()
     if specifier.startswith("(") and specifier.endswith(")"):
         specifier = specifier[1:-1].strip()
     _require(not separator or bool(marker.strip()), "invalid dependency marker")
-    return normalize_distribution_name(match.group(1)), specifier, marker.strip() if separator else None
+    return normalize_distribution_name(match.group(1)), specifier, marker.strip() if separator else None, extras
 
 
 def _validate_dependency_closure(packages: Sequence[Mapping[str, Any]], metadata: Any) -> None:
@@ -400,9 +399,10 @@ def _validate_dependency_closure(packages: Sequence[Mapping[str, Any]], metadata
         if requires_python is not None:
             _require(_version_satisfies("3.12.10", requires_python), "RESOLUTION_REPORT_INVALID")
         for raw in requirements:
-            dependency, specifier, marker = _parse_requirement(raw)
+            dependency, specifier, marker, extras = _parse_requirement(raw)
             if not _marker_applies(marker):
                 continue
+            _require(extras is None, "dependency extras are not closed")
             _require(dependency in package_map, "RESOLUTION_REPORT_INVALID")
             if specifier:
                 _require(_version_satisfies(package_map[dependency], specifier), "RESOLUTION_REPORT_INVALID")

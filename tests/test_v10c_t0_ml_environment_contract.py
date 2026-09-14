@@ -32,6 +32,29 @@ def _packages() -> list[dict[str, str]]:
     return sorted(packages, key=lambda item: (item["name"], item["version"]))
 
 
+def _closure_metadata(*, lightgbm_requirements: tuple[str, ...] = (), narwhals_requirements: tuple[str, ...] = ()) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
+    packages = _packages()
+    if narwhals_requirements or lightgbm_requirements and "narwhals" in lightgbm_requirements:
+        packages.append({"name": "narwhals", "version": "2.26.0"})
+    packages.sort(key=lambda item: (item["name"], item["version"]))
+    metadata: list[dict[str, object]] = []
+    for package in packages:
+        requirements: tuple[str, ...] = ()
+        if package["name"] == "lightgbm":
+            requirements = lightgbm_requirements
+        elif package["name"] == "narwhals":
+            requirements = narwhals_requirements
+        metadata.append(
+            {
+                "name": package["name"],
+                "version": package["version"],
+                "requires_dist": list(requirements),
+                "requires_python": None,
+            }
+        )
+    return packages, metadata
+
+
 def test_constants_and_direct_spec_are_frozen() -> None:
     assert contract.FROZEN_DESIGN_SHA == "840094e09f89569b8e6345bd2e19f43298e9ddfe"
     assert contract.FROZEN_DESIGN_BLOB == "8efe1ef1d789ea22b5c070593610f158d2fad53e"
@@ -72,6 +95,69 @@ def test_duplicate_normalized_distribution_rejected() -> None:
     packages.append({"name": "light_gbm", "version": "4.6.0"})
     with pytest.raises(contract.ContractValidationError):
         contract.validate_resolved_packages(packages)
+
+
+def test_inactive_extra_requirement_is_ignored_before_extras_closure() -> None:
+    inactive = (
+        'dask[array,dataframe,distributed]>=2.0.0; extra == "dask"',
+        "dask[dataframe]>=2024.8 ; extra == 'dask'",
+        "narwhals[duckdb] ; extra == 'sql'",
+        "pyspark[connect]>=3.5.0 ; extra == 'pyspark-connect'",
+    )
+    packages, metadata = _closure_metadata(
+        lightgbm_requirements=tuple(sorted(("narwhals", inactive[0]))),
+        narwhals_requirements=tuple(sorted(inactive[1:])),
+    )
+    contract._validate_dependency_closure(packages, metadata)
+
+
+def test_active_extra_requirement_fails_closed() -> None:
+    packages, metadata = _closure_metadata(
+        lightgbm_requirements=("narwhals", 'narwhals[duckdb]; python_version >= "3.12"'),
+    )
+    with pytest.raises(contract.ContractValidationError, match="dependency extras are not closed"):
+        contract._validate_dependency_closure(packages, metadata)
+
+
+def test_unmarked_extra_requirement_fails_closed() -> None:
+    packages, metadata = _closure_metadata(
+        lightgbm_requirements=("narwhals", "narwhals[duckdb]"),
+    )
+    with pytest.raises(contract.ContractValidationError, match="dependency extras are not closed"):
+        contract._validate_dependency_closure(packages, metadata)
+
+
+def test_observed_inactive_extra_requirements_are_false_for_frozen_target() -> None:
+    requirements = (
+        'dask[array,dataframe,distributed]>=2.0.0; extra == "dask"',
+        "dask[dataframe]>=2024.8 ; extra == 'dask'",
+        "narwhals[duckdb] ; extra == 'sql'",
+        "pyspark[connect]>=3.5.0 ; extra == 'pyspark-connect'",
+    )
+    for raw in requirements:
+        _, _, marker, extras = contract._parse_requirement(raw)
+        assert extras is not None
+        assert contract._marker_applies(marker) is False
+
+
+def test_ordinary_dependency_and_marker_handling_remain_unchanged() -> None:
+    packages, metadata = _closure_metadata(
+        lightgbm_requirements=("narwhals", "narwhals>=2.0; python_version >= \"3.12\""),
+    )
+    contract._validate_dependency_closure(packages, metadata)
+    packages, metadata = _closure_metadata(lightgbm_requirements=("missing>=1; extra == 'dask'",))
+    contract._validate_dependency_closure(packages, metadata)
+
+
+def test_active_missing_dependency_still_fails_closed() -> None:
+    packages, metadata = _closure_metadata(lightgbm_requirements=("missing>=1",))
+    with pytest.raises(contract.ContractValidationError):
+        contract._validate_dependency_closure(packages, metadata)
+
+
+def test_existing_version_specifier_behavior_remains_unchanged() -> None:
+    assert contract._version_satisfies("2.26.0", ">=2.0,<3") is True
+    assert contract._version_satisfies("1.9.0", ">=2.0") is False
 
 
 def test_wheel_filename_metadata_and_hash_are_checked(tmp_path: Path) -> None:

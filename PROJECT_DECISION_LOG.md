@@ -2641,3 +2641,11 @@ transitions. This public log must not contain protected material.
 - The installed-metadata observer implementation was accepted; production Phase-A package authority uses canonical-interpreter `importlib.metadata`, not pip freeze.
 - The sole finding was stale status for the prior duplicate-key MEDIUM-1, already resolved by the `d4afeb9c1a8f81bb88e10d03202a46f248e3d105` `PASS` review. Corrected that prior finding to `RESOLVED`; the current metadata-observer finding remains awaiting exact-SHA review.
 - No real resolution, network request, installation, environment mutation, model fit, T0 run, or payload read occurred. Phase-A attempt-2 human authority remains unconsumed.
+
+## 2026-09-14 — V10C inactive-extra validator and offline readjudication remediation
+
+- Recorded the exact-SHA review of `3aee6c2772f30c6dc35d2a7efb862ae15091febc` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`; the prior Phase-A metadata-observer findings are resolved.
+- The first complete source resolution is frozen as provenance: 27 wheels, 94,451,528 total bytes, and manifest SHA-256 `5d5953f14b0609767972679554e1999e754621056d863f8c33def96988797b74`. Phase B completed once with exit code 0 and consumed the one-shot resolution authority; no retry is authorized.
+- Phase C failed with `RESOLUTION_REPORT_INVALID` because inactive optional dependency extras were rejected before marker evaluation. The validator now evaluates the frozen target marker first, ignores false-marker requirements, and fails closed for active or unmarked extras without changing package versions, dependency roots, or methodology.
+- Added safe source-resolution provenance and a separate offline readjudication runner that validates the same 27 wheel bytes and publishes only to a new fail-atomic namespace. The source attempt root and original failure evidence remain read-only and preserved; no second resolution, network, installation, environment mutation, model fit, T0 run, or payload read occurred.
+- Targeted result: `100 passed, 4 skipped`. Future profitability remains unestablished; resolution authority is consumed from the source attempt, while resolution retry, mutation, and T0 authorities remain false.
