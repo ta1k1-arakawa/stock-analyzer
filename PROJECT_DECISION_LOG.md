@@ -2729,3 +2729,9 @@ transitions. This public log must not contain protected material.
 - Recorded the latest review of `8aef2a699eecf895c5b50749c7dd737020d3b45c` as `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_1_LOW_0`; HIGH-1 and HIGH-2 remain remediated awaiting review, while HIGH-3 and MEDIUM-1 remain open.
 - Replaced the production collector stub with read-only repository, canonical-interpreter, metadata, pip-reachability, wheel-root, and attempt-namespace observation paths. Phase B now consumes an immutable verified Phase-A result and rehashes all seven wheels immediately before the boundary; caller observations, wheel paths, and interpreter overrides are not public inputs.
 - Targeted synthetic test result: `6 passed`. No real phase, installation, mutation, network/package-index access, model fit, T0, payload/private access, or human mutation-gate consumption occurred.
+
+## 2026-09-14 — V10C mutation implementation MEDIUM-2 blocked-SHA bookkeeping remediation
+
+- Recorded the exact-SHA review of `a4556820da229826e6c9e74b9423d81cc04f3a0c` as `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_2_LOW_0`.
+- HIGH-1 and HIGH-2 remain `OPEN`; HIGH-3 and MEDIUM-1 remain `OPEN`. The blocked SHA is recorded only as the latest reviewed attempt and is not an execution-reviewed or PASS binding.
+- Remediated MEDIUM-2 bookkeeping by setting `V10C_T0_ML_CANONICAL_MUTATION_IMPLEMENTATION_PASS_SHA=UNESTABLISHED`; no PASS SHA was invented. Mutation, installation, T0, and global readiness authorities remain false/NO.
