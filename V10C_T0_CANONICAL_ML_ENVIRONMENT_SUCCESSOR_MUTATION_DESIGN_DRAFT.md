@@ -46,7 +46,7 @@ closed failure before the corresponding boundary.
 | Binding | Required value |
 | --- | --- |
 | Authoritative branch | `v9-cross-sectional-close-auction-design` |
-| Reviewed promotion commit | `89e0998f55b8bd4acf646fe8ca6f41120a191171` |
+| Reviewed promotion provenance commit | `89e0998f55b8bd4acf646fe8ca6f41120a191171` |
 | Successor lock Git blob | `13636e58fbe40071be04cbfa57c3990c1d8ff2e0` |
 | Successor lock SHA-256 | `f38dd4c7319465bb7e6ff429e8dff4a476d9966c744b19e50264dcc0b18e8300` |
 | Promotion-record Git blob | `b866e6d77508d6366569ee6a229587c59c3c8be2` |
@@ -75,6 +75,26 @@ threadpoolctl==3.6.0
 ```
 
 No package outside that seven-package set is installable under this design.
+
+### 2.1 Future execution-time implementation binding
+
+The reviewed promotion commit is immutable provenance only. It is not an
+execution-time repository-head target and it must never be used to reset the
+future execution checkout. This design deliberately does not fabricate a
+future commit SHA.
+
+```text
+MUTATION_IMPLEMENTATION_REVIEWED_SHA=UNESTABLISHED
+MUTATION_IMPLEMENTATION_REVIEW_RESULT=UNESTABLISHED
+```
+
+These bindings are established only when a future mutation implementation has
+received a GPT exact-SHA `PASS`. Execution is prohibited until both are
+established. Thereafter, Phase A and the Phase B immediate pre-launch recheck
+require local `HEAD` and local
+`refs/remotes/origin/v9-cross-sectional-close-auction-design` to equal that
+exact reviewed mutation-implementation SHA. The promotion commit remains a
+separate provenance binding in every such recheck.
 
 ## 3. Future durable attempt namespace
 
@@ -107,10 +127,13 @@ before point-of-use mutation authority is requested or consumed.
 
 It must prove all of the following:
 
-1. The repository is on the authoritative branch; `HEAD` and the local
+1. The repository is on the authoritative branch; the future
+   `MUTATION_IMPLEMENTATION_REVIEWED_SHA` and its GPT exact-SHA `PASS` result
+   are established; `HEAD` and the local
    `refs/remotes/origin/v9-cross-sectional-close-auction-design` both equal
-   the reviewed promotion commit, and the working tree is clean. It performs
-   no fetch, `ls-remote`, or other network operation.
+   that exact reviewed implementation SHA; and the working tree is clean. The
+   reviewed promotion commit remains provenance only. It performs no fetch,
+   `ls-remote`, or other network operation.
 2. The committed successor lock has the exact blob and SHA-256 in section 2;
    the promotion record has its exact blob; and the candidate, evidence, and
    source-wheel-manifest SHA-256 bindings exactly match section 2.
@@ -129,6 +152,8 @@ It must prove all of the following:
    index.
 6. The durable attempt namespace in section 3 is fresh, non-overlapping, and
    unambiguous.
+7. Before requesting or accepting human mutation authorization, the
+   operation-specific pre-gate closure described in section 4.1 is `YES`.
 
 Phase A has no network, installation, environment mutation, model fit, T0,
 training/evaluation payload, raw-market payload, candidate/evidence payload,
@@ -141,6 +166,56 @@ only a separately authorized non-methodological preflight repair and a new
 complete preflight. It never permits a second resolution or alternate package
 selection.
 
+### 4.1 Mandatory mutation-operation readiness closure
+
+Before requesting or accepting fresh mutation authority, Phase A must
+mechanically establish readiness for every software and durable mechanism
+reachable after the mutation gate. It reuses the existing reviewed canonical
+environment readiness machinery wherever applicable; it does not redefine
+the existing interpreter, environment-lock/fingerprint, parser-probe, or
+filesystem-readiness semantics.
+
+The required closure is all of the following:
+
+1. The existing reviewed canonical-environment readiness checker is run using
+   the canonical interpreter and must pass every applicable pre-mutation
+   interpreter, baseline predecessor-lock/fingerprint, and filesystem/durable
+   readiness predicate. Its established semantics are reused rather than
+   duplicated.
+2. The future reviewed mutation implementation's canonical subprocess builder
+   is statically bound to the resolved canonical interpreter and exactly
+   `-m pip install --no-deps --no-index`. A no-network canonical
+   `python -m pip --version` probe confirms that the `pip` invocation
+   machinery itself is reachable before the gate; it must not install,
+   download, resolve, or contact an index.
+3. The reviewed mutation implementation's durable publication protocol is
+   mechanically validated pre-gate: the planned attempt root is fresh and
+   non-reparse, all reserved output names are exclusive/no-overwrite, and the
+   state/stdout/stderr/evidence protocol is bound to one parent volume and
+   atomic publication semantics. A deterministic privacy-safe pre-gate probe
+   may use only a distinct fresh probe namespace under that same protected
+   audit root; it must never overlap the real attempt root and is preserved
+   rather than deleted. Any uncertain stat, permission, volume, reparse, or
+   exclusivity result fails closed.
+4. The exact future reviewed implementation SHA, its protected source blobs,
+   the promotion provenance, the seven-wheel selection rule, canonical
+   interpreter, and the durable protocol are all bound in the Phase-A safe
+   evidence.
+
+Only when every item is mechanically proven may Phase A emit the required
+operation-specific predicate:
+
+```text
+CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE_FOR_MUTATION=YES
+```
+
+`NO` or `UNKNOWN` is `PRE_GATE_ENVIRONMENT_BLOCK`, consumes no mutation
+authority, and prohibits requesting or accepting the human authorization.
+This predicate does not alter the global
+`CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE`,
+which remains `NO` until the separate successor T0 readiness sequence is
+successfully completed and reviewed.
+
 ## 5. Phase B — one bounded canonical mutation
 
 Phase B is reachable only after every Phase A predicate passes and a fresh,
@@ -150,10 +225,11 @@ inherited from the design freeze, resolution, promotion, T0, or any prior
 authority.
 
 Immediately before process launch, the implementation reruns the
-non-destructive repository, provenance, interpreter, predecessor-set,
-wheel-set, and durable-root bindings. It then atomically records a
-privacy-safe mutation receipt/state in the fresh attempt root and launches
-one process using only the canonical interpreter:
+non-destructive repository, future reviewed-implementation SHA, promotion
+provenance, mutation-readiness-`YES`, interpreter, predecessor-set, wheel-set,
+and durable-root bindings. It then atomically records a privacy-safe mutation
+receipt/state in the fresh attempt root and launches one process using only
+the canonical interpreter:
 
 ```text
 .venv-real-execution\Scripts\python.exe -m pip install --no-deps --no-index <the seven individually validated local wheel files>
