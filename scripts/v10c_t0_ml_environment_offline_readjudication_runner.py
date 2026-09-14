@@ -36,6 +36,8 @@ READJUDICATION_ARTIFACT_STAGING_DIRECTORY_NAME = "offline_readjudication_artifac
 READJUDICATION_CANDIDATE_NAME = "V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_LOCK_CANDIDATE.json"
 READJUDICATION_EVIDENCE_NAME = "V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_OFFLINE_READJUDICATION_EVIDENCE.json"
 READJUDICATION_EVIDENCE_SCHEMA = "V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_OFFLINE_READJUDICATION_EVIDENCE_V1"
+READJUDICATION_RUNNER_RELATIVE = Path("scripts/v10c_t0_ml_environment_offline_readjudication_runner.py")
+CONTRACT_RELATIVE = Path("scripts/v10c_t0_ml_environment_contract.py")
 SOURCE_RESOLUTION_HEAD = "3aee6c2772f30c6dc35d2a7efb862ae15091febc"
 SOURCE_RESOLUTION_RUNNER_BLOB = "4a941e4631174c3dc56a1623f2eb270045832905"
 SOURCE_WHEEL_MANIFEST_ALGORITHM = "CANONICAL_WHEEL_MANIFEST_V1"
@@ -218,15 +220,20 @@ def _validate_repository(config: OfflineReadjudicationConfig) -> None:
     _require_sha(config.expected_readjudication_runner_blob_sha1, SHA1_RE, "SOURCE_PROVENANCE_MISMATCH")
     _require_sha(config.expected_contract_blob_sha1, SHA1_RE, "SOURCE_PROVENANCE_MISMATCH")
     _require_sha(config.expected_source_provenance_blob_sha1, SHA1_RE, "SOURCE_PROVENANCE_MISMATCH")
+    if config.expected_reviewed_readjudication_runner_sha != config.expected_current_head:
+        raise OfflineReadjudicationError("SOURCE_PROVENANCE_MISMATCH")
     try:
         remote = _git_output(config.repo_root, ["config", "--get", "remote.origin.url"]).decode().strip()
         branch = _git_output(config.repo_root, ["branch", "--show-current"]).decode().strip()
         origin = _git_output(config.repo_root, ["rev-parse", f"refs/remotes/origin/{AUTHORITATIVE_BRANCH}"]).decode().strip()
         head = _git_output(config.repo_root, ["rev-parse", "HEAD"]).decode().strip()
         clean = _git_output(config.repo_root, ["status", "--porcelain", "--untracked-files=all"]) == b""
-        runner_blob = _git_output(config.repo_root, ["rev-parse", f"HEAD:{Path(__file__).relative_to(config.repo_root).as_posix()}"]).decode().strip()
-        contract_blob = _git_output(config.repo_root, ["rev-parse", "HEAD:scripts/v10c_t0_ml_environment_contract.py"]).decode().strip()
+        runner_blob = _git_output(config.repo_root, ["rev-parse", f"HEAD:{READJUDICATION_RUNNER_RELATIVE.as_posix()}"]).decode().strip()
+        contract_blob = _git_output(config.repo_root, ["rev-parse", f"HEAD:{CONTRACT_RELATIVE.as_posix()}"]).decode().strip()
         provenance_blob = _git_output(config.repo_root, ["rev-parse", f"HEAD:{SOURCE_PROVENANCE_NAME}"]).decode().strip()
+        reviewed_runner_blob = _git_output(config.repo_root, ["rev-parse", f"{config.expected_reviewed_readjudication_runner_sha}:{READJUDICATION_RUNNER_RELATIVE.as_posix()}"]).decode().strip()
+        reviewed_contract_blob = _git_output(config.repo_root, ["rev-parse", f"{config.expected_reviewed_readjudication_runner_sha}:{CONTRACT_RELATIVE.as_posix()}"]).decode().strip()
+        reviewed_provenance_blob = _git_output(config.repo_root, ["rev-parse", f"{config.expected_reviewed_readjudication_runner_sha}:{SOURCE_PROVENANCE_NAME}"]).decode().strip()
     except (OSError, subprocess.CalledProcessError, UnicodeError, ValueError) as error:
         raise OfflineReadjudicationError("SOURCE_PROVENANCE_MISMATCH") from error
     if (
@@ -238,7 +245,10 @@ def _validate_repository(config: OfflineReadjudicationConfig) -> None:
         or runner_blob != config.expected_readjudication_runner_blob_sha1
         or contract_blob != config.expected_contract_blob_sha1
         or provenance_blob != config.expected_source_provenance_blob_sha1
-        or git_blob_sha1(Path(__file__.read_bytes())) != config.expected_readjudication_runner_blob_sha1
+        or reviewed_runner_blob != config.expected_readjudication_runner_blob_sha1
+        or reviewed_contract_blob != config.expected_contract_blob_sha1
+        or reviewed_provenance_blob != config.expected_source_provenance_blob_sha1
+        or git_blob_sha1(Path(__file__).read_bytes()) != config.expected_readjudication_runner_blob_sha1
     ):
         raise OfflineReadjudicationError("SOURCE_PROVENANCE_MISMATCH")
 

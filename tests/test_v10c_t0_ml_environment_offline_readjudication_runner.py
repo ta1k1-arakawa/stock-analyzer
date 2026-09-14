@@ -24,6 +24,98 @@ def _config(tmp_path: Path) -> runner.OfflineReadjudicationConfig:
     )
 
 
+def _repository_probe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[runner.OfflineReadjudicationConfig, dict[str, str]]:
+    current_head = "a" * 40
+    runner_blob = git_blob_sha1(Path(runner.__file__).read_bytes())
+    contract_path = Path(runner.__file__).resolve().parents[1] / "scripts" / "v10c_t0_ml_environment_contract.py"
+    contract_blob = git_blob_sha1(contract_path.read_bytes())
+    provenance_path = Path(runner.__file__).resolve().parents[1] / runner.SOURCE_PROVENANCE_NAME
+    provenance_blob = git_blob_sha1(provenance_path.read_bytes())
+    config = runner.OfflineReadjudicationConfig(
+        repo_root=tmp_path / "repo",
+        expected_current_head=current_head,
+        expected_reviewed_readjudication_runner_sha=current_head,
+        expected_readjudication_runner_blob_sha1=runner_blob,
+        expected_contract_blob_sha1=contract_blob,
+        expected_source_provenance_blob_sha1=provenance_blob,
+        source_attempt_root=tmp_path / "source",
+        output_root=tmp_path / "output",
+    )
+    facts = {
+        "current_runner": runner_blob,
+        "current_contract": contract_blob,
+        "current_provenance": provenance_blob,
+        "reviewed_runner": runner_blob,
+        "reviewed_contract": contract_blob,
+        "reviewed_provenance": provenance_blob,
+    }
+
+    def fake_git_output(repo_root: Path, args: tuple[str, ...] | list[str]) -> bytes:
+        if args[:3] == ["config", "--get", "remote.origin.url"]:
+            return b"https://github.com/ta1k1-arakawa/stock-analyzer.git\n"
+        if args[:2] == ["branch", "--show-current"]:
+            return (runner.AUTHORITATIVE_BRANCH + "\n").encode()
+        if args[0:2] == ["rev-parse", f"refs/remotes/origin/{runner.AUTHORITATIVE_BRANCH}"]:
+            return (current_head + "\n").encode()
+        if args[0:2] == ["rev-parse", "HEAD"]:
+            return (current_head + "\n").encode()
+        if args[:2] == ["status", "--porcelain"]:
+            return b""
+        if args[:2] == ["rev-parse", "HEAD:"]:
+            raise AssertionError(args)
+        if args[0] == "rev-parse" and ":" in args[1]:
+            revision, path = args[1].split(":", 1)
+            prefix = "current" if revision == "HEAD" else "reviewed"
+            if path == runner.READJUDICATION_RUNNER_RELATIVE.as_posix():
+                return (facts[f"{prefix}_runner"] + "\n").encode()
+            if path == runner.CONTRACT_RELATIVE.as_posix():
+                return (facts[f"{prefix}_contract"] + "\n").encode()
+            if path == runner.SOURCE_PROVENANCE_NAME:
+                return (facts[f"{prefix}_provenance"] + "\n").encode()
+            raise AssertionError((revision, path))
+        raise AssertionError(args)
+
+    monkeypatch.setattr(runner, "_git_output", fake_git_output)
+    return config, facts
+
+
+def test_validate_repository_production_path_checks_self_bytes_and_reviewed_sha(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config, _ = _repository_probe(monkeypatch, tmp_path)
+    runner._validate_repository(config)
+
+
+def test_reviewed_sha_must_equal_current_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config, _ = _repository_probe(monkeypatch, tmp_path)
+    config = runner.OfflineReadjudicationConfig(**{**config.__dict__, "expected_reviewed_readjudication_runner_sha": "b" * 40})
+    with pytest.raises(runner.OfflineReadjudicationError, match="SOURCE_PROVENANCE_MISMATCH"):
+        runner._validate_repository(config)
+
+
+@pytest.mark.parametrize("mismatch", ["runner", "contract", "provenance"])
+def test_reviewed_sha_objects_must_match_expected_blobs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mismatch: str) -> None:
+    config, facts = _repository_probe(monkeypatch, tmp_path)
+    facts[f"reviewed_{mismatch}"] = "0" * 40
+    with pytest.raises(runner.OfflineReadjudicationError, match="SOURCE_PROVENANCE_MISMATCH"):
+        runner._validate_repository(config)
+
+
+@pytest.mark.parametrize("mismatch", ["runner", "contract", "provenance"])
+def test_current_head_objects_must_match_expected_blobs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mismatch: str) -> None:
+    config, facts = _repository_probe(monkeypatch, tmp_path)
+    facts[f"current_{mismatch}"] = "0" * 40
+    with pytest.raises(runner.OfflineReadjudicationError, match="SOURCE_PROVENANCE_MISMATCH"):
+        runner._validate_repository(config)
+
+
+def test_working_runner_bytes_must_match_expected_blob(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config, _ = _repository_probe(monkeypatch, tmp_path)
+    working_copy = tmp_path / "working-runner.py"
+    working_copy.write_bytes(b"different runner bytes")
+    monkeypatch.setattr(runner, "__file__", str(working_copy))
+    with pytest.raises(runner.OfflineReadjudicationError, match="SOURCE_PROVENANCE_MISMATCH"):
+        runner._validate_repository(config)
+
+
 def _wheels() -> tuple[dict[str, object], ...]:
     packages = sorted(
         [*PREDECESSOR_PACKAGE_SET, ("lightgbm", "4.6.0"), ("scikit-learn", "1.9.0")]

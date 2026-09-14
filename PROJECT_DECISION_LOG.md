@@ -2649,3 +2649,11 @@ transitions. This public log must not contain protected material.
 - Phase C failed with `RESOLUTION_REPORT_INVALID` because inactive optional dependency extras were rejected before marker evaluation. The validator now evaluates the frozen target marker first, ignores false-marker requirements, and fails closed for active or unmarked extras without changing package versions, dependency roots, or methodology.
 - Added safe source-resolution provenance and a separate offline readjudication runner that validates the same 27 wheel bytes and publishes only to a new fail-atomic namespace. The source attempt root and original failure evidence remain read-only and preserved; no second resolution, network, installation, environment mutation, model fit, T0 run, or payload read occurred.
 - Targeted result: `100 passed, 4 skipped`. Future profitability remains unestablished; resolution authority is consumed from the source attempt, while resolution retry, mutation, and T0 authorities remain false.
+
+## 2026-09-14 — V10C offline readjudication production provenance remediation
+
+- Recorded the GPT exact-SHA review of `5ab0c847c4482ebec228f53d59701f539161cef7` as `BLOCK` with `CRITICAL=0`, `HIGH=1`, `MEDIUM=1`, and `LOW=0`.
+- The marker-before-extras contract repair and exact 27-wheel source provenance were accepted; package versions, dependency closure, frozen methodology, and source facts remain unchanged.
+- HIGH-1 identified an offline readjudication self-blob production-path attribute error caused by hashing `file.read_bytes()` on a string instead of reading `Path(file)` bytes.
+- MEDIUM-1 identified that the reviewed readjudication SHA was only syntactically validated and was not bound to the current HEAD or to the reviewed runner, contract, and source-provenance blobs.
+- The remediation reads the current runner bytes correctly and requires current HEAD, origin, expected current head, expected reviewed SHA, reviewed objects, current objects, and working runner bytes to bind to the expected provenance blobs. No network, second resolution, installation, environment mutation, model fit, T0 run, payload read, or source-provenance modification occurred.
