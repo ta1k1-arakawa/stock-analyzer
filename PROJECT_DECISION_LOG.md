@@ -2571,3 +2571,10 @@ transitions. This public log must not contain protected material.
 - Human `DESIGN_FREEZE_ONLY` approval was recorded for the exact design commit/blob and prospective direct pins `lightgbm==4.6.0` and `scikit-learn==1.9.0`. No raw identity or private authorization text is recorded.
 - The approval record authorizes implementation phase only after its own GPT exact-SHA PASS. Package resolution, package-index/network access, wheel acquisition, installation, canonical mutation, T0, payload reads, model fitting, evaluation, and private/sealed access remain unauthorized. Transitive versions remain unresolved.
 - No network, package resolution, environment mutation, payload read, model fit, T0 run, or human-gate consumption occurred in this bookkeeping task. Future profitability remains unestablished.
+
+## 2026-09-14 — V10C environment approval-record fieldset remediation
+
+- Recorded the exact-SHA review of `e569d37b488b635aee641b9a1651ad13ebd87d06` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`.
+- The sole finding was omission of the required exact approval-record field `evaluation_payload_read_authorized`; all other approval bindings and false authority values were accepted.
+- Added only `evaluation_payload_read_authorized=false` to the canonical record. The human `DESIGN_FREEZE_ONLY` scope and all package-resolution, network, mutation, payload, model, T0, and private/sealed prohibitions remain unchanged.
+- No package resolution, network request, environment mutation, payload read, model fit, T0 run, or human-gate consumption occurred.
