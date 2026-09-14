@@ -2717,3 +2717,9 @@ transitions. This public log must not contain protected material.
 - Created the V10C-specific three-phase runner and its isolated synthetic tests. Phase A is read-only/no-network and binds the reviewed future implementation SHA at execution time; Phase B requires point-of-use human authorization and consumes authority at the durable boundary; Phase C is mandatory after every crossed boundary and is no-network.
 - No canonical mutation, pip install, package installation, package-index/network access, real package readiness/import, model fit, T0, payload/private access, or human mutation-gate consumption occurred. The implementation remains `IMPLEMENTED_AWAITING_GPT_REVIEW`.
 - Next action: `GPT_EXACT_SHA_V10C_T0_ML_CANONICAL_MUTATION_IMPLEMENTATION_REVIEW`.
+
+## 2026-09-14 — V10C mutation implementation HIGH-1/HIGH-2 remediation
+
+- Recorded review `8b53c2f53c9f093c49295e8f843f32e50b69065d` as `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_1_LOW_0`. HIGH-1 and HIGH-2 are remediated awaiting review; HIGH-3 and MEDIUM-1 remain open.
+- Added actual CLI dispatch and an injectable, fail-closed read-only production collector. Phase B now derives its canonical interpreter and seven wheel paths solely from the fresh Phase-A observation; arbitrary paths cannot be supplied.
+- No phase, installation, mutation, package-index access, payload/private access, model fit, T0, or human mutation authority occurred.

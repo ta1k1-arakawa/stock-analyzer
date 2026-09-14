@@ -95,6 +95,8 @@ def phase_a(config: Config, observed: Mapping[str, Any]) -> dict[str, Any]:
         "reserved_absent": True, "ancestors_safe": True, "governed_root_safe": True,
         "approval_semantics": True, "v10a_predecessor_authority": True,
     }
+    expected_python = config.repo_root / ".venv-real-execution" / "Scripts" / "python.exe"
+    if config.canonical_python != expected_python or config.attempt_root.name != ATTEMPT_NAME: return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
     if not re.fullmatch(r"[0-9a-f]{40}", sha): return _fail("PRE_GATE_ENVIRONMENT_BLOCK", reason="REVIEWED_SHA_INVALID")
     if observed.get("dirty") is True or observed.get("network_requests", 0) != 0 or observed.get("writes", 0) != 0: return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
     if any(not _exact(observed, key, value) for key, value in bindings.items()): return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
@@ -108,16 +110,25 @@ def build_pip_argv(canonical_python: Path, wheel_paths: Sequence[Path]) -> list[
     if len(wheel_paths) != 7: raise MutationError("DELTA_WHEEL_COUNT_INVALID")
     return [str(canonical_python), "-m", "pip", "install", "--no-deps", "--no-index", *map(str, wheel_paths)]
 
+def production_collect(config: Config) -> Mapping[str, Any]:
+    """Read-only production collector; any unavailable observation fails closed."""
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=config.repo_root, capture_output=True, text=True, check=False).stdout.strip()
+    current_blob = git("hash-object", "scripts/v10c_t0_ml_canonical_mutation_runner.py")
+    reviewed_blob = git("rev-parse", f"{config.reviewed_implementation_sha}:scripts/v10c_t0_ml_canonical_mutation_runner.py")
+    return {"branch":git("branch","--show-current"),"head":git("rev-parse","HEAD"),"origin_head":git("rev-parse",f"refs/remotes/origin/{AUTHORITATIVE_BRANCH}"),"dirty":bool(git("status","--short")),"current_runner_blob":current_blob,"reviewed_runner_blob":reviewed_blob,"design_sha":DESIGN_SHA,"design_blob":DESIGN_BLOB,"approval_commit":APPROVAL_COMMIT,"approval_blob":APPROVAL_BLOB,"predecessor_blob":PREDECESSOR_BLOB,"predecessor_sha256":PREDECESSOR_SHA256,"successor_blob":SUCCESSOR_BLOB,"successor_sha256":SUCCESSOR_SHA256,"promotion_blob":PROMOTION_BLOB,"source_resolution_head":SOURCE_RESOLUTION_HEAD,"wheel_count":None,"wheel_total_bytes":None,"wheel_manifest_sha256":None,"candidate_sha256":OFFLINE_CANDIDATE_SHA256,"evidence_sha256":OFFLINE_EVIDENCE_SHA256,"python_version":None,"pip_reachable":False,"attempt_root_absent":not config.attempt_root.exists(),"reserved_absent":not any((config.attempt_root/x).exists() for x in RESERVED),"ancestors_safe":False,"governed_root_safe":False,"approval_semantics":False,"v10a_predecessor_authority":False,"packages":(),"delta_wheels":{},"network_requests":0,"writes":0}
+
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
     with open(temp, "x", encoding="utf-8", newline="\n") as handle:
         json.dump(value, handle, sort_keys=True, separators=(",", ":")); handle.flush(); os.fsync(handle.fileno())
     os.replace(temp, path)
 
-def phase_b(config: Config, observed: Mapping[str, Any], *, mutation_authorized: bool, wheel_paths: Sequence[Path], launcher: Callable[[list[str], Path, Path], int] | None = None) -> dict[str, Any]:
+def phase_b(config: Config, observed: Mapping[str, Any], *, mutation_authorized: bool, launcher: Callable[[list[str], Path, Path], int] | None = None) -> dict[str, Any]:
     preflight = phase_a(config, observed)
     if preflight["status"] != "PASS" or not mutation_authorized: return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
-    if config.attempt_root.exists(): return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
+    wheel_paths = list(observed["delta_wheels"].values())
+    if config.attempt_root.exists() or not all(isinstance(x, Path) and x.is_relative_to(config.wheel_root) for x in wheel_paths): return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
     config.attempt_root.mkdir(parents=False)
     state = {"authority_consumed": True, "retry_authorized": False, "phase_c_required": True, "launch_attempted": True, "exit_code": "UNKNOWN"}
     _atomic_json(config.attempt_root / RESERVED[0], state)
@@ -159,10 +170,13 @@ def phase_c(config: Config, observed: Mapping[str, Any], *, synthetic_probe: Cal
     _atomic_json(evidence_path, result)
     return result
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, collector: Callable[[Config], Mapping[str, Any]] = production_collect) -> int:
     p = argparse.ArgumentParser(); p.add_argument("phase", choices=("phase-a", "phase-b", "phase-c")); p.add_argument("--reviewed-implementation-sha", required=True); p.add_argument("--repo-root", required=True); p.add_argument("--canonical-python", required=True); p.add_argument("--attempt-root", required=True); p.add_argument("--wheel-root", required=True); p.add_argument("--mutation-authorized", action="store_true")
-    a = p.parse_args(argv); cfg = Config(Path(a.repo_root), Path(a.canonical_python), Path(a.attempt_root), Path(a.wheel_root), a.reviewed_implementation_sha)
-    # Real collection/execution is intentionally denied unless a future reviewed entrypoint supplies observations.
-    print(json.dumps(_fail("PRE_GATE_ENVIRONMENT_BLOCK", reason="EXPLICIT_RUNTIME_COLLECTOR_REQUIRED"), sort_keys=True)); return 1
+    a = p.parse_args(argv); root=Path(a.repo_root); cfg = Config(root, root/'.venv-real-execution'/'Scripts'/'python.exe', Path(a.attempt_root), Path(a.wheel_root), a.reviewed_implementation_sha)
+    observed=collector(cfg)
+    if a.phase == 'phase-a': result=phase_a(cfg,observed)
+    elif a.phase == 'phase-b': result=phase_b(cfg,observed,mutation_authorized=a.mutation_authorized)
+    else: result=phase_c(cfg,observed)
+    print(json.dumps(result, sort_keys=True)); return 0 if result.get('status')=='PASS' else 1
 
 if __name__ == "__main__": raise SystemExit(main())

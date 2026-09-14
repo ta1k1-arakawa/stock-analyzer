@@ -6,7 +6,7 @@ from scripts import v10c_t0_ml_canonical_mutation_runner as r
 def obs(**overrides):
     d={"branch":r.AUTHORITATIVE_BRANCH,"head":"a"*40,"origin_head":"a"*40,"reviewed_runner_blob":"b","current_runner_blob":"b","design_sha":r.DESIGN_SHA,"design_blob":r.DESIGN_BLOB,"approval_commit":r.APPROVAL_COMMIT,"approval_blob":r.APPROVAL_BLOB,"predecessor_blob":r.PREDECESSOR_BLOB,"predecessor_sha256":r.PREDECESSOR_SHA256,"successor_blob":r.SUCCESSOR_BLOB,"successor_sha256":r.SUCCESSOR_SHA256,"promotion_blob":r.PROMOTION_BLOB,"source_resolution_head":r.SOURCE_RESOLUTION_HEAD,"wheel_count":27,"wheel_total_bytes":94451528,"wheel_manifest_sha256":r.SOURCE_WHEEL_MANIFEST_SHA256,"candidate_sha256":r.OFFLINE_CANDIDATE_SHA256,"evidence_sha256":r.OFFLINE_EVIDENCE_SHA256,"python_version":"3.12.10","pip_reachable":True,"attempt_root_absent":True,"reserved_absent":True,"ancestors_safe":True,"governed_root_safe":True,"approval_semantics":True,"v10a_predecessor_authority":True,"packages":r.PREDECESSOR,"delta_wheels":{x:True for x in r.DELTA},"network_requests":0,"writes":0}
     d.update(overrides); return d
-def cfg(tmp_path): return r.Config(tmp_path, tmp_path/'python.exe', tmp_path/'attempt', tmp_path/'wheels', 'a'*40)
+def cfg(tmp_path): return r.Config(tmp_path, tmp_path/'.venv-real-execution'/'Scripts'/'python.exe', tmp_path/r.ATTEMPT_NAME, tmp_path/'wheels', 'a'*40)
 def test_constants_and_future_sha_not_hard_coded():
     assert len(r.PREDECESSOR)==20 and len(r.SUCCESSOR)==27 and len(r.DELTA)==7
     assert r.DESIGN_SHA != 'a'*40 and r.Config.__dataclass_fields__['reviewed_implementation_sha']
@@ -25,11 +25,11 @@ def test_phase_a_pass_is_read_only_and_delta_exact(tmp_path):
 def test_phase_a_rejects_authority_and_namespace_ambiguity(tmp_path,field):
     assert r.phase_a(cfg(tmp_path),obs(**{field:False}))['status']=='FAIL'
 def test_phase_b_requires_human_gate_and_exact_argv(tmp_path):
-    c=cfg(tmp_path); paths=[Path(f'w{i}.whl') for i in range(7)]
-    assert r.phase_b(c,obs(),mutation_authorized=False,wheel_paths=paths)['status']=='FAIL'; assert not c.attempt_root.exists()
+    c=cfg(tmp_path); paths=[c.wheel_root/f'w{i}.whl' for i in range(7)]
+    assert r.phase_b(c,obs(),mutation_authorized=False)['status']=='FAIL'; assert not c.attempt_root.exists()
     argv=r.build_pip_argv(c.canonical_python,paths); assert argv[1:6]==['-m','pip','install','--no-deps','--no-index']; assert not any('numpy' in x for x in argv)
 def test_boundary_failures_preserved_and_phase_c_is_mandatory(tmp_path):
-    c=cfg(tmp_path); out=r.phase_b(c,obs(),mutation_authorized=True,wheel_paths=[Path(str(i)) for i in range(7)],launcher=lambda *_: 1)
+    c=cfg(tmp_path); c.wheel_root.mkdir(); wheels={x:c.wheel_root/f'{i}.whl' for i,x in enumerate(r.DELTA)}; out=r.phase_b(c,obs(delta_wheels=wheels),mutation_authorized=True,launcher=lambda *_: 1)
     assert out['authority_consumed'] and not out['retry_authorized'] and out['failure_code']=='CANONICAL_MUTATION_FAILURE'
     result=r.phase_c(c,{},synthetic_probe=lambda: pytest.fail('must not run')); assert result['failure_code']=='CANONICAL_MUTATION_FAILURE' and not result['full_validation_run']
 def test_phase_c_corrupt_state_and_success_and_probe_failure(tmp_path):
