@@ -2501,6 +2501,14 @@ transitions. This public log must not contain protected material.
 - V10C now accepts the frozen V10B `status="TRANSPORT_EXCEPTION"` / `error_type="TRANSPORT_EXCEPTION"` audit representation and enforces the reviewed terminal/ordering closure without changing any acquisition behavior.
 - Added synthetic parity coverage against the reviewed V10B predicate and malformed transport-exception sequences. No real candidate, payload, network, T0, model, evaluation, private/sealed, or human-gate activity occurred.
 
+## 2026-09-14 — V10C training provenance adoption record creation
+
+- Recorded Attempt 2 Phase A as `PASS` at implementation SHA `33c817c26770d9a66505e8f9332971cc2c65b732`, with zero locked raw-payload bytes read, zero network requests, and no human gate consumed during Phase A.
+- Recorded fresh Attempt-2 authorization as consumed at the frozen offline adoption boundary. The gate receipt was durably established, Phase-B wrapper exit code was `0`, no automatic retry occurred, and the authorization is not reusable; no second adoption execution is authorized.
+- Recorded Phase B and Phase C as `PASS`: final execution receipt, manifest validation, and locked-payload hash closure were all accepted with network requests `0` and semantic payload parsing `false`.
+- Recorded GPT adoption adjudication as `PASS` and created `V10C_TRAINING_PROVENANCE_ADOPTION_RECORD.json` with the exact candidate, gate, execution, and wrapper evidence hashes. Its promotion status is `ADOPTED_V10C_PROVENANCE_ONLY`, while project state remains `V10C_TRAINING_INPUT_PROVENANCE=NOT_ADOPTED` and `V10C_MANIFEST_ADOPTION_SHA256=NOT_PROMOTED` pending exact-SHA review of this commit.
+- V10B remains terminal `BLOCK` and is not relabeled as recovered. T0, historical evaluation, private/sealed access, and future profitability remain unauthorized or unestablished. No candidate/raw-payload inspection, network, T0, model, evaluation, or private activity occurred in this bookkeeping task.
+
 ## 2026-09-13 — V10C Phase-B attempt-1 entrypoint and exit-capture remediation
 
 - Recorded the GPT exact-SHA implementation review of `79309ff30ab4ac71c57aec91234e17ed20917965` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`. The V10C validator implementation, including the receipt/gate path and audit-parity remediations, is now GPT-reviewed acceptable.
