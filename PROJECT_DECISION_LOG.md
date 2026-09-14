@@ -2752,3 +2752,9 @@ transitions. This public log must not contain protected material.
 - Recorded exact-SHA review `645841ac9e5d45a7f4b54a0c4eae2560c6dfc5ce` as `BLOCK_CRITICAL_0_HIGH_0_MEDIUM_1_LOW_0`.
 - The sole finding was duplicate `LAST_REVIEWED` bookkeeping keys. Removed the older `a4556820da229826e6c9e74b9423d81cc04f3a0c` pair; `033bcf3960b0b284abebb32278817e612e614c68` remains the sole latest implementation review attempt.
 - The implementation PASS SHA remains `UNESTABLISHED`; no execution authority changed. MEDIUM-2 is `REMEDIATED_AWAITING_GPT_REVIEW`.
+
+## 2026-09-14 — V10C stale HIGH-status bookkeeping remediation
+
+- Recorded exact-SHA review `e229a916a52c3c62d673b0f9beac6e8645928e3f` as `BLOCK_CRITICAL_0_HIGH_0_MEDIUM_1_LOW_0`.
+- The duplicate latest-review-key finding is resolved. The new MEDIUM-3 finding is stale HIGH-1/HIGH-2 status bookkeeping.
+- HIGH-1 and HIGH-2 remain `OPEN` per the GPT review of `033bcf3960b0b284abebb32278817e612e614c68`; HIGH-3 and MEDIUM-1 remain `OPEN`. The implementation PASS SHA remains `UNESTABLISHED` and no execution authority changed.
