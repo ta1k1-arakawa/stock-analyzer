@@ -2612,3 +2612,10 @@ transitions. This public log must not contain protected material.
 - The successor remediation reuses the reviewed `normalize_distribution_name` semantics through a dedicated strict live-freeze parser, rejecting malformed, duplicate-normalized, option, editable, and direct-reference lines with closed `LIVE_PACKAGE_SET_UNPARSEABLE` classification.
 - Known durable-root and canonical-interpreter probe failures are now preserved as closed, auditable Phase-A failure classes; unknown failures remain generic `PHASE_A_PRECHECK_FAILURE`.
 - No scientific methodology, predecessor pin, direct pin, dependency-selection, authority, or package-selection change was made. Future profitability remains unestablished.
+
+## 2026-09-14 — V10C Phase-A normalization state MEDIUM-1 bookkeeping remediation
+
+- Recorded the GPT exact-SHA review of `641c91aedff7eeb6d9a54392c9702b13886caa96` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`.
+- The live pip-freeze normalization and closed Phase-A failure-classification implementation itself was accepted; the sole finding was stale `PROJECT_STATE` status for the already-resolved fail-atomic publication MEDIUM-1.
+- Corrected the prior fail-atomic publication finding to `RESOLVED` and recorded the current Phase-A normalization state finding as `REMEDIATED_AWAITING_GPT_REVIEW`.
+- No code, methodology, package-selection, or authority change was made. No real resolution, network request, installation, environment mutation, model fit, T0 run, or payload read occurred; Phase-A attempt-1 authority remains unconsumed.
