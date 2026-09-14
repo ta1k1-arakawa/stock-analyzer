@@ -26,6 +26,9 @@ def test_wheel_rehash_blocks_before_boundary(tmp_path,monkeypatch):
     assert r.phase_b(c,mutation_authorized=True)['failure_code']=='PRE_GATE_ENVIRONMENT_BLOCK' and not c.attempt_root.exists()
 def test_no_real_ml_or_t0_and_exact_sets():
     assert len(r.PREDECESSOR)==20 and len(r.SUCCESSOR)==27 and len(r.DELTA)==7 and not r.T0_AUTHORIZED and r.GLOBAL_T0_READINESS=='NO'
+def test_phase_a_safety_helpers_fail_closed(tmp_path):
+    assert r._safe_ancestor_chain(tmp_path/r.ATTEMPT_NAME)
+    assert not r._approval_semantics('{"approval_status":"WRONG"}')
 def test_single_collector_and_main_dispatch_surface():
     assert r.production_collect.__doc__.startswith('Compatibility alias')
     assert 'collector' not in inspect.signature(r.main).parameters

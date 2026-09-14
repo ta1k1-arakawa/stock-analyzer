@@ -100,6 +100,27 @@ def _packages_ok(observed: Mapping[str, Any], expected: Mapping[str, str]) -> bo
     try: return package_map(observed["packages"]) == expected
     except (KeyError, TypeError, ValueError, MutationError): return False
 
+def _safe_ancestor_chain(path: Path) -> bool:
+    current = path
+    try:
+        while True:
+            if current.exists() and (current.is_symlink() or current.stat().st_reparse_tag if hasattr(current.stat(), 'st_reparse_tag') else False): return False
+            if current.parent == current: return True
+            current = current.parent
+    except OSError: return False
+
+def _approval_semantics(raw: str) -> bool:
+    try:
+        value=json.loads(raw)
+        return (value.get('approval_scope')=='DESIGN_FREEZE_ONLY' and value.get('approval_status')=='APPROVED' and value.get('human_design_freeze_complete') is True and value.get('frozen_design_git_commit')==DESIGN_SHA and value.get('frozen_design_git_blob_sha1')==DESIGN_BLOB and value.get('final_independent_review_result')=='PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0' and all(value.get(k) is False for k in ('canonical_environment_mutation_authorized','package_installation_authorized','t0_authorized','private_sealed_access_authorized')))
+    except (TypeError, ValueError, json.JSONDecodeError): return False
+
+def _v10a_semantics(repo: Path, git: Callable[..., str]) -> bool:
+    try:
+        evidence=json.loads((repo/'V10A_CANONICAL_ENVIRONMENT_FINAL_FREEZE_VERIFICATION_EVIDENCE.json').read_text(encoding='utf-8'))
+        return (git('rev-parse','HEAD:V10A_RUNTIME_ENVIRONMENT_LOCK.json')=='9dfe03cf807b3580d432146839e8eb013bfa3c63' and git('rev-parse','HEAD:V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE.json')=='e07040f75a92ef0669215f4a7e2e98b71ea29d36' and git('rev-parse','HEAD:V10A_CANONICAL_ENVIRONMENT_FINAL_FREEZE_VERIFICATION_EVIDENCE.json')=='d880b84fa00233e58653739fd510385fdf94de4e' and evidence.get('status')=='PASS' and evidence.get('python_version')=='3.12.10' and evidence.get('runtime_distribution_count')==20 and evidence.get('canonical_interpreter_verified') is True and evidence.get('exact_package_mapping') is True)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError): return False
+
 def collect_production(config: Config) -> Mapping[str, Any]:
     """Collect facts using read-only git/subprocess/filesystem operations."""
     def git(*args: str) -> str:
@@ -109,6 +130,8 @@ def collect_production(config: Config) -> Mapping[str, Any]:
     if config.canonical_python != config.repo_root/'.venv-real-execution'/'Scripts'/'python.exe' or not config.canonical_python.is_file(): raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK")
     current = git("hash-object", "scripts/v10c_t0_ml_canonical_mutation_runner.py")
     reviewed = git("rev-parse", f"{config.reviewed_implementation_sha}:scripts/v10c_t0_ml_canonical_mutation_runner.py")
+    approval_blob=git("rev-parse",f"{APPROVAL_COMMIT}:V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_MUTATION_DESIGN_FREEZE_APPROVAL.json")
+    approval_raw=git("show",f"{APPROVAL_COMMIT}:V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_MUTATION_DESIGN_FREEZE_APPROVAL.json")
     probe = "import importlib.metadata,json,platform,sys; print(json.dumps({'python':platform.python_version(),'packages':sorted((d.metadata.get('Name'),d.version) for d in importlib.metadata.distributions() if d.metadata.get('Name'))}))"
     child=subprocess.run([str(config.canonical_python),'-c',probe],capture_output=True,text=True,check=False)
     if child.returncode: raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK")
@@ -120,8 +143,8 @@ def collect_production(config: Config) -> Mapping[str, Any]:
     for item in DELTA:
         name,version=item.split('=='); matches=[x for x in files if x.name.lower().startswith(normalize(name).replace('-','_')+'-'+version+'-') or x.name.lower().startswith(normalize(name)+'-'+version+'-')]
         if len(matches)==1: delta_wheels[item]=matches[0]
-    v10a=all((config.repo_root/f).is_file() for f in ('V10A_RUNTIME_ENVIRONMENT_LOCK.json','V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE.json','V10A_CANONICAL_ENVIRONMENT_FINAL_FREEZE_VERIFICATION_EVIDENCE.json'))
-    return {"branch":git("branch","--show-current"),"head":git("rev-parse","HEAD"),"origin_head":git("rev-parse",f"refs/remotes/origin/{AUTHORITATIVE_BRANCH}"),"dirty":bool(git("status","--short")),"reviewed_runner_blob":reviewed,"current_runner_blob":current,"design_sha":git("rev-parse",f"{DESIGN_SHA}:V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_MUTATION_DESIGN_DRAFT.md"),"design_blob":DESIGN_BLOB,"approval_commit":APPROVAL_COMMIT,"approval_blob":git("rev-parse",f"{APPROVAL_COMMIT}:V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_MUTATION_DESIGN_FREEZE_APPROVAL.json"),"predecessor_blob":git("rev-parse","HEAD:requirements-real-execution.lock.txt"),"predecessor_sha256":hashlib.sha256((config.repo_root/'requirements-real-execution.lock.txt').read_bytes()).hexdigest(),"successor_blob":SUCCESSOR_BLOB,"successor_sha256":SUCCESSOR_SHA256,"promotion_blob":git("rev-parse",f"HEAD:V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_RESOLUTION_PROMOTION.json"),"source_resolution_head":SOURCE_RESOLUTION_HEAD,"wheel_count":len(files),"wheel_total_bytes":sum(x.stat().st_size for x in files),"wheel_manifest_sha256":SOURCE_WHEEL_MANIFEST_SHA256,"candidate_sha256":OFFLINE_CANDIDATE_SHA256,"evidence_sha256":OFFLINE_EVIDENCE_SHA256,"python_version":meta['python'],"pip_reachable":True,"attempt_root_absent":not config.attempt_root.exists(),"reserved_absent":not config.attempt_root.exists(),"ancestors_safe":True,"governed_root_safe":True,"approval_semantics":True,"v10a_predecessor_authority":v10a,"packages":meta['packages'],"delta_wheels":delta_wheels,"wheel_root_realpath":config.wheel_root.resolve(),"network_requests":0,"writes":0}
+    v10a=_v10a_semantics(config.repo_root,git)
+    return {"branch":git("branch","--show-current"),"head":git("rev-parse","HEAD"),"origin_head":git("rev-parse",f"refs/remotes/origin/{AUTHORITATIVE_BRANCH}"),"dirty":bool(git("status","--short")),"reviewed_runner_blob":reviewed,"current_runner_blob":current,"design_sha":DESIGN_SHA,"design_blob":git("rev-parse",f"{DESIGN_SHA}:V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_MUTATION_DESIGN_DRAFT.md"),"approval_commit":APPROVAL_COMMIT,"approval_blob":approval_blob,"approval_semantics":_approval_semantics(approval_raw),"predecessor_blob":git("rev-parse","HEAD:requirements-real-execution.lock.txt"),"predecessor_sha256":hashlib.sha256((config.repo_root/'requirements-real-execution.lock.txt').read_bytes()).hexdigest(),"successor_blob":SUCCESSOR_BLOB,"successor_sha256":SUCCESSOR_SHA256,"promotion_blob":git("rev-parse",f"HEAD:V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_RESOLUTION_PROMOTION.json"),"source_resolution_head":SOURCE_RESOLUTION_HEAD,"wheel_count":len(files),"wheel_total_bytes":sum(x.stat().st_size for x in files),"wheel_manifest_sha256":SOURCE_WHEEL_MANIFEST_SHA256,"candidate_sha256":OFFLINE_CANDIDATE_SHA256,"evidence_sha256":OFFLINE_EVIDENCE_SHA256,"python_version":meta['python'],"pip_reachable":True,"attempt_root_absent":not config.attempt_root.exists(),"reserved_absent":not config.attempt_root.exists(),"ancestors_safe":_safe_ancestor_chain(config.attempt_root),"governed_root_safe":_safe_ancestor_chain(config.wheel_root),"v10a_predecessor_authority":v10a,"packages":meta['packages'],"delta_wheels":delta_wheels,"wheel_root_realpath":config.wheel_root.resolve(),"network_requests":0,"writes":0}
 
 def _verified_result(config: Config, observed: Mapping[str, Any]) -> VerifiedPhaseAResult:
     result = phase_a(config, observed)

@@ -2758,3 +2758,9 @@ transitions. This public log must not contain protected material.
 - Recorded exact-SHA review `e229a916a52c3c62d673b0f9beac6e8645928e3f` as `BLOCK_CRITICAL_0_HIGH_0_MEDIUM_1_LOW_0`.
 - The duplicate latest-review-key finding is resolved. The new MEDIUM-3 finding is stale HIGH-1/HIGH-2 status bookkeeping.
 - HIGH-1 and HIGH-2 remain `OPEN` per the GPT review of `033bcf3960b0b284abebb32278817e612e614c68`; HIGH-3 and MEDIUM-1 remain `OPEN`. The implementation PASS SHA remains `UNESTABLISHED` and no execution authority changed.
+
+## 2026-09-14 — V10C production Phase-A mechanical closure
+
+- Recorded GPT exact-SHA review `b1ace61ea119b5c653c4465f21515fb68848e7d2` as `PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0`; MEDIUM-2 and MEDIUM-3 remain resolved.
+- Implemented mechanical design/approval commit-vs-blob and JSON semantic checks, lock/provenance bindings, V10A evidence semantics, canonical metadata/pip observations, and read-only ancestor safety checks. The HIGH-2 wheel manifest remains explicitly open and is not claimed closed.
+- No real Phase-A/B/C execution, installation, mutation, network/package-index access, model fit, T0, payload/private access, or human mutation authorization occurred.
