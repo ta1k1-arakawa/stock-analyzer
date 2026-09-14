@@ -2523,6 +2523,12 @@ transitions. This public log must not contain protected material.
 - V10C training-input provenance is promoted exclusively from the fixed V10B locked artifact set with manifest SHA-256 `887c031a004f91a080fa53ab511711fff92c92527cb119878ab2c295ee13cd44`. This is not recovery of the historical V9_009 cache; V10B remains terminal `BLOCK`/nonreusable.
 - T0, historical evaluation, and private/sealed authority remain false; future profitability remains unestablished. No execution, network, candidate/raw-payload read, or human gate occurred in this state-transition task.
 
+## 2026-09-14 — V10C final-promotion adoption-review binding remediation
+
+- Recorded the GPT exact-SHA review of `3bbe52d13e5903844db7afca2bef2fda2f0221d5` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`. The promotion values themselves were accepted; the sole finding was the adoption-record review SHA/result pair being misbound in active state.
+- Corrected the historical binding: `71c663ef5e870380e4af261f52e6067fd32ce1f8` remains `BLOCK_CRITICAL_0_HIGH_0_MEDIUM_1_LOW_0`, while `6f8933ca666db912ee87b5b1176697c3c4bd59ab` is the `PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0` review of the unchanged adoption record.
+- V10C training-input provenance remains promoted from the fixed V10B locked artifact set, with no change to the adoption record or promotion values. No execution, network, candidate/raw-payload read, T0, model, evaluation, private/sealed, or human-gate activity occurred.
+
 ## 2026-09-13 — V10C Phase-B attempt-1 entrypoint and exit-capture remediation
 
 - Recorded the GPT exact-SHA implementation review of `79309ff30ab4ac71c57aec91234e17ed20917965` as `PASS` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`. The V10C validator implementation, including the receipt/gate path and audit-parity remediations, is now GPT-reviewed acceptable.
