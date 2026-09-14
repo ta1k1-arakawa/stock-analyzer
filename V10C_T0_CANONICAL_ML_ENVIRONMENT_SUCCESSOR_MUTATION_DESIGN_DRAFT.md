@@ -1,0 +1,241 @@
+# V10C T0 Canonical Environment Mutation Design Draft
+
+```text
+document_role=V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_MUTATION_DESIGN
+study_identity=V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR
+status=DRAFT_AWAITING_GPT_REVIEW
+scope=PROSPECTIVE_CANONICAL_ENVIRONMENT_MUTATION_ONLY
+```
+
+## 1. Purpose, boundary, and non-authority
+
+This design specifies a future, one-shot mutation of the existing canonical
+environment `.venv-real-execution`. It refines the already-frozen parent
+sequence without changing its package set, versions, dependency closure, or
+scientific methodology:
+
+```text
+Phase A = no-network provenance and readiness preflight
+Phase B = exactly one bounded local-wheel installation of the frozen delta
+Phase C = no-network live inspection and synthetic readiness validation
+```
+
+This draft neither executes nor authorizes any phase. In particular:
+
+```text
+network_authorized=false
+package_installation_authorized=false
+canonical_environment_mutation_authorized=false
+t0_authorized=false
+payload_read_authorized=false
+private_sealed_access_authorized=false
+resolution_authority_consumed=true
+resolution_retry_authorized=false
+future_profitability_established=false
+```
+
+No authority for resolution, installation, mutation, T0, historical
+evaluation, payload access, or private/sealed access is inherited from the
+design freeze, the source resolution, or this design review.
+
+## 2. Immutable bindings
+
+Every future phase must bind the following values exactly; a mismatch is a
+closed failure before the corresponding boundary.
+
+| Binding | Required value |
+| --- | --- |
+| Authoritative branch | `v9-cross-sectional-close-auction-design` |
+| Reviewed promotion commit | `89e0998f55b8bd4acf646fe8ca6f41120a191171` |
+| Successor lock Git blob | `13636e58fbe40071be04cbfa57c3990c1d8ff2e0` |
+| Successor lock SHA-256 | `f38dd4c7319465bb7e6ff429e8dff4a476d9966c744b19e50264dcc0b18e8300` |
+| Promotion-record Git blob | `b866e6d77508d6366569ee6a229587c59c3c8be2` |
+| Source resolution head | `3aee6c2772f30c6dc35d2a7efb862ae15091febc` |
+| Source wheel manifest SHA-256 | `5d5953f14b0609767972679554e1999e754621056d863f8c33def96988797b74` |
+| Offline candidate SHA-256 | `893881cbb9612e3402b0f4e1e434edfc4283da81a0f6a6d264d019ae5573c48e` |
+| Offline readjudication evidence SHA-256 | `b4398e32be354de03e64202148dc6933ed45ef888657e909de1f52a4a051206b` |
+| Source wheel/package count | `27` |
+| Immutable predecessor package count | `20` |
+| Successor package count | `27` |
+
+The immutable predecessor lock remains `requirements-real-execution.lock.txt`
+at blob `99395e7a5be752fb3ea92fd31be0334f38792261` and is never modified,
+reinstalled, upgraded, downgraded, or uninstalled by this study.
+
+The exact successor delta is the closed ordered set:
+
+```text
+cloudpickle==3.1.2
+joblib==1.6.0
+lightgbm==4.6.0
+narwhals==2.26.0
+scikit-learn==1.9.0
+scipy==1.18.1
+threadpoolctl==3.6.0
+```
+
+No package outside that seven-package set is installable under this design.
+
+## 3. Future durable attempt namespace
+
+The future implementation shall receive one logical durable attempt root
+named `V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_MUTATION_ATTEMPT_1` under
+the preconfigured machine-local protected audit root. The root is not created
+by this design task and its machine-local path is not recorded in Git.
+
+Before Phase A, the implementation must prove that this exact root and every
+planned child output name are absent. The reserved child names are:
+
+```text
+mutation_state.json
+mutation_stdout.txt
+mutation_stderr.txt
+mutation_evidence.json
+```
+
+The root must be distinct from the source-resolution attempt, the offline
+readjudication namespace, candidate/evidence locations, wheel storage, cache,
+and every prior mutation attempt. Any existing root, child, symlink, junction,
+reparse point, non-regular file, failed stat/read, or ambiguous resolution is
+`PRE_GATE_ENVIRONMENT_BLOCK`. No cleanup, delete, overwrite, or alternate
+location selection is permitted.
+
+## 4. Phase A — no-network preflight
+
+Phase A is read-only with respect to the canonical environment and must run
+before point-of-use mutation authority is requested or consumed.
+
+It must prove all of the following:
+
+1. The repository is on the authoritative branch; `HEAD` and the local
+   `refs/remotes/origin/v9-cross-sectional-close-auction-design` both equal
+   the reviewed promotion commit, and the working tree is clean. It performs
+   no fetch, `ls-remote`, or other network operation.
+2. The committed successor lock has the exact blob and SHA-256 in section 2;
+   the promotion record has its exact blob; and the candidate, evidence, and
+   source-wheel-manifest SHA-256 bindings exactly match section 2.
+3. The canonical interpreter resolves uniquely to
+   `.venv-real-execution\Scripts\python.exe`, is not the general `.venv`, and
+   reports exactly Python `3.12.10`.
+4. A canonical-interpreter `importlib.metadata` observer, not pip-freeze
+   presentation, reports exactly the immutable predecessor set of 20
+   normalized `name==version` entries, with no missing, extra, duplicate, or
+   version-drifted distribution.
+5. The protected source wheel set is exactly 27 regular, non-reparse wheel
+   files matching the frozen manifest. Exactly one regular reviewed wheel for
+   each normalized successor-delta distribution/version exists; each is part
+   of the reviewed 27-wheel set. This check must not select substitutes by
+   filename similarity, another version, another wheelhouse, or a network
+   index.
+6. The durable attempt namespace in section 3 is fresh, non-overlapping, and
+   unambiguous.
+
+Phase A has no network, installation, environment mutation, model fit, T0,
+training/evaluation payload, raw-market payload, candidate/evidence payload,
+or private/sealed-data activity. It produces only privacy-safe booleans,
+counts, fixed hashes, and closed failure codes. Human mutation authority is
+not consumed in Phase A.
+
+Any failure in these predicates is `PRE_GATE_ENVIRONMENT_BLOCK`; it permits
+only a separately authorized non-methodological preflight repair and a new
+complete preflight. It never permits a second resolution or alternate package
+selection.
+
+## 5. Phase B — one bounded canonical mutation
+
+Phase B is reachable only after every Phase A predicate passes and a fresh,
+point-of-use human authorization specifically naming V10C canonical-
+environment mutation is present. That authorization is distinct from and not
+inherited from the design freeze, resolution, promotion, T0, or any prior
+authority.
+
+Immediately before process launch, the implementation reruns the
+non-destructive repository, provenance, interpreter, predecessor-set,
+wheel-set, and durable-root bindings. It then atomically records a
+privacy-safe mutation receipt/state in the fresh attempt root and launches
+one process using only the canonical interpreter:
+
+```text
+.venv-real-execution\Scripts\python.exe -m pip install --no-deps --no-index <the seven individually validated local wheel files>
+```
+
+The seven arguments are exactly one validated wheel for each section-2 delta
+entry and no others. `--no-deps` and `--no-index` are mandatory. No index,
+network endpoint, cache fallback, requirements file, package resolver,
+alternate environment, or general `.venv` may be used.
+
+The durable state records the process-launch boundary, and stdout/stderr are
+captured only in the reserved attempt-root files. Once that state is published
+or the install process is crossed, the one-shot mutation authority is
+consumed. There is exactly one bounded install process. The process may not
+reinstall, upgrade, downgrade, or uninstall any predecessor package.
+
+No automatic retry is allowed. A launch error, nonzero exit, partial install,
+or interrupted process is preserved. It never restores authority or permits
+rollback, reset, deletion, environment recreation, predecessor reinstall,
+alternate version, second resolution, or T0. Network is prohibited under all
+conditions.
+
+## 6. Phase C — no-network validation
+
+Phase C runs only after the Phase B process has completed and uses the
+canonical interpreter. It never calls pip, an index, a wheel root, a market
+payload, training/evaluation payload, or T0 code.
+
+The implementation must use `importlib.metadata`, normalized distribution
+names, and exact versions to require all of the following simultaneously:
+
+1. The live set is exactly the 27-entry successor lock: no missing, extra,
+   duplicate-normalized, or version-drifted distribution.
+2. The 20 immutable predecessor entries are unchanged.
+3. The exact seven-delta set is present at the frozen versions.
+4. The interpreter is exactly Python `3.12.10` and resolves to the canonical
+   `.venv-real-execution\Scripts\python.exe` path.
+
+It must then run only these deterministic, invented, in-memory operational
+probes:
+
+```text
+import lightgbm
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import StandardScaler
+
+X = [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
+y = [0.0, 1.0, 2.0, 3.0]
+```
+
+The LightGBM probe constructs `LGBMRegressor(n_estimators=1, random_state=0,
+n_jobs=1, verbosity=-1)`, fits `X, y`, predicts one invented row, and requires
+one finite prediction. The Ridge probe fits `StandardScaler` on `X`, fits
+`Ridge()` on the transformed `X, y`, predicts one transformed invented row,
+and requires one finite prediction. These probes do not read any file or
+network source and are not research-model fitting or T0.
+
+Phase C publishes only deterministic privacy-safe evidence: fixed bindings,
+pass/fail status, closed failure class, package counts, normalized package
+identities/versions, interpreter version, bounded-probe booleans, and hashes
+of the reserved durable outputs. It must not emit machine-local paths, raw
+payloads, credentials, ticker identities, prices, or private information.
+
+## 7. Closed failure discipline
+
+The implementation must use these distinct non-scientific classes:
+
+| Condition | Class | Consequence |
+| --- | --- | --- |
+| Any failed Phase A predicate before the mutation boundary | `PRE_GATE_ENVIRONMENT_BLOCK` | No authority consumed; no installation or retry. |
+| Launch, installation, or interruption after the Phase B boundary | `CANONICAL_MUTATION_FAILURE` | Authority consumed; preserve state; no retry/rollback/reset. |
+| Phase C metadata or synthetic-readiness failure | `LIVE_ENVIRONMENT_VALIDATION_FAILURE` | Authority remains consumed; preserve state; no retry/rollback/reset. |
+
+None of these is a scientific T0 STOP/CONTINUE result. None authorizes
+alternate versions, re-resolution, predecessor reinstallation, environment
+recreation, T0, or a new mutation attempt.
+
+## 8. Post-success boundary
+
+A Phase C `PASS` is readiness evidence only. It must first receive GPT exact-
+SHA result adjudication/review. Even after GPT review, mutation readiness does
+not itself authorize T0: T0 authority remains separately false until a future
+explicit authority names that boundary. This design does not change
+`CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE`
+from `NO`, and makes no profitability claim.
