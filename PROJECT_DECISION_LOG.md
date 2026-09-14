@@ -2550,3 +2550,10 @@ transitions. This public log must not contain protected material.
 - Added a dedicated successor input-binding adapter and routed the production CLI through it. Phase-A metadata validation binds the promoted V10C adoption record, fixed V4 universe, promoted V10B manifest/attempt receipt, evaluation manifest, exact payload descriptor/file sets, and reviewed provenance without reading payload bytes.
 - The later full-load boundary reuses the reviewed V10B hash-closure validator and inherited V9 T0 parser semantics, with no refetch, fallback, substitution, or cache reconstruction. The old unrecoverable training manifest remains rejected.
 - Targeted synthetic/CLI result: `53 passed, 1 skipped`; the skip is host-permission-dependent symlink coverage. No real candidate, training/evaluation payload, network, T0, model, historical evaluation, private/sealed, or human-gate activity occurred. T0 authority remains false and future profitability remains unestablished.
+
+## 2026-09-14 — V10C successor input-binding design-provenance remediation
+
+- Recorded the exact-SHA review of `4773e263c0c057adf30eb6ddbf8a5b2b577b0f33` as `BLOCK` with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`.
+- The sole finding was successor design provenance misbinding: the implementation had used the earlier V10C adoption-design commit/blob instead of the reviewed successor design commit `0e65b170caef9958c31b7efa6802aa0313571d57` and blob `52572c53934f9de1a182a7f580df91e52086de9c`.
+- Corrected the binding and added independent literal Git-provenance regression tests, including rejection of the old adoption-design blob. Implementation functionality otherwise remains unchanged; no methodology change was made.
+- No real candidate, training/evaluation payload, network, T0, model, historical evaluation, private/sealed, or human-gate activity occurred. T0 authority remains false and future profitability remains unestablished.

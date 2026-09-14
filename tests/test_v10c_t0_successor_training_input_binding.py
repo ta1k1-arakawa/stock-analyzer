@@ -131,8 +131,39 @@ def test_fixed_successor_identities_and_old_identity_rejection():
     assert binding.TRAINING_MANIFEST_SHA256 == "887c031a004f91a080fa53ab511711fff92c92527cb119878ab2c295ee13cd44"
     assert binding.OLD_TRAINING_MANIFEST_SHA256 != binding.TRAINING_MANIFEST_SHA256
     assert binding.EVALUATION_MANIFEST_SHA256 == "797265bf671af2245a342051ffad02aa2929d67ba885945e7762149649148aa5"
-    assert binding.DESIGN_BLOB == "d4e6e9b15dfee423aabc0a4052e68e4970739319"
+    assert binding.DESIGN_COMMIT == "0e65b170caef9958c31b7efa6802aa0313571d57"
+    assert binding.DESIGN_BLOB == "52572c53934f9de1a182a7f580df91e52086de9c"
     assert binding.ADOPTION_RECORD_BLOB == "7febddd4af7c82fe00ef7ba618403f4dcf8f6758"
+
+
+def _mocked_successor_git_values() -> dict[tuple[str, ...], str]:
+    return {
+        ("remote", "get-url", "origin"): "https://github.com/ta1k1-arakawa/stock-analyzer.git",
+        ("rev-parse", "--abbrev-ref", "HEAD"): "v9-cross-sectional-close-auction-design",
+        ("rev-parse", "HEAD"): "a" * 40,
+        ("rev-parse", "refs/remotes/origin/v9-cross-sectional-close-auction-design"): "a" * 40,
+        ("status", "--porcelain", "--untracked-files=all"): "",
+        ("rev-parse", "HEAD:V10C_T0_SUCCESSOR_TRAINING_INPUT_BINDING_DESIGN_DRAFT.md"): "52572c53934f9de1a182a7f580df91e52086de9c",
+        ("rev-parse", "HEAD:V10A_T0_CALENDAR_INPUT_BINDING_BRIDGE_DESIGN_DRAFT.md"): "6df95aa8354c3d335a51747ee98ed9f2741c2410",
+        ("rev-parse", "HEAD:src/v10b_training_cache_reacquisition.py"): "abb17129870241f18eba2f31a49c5606475a1a0d",
+        ("rev-parse", "HEAD:src/v9_009_t0_top1_kill_screen.py"): "42753ddc75c6d7c016ac148991935bf316d9d14e",
+        ("rev-parse", "HEAD:V10C_TRAINING_PROVENANCE_ADOPTION_RECORD.json"): "7febddd4af7c82fe00ef7ba618403f4dcf8f6758",
+        ("rev-parse", "HEAD:V10C_DESIGN_FREEZE_APPROVAL.json"): "4676eb87c10dfc47fc19be387bfcb2ca17ebc59d",
+    }
+
+
+def test_successor_repo_provenance_uses_independent_exact_design_literal(monkeypatch):
+    values = _mocked_successor_git_values()
+    monkeypatch.setattr(binding, "_git", lambda _root, *parts: values[parts])
+    binding._verify_successor_repo(Path(__file__).resolve().parents[1], "a" * 40)
+
+
+def test_old_v10c_adoption_design_blob_is_rejected_independently(monkeypatch):
+    values = _mocked_successor_git_values()
+    values[("rev-parse", "HEAD:V10C_T0_SUCCESSOR_TRAINING_INPUT_BINDING_DESIGN_DRAFT.md")] = "d4e6e9b15dfee423aabc0a4052e68e4970739319"
+    monkeypatch.setattr(binding, "_git", lambda _root, *parts: values[parts])
+    with pytest.raises(binding.SuccessorPreflightFailure, match="SUCCESSOR_PROVENANCE_BLOB_MISMATCH"):
+        binding._verify_successor_repo(Path(__file__).resolve().parents[1], "a" * 40)
 
 
 def test_phase_a_accepts_valid_metadata_and_reads_zero_payload_bytes(tmp_path, monkeypatch):
