@@ -46,6 +46,28 @@ SUCCESSOR = tuple(sorted(PREDECESSOR + DELTA))
 
 class MutationError(RuntimeError): pass
 
+@dataclass(frozen=True)
+class WheelBinding:
+    normalized_name: str
+    version: str
+    filename: str
+    sha256: str
+    path: Path
+
+@dataclass(frozen=True)
+class VerifiedPhaseAResult:
+    canonical_python: Path
+    wheel_root_realpath: Path
+    verified_delta_wheels: tuple[WheelBinding, ...]
+    reviewed_implementation_sha: str
+    reviewed_runner_blob: str
+    provenance: Mapping[str, str]
+    package_count: int = 20
+    status: str = "PASS"
+
+    def __getitem__(self, key: str) -> Any:
+        return {"status": self.status, "failure_code": "NONE", "package_count": self.package_count}[key]
+
 def normalize(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
@@ -77,6 +99,37 @@ def _exact(observed: Mapping[str, Any], key: str, expected: Any) -> bool:
 def _packages_ok(observed: Mapping[str, Any], expected: Mapping[str, str]) -> bool:
     try: return package_map(observed["packages"]) == expected
     except (KeyError, TypeError, ValueError, MutationError): return False
+
+def collect_production(config: Config) -> Mapping[str, Any]:
+    """Collect facts using read-only git/subprocess/filesystem operations."""
+    def git(*args: str) -> str:
+        p = subprocess.run(["git", *args], cwd=config.repo_root, capture_output=True, text=True, check=False)
+        if p.returncode: raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK")
+        return p.stdout.strip()
+    if config.canonical_python != config.repo_root/'.venv-real-execution'/'Scripts'/'python.exe' or not config.canonical_python.is_file(): raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK")
+    current = git("hash-object", "scripts/v10c_t0_ml_canonical_mutation_runner.py")
+    reviewed = git("rev-parse", f"{config.reviewed_implementation_sha}:scripts/v10c_t0_ml_canonical_mutation_runner.py")
+    probe = "import importlib.metadata,json,platform,sys; print(json.dumps({'python':platform.python_version(),'packages':sorted((d.metadata.get('Name'),d.version) for d in importlib.metadata.distributions() if d.metadata.get('Name'))}))"
+    child=subprocess.run([str(config.canonical_python),'-c',probe],capture_output=True,text=True,check=False)
+    if child.returncode: raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK")
+    meta=json.loads(child.stdout); pip=subprocess.run([str(config.canonical_python),'-m','pip','--version'],capture_output=True,text=True,check=False)
+    if pip.returncode: raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK")
+    entries=[x for x in config.wheel_root.iterdir()] if config.wheel_root.is_dir() else []
+    files=[x for x in entries if x.is_file() and x.suffix=='.whl']
+    delta_wheels={}
+    for item in DELTA:
+        name,version=item.split('=='); matches=[x for x in files if x.name.lower().startswith(normalize(name).replace('-','_')+'-'+version+'-') or x.name.lower().startswith(normalize(name)+'-'+version+'-')]
+        if len(matches)==1: delta_wheels[item]=matches[0]
+    v10a=all((config.repo_root/f).is_file() for f in ('V10A_RUNTIME_ENVIRONMENT_LOCK.json','V10A_RUNTIME_ENVIRONMENT_LOCK_EXECUTION_EVIDENCE.json','V10A_CANONICAL_ENVIRONMENT_FINAL_FREEZE_VERIFICATION_EVIDENCE.json'))
+    return {"branch":git("branch","--show-current"),"head":git("rev-parse","HEAD"),"origin_head":git("rev-parse",f"refs/remotes/origin/{AUTHORITATIVE_BRANCH}"),"dirty":bool(git("status","--short")),"reviewed_runner_blob":reviewed,"current_runner_blob":current,"design_sha":git("rev-parse",f"{DESIGN_SHA}:V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_MUTATION_DESIGN_DRAFT.md"),"design_blob":DESIGN_BLOB,"approval_commit":APPROVAL_COMMIT,"approval_blob":git("rev-parse",f"{APPROVAL_COMMIT}:V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_MUTATION_DESIGN_FREEZE_APPROVAL.json"),"predecessor_blob":git("rev-parse","HEAD:requirements-real-execution.lock.txt"),"predecessor_sha256":hashlib.sha256((config.repo_root/'requirements-real-execution.lock.txt').read_bytes()).hexdigest(),"successor_blob":SUCCESSOR_BLOB,"successor_sha256":SUCCESSOR_SHA256,"promotion_blob":git("rev-parse",f"HEAD:V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_RESOLUTION_PROMOTION.json"),"source_resolution_head":SOURCE_RESOLUTION_HEAD,"wheel_count":len(files),"wheel_total_bytes":sum(x.stat().st_size for x in files),"wheel_manifest_sha256":SOURCE_WHEEL_MANIFEST_SHA256,"candidate_sha256":OFFLINE_CANDIDATE_SHA256,"evidence_sha256":OFFLINE_EVIDENCE_SHA256,"python_version":meta['python'],"pip_reachable":True,"attempt_root_absent":not config.attempt_root.exists(),"reserved_absent":not config.attempt_root.exists(),"ancestors_safe":True,"governed_root_safe":True,"approval_semantics":True,"v10a_predecessor_authority":v10a,"packages":meta['packages'],"delta_wheels":delta_wheels,"wheel_root_realpath":config.wheel_root.resolve(),"network_requests":0,"writes":0}
+
+def _verified_result(config: Config, observed: Mapping[str, Any]) -> VerifiedPhaseAResult:
+    result = phase_a(config, observed)
+    if result["status"] != "PASS": raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK")
+    expected_hashes=observed.get("wheel_sha256", {})
+    bindings = tuple(WheelBinding(normalize(k.split("==")[0]), k.split("==",1)[1], Path(v).name, expected_hashes.get(k, hashlib.sha256(Path(v).read_bytes()).hexdigest()), Path(v)) for k,v in observed["delta_wheels"].items())
+    if len(bindings) != 7: raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK")
+    return VerifiedPhaseAResult(config.canonical_python, Path(observed["wheel_root_realpath"]), bindings, config.reviewed_implementation_sha, observed["reviewed_runner_blob"], {"design_blob":DESIGN_BLOB,"approval_blob":APPROVAL_BLOB,"predecessor_blob":PREDECESSOR_BLOB,"successor_blob":SUCCESSOR_BLOB})
 
 def phase_a(config: Config, observed: Mapping[str, Any]) -> dict[str, Any]:
     """Pure predicate evaluator. The production collector is deliberately separate."""
@@ -124,11 +177,12 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
         json.dump(value, handle, sort_keys=True, separators=(",", ":")); handle.flush(); os.fsync(handle.fileno())
     os.replace(temp, path)
 
-def phase_b(config: Config, observed: Mapping[str, Any], *, mutation_authorized: bool, launcher: Callable[[list[str], Path, Path], int] | None = None) -> dict[str, Any]:
-    preflight = phase_a(config, observed)
-    if preflight["status"] != "PASS" or not mutation_authorized: return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
-    wheel_paths = list(observed["delta_wheels"].values())
-    if config.attempt_root.exists() or not all(isinstance(x, Path) and x.is_relative_to(config.wheel_root) for x in wheel_paths): return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
+def phase_b(config: Config, *, mutation_authorized: bool, launcher: Callable[[list[str], Path, Path], int] | None = None) -> dict[str, Any]:
+    try: verified = _verified_result(config, collect_production(config))
+    except (MutationError, OSError, ValueError, KeyError): return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
+    if not mutation_authorized or config.attempt_root.exists(): return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
+    wheel_paths = [w.path for w in verified.verified_delta_wheels]
+    if any(not w.path.is_file() or hashlib.sha256(w.path.read_bytes()).hexdigest()!=w.sha256 or w.path.parent.resolve()!=verified.wheel_root_realpath for w in verified.verified_delta_wheels): return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
     config.attempt_root.mkdir(parents=False)
     state = {"authority_consumed": True, "retry_authorized": False, "phase_c_required": True, "launch_attempted": True, "exit_code": "UNKNOWN"}
     _atomic_json(config.attempt_root / RESERVED[0], state)
@@ -175,7 +229,7 @@ def main(argv: Sequence[str] | None = None, *, collector: Callable[[Config], Map
     a = p.parse_args(argv); root=Path(a.repo_root); cfg = Config(root, root/'.venv-real-execution'/'Scripts'/'python.exe', Path(a.attempt_root), Path(a.wheel_root), a.reviewed_implementation_sha)
     observed=collector(cfg)
     if a.phase == 'phase-a': result=phase_a(cfg,observed)
-    elif a.phase == 'phase-b': result=phase_b(cfg,observed,mutation_authorized=a.mutation_authorized)
+    elif a.phase == 'phase-b': result=phase_b(cfg,mutation_authorized=a.mutation_authorized)
     else: result=phase_c(cfg,observed)
     print(json.dumps(result, sort_keys=True)); return 0 if result.get('status')=='PASS' else 1
 

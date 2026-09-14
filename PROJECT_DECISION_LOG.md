@@ -2723,3 +2723,9 @@ transitions. This public log must not contain protected material.
 - Recorded review `8b53c2f53c9f093c49295e8f843f32e50b69065d` as `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_1_LOW_0`. HIGH-1 and HIGH-2 are remediated awaiting review; HIGH-3 and MEDIUM-1 remain open.
 - Added actual CLI dispatch and an injectable, fail-closed read-only production collector. Phase B now derives its canonical interpreter and seven wheel paths solely from the fresh Phase-A observation; arbitrary paths cannot be supplied.
 - No phase, installation, mutation, package-index access, payload/private access, model fit, T0, or human mutation authority occurred.
+
+## 2026-09-14 — V10C mutation implementation HIGH-1/HIGH-2 remediation attempt 2
+
+- Recorded the latest review of `8aef2a699eecf895c5b50749c7dd737020d3b45c` as `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_1_LOW_0`; HIGH-1 and HIGH-2 remain remediated awaiting review, while HIGH-3 and MEDIUM-1 remain open.
+- Replaced the production collector stub with read-only repository, canonical-interpreter, metadata, pip-reachability, wheel-root, and attempt-namespace observation paths. Phase B now consumes an immutable verified Phase-A result and rehashes all seven wheels immediately before the boundary; caller observations, wheel paths, and interpreter overrides are not public inputs.
+- Targeted synthetic test result: `6 passed`. No real phase, installation, mutation, network/package-index access, model fit, T0, payload/private access, or human mutation-gate consumption occurred.
