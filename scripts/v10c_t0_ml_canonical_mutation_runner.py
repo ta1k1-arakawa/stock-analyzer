@@ -38,6 +38,7 @@ T0_AUTHORIZED = False
 GLOBAL_T0_READINESS = "NO"
 ATTEMPT_NAME = "V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_MUTATION_ATTEMPT_1"
 RESERVED = ("mutation_state.json", "mutation_stdout.txt", "mutation_stderr.txt", "mutation_evidence.json")
+PHASE_C_EVIDENCE_SCHEMA = "V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_MUTATION_PHASE_C_EVIDENCE_V1"
 PREDECESSOR = (
     "cffi==2.1.1", "charset-normalizer==3.5.1", "cryptography==50.0.1", "exchange-calendars==4.13.2",
     "korean-lunar-calendar==0.4.0", "numpy==2.5.2", "pandas==3.0.5", "pandas-market-calendars==5.4.0",
@@ -691,6 +692,126 @@ def _publish_phase_c_evidence(config: Config, evidence: Mapping[str, Any]) -> bo
         return False
 
 
+_PHASE_C_EVIDENCE_KEYS = frozenset({
+    "schema_version", "reviewed_implementation_sha", "status", "failure_code",
+    "failure_class", "authority_consumed", "retry_authorized", "evidence_published",
+    "inspection", "full_validation_run", "canonical_interpreter_status",
+    "live_package_observation_status", "readiness_evidence_only", "python_version",
+    "package_count", "probe_status", "lightgbm_probe", "ridge_probe",
+})
+
+
+def _phase_c_evidence_is_valid(
+    stored: Mapping[str, Any], config: Config, inspection: Mapping[str, Any]
+) -> bool:
+    """Validate the complete immutable semantics of an existing evidence record."""
+    if set(stored) - _PHASE_C_EVIDENCE_KEYS:
+        return False
+    required = {
+        "schema_version", "reviewed_implementation_sha", "status", "failure_code",
+        "failure_class", "authority_consumed", "retry_authorized", "evidence_published",
+        "inspection", "full_validation_run", "canonical_interpreter_status",
+        "live_package_observation_status",
+    }
+    if not required.issubset(stored):
+        return False
+    if (
+        type(stored["schema_version"]) is not str
+        or stored["schema_version"] != PHASE_C_EVIDENCE_SCHEMA
+        or type(stored["reviewed_implementation_sha"]) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", stored["reviewed_implementation_sha"]) is None
+        or stored["reviewed_implementation_sha"] != config.reviewed_implementation_sha
+        or type(config.reviewed_implementation_sha) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", config.reviewed_implementation_sha) is None
+        or type(stored["status"]) is not str
+        or type(stored["failure_code"]) is not str
+        or type(stored["failure_class"]) is not str
+        or type(stored["authority_consumed"]) is not bool
+        or stored["authority_consumed"] is not True
+        or type(stored["retry_authorized"]) is not bool
+        or stored["retry_authorized"] is not False
+        or type(stored["evidence_published"]) is not bool
+        or stored["evidence_published"] is not True
+        or type(stored["inspection"]) is not dict
+        or stored["inspection"] != dict(inspection)
+        or type(stored["full_validation_run"]) is not bool
+        or type(stored["canonical_interpreter_status"]) is not str
+        or type(stored["live_package_observation_status"]) is not str
+    ):
+        return False
+
+    optional_types = {
+        "readiness_evidence_only": bool,
+        "python_version": str,
+        "package_count": int,
+        "probe_status": str,
+        "lightgbm_probe": bool,
+        "ridge_probe": bool,
+    }
+    for key, expected_type in optional_types.items():
+        if key in stored and type(stored[key]) is not expected_type:
+            return False
+
+    status = stored["status"]
+    failure_code = stored["failure_code"]
+    failure_class = stored["failure_class"]
+    if status == "PASS":
+        return (
+            failure_code == "NONE"
+            and failure_class == "PASS"
+            and stored["full_validation_run"] is True
+            and stored.get("readiness_evidence_only") is True
+            and stored["canonical_interpreter_status"] == "PASS"
+            and stored["live_package_observation_status"] == "PASS"
+            and stored.get("python_version") == "3.12.10"
+            and stored.get("package_count") == 27
+            and stored.get("probe_status") == "PASS"
+            and stored.get("lightgbm_probe") is True
+            and stored.get("ridge_probe") is True
+        )
+
+    if status != "FAIL" or stored["full_validation_run"] is not False:
+        return False
+    if failure_class == "LIVE_ENVIRONMENT_VALIDATION_FAILURE":
+        if failure_code != failure_class or stored.get("readiness_evidence_only") is True:
+            return False
+        if stored["canonical_interpreter_status"] not in {"UNKNOWN", "PASS", "FAIL"}:
+            return False
+        if stored["live_package_observation_status"] not in {"NOT_RUN", "PASS", "FAIL"}:
+            return False
+        if "package_count" in stored and stored["package_count"] < 0:
+            return False
+        if "probe_status" in stored and stored["probe_status"] not in {"NOT_RUN", "PASS", "FAIL"}:
+            return False
+        runtime_fields = {"python_version", "package_count", "probe_status", "lightgbm_probe", "ridge_probe"}
+        if stored["live_package_observation_status"] == "NOT_RUN":
+            return (
+                stored["canonical_interpreter_status"] in {"UNKNOWN", "FAIL"}
+                and not runtime_fields.intersection(stored)
+            )
+        if stored["canonical_interpreter_status"] not in {"PASS", "FAIL"}:
+            return False
+        if not runtime_fields.issubset(stored):
+            return False
+        if stored["live_package_observation_status"] == "FAIL" and stored["probe_status"] != "NOT_RUN":
+            return False
+        if stored.get("probe_status") == "PASS" and (
+            stored.get("lightgbm_probe") is not True or stored.get("ridge_probe") is not True
+        ):
+            return False
+        if stored.get("live_package_observation_status") == "PASS" and stored.get("package_count") != 27:
+            return False
+        return True
+    if failure_class == "CANONICAL_MUTATION_FAILURE":
+        return (
+            failure_code == failure_class
+            and stored["canonical_interpreter_status"] != "PASS"
+            and stored["live_package_observation_status"] != "PASS"
+            and stored.get("readiness_evidence_only") is not True
+        )
+    return False
+
+
 def _existing_phase_c_evidence(
     config: Config, inspection: Mapping[str, Any]
 ) -> tuple[dict[str, Any] | None, bool]:
@@ -708,33 +829,7 @@ def _existing_phase_c_evidence(
         ):
             raise MutationError("EVIDENCE_UNSAFE")
         stored = _json_object(path.read_bytes())
-        if (
-            stored.get("authority_consumed") is not True
-            or stored.get("retry_authorized") is not False
-            or stored.get("inspection") != dict(inspection)
-            or stored.get("evidence_published", True) is not True
-        ):
-            raise MutationError("EVIDENCE_INCONSISTENT")
-        status = stored.get("status")
-        failure_code = stored.get("failure_code")
-        failure_class = stored.get("failure_class")
-        if status == "PASS":
-            valid = (
-                failure_code == "NONE"
-                and failure_class == "PASS"
-                and stored.get("full_validation_run") is True
-            )
-        else:
-            valid = (
-                status == "FAIL"
-                and failure_class in {
-                    "CANONICAL_MUTATION_FAILURE",
-                    "LIVE_ENVIRONMENT_VALIDATION_FAILURE",
-                }
-                and failure_code == failure_class
-                and stored.get("full_validation_run") is False
-            )
-        if not valid:
+        if not _phase_c_evidence_is_valid(stored, config, inspection):
             raise MutationError("EVIDENCE_INCONSISTENT")
         result = dict(stored)
         result["existing_evidence_inspected"] = True
@@ -772,6 +867,8 @@ def phase_c(config: Config) -> dict[str, Any]:
         "stderr": _safe_file_summary(config.attempt_root / RESERVED[2]),
     }
     result: dict[str, Any] = {
+        "schema_version": PHASE_C_EVIDENCE_SCHEMA,
+        "reviewed_implementation_sha": config.reviewed_implementation_sha,
         "inspection": inspection,
         "authority_consumed": True,
         "retry_authorized": False,
@@ -793,6 +890,17 @@ def phase_c(config: Config) -> dict[str, Any]:
             "evidence_published": False,
             "inspection": inspection,
         }
+    if (
+        type(config.reviewed_implementation_sha) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", config.reviewed_implementation_sha) is None
+    ):
+        result.update(
+            status="FAIL",
+            failure_code="CANONICAL_MUTATION_FAILURE",
+            failure_class="CANONICAL_MUTATION_FAILURE",
+            evidence_published=False,
+        )
+        return result
     if (
         not state_valid
         or state.get("exit_code") != 0

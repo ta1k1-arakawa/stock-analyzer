@@ -2797,3 +2797,10 @@ transitions. This public log must not contain protected material.
 - Remediated existing-evidence lifecycle semantics: standalone Phase C now performs read-only strict evidence inspection, preserves intact PASS and closed failure classes, never reprobes, and never overwrites existing evidence; malformed or inconsistent evidence fails closed without retry.
 - Remediated classification semantics: any new evidence-publication failure is `CANONICAL_MUTATION_FAILURE`, while exit-0 interpreter/runtime/package/probe failures are `LIVE_ENVIRONMENT_VALIDATION_FAILURE`; duplicate-normalized metadata prevents invented probes.
 - Targeted synthetic result was `28 passed`; no real phase execution, package installation, environment mutation, network/package-index access, model fit, T0, payload/private access, or human mutation-gate consumption occurred. HIGH-3 and MEDIUM-1 are `REMEDIATED_AWAITING_GPT_REVIEW`; implementation PASS remains unestablished.
+
+## 2026-09-15 — V10C final strict durable evidence validation
+
+- Recorded GPT exact-SHA review `58155af98cf8c61e29f5439e3c934dcc388d6dbc` as `BLOCK_CRITICAL_0_HIGH_1_MEDIUM_1_LOW_0`; HIGH-1/HIGH-2 and MEDIUM-2/MEDIUM-3/MEDIUM-4 remain resolved, with HIGH-3 and MEDIUM-1 as the scoped remediation findings.
+- Added fixed Phase-C evidence schema and reviewed-implementation SHA provenance. Existing evidence now requires exact strict semantics for PASS, LIVE_ENVIRONMENT_VALIDATION_FAILURE, and CANONICAL_MUTATION_FAILURE variants, including authority, retry, inspection, type, and contradiction checks.
+- Added synthetic semantic-tamper coverage for PASS, LIVE, CANONICAL, schema, and reviewed-SHA mutations; valid existing evidence remains inspect-only with no reprobe or rewrite. Targeted result: `41 passed`.
+- No real Phase-A/B/C execution, installation, environment mutation, network/package-index access, model fit, T0, payload/private access, or human mutation-gate consumption occurred. HIGH-3 and MEDIUM-1 are `REMEDIATED_AWAITING_GPT_REVIEW`; implementation PASS remains `UNESTABLISHED`.
