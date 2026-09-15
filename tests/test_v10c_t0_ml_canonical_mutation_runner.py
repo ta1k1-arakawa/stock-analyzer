@@ -354,13 +354,121 @@ def test_phase_c_existing_evidence_is_never_overwritten(tmp_path, monkeypatch):
     config = _attempt_config(tmp_path)
     _write_state(config)
     evidence_path = config.attempt_root / r.RESERVED[3]
-    evidence_path.write_bytes(b"existing")
+    monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
+    calls = {"runtime": 0}
+
+    def runtime_once(command, **kwargs):
+        calls["runtime"] += 1
+        return subprocess.CompletedProcess(command, 0, json.dumps(_runtime_payload(config)), "")
+
+    monkeypatch.setattr(r.subprocess, "run", runtime_once)
+    first = r.phase_c(config)
+    assert first["status"] == "PASS"
+    evidence_bytes = evidence_path.read_bytes()
+
+    monkeypatch.setattr(r, "_canonical_identity", lambda _: (_ for _ in ()).throw(AssertionError("re-probed")))
+    second = r.phase_c(config)
+    assert second["status"] == "PASS"
+    assert second["existing_evidence_inspected"] is True
+    assert calls["runtime"] == 1
+    assert evidence_path.read_bytes() == evidence_bytes
+
+
+def test_phase_c_existing_failure_class_is_preserved_without_reprobe(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    _write_state(config, exit_code=7)
+    evidence_path = config.attempt_root / r.RESERVED[3]
+    first = r.phase_c(config)
+    assert first["failure_class"] == "CANONICAL_MUTATION_FAILURE"
+    evidence_bytes = evidence_path.read_bytes()
+    monkeypatch.setattr(r, "_canonical_identity", lambda _: (_ for _ in ()).throw(AssertionError("re-probed")))
+    result = r.phase_c(config)
+    assert result["status"] == "FAIL"
+    assert result["failure_class"] == "CANONICAL_MUTATION_FAILURE"
+    assert result["existing_evidence_inspected"] is True
+    assert evidence_path.read_bytes() == evidence_bytes
+
+
+def test_phase_c_existing_live_failure_class_is_preserved_without_reprobe(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    _write_state(config)
+    monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
+    monkeypatch.setattr(r.subprocess, "run", _runtime_run(_runtime_payload(config, r.PREDECESSOR)))
+    first = r.phase_c(config)
+    assert first["failure_class"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+    evidence_path = config.attempt_root / r.RESERVED[3]
+    evidence_bytes = evidence_path.read_bytes()
+    monkeypatch.setattr(r, "_canonical_identity", lambda _: (_ for _ in ()).throw(AssertionError("re-probed")))
+    result = r.phase_c(config)
+    assert result["failure_class"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+    assert result["existing_evidence_inspected"] is True
+    assert evidence_path.read_bytes() == evidence_bytes
+
+
+def test_phase_c_tampered_existing_evidence_fails_closed_without_rewrite(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    _write_state(config)
     monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
     monkeypatch.setattr(r.subprocess, "run", _runtime_run(_runtime_payload(config)))
+    assert r.phase_c(config)["status"] == "PASS"
+    evidence_path = config.attempt_root / r.RESERVED[3]
+    evidence_path.write_bytes(b"{\"status\":\"PASS\"}")
+    tampered = evidence_path.read_bytes()
+    monkeypatch.setattr(r, "_canonical_identity", lambda _: (_ for _ in ()).throw(AssertionError("re-probed")))
+    result = r.phase_c(config)
+    assert result["failure_class"] == "CANONICAL_MUTATION_FAILURE"
+    assert result["existing_evidence_inspected"] is True
+    assert evidence_path.read_bytes() == tampered
+
+
+def test_phase_c_publication_failure_always_becomes_canonical_failure(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    _write_state(config)
+    monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
+    monkeypatch.setattr(r.subprocess, "run", _runtime_run(_runtime_payload(config, r.PREDECESSOR)))
+    monkeypatch.setattr(r, "_publish_phase_c_evidence", lambda *_: False)
     result = r.phase_c(config)
     assert result["status"] == "FAIL"
     assert result["failure_code"] == "CANONICAL_MUTATION_FAILURE"
-    assert evidence_path.read_bytes() == b"existing"
+    assert result["failure_class"] == "CANONICAL_MUTATION_FAILURE"
+    assert result["evidence_published"] is False
+
+
+def test_phase_c_exit_zero_interpreter_failure_is_live_validation_failure(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    _write_state(config)
+    monkeypatch.setattr(r, "_canonical_identity", lambda _: (_ for _ in ()).throw(r.MutationError("identity")))
+    result = r.phase_c(config)
+    assert result["failure_code"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+    assert result["failure_class"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+
+
+def test_phase_c_exit_zero_runtime_observer_failure_is_live_validation_failure(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    _write_state(config)
+    monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
+    monkeypatch.setattr(
+        r.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", "observer failed"),
+    )
+    result = r.phase_c(config)
+    assert result["failure_code"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+    assert result["failure_class"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+
+
+def test_phase_c_duplicate_normalized_package_blocks_probes(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    _write_state(config)
+    duplicate = list(r.SUCCESSOR)
+    duplicate[-1] = "cloud_pickle==3.1.2"
+    monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
+    monkeypatch.setattr(r.subprocess, "run", _runtime_run(_runtime_payload(config, duplicate)))
+    result = r.phase_c(config)
+    assert result["failure_code"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+    assert result["full_validation_run"] is False
+    script = r._phase_c_probe_script()
+    assert script.index("if key in names") < script.index("from lightgbm import")
 
 
 def test_phase_b_pre_boundary_failure_does_not_call_phase_c(tmp_path, monkeypatch):

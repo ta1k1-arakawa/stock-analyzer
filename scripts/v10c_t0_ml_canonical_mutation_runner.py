@@ -611,7 +611,7 @@ def _read_mutation_state(config: Config) -> tuple[dict[str, Any] | None, bool]:
 def _phase_c_probe_script() -> str:
     expected = repr(EXPECTED_SUCCESSOR)
     return f"""
-import importlib.metadata, json, math, platform, sys
+import importlib.metadata, json, math, platform, re, sys
 packages = []
 for distribution in importlib.metadata.distributions():
     name = distribution.metadata.get('Name')
@@ -628,7 +628,21 @@ result = {{
     'ridge_probe': False,
 }}
 try:
-    names = {{item['name'].lower().replace('_', '-').replace('.', '-'): item['version'] for item in packages}}
+    names = {{}}
+    for item in packages:
+        key = re.sub(r'[-_.]+', '-', item['name']).lower()
+        if key in names:
+            result['package_status'] = 'FAIL'
+            result['probe_status'] = 'NOT_RUN'
+            print(json.dumps(result, sort_keys=True))
+            raise SystemExit(0)
+        names[key] = item['version']
+    if len(packages) != 27 or names != {expected}:
+        result['package_status'] = 'FAIL'
+        result['probe_status'] = 'NOT_RUN'
+        print(json.dumps(result, sort_keys=True))
+        raise SystemExit(0)
+    result['package_status'] = 'PASS'
     if names == {expected}:
         X = [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
         y = [0.0, 1.0, 2.0, 3.0]
@@ -673,8 +687,71 @@ def _publish_phase_c_evidence(config: Config, evidence: Mapping[str, Any]) -> bo
             return False
         _atomic_json(path, evidence)
         return True
-    except (FileExistsError, OSError, ValueError, TypeError):
+    except BaseException:
         return False
+
+
+def _existing_phase_c_evidence(
+    config: Config, inspection: Mapping[str, Any]
+) -> tuple[dict[str, Any] | None, bool]:
+    """Inspect an existing evidence file without probing or publishing."""
+    path = config.attempt_root / RESERVED[3]
+    try:
+        if not os.path.lexists(path):
+            return None, False
+        info = path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & 0x400
+            or not _safe_ancestor_chain(path)
+        ):
+            raise MutationError("EVIDENCE_UNSAFE")
+        stored = _json_object(path.read_bytes())
+        if (
+            stored.get("authority_consumed") is not True
+            or stored.get("retry_authorized") is not False
+            or stored.get("inspection") != dict(inspection)
+            or stored.get("evidence_published", True) is not True
+        ):
+            raise MutationError("EVIDENCE_INCONSISTENT")
+        status = stored.get("status")
+        failure_code = stored.get("failure_code")
+        failure_class = stored.get("failure_class")
+        if status == "PASS":
+            valid = (
+                failure_code == "NONE"
+                and failure_class == "PASS"
+                and stored.get("full_validation_run") is True
+            )
+        else:
+            valid = (
+                status == "FAIL"
+                and failure_class in {
+                    "CANONICAL_MUTATION_FAILURE",
+                    "LIVE_ENVIRONMENT_VALIDATION_FAILURE",
+                }
+                and failure_code == failure_class
+                and stored.get("full_validation_run") is False
+            )
+        if not valid:
+            raise MutationError("EVIDENCE_INCONSISTENT")
+        result = dict(stored)
+        result["existing_evidence_inspected"] = True
+        result["evidence_published"] = True
+        return result, True
+    except BaseException:
+        return {
+            "status": "FAIL",
+            "failure_code": "CANONICAL_MUTATION_FAILURE",
+            "failure_class": "CANONICAL_MUTATION_FAILURE",
+            "authority_consumed": True,
+            "retry_authorized": False,
+            "full_validation_run": False,
+            "existing_evidence_inspected": True,
+            "evidence_published": False,
+            "inspection": dict(inspection),
+        }, True
 
 
 def phase_c(config: Config) -> dict[str, Any]:
@@ -703,17 +780,43 @@ def phase_c(config: Config) -> dict[str, Any]:
         "live_package_observation_status": "NOT_RUN",
         "failure_class": "CANONICAL_MUTATION_FAILURE",
     }
-    if not state_valid or state.get("exit_code") != 0:
+    existing, evidence_exists = _existing_phase_c_evidence(config, inspection)
+    if evidence_exists:
+        return existing or {
+            "status": "FAIL",
+            "failure_code": "CANONICAL_MUTATION_FAILURE",
+            "failure_class": "CANONICAL_MUTATION_FAILURE",
+            "authority_consumed": True,
+            "retry_authorized": False,
+            "full_validation_run": False,
+            "existing_evidence_inspected": True,
+            "evidence_published": False,
+            "inspection": inspection,
+        }
+    if (
+        not state_valid
+        or state.get("exit_code") != 0
+        or state.get("launch_attempted") is not True
+        or state.get("process_started") is not True
+    ):
         result.update(status="FAIL", failure_code="CANONICAL_MUTATION_FAILURE")
     else:
         try:
             canonical = _canonical_identity(config)
         except (MutationError, OSError, ValueError):
-            result.update(status="FAIL", failure_code="CANONICAL_MUTATION_FAILURE")
+            result.update(
+                status="FAIL",
+                failure_code="LIVE_ENVIRONMENT_VALIDATION_FAILURE",
+                failure_class="LIVE_ENVIRONMENT_VALIDATION_FAILURE",
+            )
         else:
             runtime, runtime_failure = _observe_phase_c_runtime(canonical)
             if runtime_failure != "NONE" or runtime is None:
-                result.update(status="FAIL", failure_code="CANONICAL_MUTATION_FAILURE")
+                result.update(
+                    status="FAIL",
+                    failure_code="LIVE_ENVIRONMENT_VALIDATION_FAILURE",
+                    failure_class="LIVE_ENVIRONMENT_VALIDATION_FAILURE",
+                )
             else:
                 try:
                     package_status = "PASS" if _packages_ok(runtime, EXPECTED_SUCCESSOR) else "FAIL"
@@ -736,10 +839,16 @@ def phase_c(config: Config) -> dict[str, Any]:
                     result.update(status="FAIL", failure_code="LIVE_ENVIRONMENT_VALIDATION_FAILURE", failure_class="LIVE_ENVIRONMENT_VALIDATION_FAILURE")
                 else:
                     result.update(status="PASS", failure_code="NONE", failure_class="PASS", full_validation_run=True, readiness_evidence_only=True)
-    published = _publish_phase_c_evidence(config, result)
+    evidence = dict(result)
+    evidence["evidence_published"] = True
+    published = _publish_phase_c_evidence(config, evidence)
     result["evidence_published"] = published
-    if not published and result.get("status") == "PASS":
-        result.update(status="FAIL", failure_code="CANONICAL_MUTATION_FAILURE", failure_class="CANONICAL_MUTATION_FAILURE")
+    if not published:
+        result.update(
+            status="FAIL",
+            failure_code="CANONICAL_MUTATION_FAILURE",
+            failure_class="CANONICAL_MUTATION_FAILURE",
+        )
     return result
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -2790,3 +2790,10 @@ transitions. This public log must not contain protected material.
 - Phase-B now treats the durable receipt publication as a sticky boundary and routes every post-boundary outcome—success, nonzero exit, launch exception, and later durable-state failure—through exactly one Phase-C inspection. Authority remains consumed and retry remains false; no rollback, reset, deletion, or retry path was added.
 - Added synthetic production-control coverage for pre-boundary blocking, automatic Phase-C success/nonzero/exception paths, package drift, probe failure, existing-evidence non-overwrite, post-boundary state-publication failure, and standalone Phase-C isolation. Targeted result: `21 passed`.
 - HIGH-3 and MEDIUM-1 are `REMEDIATED_AWAITING_GPT_REVIEW`; HIGH-1=RESOLVED, HIGH-2=RESOLVED, MEDIUM-2=RESOLVED, MEDIUM-3=RESOLVED, and MEDIUM-4=RESOLVED. No real Phase-A/B/C execution, installation, mutation, package-index access, model fit, T0, payload/private access, or human mutation-gate consumption occurred.
+
+## 2026-09-15 — V10C H3 final evidence lifecycle remediation
+
+- Recorded GPT exact-SHA review `b09e05c02c6dd929bf27320b0e04c2cbebe992c9` as `BLOCK_CRITICAL_0_HIGH_1_MEDIUM_1_LOW_0`; HIGH-1 and HIGH-2 were resolved, and HIGH-3/MEDIUM-1 were the remaining scoped findings.
+- Remediated existing-evidence lifecycle semantics: standalone Phase C now performs read-only strict evidence inspection, preserves intact PASS and closed failure classes, never reprobes, and never overwrites existing evidence; malformed or inconsistent evidence fails closed without retry.
+- Remediated classification semantics: any new evidence-publication failure is `CANONICAL_MUTATION_FAILURE`, while exit-0 interpreter/runtime/package/probe failures are `LIVE_ENVIRONMENT_VALIDATION_FAILURE`; duplicate-normalized metadata prevents invented probes.
+- Targeted synthetic result was `28 passed`; no real phase execution, package installation, environment mutation, network/package-index access, model fit, T0, payload/private access, or human mutation-gate consumption occurred. HIGH-3 and MEDIUM-1 are `REMEDIATED_AWAITING_GPT_REVIEW`; implementation PASS remains unestablished.
