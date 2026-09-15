@@ -247,11 +247,237 @@ def test_phase_a_zero_writes_and_global_t0_unchanged():
     assert len(r.PREDECESSOR) == 20 and len(r.SUCCESSOR) == 27 and len(r.DELTA) == 7
 
 
-def test_phase_c_safe_failure_remains_unchanged(tmp_path):
-    config = r.Config(
-        tmp_path, tmp_path / ".venv-real-execution" / "Scripts" / "python.exe",
-        tmp_path / r.ATTEMPT_NAME, tmp_path / "wheels", REVIEWED_SHA,
-    )
-    config.attempt_root.mkdir()
-    (config.attempt_root / "mutation_state.json").write_text("{}", encoding="utf-8")
-    assert r.phase_c(config, {})["failure_code"] == "CANONICAL_MUTATION_FAILURE"
+def _attempt_config(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    interpreter = repo / ".venv-real-execution" / "Scripts" / "python.exe"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"synthetic interpreter")
+    attempt = tmp_path / "audit" / r.ATTEMPT_NAME
+    attempt.parent.mkdir()
+    return r.Config(repo, interpreter, attempt, tmp_path / "missing-wheel-root", REVIEWED_SHA)
+
+
+def _write_state(config, exit_code=0, *, launch_attempted=True, process_started=True):
+    config.attempt_root.mkdir(parents=True, exist_ok=True)
+    (config.attempt_root / r.RESERVED[0]).write_text(json.dumps({
+        "authority_consumed": True,
+        "retry_authorized": False,
+        "phase_c_required": True,
+        "launch_attempted": launch_attempted,
+        "process_started": process_started,
+        "exit_code": exit_code,
+    }), encoding="utf-8")
+    (config.attempt_root / r.RESERVED[1]).write_bytes(b"stdout")
+    (config.attempt_root / r.RESERVED[2]).write_bytes(b"stderr")
+
+
+def _runtime_payload(config, packages=None, *, probe_status="PASS", executable=None):
+    return {
+        "python_version": "3.12.10",
+        "executable": str(executable or config.canonical_python),
+        "packages": [
+            {"name": pin.split("==", 1)[0], "version": pin.split("==", 1)[1]}
+            for pin in (packages or r.SUCCESSOR)
+        ],
+        "probe_status": probe_status,
+        "lightgbm_probe": probe_status == "PASS",
+        "ridge_probe": probe_status == "PASS",
+    }
+
+
+def _runtime_run(payload):
+    def fake_run(command, **kwargs):
+        assert "-m" not in command
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+    return fake_run
+
+
+def test_phase_c_success_is_dedicated_and_publishes_safe_evidence(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    _write_state(config)
+    monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
+    calls = []
+    payload = _runtime_payload(config)
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+    monkeypatch.setattr(r.subprocess, "run", fake_run)
+    monkeypatch.setattr(r, "collect_production", lambda _: (_ for _ in ()).throw(AssertionError("phase A called")))
+    result = r.phase_c(config)
+    assert result["status"] == "PASS"
+    assert result["authority_consumed"] is True
+    assert result["retry_authorized"] is False
+    assert result["full_validation_run"] is True
+    assert result["inspection"]["stdout"]["sha256"] == hashlib.sha256(b"stdout").hexdigest()
+    assert len(calls) == 1 and "-m" not in calls[0]
+    evidence = (config.attempt_root / r.RESERVED[3]).read_text(encoding="utf-8")
+    assert str(config.repo_root) not in evidence
+
+
+@pytest.mark.parametrize("exit_code", [7, "UNKNOWN"])
+def test_phase_c_post_boundary_failure_is_safe_and_no_runtime_probe(tmp_path, monkeypatch, exit_code):
+    config = _attempt_config(tmp_path)
+    _write_state(config, exit_code=exit_code, process_started="UNKNOWN" if exit_code == "UNKNOWN" else True)
+    monkeypatch.setattr(r, "_canonical_identity", lambda _: (_ for _ in ()).throw(AssertionError("probe ran")))
+    result = r.phase_c(config)
+    assert result["status"] == "FAIL"
+    assert result["failure_code"] == "CANONICAL_MUTATION_FAILURE"
+    assert result["full_validation_run"] is False
+    assert (config.attempt_root / r.RESERVED[3]).exists()
+
+
+def test_phase_c_package_drift_and_probe_failure_are_live_validation_failures(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
+    _write_state(config)
+    monkeypatch.setattr(r.subprocess, "run", _runtime_run(
+        _runtime_payload(config, r.PREDECESSOR)
+    ))
+    drift = r.phase_c(config)
+    assert drift["failure_code"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+    assert drift["full_validation_run"] is False
+
+    config = _attempt_config(tmp_path / "probe")
+    _write_state(config)
+    monkeypatch.setattr(r.subprocess, "run", _runtime_run(
+        _runtime_payload(config, probe_status="FAIL")
+    ))
+    probe = r.phase_c(config)
+    assert probe["failure_code"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+    assert probe["full_validation_run"] is False
+
+
+def test_phase_c_existing_evidence_is_never_overwritten(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    _write_state(config)
+    evidence_path = config.attempt_root / r.RESERVED[3]
+    evidence_path.write_bytes(b"existing")
+    monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
+    monkeypatch.setattr(r.subprocess, "run", _runtime_run(_runtime_payload(config)))
+    result = r.phase_c(config)
+    assert result["status"] == "FAIL"
+    assert result["failure_code"] == "CANONICAL_MUTATION_FAILURE"
+    assert evidence_path.read_bytes() == b"existing"
+
+
+def test_phase_b_pre_boundary_failure_does_not_call_phase_c(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    called = {"phase_c": 0}
+    monkeypatch.setattr(r, "collect_production", lambda _: (_ for _ in ()).throw(r.MutationError("blocked")))
+    original = r.phase_c
+
+    def phase_c_spy(value):
+        called["phase_c"] += 1
+        return original(value)
+
+    monkeypatch.setattr(r, "phase_c", phase_c_spy)
+    result = r.phase_b(config, mutation_authorized=True, launcher=lambda *_: 0)
+    assert result["failure_code"] == "PRE_GATE_ENVIRONMENT_BLOCK"
+    assert called["phase_c"] == 0
+    assert not config.attempt_root.exists()
+
+
+def test_phase_b_success_runs_phase_c_once_and_returns_nested_results(synthetic, monkeypatch):
+    _, config, _ = synthetic
+    observed = r.collect_production(config)
+    for pin, path in observed["delta_wheels"].items():
+        observed["wheel_sha256"][pin] = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setattr(r, "collect_production", lambda _: observed)
+    monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
+    monkeypatch.setattr(r.subprocess, "run", _runtime_run(_runtime_payload(config)))
+    calls = {"phase_c": 0}
+    original = r.phase_c
+
+    def phase_c_spy(value):
+        calls["phase_c"] += 1
+        return original(value)
+
+    monkeypatch.setattr(r, "phase_c", phase_c_spy)
+
+    def launcher(argv, stdout, stderr):
+        assert argv[1:6] == ["-m", "pip", "install", "--no-deps", "--no-index"]
+        stdout.write_bytes(b"synthetic stdout")
+        stderr.write_bytes(b"")
+        return 0
+
+    result = r.phase_b(config, mutation_authorized=True, launcher=launcher)
+    assert result["status"] == "PASS"
+    assert result["phase_c_result"]["status"] == "PASS"
+    assert result["authority_consumed"] is True
+    assert result["retry_authorized"] is False
+    assert calls["phase_c"] == 1
+
+
+@pytest.mark.parametrize("launcher", [
+    lambda *_: 9,
+    lambda *_: (_ for _ in ()).throw(RuntimeError("launch")),
+])
+def test_phase_b_nonzero_or_launch_exception_runs_phase_c_once(synthetic, monkeypatch, launcher):
+    _, config, _ = synthetic
+    observed = r.collect_production(config)
+    for pin, path in observed["delta_wheels"].items():
+        observed["wheel_sha256"][pin] = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setattr(r, "collect_production", lambda _: observed)
+    calls = {"phase_c": 0}
+    original = r.phase_c
+
+    def phase_c_spy(value):
+        calls["phase_c"] += 1
+        return original(value)
+
+    monkeypatch.setattr(r, "phase_c", phase_c_spy)
+    result = r.phase_b(config, mutation_authorized=True, launcher=launcher)
+    assert result["status"] == "FAIL"
+    assert result["failure_code"] == "CANONICAL_MUTATION_FAILURE"
+    assert result["phase_c_result"]["full_validation_run"] is False
+    assert calls["phase_c"] == 1
+
+
+def test_phase_b_state_update_failure_after_boundary_is_not_retried(synthetic, monkeypatch):
+    _, config, _ = synthetic
+    observed = r.collect_production(config)
+    for pin, path in observed["delta_wheels"].items():
+        observed["wheel_sha256"][pin] = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setattr(r, "collect_production", lambda _: observed)
+    original_atomic = r._atomic_json
+    calls = {"atomic": 0, "launch": 0}
+
+    def failing_atomic(path, value):
+        calls["atomic"] += 1
+        if calls["atomic"] == 2:
+            raise OSError("synthetic state publication failure")
+        return original_atomic(path, value)
+
+    monkeypatch.setattr(r, "_atomic_json", failing_atomic)
+
+    def launcher(*_):
+        calls["launch"] += 1
+        return 0
+
+    result = r.phase_b(config, mutation_authorized=True, launcher=launcher)
+    assert result["failure_code"] == "CANONICAL_MUTATION_FAILURE"
+    assert result["authority_consumed"] is True
+    assert result["retry_authorized"] is False
+    assert calls["launch"] == 0
+    assert calls["atomic"] == 3
+    assert (config.attempt_root / r.RESERVED[3]).exists()
+
+
+def test_main_phase_c_does_not_collect_phase_a_or_require_wheel_root(tmp_path, monkeypatch, capsys):
+    config = _attempt_config(tmp_path)
+    _write_state(config, exit_code=7)
+    monkeypatch.setattr(r, "collect_production", lambda _: (_ for _ in ()).throw(AssertionError("phase A called")))
+    rc = r.main([
+        "phase-c", "--reviewed-implementation-sha", REVIEWED_SHA,
+        "--repo-root", str(config.repo_root),
+        "--canonical-python", str(config.canonical_python),
+        "--attempt-root", str(config.attempt_root),
+        "--wheel-root", str(config.wheel_root),
+    ])
+    assert rc == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["failure_code"] == "CANONICAL_MUTATION_FAILURE"
+    assert not config.wheel_root.exists()

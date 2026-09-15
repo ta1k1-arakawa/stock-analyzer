@@ -470,16 +470,14 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
         json.dump(value, handle, sort_keys=True, separators=(",", ":")); handle.flush(); os.fsync(handle.fileno())
     os.replace(temp, path)
 
-def phase_b(config: Config, *, mutation_authorized: bool, launcher: Callable[[list[str], Path, Path], int] | None = None) -> dict[str, Any]:
-    try: verified = _verified_result(config, collect_production(config))
-    except (MutationError, OSError, ValueError, KeyError): return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
-    if not mutation_authorized or config.attempt_root.exists(): return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
+def _prelaunch_wheels(verified: VerifiedPhaseAResult) -> None:
     for wheel in verified.verified_delta_wheels:
         try:
             info = wheel.path.lstat()
             resolved = wheel.path.resolve(strict=True)
-        except OSError:
-            return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
+            digest = hashlib.sha256(wheel.path.read_bytes()).hexdigest()
+        except OSError as error:
+            raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK") from error
         if (
             not stat.S_ISREG(info.st_mode)
             or stat.S_ISLNK(info.st_mode)
@@ -488,48 +486,260 @@ def phase_b(config: Config, *, mutation_authorized: bool, launcher: Callable[[li
             or resolved.parent != verified.wheel_root_realpath
             or wheel.path.name != wheel.filename
             or EXPECTED_DELTA.get(wheel.normalized_name) != wheel.version
-            or hashlib.sha256(wheel.path.read_bytes()).hexdigest() != wheel.sha256
+            or digest != wheel.sha256
         ):
-            return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
-    config.attempt_root.mkdir(parents=False)
-    state = {"authority_consumed": True, "retry_authorized": False, "phase_c_required": True, "launch_attempted": True, "exit_code": "UNKNOWN"}
-    _atomic_json(config.attempt_root / RESERVED[0], state)
-    stdout, stderr = config.attempt_root / RESERVED[1], config.attempt_root / RESERVED[2]
-    stdout.touch(exist_ok=False); stderr.touch(exist_ok=False)
+            raise MutationError("PRE_GATE_ENVIRONMENT_BLOCK")
+
+
+def _post_boundary_result(config: Config, phase_b_result: Mapping[str, Any]) -> dict[str, Any]:
+    """Run the dedicated safe observer exactly once after the boundary."""
+    phase_c_result = phase_c(config)
+    return {
+        "status": phase_c_result.get("status", "FAIL"),
+        "failure_code": phase_c_result.get("failure_code", "CANONICAL_MUTATION_FAILURE"),
+        "authority_consumed": True,
+        "retry_authorized": False,
+        "phase_b_result": dict(phase_b_result),
+        "phase_c_result": phase_c_result,
+    }
+
+
+def phase_b(
+    config: Config,
+    *,
+    mutation_authorized: bool,
+    launcher: Callable[[list[str], Path, Path], int] | None = None,
+) -> dict[str, Any]:
     try:
-        code = (launcher or _launch)(build_pip_argv(verified), stdout, stderr)
-        state["exit_code"] = code
+        verified = _verified_result(config, collect_production(config))
+        _prelaunch_wheels(verified)
+    except (MutationError, OSError, ValueError, KeyError):
+        return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
+    if not mutation_authorized or os.path.lexists(config.attempt_root):
+        return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
+
+    try:
+        config.attempt_root.mkdir(parents=False, exist_ok=False)
+    except (FileExistsError, OSError):
+        return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
+
+    state = {
+        "authority_consumed": True,
+        "retry_authorized": False,
+        "phase_c_required": True,
+        "launch_attempted": False,
+        "process_started": False,
+        "exit_code": "UNKNOWN",
+    }
+    # The publication attempt is the sticky boundary. Any later exception
+    # must go through Phase C and may never enter a retry path.
+    try:
+        _atomic_json(config.attempt_root / RESERVED[0], state)
     except BaseException:
-        state["launch_exception"] = True
-    _atomic_json(config.attempt_root / RESERVED[0], state)
-    return {"status": "PASS" if state.get("exit_code") == 0 else "FAIL", "failure_code": "NONE" if state.get("exit_code") == 0 else "CANONICAL_MUTATION_FAILURE", **state}
+        return _post_boundary_result(
+            config,
+            {"status": "FAIL", "failure_code": "CANONICAL_MUTATION_FAILURE", **state},
+        )
+
+    stdout = config.attempt_root / RESERVED[1]
+    stderr = config.attempt_root / RESERVED[2]
+    phase_b_failure: str | None = None
+    try:
+        stdout.touch(exist_ok=False)
+        stderr.touch(exist_ok=False)
+        state["launch_attempted"] = True
+        state["process_started"] = "UNKNOWN"
+        _atomic_json(config.attempt_root / RESERVED[0], state)
+        try:
+            code = (launcher or _launch)(build_pip_argv(verified), stdout, stderr)
+            state["process_started"] = True
+            state["exit_code"] = code if isinstance(code, int) else "UNKNOWN"
+            if state["exit_code"] != 0:
+                phase_b_failure = "CANONICAL_MUTATION_FAILURE"
+        except BaseException:
+            state["launch_exception"] = True
+            state["process_started"] = "UNKNOWN"
+            phase_b_failure = "CANONICAL_MUTATION_FAILURE"
+        try:
+            _atomic_json(config.attempt_root / RESERVED[0], state)
+        except BaseException:
+            phase_b_failure = "CANONICAL_MUTATION_FAILURE"
+    except BaseException:
+        phase_b_failure = "CANONICAL_MUTATION_FAILURE"
+
+    phase_b_result = {
+        "status": "PASS" if phase_b_failure is None and state.get("exit_code") == 0 else "FAIL",
+        "failure_code": phase_b_failure or "NONE",
+        **state,
+    }
+    return _post_boundary_result(config, phase_b_result)
 
 def _launch(argv: list[str], stdout: Path, stderr: Path) -> int:
     with open(stdout, "wb") as out, open(stderr, "wb") as err:
         return subprocess.run(argv, stdout=out, stderr=err, check=False).returncode
 
-def _file_summary(path: Path) -> dict[str, Any]:
-    if not path.is_file(): return {"exists": False, "size": None, "sha256": None}
-    data = path.read_bytes(); return {"exists": True, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+def _safe_file_summary(path: Path) -> dict[str, Any]:
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            return {"exists": True, "size": None, "sha256": None, "integrity": "FAIL"}
+        data = path.read_bytes()
+        return {"exists": True, "size": len(data), "sha256": hashlib.sha256(data).hexdigest(), "integrity": "PASS"}
+    except FileNotFoundError:
+        return {"exists": False, "size": None, "sha256": None, "integrity": "MISSING"}
+    except OSError:
+        return {"exists": "UNKNOWN", "size": None, "sha256": None, "integrity": "UNKNOWN"}
 
-def phase_c(config: Config, observed: Mapping[str, Any], *, synthetic_probe: Callable[[], bool] | None = None) -> dict[str, Any]:
-    root = config.attempt_root; state_path = root / RESERVED[0]
-    try: state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError): state = None
-    inspection = {"state_valid": isinstance(state, dict), "stdout": _file_summary(root / RESERVED[1]), "stderr": _file_summary(root / RESERVED[2]), "authority_consumed": state.get("authority_consumed") if isinstance(state, dict) else None, "retry_authorized": state.get("retry_authorized") if isinstance(state, dict) else None}
-    result: dict[str, Any] = {"inspection": inspection, "authority_consumed": True, "retry_authorized": False}
-    ready = isinstance(state, dict) and state.get("authority_consumed") is True and state.get("retry_authorized") is False and state.get("exit_code") == 0
-    if not ready:
-        result.update(status="FAIL", failure_code="CANONICAL_MUTATION_FAILURE", full_validation_run=False)
-    elif not _packages_ok(observed, EXPECTED_SUCCESSOR) or observed.get("python_version") != "3.12.10" or observed.get("canonical_interpreter") is not True:
-        result.update(status="FAIL", failure_code="LIVE_ENVIRONMENT_VALIDATION_FAILURE", full_validation_run=False)
+
+def _read_mutation_state(config: Config) -> tuple[dict[str, Any] | None, bool]:
+    try:
+        state = _json_object((config.attempt_root / RESERVED[0]).read_bytes())
+    except (OSError, TypeError, ValueError, MutationError):
+        return None, False
+    exit_code = state.get("exit_code")
+    valid = (
+        state.get("authority_consumed") is True
+        and state.get("retry_authorized") is False
+        and state.get("phase_c_required") is True
+        and isinstance(state.get("launch_attempted"), bool)
+        and state.get("process_started") in {True, False, "UNKNOWN"}
+        and ((isinstance(exit_code, int) and not isinstance(exit_code, bool)) or exit_code == "UNKNOWN")
+    )
+    return state, valid
+
+
+def _phase_c_probe_script() -> str:
+    expected = repr(EXPECTED_SUCCESSOR)
+    return f"""
+import importlib.metadata, json, math, platform, sys
+packages = []
+for distribution in importlib.metadata.distributions():
+    name = distribution.metadata.get('Name')
+    version = distribution.version
+    if not isinstance(name, str) or not isinstance(version, str):
+        raise ValueError('MALFORMED_METADATA')
+    packages.append({{'name': name, 'version': version}})
+result = {{
+    'python_version': platform.python_version(),
+    'executable': sys.executable,
+    'packages': packages,
+    'probe_status': 'NOT_RUN',
+    'lightgbm_probe': False,
+    'ridge_probe': False,
+}}
+try:
+    names = {{item['name'].lower().replace('_', '-').replace('.', '-'): item['version'] for item in packages}}
+    if names == {expected}:
+        X = [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]
+        y = [0.0, 1.0, 2.0, 3.0]
+        from lightgbm import LGBMRegressor
+        from sklearn.linear_model import Ridge
+        from sklearn.preprocessing import StandardScaler
+        lgbm = LGBMRegressor(n_estimators=1, random_state=0, n_jobs=1, verbosity=-1)
+        lgbm.fit(X, y)
+        lgbm_prediction = lgbm.predict([[1.5, 1.5]])
+        scaler = StandardScaler()
+        transformed = scaler.fit_transform(X)
+        ridge = Ridge()
+        ridge.fit(transformed, y)
+        ridge_prediction = ridge.predict(scaler.transform([[1.5, 1.5]]))
+        result['lightgbm_probe'] = len(lgbm_prediction) == 1 and math.isfinite(float(lgbm_prediction[0]))
+        result['ridge_probe'] = len(ridge_prediction) == 1 and math.isfinite(float(ridge_prediction[0]))
+        result['probe_status'] = 'PASS' if result['lightgbm_probe'] and result['ridge_probe'] else 'FAIL'
+except Exception:
+    result['probe_status'] = 'FAIL'
+print(json.dumps(result, sort_keys=True))
+"""
+
+
+def _observe_phase_c_runtime(canonical: Path) -> tuple[dict[str, Any] | None, str]:
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1", "PIP_CONFIG_FILE": os.devnull}
+    try:
+        child = subprocess.run(
+            [str(canonical), "-B", "-I", "-c", _phase_c_probe_script()],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        if child.returncode != 0:
+            return None, "CANONICAL_MUTATION_FAILURE"
+        return _json_object(child.stdout), "NONE"
+    except (OSError, TypeError, ValueError, MutationError):
+        return None, "CANONICAL_MUTATION_FAILURE"
+
+
+def _publish_phase_c_evidence(config: Config, evidence: Mapping[str, Any]) -> bool:
+    path = config.attempt_root / RESERVED[3]
+    try:
+        if os.path.lexists(path):
+            return False
+        _atomic_json(path, evidence)
+        return True
+    except (FileExistsError, OSError, ValueError, TypeError):
+        return False
+
+
+def phase_c(config: Config) -> dict[str, Any]:
+    """Inspect one existing attempt without Phase-A, pip, or wheel-root access."""
+    state, state_valid = _read_mutation_state(config)
+    launch_attempted = state.get("launch_attempted") if state and isinstance(state.get("launch_attempted"), bool) else "UNKNOWN"
+    process_started = state.get("process_started") if state and state.get("process_started") in {True, False, "UNKNOWN"} else "UNKNOWN"
+    raw_exit_code = state.get("exit_code") if state else "UNKNOWN"
+    process_exit_code = raw_exit_code if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool) else "UNKNOWN"
+    inspection: dict[str, Any] = {
+        "state_valid": state_valid,
+        "authority_consumed": True,
+        "retry_authorized": False,
+        "launch_attempted": launch_attempted,
+        "process_started": process_started,
+        "process_exit_code": process_exit_code,
+        "stdout": _safe_file_summary(config.attempt_root / RESERVED[1]),
+        "stderr": _safe_file_summary(config.attempt_root / RESERVED[2]),
+    }
+    result: dict[str, Any] = {
+        "inspection": inspection,
+        "authority_consumed": True,
+        "retry_authorized": False,
+        "full_validation_run": False,
+        "canonical_interpreter_status": "UNKNOWN",
+        "live_package_observation_status": "NOT_RUN",
+        "failure_class": "CANONICAL_MUTATION_FAILURE",
+    }
+    if not state_valid or state.get("exit_code") != 0:
+        result.update(status="FAIL", failure_code="CANONICAL_MUTATION_FAILURE")
     else:
-        ok = bool((synthetic_probe or (lambda: False))())
-        result.update(status="PASS" if ok else "FAIL", failure_code="NONE" if ok else "LIVE_ENVIRONMENT_VALIDATION_FAILURE", full_validation_run=True, readiness_evidence_only=True)
-    evidence_path = root / RESERVED[3]
-    if evidence_path.exists():
-        return {**result, "status": "FAIL", "failure_code": "CANONICAL_MUTATION_FAILURE", "evidence_published": False}
-    _atomic_json(evidence_path, result)
+        try:
+            canonical = _canonical_identity(config)
+        except (MutationError, OSError, ValueError):
+            result.update(status="FAIL", failure_code="CANONICAL_MUTATION_FAILURE")
+        else:
+            runtime, runtime_failure = _observe_phase_c_runtime(canonical)
+            if runtime_failure != "NONE" or runtime is None:
+                result.update(status="FAIL", failure_code="CANONICAL_MUTATION_FAILURE")
+            else:
+                try:
+                    package_status = "PASS" if _packages_ok(runtime, EXPECTED_SUCCESSOR) else "FAIL"
+                except (TypeError, ValueError, MutationError):
+                    package_status = "FAIL"
+                interpreter_ok = (
+                    runtime.get("python_version") == "3.12.10"
+                    and Path(runtime.get("executable", "")) == canonical
+                )
+                result["canonical_interpreter_status"] = "PASS" if interpreter_ok else "FAIL"
+                result["live_package_observation_status"] = package_status
+                result["python_version"] = runtime.get("python_version")
+                result["package_count"] = len(runtime.get("packages", ())) if isinstance(runtime.get("packages"), list) else None
+                result["probe_status"] = runtime.get("probe_status", "NOT_RUN")
+                result["lightgbm_probe"] = runtime.get("lightgbm_probe") is True
+                result["ridge_probe"] = runtime.get("ridge_probe") is True
+                if not interpreter_ok or package_status != "PASS":
+                    result.update(status="FAIL", failure_code="LIVE_ENVIRONMENT_VALIDATION_FAILURE", failure_class="LIVE_ENVIRONMENT_VALIDATION_FAILURE")
+                elif result["probe_status"] != "PASS" or not result["lightgbm_probe"] or not result["ridge_probe"]:
+                    result.update(status="FAIL", failure_code="LIVE_ENVIRONMENT_VALIDATION_FAILURE", failure_class="LIVE_ENVIRONMENT_VALIDATION_FAILURE")
+                else:
+                    result.update(status="PASS", failure_code="NONE", failure_class="PASS", full_validation_run=True, readiness_evidence_only=True)
+    published = _publish_phase_c_evidence(config, result)
+    result["evidence_published"] = published
+    if not published and result.get("status") == "PASS":
+        result.update(status="FAIL", failure_code="CANONICAL_MUTATION_FAILURE", failure_class="CANONICAL_MUTATION_FAILURE")
     return result
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -538,7 +748,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if a.phase == 'phase-a': result=phase_a(cfg,collect_production(cfg))
         elif a.phase == 'phase-b': result=phase_b(cfg,mutation_authorized=a.mutation_authorized)
-        else: result=phase_c(cfg,collect_production(cfg))
+        else: result=phase_c(cfg)
     except (MutationError, OSError, ValueError, TypeError, KeyError, RuntimeError):
         result=_fail("PRE_GATE_ENVIRONMENT_BLOCK")
     print(json.dumps(result, sort_keys=True)); return 0 if result.get('status')=='PASS' else 1
