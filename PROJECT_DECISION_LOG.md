@@ -2872,3 +2872,10 @@ transitions. This public log must not contain protected material.
 - Remediated MEDIUM-2 by requiring existing final-freeze evidence to bind `canonical_environment_promoted=false`, `environment_frozen=false`, `global_t0_readiness=NO`, `t0_authorized=false`, and `future_profitability_established=false` exactly for both PASS and FAIL evidence.
 - Added synthetic tamper, omission, wrong-type, valid-PASS, valid-FAIL, and byte-preservation coverage. No phase, canonical interpreter, installation, mutation, network, model fit, T0, human authority consumption, or protected-data access occurred.
 - Next action: GPT exact-SHA MEDIUM-2 review.
+
+## 2026-09-15 — V10C F3 durable cross-chat review policy
+
+- Recorded GPT exact-SHA review `266220505351d662550ccd5c244814f1b557bbf3` with parent `010a68c83f570cf3f4448015e66b19bee876b898` as `PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_1`; MEDIUM-2 is resolved and the LOW was stale project-state bookkeeping.
+- Added the durable `AI_STOCK_ANALYZER_REVIEW_POLICY.md` and a concise mandatory reference from `AGENTS.md`. The policy changes no V10C methodology, Phase A/B/C semantics, authority, human gates, T0 sequencing, or F3/F4/F8 lineage.
+- This governance commit remains inside the V10C F3 checkpoint and is not itself GPT-reviewed. If its exact-SHA review passes, its new commit SHA becomes the final F3-reviewed SHA for F4/F6/F8 lineage; no F4 execution may occur before that review.
+- Global T0 readiness remains `NO`, T0 authority remains false, final-freeze live-verification authority remains false, and the environment remains `MUTATED_VALIDATED_NOT_FROZEN`.

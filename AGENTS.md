@@ -1,5 +1,11 @@
 ## AI research/execution governance
 
+For every important stock-analyzer research-planning, methodology-decision,
+exact-SHA-review, next-action, promotion/rejection, or profitability-
+assessment task, also read `AI_STOCK_ANALYZER_REVIEW_POLICY.md`. It is the
+stable project-level review policy; a frozen task design or stricter
+repository governance wins, and reading it creates no authority.
+
 For every AI-assisted research, design, implementation, review, or
 execution task in this repository, read `AI_RESEARCH_EXECUTION_RULES.md`
 first. It governs: human gate authority, ChatGPT research-planner
