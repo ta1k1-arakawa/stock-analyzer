@@ -94,6 +94,7 @@ class VerifiedPhaseAResult:
     candidate_sha256: str
     runner_blob_sha1: str
     test_blob_sha1: str
+    mutation_evidence_sha256: str
     provenance: Mapping[str, str]
 
 
@@ -295,7 +296,8 @@ def _validate_mutation_attempt(config: Config) -> dict[str, Any]:
     if not _regular_nonreparse(state_path) or not _regular_nonreparse(evidence_path):
         raise FinalFreezeError("MUTATION_EVIDENCE_MISSING_OR_UNSAFE")
     state = _strict_json(state_path.read_bytes())
-    evidence = _strict_json(evidence_path.read_bytes())
+    evidence_raw = evidence_path.read_bytes()
+    evidence = _strict_json(evidence_raw)
     if state.get("authority_consumed") is not True or state.get("retry_authorized") is not False:
         raise FinalFreezeError("MUTATION_AUTHORITY_INVALID")
     if state.get("launch_attempted") is not True or state.get("process_started") is not True or state.get("exit_code") != 0:
@@ -320,7 +322,7 @@ def _validate_mutation_attempt(config: Config) -> dict[str, Any]:
     }
     if any(type(evidence.get(key)) is not type(value) or evidence.get(key) != value for key, value in required.items()):
         raise FinalFreezeError("MUTATION_EVIDENCE_SEMANTICS_INVALID")
-    return {"state_valid": True, "evidence_valid": True}
+    return {"state_valid": True, "evidence_valid": True, "mutation_evidence_sha256": _sha256(evidence_raw)}
 
 
 def _validate_candidate(config: Config, raw: bytes) -> dict[str, Any]:
@@ -440,6 +442,7 @@ def collect_production(config: Config) -> Mapping[str, Any]:
         "candidate_sha256": candidate_sha,
         "mutation_attempt_identity": MUTATION_ATTEMPT_NAME,
         "mutation_attempt_safe": mutation["state_valid"] and mutation["evidence_valid"],
+        "mutation_evidence_sha256": mutation["mutation_evidence_sha256"],
         "canonical_interpreter_configured": str(canonical).endswith(os.path.join(".venv-real-execution", "Scripts", "python.exe")),
         "canonical_interpreter_existing": True,
         "final_freeze_attempt_name": ATTEMPT_NAME,
@@ -452,18 +455,18 @@ def collect_production(config: Config) -> Mapping[str, Any]:
 
 
 def _phase_a_from_observations(config: Config, observed: Mapping[str, Any]) -> VerifiedPhaseAResult:
-    required = ("branch", "head", "origin_head", "clean", "reviewed_tooling_sha", "reviewed_runner_blob_sha1", "current_runner_blob_sha1", "reviewed_test_blob_sha1", "current_test_blob_sha1", "candidate_blob", "candidate_sha256", "mutation_attempt_safe", "canonical_interpreter_configured", "canonical_interpreter_existing", "final_freeze_attempt_name", "final_freeze_attempt_absent", "reserved_children_absent", "ancestors_safe", "writes", "network_requests")
+    required = ("branch", "head", "origin_head", "clean", "reviewed_tooling_sha", "reviewed_runner_blob_sha1", "current_runner_blob_sha1", "reviewed_test_blob_sha1", "current_test_blob_sha1", "candidate_blob", "candidate_sha256", "mutation_attempt_safe", "mutation_evidence_sha256", "canonical_interpreter_configured", "canonical_interpreter_existing", "final_freeze_attempt_name", "final_freeze_attempt_absent", "reserved_children_absent", "ancestors_safe", "writes", "network_requests")
     if any(key not in observed for key in required):
         raise FinalFreezeError("PRE_GATE_ENVIRONMENT_BLOCK")
     if observed.get("branch") != AUTHORITATIVE_BRANCH or observed.get("head") != config.reviewed_tooling_sha or observed.get("origin_head") != config.reviewed_tooling_sha or observed.get("clean") is not True:
         raise FinalFreezeError("PRE_GATE_ENVIRONMENT_BLOCK")
     if observed.get("reviewed_tooling_sha") != config.reviewed_tooling_sha or observed.get("reviewed_runner_blob_sha1") != config.expected_runner_blob_sha1 or observed.get("current_runner_blob_sha1") != config.expected_runner_blob_sha1 or observed.get("reviewed_test_blob_sha1") != config.expected_test_blob_sha1 or observed.get("current_test_blob_sha1") != config.expected_test_blob_sha1:
         raise FinalFreezeError("PRE_GATE_ENVIRONMENT_BLOCK")
-    if observed.get("candidate_blob") != config.expected_candidate_blob_sha1 or observed.get("candidate_sha256") != config.expected_candidate_sha256 or observed.get("mutation_attempt_safe") is not True or observed.get("canonical_interpreter_configured") is not True or observed.get("canonical_interpreter_existing") is not True or observed.get("final_freeze_attempt_name") != ATTEMPT_NAME or observed.get("final_freeze_attempt_absent") is not True or observed.get("reserved_children_absent") is not True or observed.get("ancestors_safe") is not True or observed.get("writes") != 0 or observed.get("network_requests") != 0:
+    if observed.get("candidate_blob") != config.expected_candidate_blob_sha1 or observed.get("candidate_sha256") != config.expected_candidate_sha256 or observed.get("mutation_attempt_safe") is not True or type(observed.get("mutation_evidence_sha256")) is not str or SHA256_RE.fullmatch(observed["mutation_evidence_sha256"]) is None or observed.get("canonical_interpreter_configured") is not True or observed.get("canonical_interpreter_existing") is not True or observed.get("final_freeze_attempt_name") != ATTEMPT_NAME or observed.get("final_freeze_attempt_absent") is not True or observed.get("reserved_children_absent") is not True or observed.get("ancestors_safe") is not True or observed.get("writes") != 0 or observed.get("network_requests") != 0:
         raise FinalFreezeError("PRE_GATE_ENVIRONMENT_BLOCK")
     if not _path_separation(config):
         raise FinalFreezeError("PRE_GATE_ENVIRONMENT_BLOCK")
-    return VerifiedPhaseAResult(config.canonical_python, config.mutation_attempt_root, config.attempt_root, config.reviewed_tooling_sha, config.expected_candidate_blob_sha1, config.expected_candidate_sha256, config.expected_runner_blob_sha1, config.expected_test_blob_sha1, MappingProxyType({"design_blob": DESIGN_BLOB, "approval_blob": APPROVAL_RECORD_BLOB, "predecessor_blob": PREDECESSOR_BLOB, "successor_blob": SUCCESSOR_BLOB, "promotion_blob": PROMOTION_BLOB, "source_provenance_blob": SOURCE_PROVENANCE_BLOB}))
+    return VerifiedPhaseAResult(config.canonical_python, config.mutation_attempt_root, config.attempt_root, config.reviewed_tooling_sha, config.expected_candidate_blob_sha1, config.expected_candidate_sha256, config.expected_runner_blob_sha1, config.expected_test_blob_sha1, observed["mutation_evidence_sha256"], MappingProxyType({"design_blob": DESIGN_BLOB, "approval_blob": APPROVAL_RECORD_BLOB, "predecessor_blob": PREDECESSOR_BLOB, "successor_blob": SUCCESSOR_BLOB, "promotion_blob": PROMOTION_BLOB, "source_provenance_blob": SOURCE_PROVENANCE_BLOB, "mutation_evidence_sha256": observed["mutation_evidence_sha256"]}))
 
 
 def phase_a(config: Config) -> dict[str, Any]:
@@ -533,6 +536,8 @@ def _read_state(config: Config) -> tuple[dict[str, Any] | None, bool]:
             state.get("schema_version") == STATE_SCHEMA
             and state.get("attempt_name") == ATTEMPT_NAME
             and state.get("reviewed_implementation_sha") == config.reviewed_tooling_sha
+            and type(state.get("mutation_evidence_sha256")) is str
+            and SHA256_RE.fullmatch(state["mutation_evidence_sha256"]) is not None
             and state.get("authority_consumed") is True
             and state.get("retry_authorized") is False
             and state.get("phase_c_required") is True
@@ -553,6 +558,7 @@ def _inspection(config: Config, state: Mapping[str, Any] | None, valid: bool) ->
         "state_valid": valid,
         "authority_consumed": True,
         "retry_authorized": False,
+        "mutation_evidence_sha256": state.get("mutation_evidence_sha256") if state and type(state.get("mutation_evidence_sha256")) is str and SHA256_RE.fullmatch(state["mutation_evidence_sha256"]) is not None else None,
         "launch_attempted": state.get("launch_attempted") if state and isinstance(state.get("launch_attempted"), bool) else "UNKNOWN",
         "process_started": state.get("process_started") if state and state.get("process_started") in {True, False, "UNKNOWN"} else "UNKNOWN",
         "process_exit_code": exit_code,
@@ -571,6 +577,7 @@ def _base_evidence(config: Config, inspection: Mapping[str, Any], *, status: str
         "failure_class": failure_class,
         "authority_consumed": True,
         "retry_authorized": False,
+        "mutation_evidence_sha256": inspection.get("mutation_evidence_sha256"),
         "evidence_published": False,
         "inspection": dict(inspection),
         "full_validation_run": full_validation_run,
@@ -647,7 +654,7 @@ def _live_fields_from_stdout(path: Path) -> dict[str, Any]:
 
 
 def _validate_existing_evidence(stored: Mapping[str, Any], config: Config, inspection: Mapping[str, Any]) -> bool:
-    if stored.get("schema_version") != FINAL_EVIDENCE_SCHEMA or stored.get("attempt_name") != ATTEMPT_NAME or stored.get("reviewed_implementation_sha") != config.reviewed_tooling_sha or stored.get("authority_consumed") is not True or stored.get("retry_authorized") is not False or stored.get("evidence_published") is not True or stored.get("inspection") != dict(inspection):
+    if stored.get("schema_version") != FINAL_EVIDENCE_SCHEMA or stored.get("attempt_name") != ATTEMPT_NAME or stored.get("reviewed_implementation_sha") != config.reviewed_tooling_sha or type(stored.get("mutation_evidence_sha256")) is not str or SHA256_RE.fullmatch(stored["mutation_evidence_sha256"]) is None or stored.get("mutation_evidence_sha256") != inspection.get("mutation_evidence_sha256") or stored.get("authority_consumed") is not True or stored.get("retry_authorized") is not False or stored.get("evidence_published") is not True or stored.get("inspection") != dict(inspection):
         return False
     if stored.get("status") == "PASS":
         return stored.get("failure_code") == "NONE" and stored.get("failure_class") == "PASS" and stored.get("full_validation_run") is True and stored.get("readiness_evidence_only") is True and stored.get("canonical_interpreter_status") == "PASS" and stored.get("live_package_observation_status") == "PASS" and stored.get("python_version") == "3.12.10" and stored.get("package_count") == 27 and stored.get("probe_status") == "PASS" and stored.get("lightgbm_probe") is True and stored.get("ridge_probe") is True
@@ -712,6 +719,7 @@ def phase_b(config: Config, *, final_freeze_authorized: bool) -> dict[str, Any]:
         "schema_version": STATE_SCHEMA,
         "attempt_name": ATTEMPT_NAME,
         "reviewed_implementation_sha": verified.reviewed_tooling_sha,
+        "mutation_evidence_sha256": verified.mutation_evidence_sha256,
         "authority_consumed": True,
         "retry_authorized": False,
         "phase_c_required": True,

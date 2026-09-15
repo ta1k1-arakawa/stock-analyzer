@@ -7,6 +7,44 @@ import pytest
 from scripts import v10c_t0_ml_successor_final_freeze_verification_runner as r
 
 
+def synthetic_mutation_evidence_bytes(suffix=b"\n") -> bytes:
+    evidence = {
+        "schema_version": r.MUTATION_EVIDENCE_SCHEMA,
+        "reviewed_implementation_sha": r.MUTATION_IMPLEMENTATION_SHA,
+        "status": "PASS",
+        "failure_code": "NONE",
+        "failure_class": "PASS",
+        "authority_consumed": True,
+        "retry_authorized": False,
+        "full_validation_run": True,
+        "canonical_interpreter_status": "PASS",
+        "live_package_observation_status": "PASS",
+        "python_version": "3.12.10",
+        "package_count": 27,
+        "probe_status": "PASS",
+        "lightgbm_probe": True,
+        "ridge_probe": True,
+        "evidence_published": True,
+    }
+    return json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode() + suffix
+
+
+def write_synthetic_mutation_attempt(config: r.Config, evidence_raw: bytes | None = None) -> bytes:
+    state = {
+        "authority_consumed": True,
+        "retry_authorized": False,
+        "launch_attempted": True,
+        "process_started": True,
+        "exit_code": 0,
+    }
+    state_path = config.mutation_attempt_root / "mutation_state.json"
+    evidence_path = config.mutation_attempt_root / "mutation_evidence.json"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    raw = evidence_raw if evidence_raw is not None else synthetic_mutation_evidence_bytes()
+    evidence_path.write_bytes(raw)
+    return raw
+
+
 def make_config(tmp_path: Path) -> r.Config:
     repo = tmp_path / "repo"
     (repo / ".venv-real-execution" / "Scripts").mkdir(parents=True)
@@ -31,6 +69,7 @@ def valid_observations(config: r.Config) -> dict:
         "candidate_blob": config.expected_candidate_blob_sha1,
         "candidate_sha256": config.expected_candidate_sha256,
         "mutation_attempt_safe": True,
+        "mutation_evidence_sha256": r._sha256(b"synthetic mutation evidence"),
         "canonical_interpreter_configured": True,
         "canonical_interpreter_existing": True,
         "final_freeze_attempt_name": r.ATTEMPT_NAME,
@@ -107,6 +146,31 @@ def test_phase_a_uses_collector_and_never_writes(tmp_path, monkeypatch):
     assert result["status"] == "PASS"
     assert result["writes"] == 0
     assert before == after
+
+
+def test_mutation_evidence_sha256_is_captured_from_exact_bytes(tmp_path):
+    config = make_config(tmp_path)
+    raw = write_synthetic_mutation_attempt(config)
+
+    observed = r._validate_mutation_attempt(config)
+
+    assert observed["mutation_evidence_sha256"] == r._sha256(raw)
+    changed = write_synthetic_mutation_attempt(config, synthetic_mutation_evidence_bytes(b"\n\n"))
+    changed_observed = r._validate_mutation_attempt(config)
+    assert changed != raw
+    assert changed_observed["mutation_evidence_sha256"] == r._sha256(changed)
+    assert changed_observed["mutation_evidence_sha256"] != observed["mutation_evidence_sha256"]
+
+
+def test_phase_a_result_carries_mutation_evidence_hash(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    monkeypatch.setattr(r, "_path_separation", lambda _config: True)
+    expected = r._sha256(b"synthetic mutation evidence")
+
+    result = r._phase_a_from_observations(config, valid_observations(config))
+
+    assert result.mutation_evidence_sha256 == expected
+    assert result.provenance["mutation_evidence_sha256"] == expected
 
 
 def test_phase_a_missing_observation_fails_closed(tmp_path, monkeypatch):
@@ -240,9 +304,55 @@ def test_phase_b_success_routes_to_phase_c_and_publishes_pass(tmp_path, monkeypa
     assert result["phase_c_result"]["status"] == "PASS"
     assert (config.attempt_root / "final_freeze_evidence.json").exists()
     evidence = r._strict_json((config.attempt_root / "final_freeze_evidence.json").read_bytes())
+    expected_hash = r._sha256(b"synthetic mutation evidence")
+    state = r._strict_json((config.attempt_root / r.RESERVED[0]).read_bytes())
+    assert state["mutation_evidence_sha256"] == expected_hash
+    assert evidence["mutation_evidence_sha256"] == expected_hash
     assert evidence["canonical_environment_promoted"] is False
     assert evidence["environment_frozen"] is False
     assert evidence["global_t0_readiness"] == "NO"
+
+
+def test_phase_c_missing_state_hash_fails_closed(tmp_path):
+    config = make_config(tmp_path)
+    config.attempt_root.mkdir()
+    state = {"schema_version": r.STATE_SCHEMA, "attempt_name": r.ATTEMPT_NAME, "reviewed_implementation_sha": config.reviewed_tooling_sha, "authority_consumed": True, "retry_authorized": False, "phase_c_required": True, "launch_attempted": True, "process_started": True, "process_exit_code": 0}
+    (config.attempt_root / r.RESERVED[0]).write_text(json.dumps(state), encoding="utf-8")
+    (config.attempt_root / r.RESERVED[1]).write_bytes(b"")
+    (config.attempt_root / r.RESERVED[2]).write_bytes(b"")
+
+    result = r.phase_c(config)
+
+    assert result["status"] == "FAIL"
+    assert result["failure_code"] == "IMPLEMENTATION_FAILURE"
+    assert result["authority_consumed"] is True
+    assert result["retry_authorized"] is False
+    assert result["mutation_evidence_sha256"] is None
+
+
+def test_existing_evidence_hash_mismatch_fails_closed_without_rewrite(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    monkeypatch.setattr(r, "collect_production", fake_collect)
+
+    def launch(_canonical, stdout, stderr):
+        stdout.write_text(json.dumps(live_payload(config), sort_keys=True), encoding="utf-8")
+        stderr.write_bytes(b"")
+        return 0
+
+    monkeypatch.setattr(r, "_launch", launch)
+    first = r.phase_b(config, final_freeze_authorized=True)
+    evidence_path = config.attempt_root / r.RESERVED[3]
+    stored = r._strict_json(evidence_path.read_bytes())
+    stored["mutation_evidence_sha256"] = "0" * 64
+    tampered = json.dumps(stored, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    evidence_path.write_bytes(tampered)
+
+    result = r.phase_c(config)
+
+    assert first["status"] == "PASS"
+    assert result["status"] == "FAIL"
+    assert result["failure_code"] == "IMPLEMENTATION_FAILURE"
+    assert evidence_path.read_bytes() == tampered
 
 
 @pytest.mark.parametrize("launch_mode", ["nonzero", "exception"])

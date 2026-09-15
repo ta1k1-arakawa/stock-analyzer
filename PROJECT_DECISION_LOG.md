@@ -2851,3 +2851,10 @@ transitions. This public log must not contain protected material.
 - Remediated HIGH-1 boundary semantics: creating the attempt directory alone does not consume authority. The first initial receipt publication is classified as definitely succeeded, definitely not published, or uncertain; only the first crosses the boundary, while uncertainty fails closed as consumed and routes to mandatory Phase C.
 - Added synthetic coverage for definite pre-boundary publication failure, proven receipt publication, publication acknowledgement uncertainty, and preserved launch exception/nonzero post-boundary routing. No cleanup, retry, reset, second attempt, live phase, canonical interpreter execution, human authority consumption, installation, mutation, network, model fit, T0, or protected-data access occurred.
 - Next action: GPT exact-SHA HIGH-1 remediation review.
+
+## 2026-09-15 — V10C successor final-freeze F3 HIGH-2 mutation-evidence hash remediation
+
+- Recorded GPT exact-SHA review `7a39a583bdaa01bbbb3bff3c39e5c4f92caaec0b` as `BLOCK_CRITICAL_0_HIGH_1_MEDIUM_1_LOW_0`; HIGH-1 is resolved by review, HIGH-2 is remediated awaiting GPT review, and MEDIUM-1 remains open.
+- Remediated HIGH-2 by mechanically hashing the exact safe mutation-evidence bytes during Phase A, carrying that digest through the verified result, binding it into the initial final-freeze state, and requiring matching state/inspection/evidence bindings without any Phase-C reread of the mutation attempt.
+- Added synthetic coverage for byte-sensitive capture, state/evidence propagation, missing state hash, and mismatched existing-evidence hash fail-closed behavior. No real phase, canonical interpreter, installation, mutation, network, model fit, T0, human authority consumption, or protected-data access occurred.
+- Next action: GPT exact-SHA HIGH-2 review.
