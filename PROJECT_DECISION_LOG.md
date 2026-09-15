@@ -2844,3 +2844,10 @@ transitions. This public log must not contain protected material.
 - The candidate and runner preserve promotion=false, environment_frozen=false, global T0 readiness `NO`, T0 authority false, and future profitability false. No real F4/F5/F6/F7, canonical interpreter execution, package install/resolution, environment mutation, network access, model fit, T0, payload/private/sealed access, or human execution-gate consumption occurred.
 - Targeted synthetic result: `19 passed`; no full regression was run.
 - Next action: GPT exact-SHA F3 tooling review.
+
+## 2026-09-15 — V10C successor final-freeze F3 HIGH-1 remediation
+
+- Recorded GPT exact-SHA review `09f1762d3f9cd9ed70e81a170263244b8bb899f7` as `BLOCK_CRITICAL_0_HIGH_2_MEDIUM_1_LOW_0`; HIGH-2 and MEDIUM-1 remain open and tooling PASS is not claimed.
+- Remediated HIGH-1 boundary semantics: creating the attempt directory alone does not consume authority. The first initial receipt publication is classified as definitely succeeded, definitely not published, or uncertain; only the first crosses the boundary, while uncertainty fails closed as consumed and routes to mandatory Phase C.
+- Added synthetic coverage for definite pre-boundary publication failure, proven receipt publication, publication acknowledgement uncertainty, and preserved launch exception/nonzero post-boundary routing. No cleanup, retry, reset, second attempt, live phase, canonical interpreter execution, human authority consumption, installation, mutation, network, model fit, T0, or protected-data access occurred.
+- Next action: GPT exact-SHA HIGH-1 remediation review.

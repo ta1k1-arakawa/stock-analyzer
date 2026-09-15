@@ -486,6 +486,29 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def _initial_receipt_matches(path: Path, expected: Mapping[str, Any]) -> bool:
+    try:
+        if not _regular_nonreparse(path):
+            return False
+        return _strict_json(path.read_bytes()) == dict(expected)
+    except (OSError, UnicodeError, ValueError, TypeError, FinalFreezeError):
+        return False
+
+
+def _publish_initial_receipt(path: Path, state: Mapping[str, Any]) -> str:
+    """Classify initial receipt publication without equating mkdir with the boundary."""
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        _atomic_json(path, state)
+    except BaseException:
+        if _initial_receipt_matches(path, state):
+            return "SUCCEEDED"
+        if not os.path.lexists(path) and not os.path.lexists(temporary):
+            return "NOT_PUBLISHED"
+        return "UNKNOWN"
+    return "SUCCEEDED" if _initial_receipt_matches(path, state) else "UNKNOWN"
+
+
 def _safe_file_summary(path: Path) -> dict[str, Any]:
     try:
         info = path.lstat()
@@ -698,8 +721,20 @@ def phase_b(config: Config, *, final_freeze_authorized: bool) -> dict[str, Any]:
     }
     try:
         verified.attempt_root.mkdir(parents=False, exist_ok=False)
-        boundary = True
-        _atomic_json(verified.attempt_root / RESERVED[0], state)
+    except BaseException:
+        return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
+
+    receipt_status = _publish_initial_receipt(verified.attempt_root / RESERVED[0], state)
+    if receipt_status == "NOT_PUBLISHED":
+        return _fail("PRE_GATE_ENVIRONMENT_BLOCK", authority_consumed=False, boundary_crossed=False, phase_c_required=False, attempt_root_created=True)
+
+    boundary = True
+    if receipt_status == "UNKNOWN":
+        phase_b_result = {"status": "FAIL", "failure_code": "IMPLEMENTATION_FAILURE", "boundary_uncertain": True, **state}
+        phase_c_result = phase_c(Config(config.repo_root, config.reviewed_tooling_sha, config.expected_candidate_blob_sha1, config.expected_candidate_sha256, config.expected_runner_blob_sha1, config.expected_test_blob_sha1, config.mutation_attempt_root, verified.attempt_root))
+        return {"status": phase_c_result.get("status", "FAIL"), "failure_code": phase_c_result.get("failure_code", "IMPLEMENTATION_FAILURE"), "authority_consumed": True, "retry_authorized": False, "phase_b_result": phase_b_result, "phase_c_result": phase_c_result}
+
+    try:
         (verified.attempt_root / RESERVED[1]).touch(exist_ok=False)
         (verified.attempt_root / RESERVED[2]).touch(exist_ok=False)
         state.update(launch_attempted=True, process_started="UNKNOWN")
@@ -716,8 +751,6 @@ def phase_b(config: Config, *, final_freeze_authorized: bool) -> dict[str, Any]:
     except BaseException:
         state.update(process_started="UNKNOWN", process_exit_code="UNKNOWN", boundary_uncertain=True)
     phase_b_result = {"status": "PASS" if state.get("process_exit_code") == 0 and state.get("process_started") is True else "FAIL", "failure_code": "NONE" if state.get("process_exit_code") == 0 and state.get("process_started") is True else "IMPLEMENTATION_FAILURE", **state}
-    if not boundary:
-        return _fail("PRE_GATE_ENVIRONMENT_BLOCK")
     phase_c_result = phase_c(Config(config.repo_root, config.reviewed_tooling_sha, config.expected_candidate_blob_sha1, config.expected_candidate_sha256, config.expected_runner_blob_sha1, config.expected_test_blob_sha1, config.mutation_attempt_root, verified.attempt_root))
     return {"status": phase_c_result.get("status", "FAIL"), "failure_code": phase_c_result.get("failure_code", "IMPLEMENTATION_FAILURE"), "authority_consumed": True, "retry_authorized": False, "phase_b_result": phase_b_result, "phase_c_result": phase_c_result}
 

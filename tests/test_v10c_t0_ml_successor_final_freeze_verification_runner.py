@@ -139,6 +139,90 @@ def test_phase_b_requires_authority_before_boundary(tmp_path, monkeypatch):
     assert not config.attempt_root.exists()
 
 
+def test_mkdir_without_initial_receipt_publication_is_preboundary(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    monkeypatch.setattr(r, "collect_production", fake_collect)
+    phase_c_calls = []
+    monkeypatch.setattr(r, "phase_c", lambda _config: phase_c_calls.append(True) or {"status": "FAIL"})
+    monkeypatch.setattr(r, "_atomic_json", lambda _path, _value: (_ for _ in ()).throw(RuntimeError("before publication")))
+
+    result = r.phase_b(config, final_freeze_authorized=True)
+
+    assert result["failure_code"] == "PRE_GATE_ENVIRONMENT_BLOCK"
+    assert result["authority_consumed"] is False
+    assert result["retry_authorized"] is False
+    assert result["phase_c_required"] is False
+    assert phase_c_calls == []
+    assert config.attempt_root.exists()
+    assert not (config.attempt_root / r.RESERVED[0]).exists()
+
+
+def test_initial_receipt_publication_crosses_boundary_before_later_failure(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    monkeypatch.setattr(r, "collect_production", fake_collect)
+    phase_c_calls = []
+    original_phase_c = r.phase_c
+    monkeypatch.setattr(r, "phase_c", lambda supplied: phase_c_calls.append(True) or original_phase_c(supplied))
+
+    def launch(_canonical, stdout, stderr):
+        stdout.write_bytes(b"")
+        stderr.write_bytes(b"failure")
+        raise RuntimeError("synthetic launch failure")
+
+    monkeypatch.setattr(r, "_launch", launch)
+    result = r.phase_b(config, final_freeze_authorized=True)
+
+    assert result["authority_consumed"] is True
+    assert phase_c_calls == [True]
+    assert result["phase_c_result"]["status"] == "FAIL"
+
+
+def test_initial_receipt_raise_after_durable_state_is_consumed(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    monkeypatch.setattr(r, "collect_production", fake_collect)
+    phase_c_calls = []
+    original_phase_c = r.phase_c
+    monkeypatch.setattr(r, "phase_c", lambda supplied: phase_c_calls.append(True) or original_phase_c(supplied))
+    original_atomic = r._atomic_json
+    calls = {"count": 0}
+
+    def publish_then_raise(path, value):
+        calls["count"] += 1
+        original_atomic(path, value)
+        if calls["count"] == 1:
+            raise RuntimeError("publication acknowledgement lost")
+
+    monkeypatch.setattr(r, "_atomic_json", publish_then_raise)
+    monkeypatch.setattr(r, "_launch", lambda _canonical, stdout, stderr: 7)
+
+    result = r.phase_b(config, final_freeze_authorized=True)
+
+    assert result["authority_consumed"] is True
+    assert result["retry_authorized"] is False
+    assert phase_c_calls == [True]
+
+
+def test_uncertain_initial_receipt_publication_fails_closed_and_inspects(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    monkeypatch.setattr(r, "collect_production", fake_collect)
+    phase_c_calls = []
+    original_phase_c = r.phase_c
+    monkeypatch.setattr(r, "phase_c", lambda supplied: phase_c_calls.append(True) or original_phase_c(supplied))
+
+    def leave_unpublished_temp(path, _value):
+        path.with_name(path.name + ".tmp").write_bytes(b"uncertain")
+        raise RuntimeError("publication status unknown")
+
+    monkeypatch.setattr(r, "_atomic_json", leave_unpublished_temp)
+    result = r.phase_b(config, final_freeze_authorized=True)
+
+    assert result["authority_consumed"] is True
+    assert result["retry_authorized"] is False
+    assert phase_c_calls == [True]
+    assert result["phase_b_result"]["boundary_uncertain"] is True
+    assert (config.attempt_root / (r.RESERVED[0] + ".tmp")).exists()
+
+
 def test_phase_b_success_routes_to_phase_c_and_publishes_pass(tmp_path, monkeypatch):
     config = make_config(tmp_path)
     monkeypatch.setattr(r, "collect_production", fake_collect)
