@@ -2770,3 +2770,8 @@ transitions. This public log must not contain protected material.
 - Recorded review `381f02de555d4927ff9d4154b58ac1618a3f2fd5` as `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_2_LOW_0`; HIGH-1 and HIGH-2 are remediated awaiting review, HIGH-3 and MEDIUM-1 remain open, and MEDIUM-2/MEDIUM-3 remain resolved.
 - Corrected V10A runtime-lock versus final-freeze evidence semantics and strengthened the read-only Phase-A observation path for actual approval JSON, lock/provenance bindings, canonical interpreter metadata, and existing-ancestor safety. The implementation PASS SHA remains `UNESTABLISHED`; the 27-wheel manifest remains governed by the existing open H2 boundary.
 - Targeted synthetic tests: `8 passed` using the disposable repo-local basetemp, which was removed. No real Phase-A/B/C execution, installation, mutation, package-index access, model fit, T0, payload/private access, or human mutation authorization occurred.
+
+## 2026-09-15 — V10C H1/H2 final production observation remediation
+
+- Recorded the latest blocked review of `3ecb4c0433469e2ea69585e5515c1f5a4b0523d9` as `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_2_LOW_0`; HIGH-1/HIGH-2 remain remediation targets, HIGH-3/MEDIUM-1 remain open, and MEDIUM-2/MEDIUM-3 remain resolved.
+- Reused the reviewed `CANONICAL_WHEEL_MANIFEST_V1` validator for actual wheel-root inspection and manifest-bound delta selection; current-wheel self-hash fallback and filename-prefix authority were removed.

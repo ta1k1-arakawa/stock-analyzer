@@ -30,6 +30,8 @@ def test_phase_a_safety_helpers_fail_closed(tmp_path):
     assert r._safe_ancestor_chain(tmp_path/r.ATTEMPT_NAME)
     assert not r._approval_semantics('{"approval_status":"WRONG"}')
     assert not r._v10a_semantics(tmp_path, lambda *args: 'wrong')
+def test_main_has_no_collector_injection_surface():
+    assert 'collector' not in inspect.signature(r.main).parameters
 def test_single_collector_and_main_dispatch_surface():
     assert r.production_collect.__doc__.startswith('Compatibility alias')
     assert 'collector' not in inspect.signature(r.main).parameters
