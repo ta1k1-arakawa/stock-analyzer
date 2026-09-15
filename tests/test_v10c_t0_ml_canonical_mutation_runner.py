@@ -399,6 +399,59 @@ def test_phase_c_existing_live_failure_contradiction_fails_closed(
     assert evidence_path.read_bytes() == tampered_bytes
 
 
+@pytest.mark.parametrize("updates", [
+    {"live_package_observation_status": "FAIL", "probe_status": "NOT_RUN", "lightgbm_probe": True},
+    {"live_package_observation_status": "FAIL", "probe_status": "NOT_RUN", "ridge_probe": True},
+    {"live_package_observation_status": "PASS", "package_count": 27, "probe_status": "FAIL", "lightgbm_probe": True, "ridge_probe": True},
+    {"live_package_observation_status": "PASS", "package_count": 27, "probe_status": "NOT_RUN", "lightgbm_probe": True},
+    {"canonical_interpreter_status": "PASS", "live_package_observation_status": "PASS", "python_version": "3.12.10", "package_count": 27, "probe_status": "PASS", "lightgbm_probe": True, "ridge_probe": True},
+])
+def test_phase_c_live_failure_semantic_contradictions_fail_closed(
+    tmp_path, monkeypatch, updates
+):
+    config = _attempt_config(tmp_path)
+    _write_state(config)
+    monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
+    monkeypatch.setattr(
+        r.subprocess,
+        "run",
+        _runtime_run(_runtime_payload(config, r.PREDECESSOR, probe_status="NOT_RUN")),
+    )
+    assert r.phase_c(config)["failure_class"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+    evidence_path = config.attempt_root / r.RESERVED[3]
+    tampered = json.loads(evidence_path.read_text(encoding="utf-8"))
+    tampered.update(updates)
+    evidence_path.write_text(json.dumps(tampered, sort_keys=True), encoding="utf-8")
+    tampered_bytes = evidence_path.read_bytes()
+    monkeypatch.setattr(r, "_canonical_identity", lambda _: (_ for _ in ()).throw(AssertionError("re-probed")))
+    result = r.phase_c(config)
+    assert result["failure_code"] == "CANONICAL_MUTATION_FAILURE"
+    assert evidence_path.read_bytes() == tampered_bytes
+
+
+def test_phase_c_legitimate_interpreter_only_live_failure_is_preserved(tmp_path, monkeypatch):
+    config = _attempt_config(tmp_path)
+    _write_state(config)
+    monkeypatch.setattr(r, "_canonical_identity", lambda value: value.canonical_python)
+    wrong_executable = config.repo_root / "other-python.exe"
+    monkeypatch.setattr(r.subprocess, "run", _runtime_run(
+        _runtime_payload(config, executable=wrong_executable)
+    ))
+    first = r.phase_c(config)
+    assert first["failure_class"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+    evidence_path = config.attempt_root / r.RESERVED[3]
+    stored = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert stored["canonical_interpreter_status"] == "FAIL"
+    assert stored["live_package_observation_status"] == "PASS"
+    assert stored["probe_status"] == "PASS"
+    evidence_bytes = evidence_path.read_bytes()
+    monkeypatch.setattr(r, "_canonical_identity", lambda _: (_ for _ in ()).throw(AssertionError("re-probed")))
+    second = r.phase_c(config)
+    assert second["failure_class"] == "LIVE_ENVIRONMENT_VALIDATION_FAILURE"
+    assert second["existing_evidence_inspected"] is True
+    assert evidence_path.read_bytes() == evidence_bytes
+
+
 @pytest.mark.parametrize("field,value", [
     ("authority_consumed", False),
     ("retry_authorized", True),
@@ -410,6 +463,32 @@ def test_phase_c_existing_canonical_failure_contradiction_fails_closed(
     _write_state(config, exit_code=7)
     first = r.phase_c(config)
     assert first["failure_class"] == "CANONICAL_MUTATION_FAILURE"
+    evidence_path = config.attempt_root / r.RESERVED[3]
+    tampered = json.loads(evidence_path.read_text(encoding="utf-8"))
+    tampered[field] = value
+    evidence_path.write_text(json.dumps(tampered, sort_keys=True), encoding="utf-8")
+    tampered_bytes = evidence_path.read_bytes()
+    monkeypatch.setattr(r, "_canonical_identity", lambda _: (_ for _ in ()).throw(AssertionError("re-probed")))
+    result = r.phase_c(config)
+    assert result["failure_code"] == "CANONICAL_MUTATION_FAILURE"
+    assert evidence_path.read_bytes() == tampered_bytes
+
+
+@pytest.mark.parametrize("field,value", [
+    ("python_version", "3.12.10"),
+    ("package_count", 27),
+    ("probe_status", "PASS"),
+    ("lightgbm_probe", True),
+    ("ridge_probe", True),
+    ("canonical_interpreter_status", "PASS"),
+    ("live_package_observation_status", "PASS"),
+])
+def test_phase_c_canonical_failure_runtime_fields_fail_closed(
+    tmp_path, monkeypatch, field, value
+):
+    config = _attempt_config(tmp_path)
+    _write_state(config, exit_code=7)
+    assert r.phase_c(config)["failure_class"] == "CANONICAL_MUTATION_FAILURE"
     evidence_path = config.attempt_root / r.RESERVED[3]
     tampered = json.loads(evidence_path.read_text(encoding="utf-8"))
     tampered[field] = value

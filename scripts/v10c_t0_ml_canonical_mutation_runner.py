@@ -795,18 +795,44 @@ def _phase_c_evidence_is_valid(
             return False
         if stored["live_package_observation_status"] == "FAIL" and stored["probe_status"] != "NOT_RUN":
             return False
+        if stored["live_package_observation_status"] == "FAIL" and (
+            stored["lightgbm_probe"] is not False or stored["ridge_probe"] is not False
+        ):
+            return False
+        if stored["probe_status"] == "NOT_RUN" and (
+            stored["lightgbm_probe"] is not False or stored["ridge_probe"] is not False
+        ):
+            return False
         if stored.get("probe_status") == "PASS" and (
+            stored.get("live_package_observation_status") != "PASS"
+            or
             stored.get("lightgbm_probe") is not True or stored.get("ridge_probe") is not True
         ):
             return False
         if stored.get("live_package_observation_status") == "PASS" and stored.get("package_count") != 27:
             return False
+        if stored.get("probe_status") == "FAIL" and (
+            stored.get("live_package_observation_status") != "PASS"
+            or (stored.get("lightgbm_probe") is True and stored.get("ridge_probe") is True)
+        ):
+            return False
+        if (
+            stored["canonical_interpreter_status"] == "PASS"
+            and stored["live_package_observation_status"] == "PASS"
+            and stored.get("python_version") == "3.12.10"
+            and stored.get("package_count") == 27
+            and stored.get("probe_status") == "PASS"
+            and stored.get("lightgbm_probe") is True
+            and stored.get("ridge_probe") is True
+        ):
+            return False
         return True
     if failure_class == "CANONICAL_MUTATION_FAILURE":
         return (
             failure_code == failure_class
-            and stored["canonical_interpreter_status"] != "PASS"
-            and stored["live_package_observation_status"] != "PASS"
+            and stored["canonical_interpreter_status"] == "UNKNOWN"
+            and stored["live_package_observation_status"] == "NOT_RUN"
+            and not {"python_version", "package_count", "probe_status", "lightgbm_probe", "ridge_probe"}.intersection(stored)
             and stored.get("readiness_evidence_only") is not True
         )
     return False

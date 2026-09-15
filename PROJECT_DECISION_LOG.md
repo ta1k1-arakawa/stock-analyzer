@@ -2804,3 +2804,10 @@ transitions. This public log must not contain protected material.
 - Added fixed Phase-C evidence schema and reviewed-implementation SHA provenance. Existing evidence now requires exact strict semantics for PASS, LIVE_ENVIRONMENT_VALIDATION_FAILURE, and CANONICAL_MUTATION_FAILURE variants, including authority, retry, inspection, type, and contradiction checks.
 - Added synthetic semantic-tamper coverage for PASS, LIVE, CANONICAL, schema, and reviewed-SHA mutations; valid existing evidence remains inspect-only with no reprobe or rewrite. Targeted result: `41 passed`.
 - No real Phase-A/B/C execution, installation, environment mutation, network/package-index access, model fit, T0, payload/private access, or human mutation-gate consumption occurred. HIGH-3 and MEDIUM-1 are `REMEDIATED_AWAITING_GPT_REVIEW`; implementation PASS remains `UNESTABLISHED`.
+
+## 2026-09-15 — V10C MEDIUM-1 failure-evidence semantic closure
+
+- Recorded GPT exact-SHA review `aee742ba364ed64027ea022c8a1281c4fc90a7c0` as `BLOCK_CRITICAL_0_HIGH_0_MEDIUM_1_LOW_0`; HIGH-1/HIGH-2/HIGH-3 and MEDIUM-2/MEDIUM-3/MEDIUM-4 remain resolved, with MEDIUM-1 as the scoped finding.
+- Tightened only stored LIVE and CANONICAL failure evidence semantics: package-failure evidence forces probes not-run with false flags; probe failures require a PASS package observation and cannot report both probes true; complete PASS-shaped LIVE evidence is rejected; interpreter-only LIVE evidence remains accepted; CANONICAL evidence rejects all runtime fields and requires the exact pre-runtime shape.
+- Added the requested semantic contradiction and legitimate-case regression coverage. Targeted result: `54 passed`; existing evidence remains inspect-only with no reprobe or rewrite.
+- No real Phase-A/B/C execution, installation, environment mutation, network/package-index access, model fit, T0, payload/private access, or human mutation-gate consumption occurred. MEDIUM-1 is `REMEDIATED_AWAITING_GPT_REVIEW`; implementation PASS remains `UNESTABLISHED`.
