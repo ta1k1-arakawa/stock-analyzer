@@ -2775,3 +2775,10 @@ transitions. This public log must not contain protected material.
 
 - Recorded the latest blocked review of `3ecb4c0433469e2ea69585e5515c1f5a4b0523d9` as `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_2_LOW_0`; HIGH-1/HIGH-2 remain remediation targets, HIGH-3/MEDIUM-1 remain open, and MEDIUM-2/MEDIUM-3 remain resolved.
 - Reused the reviewed `CANONICAL_WHEEL_MANIFEST_V1` validator for actual wheel-root inspection and manifest-bound delta selection; current-wheel self-hash fallback and filename-prefix authority were removed.
+
+## 2026-09-15 — V10C H1/H2 remaining actual-observation closure
+
+- Recorded the exact-SHA review of `4b3ffa4929f9d0d77ee351d19fb1762ae596db17` as `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_2_LOW_0`; the latest review attempt remains the authoritative blocked bookkeeping record and the implementation PASS SHA remains `UNESTABLISHED`.
+- Completed the production Phase-A observation closure: successor-lock bytes/blob/SHA and package delta are observed from actual artifacts; promotion and source-provenance JSON are parsed and checked; V10A runtime-lock/final-freeze hashes and exact 20-package mappings are verified; canonical interpreter and existing-ancestor safety are fail-closed; and governed attempt-root overlap checks are read-only.
+- Preserved and consumed the reviewed `CANONICAL_WHEEL_MANIFEST_V1` implementation for exact wheel-set validation and manifest-bound seven-wheel selection. Added a synthetic production CLI integration path through `main` → `collect_production` → `phase_a`, plus public-artifact, interpreter, and manifest failure cases. Targeted result: `11 passed`.
+- HIGH-1 and HIGH-2 are `REMEDIATED_AWAITING_GPT_REVIEW`; HIGH-3 and MEDIUM-1 remain `OPEN`. MEDIUM-2=RESOLVED and MEDIUM-3=RESOLVED; MEDIUM-4 is resolved because the state and decision log now agree on MEDIUM-3. No real Phase-A/B/C execution, installation, mutation, package-index access, model fit, T0, payload/private access, or human mutation-gate consumption occurred.
