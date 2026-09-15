@@ -656,6 +656,8 @@ def _live_fields_from_stdout(path: Path) -> dict[str, Any]:
 def _validate_existing_evidence(stored: Mapping[str, Any], config: Config, inspection: Mapping[str, Any]) -> bool:
     if stored.get("schema_version") != FINAL_EVIDENCE_SCHEMA or stored.get("attempt_name") != ATTEMPT_NAME or stored.get("reviewed_implementation_sha") != config.reviewed_tooling_sha or type(stored.get("mutation_evidence_sha256")) is not str or SHA256_RE.fullmatch(stored["mutation_evidence_sha256"]) is None or stored.get("mutation_evidence_sha256") != inspection.get("mutation_evidence_sha256") or stored.get("authority_consumed") is not True or stored.get("retry_authorized") is not False or stored.get("evidence_published") is not True or stored.get("inspection") != dict(inspection):
         return False
+    if stored.get("canonical_environment_promoted") is not False or stored.get("environment_frozen") is not False or stored.get("global_t0_readiness") != "NO" or stored.get("t0_authorized") is not False or stored.get("future_profitability_established") is not False:
+        return False
     if stored.get("status") == "PASS":
         return stored.get("failure_code") == "NONE" and stored.get("failure_class") == "PASS" and stored.get("full_validation_run") is True and stored.get("readiness_evidence_only") is True and stored.get("canonical_interpreter_status") == "PASS" and stored.get("live_package_observation_status") == "PASS" and stored.get("python_version") == "3.12.10" and stored.get("package_count") == 27 and stored.get("probe_status") == "PASS" and stored.get("lightgbm_probe") is True and stored.get("ridge_probe") is True
     if stored.get("status") != "FAIL" or stored.get("full_validation_run") is not False or stored.get("readiness_evidence_only") is True:

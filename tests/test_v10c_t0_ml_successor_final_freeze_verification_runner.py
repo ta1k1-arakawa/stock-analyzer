@@ -439,6 +439,120 @@ def test_existing_pass_evidence_is_inspect_only(tmp_path, monkeypatch):
     assert second["status"] == "PASS"
     assert second["existing_evidence_inspected"] is True
     assert evidence_path.read_bytes() == before
+    assert second["canonical_environment_promoted"] is False
+    assert second["environment_frozen"] is False
+    assert second["global_t0_readiness"] == "NO"
+    assert second["t0_authorized"] is False
+    assert second["future_profitability_established"] is False
+
+
+def publish_existing_pass(config, monkeypatch):
+    monkeypatch.setattr(r, "collect_production", fake_collect)
+
+    def launch(_canonical, stdout, stderr):
+        stdout.write_text(json.dumps(live_payload(config), sort_keys=True), encoding="utf-8")
+        stderr.write_bytes(b"")
+        return 0
+
+    monkeypatch.setattr(r, "_launch", launch)
+    result = r.phase_b(config, final_freeze_authorized=True)
+    assert result["status"] == "PASS"
+    return config.attempt_root / r.RESERVED[3]
+
+
+@pytest.mark.parametrize(
+    ("field", "tampered"),
+    [
+        ("canonical_environment_promoted", True),
+        ("environment_frozen", True),
+        ("global_t0_readiness", "YES"),
+        ("t0_authorized", True),
+        ("future_profitability_established", True),
+    ],
+)
+def test_existing_pass_forbidden_state_tamper_fails_closed_without_rewrite(tmp_path, monkeypatch, field, tampered):
+    config = make_config(tmp_path)
+    evidence_path = publish_existing_pass(config, monkeypatch)
+    stored = r._strict_json(evidence_path.read_bytes())
+    stored[field] = tampered
+    tampered_bytes = json.dumps(stored, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    evidence_path.write_bytes(tampered_bytes)
+
+    result = r.phase_c(config)
+
+    assert result["status"] == "FAIL"
+    assert result["failure_code"] == "IMPLEMENTATION_FAILURE"
+    assert result["authority_consumed"] is True
+    assert result["retry_authorized"] is False
+    assert evidence_path.read_bytes() == tampered_bytes
+
+
+@pytest.mark.parametrize("field", ["canonical_environment_promoted", "environment_frozen", "global_t0_readiness", "t0_authorized", "future_profitability_established"])
+def test_existing_pass_missing_forbidden_state_field_fails_closed(tmp_path, monkeypatch, field):
+    config = make_config(tmp_path)
+    evidence_path = publish_existing_pass(config, monkeypatch)
+    stored = r._strict_json(evidence_path.read_bytes())
+    del stored[field]
+    tampered_bytes = json.dumps(stored, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    evidence_path.write_bytes(tampered_bytes)
+
+    result = r.phase_c(config)
+
+    assert result["status"] == "FAIL"
+    assert result["failure_code"] == "IMPLEMENTATION_FAILURE"
+    assert evidence_path.read_bytes() == tampered_bytes
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_type"),
+    [
+        ("canonical_environment_promoted", 0),
+        ("environment_frozen", None),
+        ("global_t0_readiness", False),
+        ("t0_authorized", "false"),
+        ("future_profitability_established", "false"),
+    ],
+)
+def test_existing_pass_wrong_forbidden_state_type_fails_closed(tmp_path, monkeypatch, field, wrong_type):
+    config = make_config(tmp_path)
+    evidence_path = publish_existing_pass(config, monkeypatch)
+    stored = r._strict_json(evidence_path.read_bytes())
+    stored[field] = wrong_type
+    tampered_bytes = json.dumps(stored, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    evidence_path.write_bytes(tampered_bytes)
+
+    result = r.phase_c(config)
+
+    assert result["status"] == "FAIL"
+    assert result["failure_code"] == "IMPLEMENTATION_FAILURE"
+    assert evidence_path.read_bytes() == tampered_bytes
+
+
+def test_valid_existing_failure_requires_and_preserves_forbidden_state_fields(tmp_path, monkeypatch):
+    config = make_config(tmp_path)
+    monkeypatch.setattr(r, "collect_production", fake_collect)
+
+    def launch(_canonical, stdout, stderr):
+        stdout.write_bytes(b"")
+        stderr.write_bytes(b"failure")
+        return 7
+
+    monkeypatch.setattr(r, "_launch", launch)
+    first = r.phase_b(config, final_freeze_authorized=True)
+    evidence_path = config.attempt_root / r.RESERVED[3]
+    before = evidence_path.read_bytes()
+    second = r.phase_c(config)
+
+    assert first["phase_c_result"]["failure_code"] == "IMPLEMENTATION_FAILURE"
+    assert second["status"] == "FAIL"
+    assert second["failure_code"] == "IMPLEMENTATION_FAILURE"
+    assert second["existing_evidence_inspected"] is True
+    assert second["canonical_environment_promoted"] is False
+    assert second["environment_frozen"] is False
+    assert second["global_t0_readiness"] == "NO"
+    assert second["t0_authorized"] is False
+    assert second["future_profitability_established"] is False
+    assert evidence_path.read_bytes() == before
 
 
 def test_malformed_existing_evidence_fails_without_rewrite(tmp_path):

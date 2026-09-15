@@ -2865,3 +2865,10 @@ transitions. This public log must not contain protected material.
 - Removed the stale duplicate `V10C_T0_ML_SUCCESSOR_FINAL_FREEZE_TOOLING_PREPARATION_AUTHORIZED=true`; the sole remaining assignment is `false`.
 - This bookkeeping correction changes no live-verification, mutation, installation, network, model-fitting, T0, or protected-data authority. No phase was executed.
 - Next action: GPT exact-SHA MEDIUM-1 review.
+
+## 2026-09-15 — V10C successor final-freeze F3 MEDIUM-2 forbidden-state remediation
+
+- Recorded GPT exact-SHA review `010a68c83f570cf3f4448015e66b19bee876b898` as `BLOCK_CRITICAL_0_HIGH_0_MEDIUM_1_LOW_0`; HIGH-1, HIGH-2, and prior MEDIUM-1 remain resolved, and MEDIUM-2 is remediated awaiting GPT review.
+- Remediated MEDIUM-2 by requiring existing final-freeze evidence to bind `canonical_environment_promoted=false`, `environment_frozen=false`, `global_t0_readiness=NO`, `t0_authorized=false`, and `future_profitability_established=false` exactly for both PASS and FAIL evidence.
+- Added synthetic tamper, omission, wrong-type, valid-PASS, valid-FAIL, and byte-preservation coverage. No phase, canonical interpreter, installation, mutation, network, model fit, T0, human authority consumption, or protected-data access occurred.
+- Next action: GPT exact-SHA MEDIUM-2 review.
