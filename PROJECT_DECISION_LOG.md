@@ -2820,3 +2820,12 @@ transitions. This public log must not contain protected material.
 - Created the prospective `V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_PROMOTION_AND_FINAL_FREEZE_DESIGN.md`. The environment remains `MUTATED_VALIDATED_NOT_FROZEN`; global T0 readiness and T0 authority remain false. The design requires a fresh no-network final-freeze verification, distinct human authority, mandatory post-boundary inspection, final evidence commit, and GPT exact-SHA PASS before promotion/freeze or global readiness can change.
 - This bookkeeping/design task performed no live environment inspection, canonical interpreter execution, phase execution, new gate consumption, mutation, installation, network access, model fit, T0, payload, private, or sealed access. No mutation evidence SHA was invented.
 - Next action: GPT exact-SHA design review.
+
+## 2026-09-15 — V10C final-freeze point-of-use and lineage remediation
+
+- Recorded GPT exact-SHA review `344c1ed0b49f954b52c60b86b2db5d9a44770f43` as `BLOCK_CRITICAL_0_HIGH_0_MEDIUM_2_LOW_0`.
+- Remediated MEDIUM-1 by preserving the first connected-GitHub remote precheck and adding mandatory `F4_REMOTE_PRECHECK_2` after F4 Phase-A/GPT PASS and before fresh F5 authority or any F6 boundary. Local Phase-A/Phase-B/Phase-C blocks remain no-network and never fetch or use `ls-remote`.
+- Defined the F6 one-shot boundary at the first durable attempt receipt/state publication or live-verification launch attempt. At or after that point authority is sticky consumed, retry remains false, and F7 inspection is mandatory; unproven boundary status fails closed as consumed without rerun or reset.
+- Remediated MEDIUM-2 by requiring F8 to be exactly one commit ahead of and directly parented to the exact F3-reviewed tooling SHA, with no intervening authoritative-branch commit, restricted F8 file scope, unchanged reviewed/frozen blobs, and exact F3 lineage rechecked by F9. Promotion, freeze, and global T0 readiness remain prohibited before F9 PASS.
+- The design status is `REMEDIATED_AWAITING_GPT_REVIEW`; the adjudicated mutation PASS, `MUTATED_VALIDATED_NOT_FROZEN` environment state, global readiness `NO`, T0 authority `false`, and future profitability `false` are unchanged. No live inspection, gate consumption, mutation, installation, network access, model fit, T0, payload, private, or sealed access occurred.
+- Next action: GPT exact-SHA design review.

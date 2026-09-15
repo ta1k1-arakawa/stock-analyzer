@@ -180,6 +180,15 @@ F4 is read-only: no network/package index, installation, mutation, T0, model
 fit, or market/training/evaluation/private/sealed payload read. GPT must PASS
 F4 before F5.
 
+After F4 Phase-A PASS and its GPT adjudication PASS, but before requesting or
+accepting F5 authority and before any F6 boundary, perform the mandatory
+`F4_REMOTE_PRECHECK_2` through connected GitHub. It must verify that the
+authoritative branch remote HEAD still equals the exact F3-reviewed SHA. A
+mismatch is `EXPECTED_HEAD_MISMATCH` and stops the sequence; F5 authority is
+not requested or consumed. The local no-network Phase-A/Phase-B/Phase-C
+blocks never perform fetch or `ls-remote`; both external remote checks are
+provenance checks outside those blocks.
+
 ### F5 — Fresh final-freeze authority
 
 After F4 GPT PASS, obtain fresh point-of-use human authority scoped exactly to
@@ -201,8 +210,20 @@ allowed.
 F6 binds the F3-reviewed SHA, frozen final-freeze design and approval,
 reviewed mutation SHA, prior Phase-C schema/provenance, mutation authority
 consumed=true, and mutation retry_authorized=false. Durable stdout, stderr,
-and evidence are privacy-safe and contain no machine-local paths. After the
-F6 boundary, authority is consumed and cannot be retried or restored.
+and evidence are privacy-safe and contain no machine-local paths.
+
+F6 has one mechanically defined point-of-use boundary. Authority is consumed
+at the first of these events: (1) successful durable publication of the
+final-freeze `ATTEMPT_1` receipt/state establishing the attempt, or (2) an
+attempt to launch the live-verification process. Before both events, a
+pre-boundary failure leaves authority unconsumed and permits only a separately
+reviewed non-methodological preflight repair followed by a complete new F4
+Phase A, GPT adjudication, and `F4_REMOTE_PRECHECK_2`; it does not permit F6.
+At or after either event, the durable result must state
+`authority_consumed=true` and `retry_authorized=false`, and F7 is mandatory.
+No rerun, reset, delete, overwrite, repair, recreation, or second attempt is
+permitted. If the boundary status cannot be proven, fail closed as consumed
+with retry disabled and proceed only to safe F7 inspection/adjudication.
 
 ### F7 — Mandatory no-network result inspection
 
@@ -225,14 +246,36 @@ evidence.
 
 After F6/F7 PASS, a separate repository-writing commit records safe
 final-freeze evidence, safe adjudication if approved, and minimal state/log
-updates. It performs no live rerun and does not modify the reviewed F3
-candidate, runner, tests, or frozen designs. Before F9, all promotion/freeze
+updates. It performs no live rerun. Its parent must be exactly the F3
+GPT-reviewed tooling SHA:
+
+```text
+F8_PARENT_SHA=<exact F3 GPT-reviewed tooling SHA>
+compare F3-reviewed SHA ... F8 commit:
+ahead_by=1
+behind_by=0
+```
+
+No intervening authoritative-branch commit is allowed. Before commit and
+push, mechanically verify that the F3 candidate, runner, tests, frozen
+final-freeze design, freeze-approval record, mutation runner/design/approval,
+successor/predecessor locks, and resolution-promotion artifacts retain their
+reviewed/frozen blobs. F8 changes are limited to the new safe final-freeze
+verification evidence, an optional separately frozen safe final-freeze
+adjudication artifact, and minimal `PROJECT_STATE.md`/
+`PROJECT_DECISION_LOG.md` updates. F8 must not modify any F3 tooling or
+frozen/mutation/resolution authority artifact. Before F9, all promotion/freeze
 and T0 fields remain false/NO.
 
 ### F9 — GPT exact-SHA final-freeze review
 
-GPT independently reviews the exact F8 commit. PASS requires CRITICAL=0,
-HIGH=0, and MEDIUM=0. Only F9 PASS may establish:
+GPT independently reviews the exact F8 commit. F9 must require the exact F8
+parent to equal the exact F3-reviewed SHA, `ahead_by=1`, `behind_by=0`, only
+F8-authorized files changed, all reviewed F3 candidate/runner/test and frozen
+design/approval blobs unchanged, and F6/F7 evidence bound to the exact
+F3-reviewed SHA. F9 must also verify that no promotion, freeze, or T0
+authority was claimed before F9. PASS requires CRITICAL=0, HIGH=0, and
+MEDIUM=0. Only F9 PASS may establish:
 
 ```text
 V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_PROMOTED=true
