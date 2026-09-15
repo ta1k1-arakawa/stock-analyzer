@@ -2858,3 +2858,10 @@ transitions. This public log must not contain protected material.
 - Remediated HIGH-2 by mechanically hashing the exact safe mutation-evidence bytes during Phase A, carrying that digest through the verified result, binding it into the initial final-freeze state, and requiring matching state/inspection/evidence bindings without any Phase-C reread of the mutation attempt.
 - Added synthetic coverage for byte-sensitive capture, state/evidence propagation, missing state hash, and mismatched existing-evidence hash fail-closed behavior. No real phase, canonical interpreter, installation, mutation, network, model fit, T0, human authority consumption, or protected-data access occurred.
 - Next action: GPT exact-SHA HIGH-2 review.
+
+## 2026-09-15 — V10C successor final-freeze F3 MEDIUM-1 duplicate-authority remediation
+
+- Recorded GPT exact-SHA review `eedc5098179d785eb4665856d33b43e6e5280d8d` as `BLOCK_CRITICAL_0_HIGH_0_MEDIUM_1_LOW_0`; HIGH-1 and HIGH-2 remain resolved and MEDIUM-1 is remediated awaiting GPT review.
+- Removed the stale duplicate `V10C_T0_ML_SUCCESSOR_FINAL_FREEZE_TOOLING_PREPARATION_AUTHORIZED=true`; the sole remaining assignment is `false`.
+- This bookkeeping correction changes no live-verification, mutation, installation, network, model-fitting, T0, or protected-data authority. No phase was executed.
+- Next action: GPT exact-SHA MEDIUM-1 review.
