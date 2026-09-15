@@ -2879,3 +2879,10 @@ transitions. This public log must not contain protected material.
 - Added the durable `AI_STOCK_ANALYZER_REVIEW_POLICY.md` and a concise mandatory reference from `AGENTS.md`. The policy changes no V10C methodology, Phase A/B/C semantics, authority, human gates, T0 sequencing, or F3/F4/F8 lineage.
 - This governance commit remains inside the V10C F3 checkpoint and is not itself GPT-reviewed. If its exact-SHA review passes, its new commit SHA becomes the final F3-reviewed SHA for F4/F6/F8 lineage; no F4 execution may occur before that review.
 - Global T0 readiness remains `NO`, T0 authority remains false, final-freeze live-verification authority remains false, and the environment remains `MUTATED_VALIDATED_NOT_FROZEN`.
+
+## 2026-09-15 — V10C F4 pre-boundary UTF-8 Git-output remediation
+
+- F4 attempt 1 stopped pre-gate with `PRE_GATE_ENVIRONMENT_BLOCK`; authority and human gate consumption remained false, network requests were zero, and no durable final-freeze state was created.
+- The implementation root cause was Windows-locale-dependent Git stdout decoding in `_run_git()`. A first diagnostic wrapper failed before runner diagnosis because of a PowerShell/Python quoting `SyntaxError`; a corrected read-only diagnostic reached `collect_production` and observed `UnicodeDecodeError`. Neither diagnostic consumed authority or performed live verification.
+- `_run_git()` is remediated to collect bytes and decode Git textual output strictly as UTF-8, with invalid UTF-8 and nonzero Git exits failing closed. No F4 rerun occurred.
+- This remediation remains awaiting GPT exact-SHA review. If it passes, its new commit becomes the replacement exact F3-reviewed SHA for the restarted F4/F6/F8 lineage. F5/F6/F7 remain unexecuted.

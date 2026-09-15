@@ -98,6 +98,48 @@ def fake_collect(config: r.Config):
     return valid_observations(config)
 
 
+def test_run_git_decodes_utf8_output_independent_of_locale(monkeypatch, tmp_path):
+    class Completed:
+        returncode = 0
+        stdout = "git design — frozen – review".encode("utf-8")
+
+    monkeypatch.setattr(r.subprocess, "run", lambda *args, **kwargs: Completed())
+
+    assert r._run_git(tmp_path, ["show", "HEAD:file.md"]) == "git design — frozen – review"
+
+
+def test_run_git_preserves_stripped_ascii_output(monkeypatch, tmp_path):
+    class Completed:
+        returncode = 0
+        stdout = b"  HEAD\n"
+
+    monkeypatch.setattr(r.subprocess, "run", lambda *args, **kwargs: Completed())
+
+    assert r._run_git(tmp_path, ["rev-parse", "HEAD"]) == "HEAD"
+
+
+def test_run_git_rejects_invalid_utf8_fail_closed(monkeypatch, tmp_path):
+    class Completed:
+        returncode = 0
+        stdout = b"invalid\xffutf8"
+
+    monkeypatch.setattr(r.subprocess, "run", lambda *args, **kwargs: Completed())
+
+    with pytest.raises(r.FinalFreezeError, match="GIT_OUTPUT_UTF8_INVALID"):
+        r._run_git(tmp_path, ["show", "HEAD:file.md"])
+
+
+def test_run_git_rejects_nonzero_exit_fail_closed(monkeypatch, tmp_path):
+    class Completed:
+        returncode = 128
+        stdout = b"fatal"
+
+    monkeypatch.setattr(r.subprocess, "run", lambda *args, **kwargs: Completed())
+
+    with pytest.raises(r.FinalFreezeError, match="GIT_OBSERVATION_FAILED"):
+        r._run_git(tmp_path, ["rev-parse", "missing"])
+
+
 def test_constants_and_candidate_are_frozen(tmp_path):
     config = make_config(tmp_path)
     raw = Path("V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_FINAL_FREEZE_RECORD_CANDIDATE.json").read_bytes()

@@ -178,14 +178,16 @@ def _run_git(repo_root: Path, args: Sequence[str]) -> str:
         ["git", "-C", str(repo_root), *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        text=True,
         check=False,
         shell=False,
         env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
     )
     if completed.returncode != 0:
         raise FinalFreezeError("GIT_OBSERVATION_FAILED")
-    return completed.stdout.strip()
+    try:
+        return completed.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError as error:
+        raise FinalFreezeError("GIT_OUTPUT_UTF8_INVALID") from error
 
 
 def _git_blob_at(repo_root: Path, revision: str, relative: str) -> str:
