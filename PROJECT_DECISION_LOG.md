@@ -2829,3 +2829,10 @@ transitions. This public log must not contain protected material.
 - Remediated MEDIUM-2 by requiring F8 to be exactly one commit ahead of and directly parented to the exact F3-reviewed tooling SHA, with no intervening authoritative-branch commit, restricted F8 file scope, unchanged reviewed/frozen blobs, and exact F3 lineage rechecked by F9. Promotion, freeze, and global T0 readiness remain prohibited before F9 PASS.
 - The design status is `REMEDIATED_AWAITING_GPT_REVIEW`; the adjudicated mutation PASS, `MUTATED_VALIDATED_NOT_FROZEN` environment state, global readiness `NO`, T0 authority `false`, and future profitability `false` are unchanged. No live inspection, gate consumption, mutation, installation, network access, model fit, T0, payload, private, or sealed access occurred.
 - Next action: GPT exact-SHA design review.
+
+## 2026-09-15 — V10C successor promotion/final-freeze design-freeze approval record
+
+- Recorded GPT exact-SHA PASS `3654dd9838f89dbac03bdd6f2232b5a0a2dd89bf` for the promotion/final-freeze design, with design blob `fcfba59e4cf5e9fd4376d525d85f9cf0c02d3fc1`; MEDIUM-1 and MEDIUM-2 are resolved.
+- Recorded the fresh human `DESIGN_FREEZE_ONLY` approval and created `V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_PROMOTION_AND_FINAL_FREEZE_DESIGN_FREEZE_APPROVAL.json`.
+- The approval record authorizes no live verification, F3 tooling preparation before its own GPT review, mutation, package or network work, model fitting, T0, or protected payload access. The environment remains `MUTATED_VALIDATED_NOT_FROZEN`, global T0 readiness remains `NO`, and T0 authority remains false.
+- Next action: GPT exact-SHA review of the approval-record commit.
