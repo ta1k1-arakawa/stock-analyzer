@@ -2990,3 +2990,19 @@ transitions. This public log must not contain protected material.
   change occurred. Both findings are remediated awaiting GPT exact-SHA
   design review; all V10D execution and protected-payload authorities
   remain false and future profitability remains unestablished.
+
+## 2026-09-16 — V10D diagnostic design freeze approval record
+
+- GPT exact-SHA review of `c83bd856c24d59b5230908da22d7790d51a9f802` passed
+  with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=1`. V10D HIGH-1 and
+  MEDIUM-1 are resolved, and the frozen design blob is
+  `5f1bcf90228bab0f9fa8dd463a2d9544aa74457d`.
+- Human approval for the V10D diagnostic design freeze was explicitly
+  received with scope `DESIGN_FREEZE_ONLY`. The deterministic approval
+  record was created and binds the exact design commit, blob, and SHA-256;
+  methodology changes after freeze require a new study.
+- The approval grants no protected-payload read, diagnostic execution,
+  historical-evaluation, model-fit, T0, refetch, network, cache-repair,
+  substitution, or private/sealed authority. V10D implementation remains
+  unauthorized until GPT exact-SHA review of the approval-record commit;
+  future profitability remains unestablished.
