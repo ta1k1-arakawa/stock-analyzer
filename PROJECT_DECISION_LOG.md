@@ -2901,3 +2901,22 @@ transitions. This public log must not contain protected material.
 - F9 established `V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_PROMOTED=true`, `V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_ENVIRONMENT_FROZEN=true`, `V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_ENVIRONMENT_STATE=CANONICAL_FROZEN`, and post-gate software-dependency readiness `YES`. The F8 safe evidence is now recorded as GPT-reviewed PASS.
 - Global T0 readiness remains `NO`; T0, historical evaluation, private/sealed access, and future-profitability authority/claims remain false. F5 authority remains consumed and non-reusable, and F6 retry remains false. No new authority was created.
 - This bookkeeping commit performed no phase rerun, canonical-interpreter execution, network/package work, environment mutation, model fit, T0, or protected-data access, and did not modify frozen artifacts. It awaits GPT exact-SHA bookkeeping review.
+
+## 2026-09-16 — V10C T0 evaluation manifest schema-contract remediation
+
+- A prior universe SHA wrapper mismatch was classified as a pre-boundary
+  Windows line-ending hashing bug; authority remained unconsumed. The
+  corrected restart reached evaluation metadata validation, and the exact
+  evaluation manifest SHA matched
+  `797265bf671af2245a342051ffad02aa2929d67ba885945e7762149649148aa5`.
+- The diagnostic showed schema version `2` with no `universe_mode` or
+  `ticker_order` fields. The validator was remediated to require the actual
+  schema-2 success metadata, bind payload ticker identities exhaustively to
+  the independently frozen V4 universe without imposing payload order, and
+  preserve exact raw-file-set and per-payload metadata checks.
+- The HIGH-1 implementation defect is remediated awaiting GPT exact-SHA
+  review. No training/evaluation payload bytes, parser, model fit, T0,
+  private/sealed data, or human gate were used; network requests remained
+  zero apart from the authorized provenance fetch. Global T0 readiness,
+  T0 authority, historical/private authority, and future profitability
+  remain `NO`/false/unestablished.

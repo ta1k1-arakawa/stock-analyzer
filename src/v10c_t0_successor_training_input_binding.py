@@ -58,7 +58,7 @@ SUCCESS_COUNT = 283
 FAILED_COUNT = 17
 TRAINING_SCHEMA = "V10B_TRAINING_CACHE_MANIFEST_V1"
 ATTEMPT_SCHEMA = "V10B_ACQUISITION_ATTEMPT_RECEIPT_V1"
-EVALUATION_SCHEMA = 1
+EVALUATION_SCHEMA = 2
 LOCKED_RAW = "locked_raw"
 RAW = "raw"
 MANIFEST_FILE = "cache_manifest.json"
@@ -283,30 +283,58 @@ def _validate_evaluation_metadata(root: Path, ticker_order: Sequence[str]) -> di
     raw, manifest = _read_json(root / MANIFEST_FILE, error=SuccessorPreflightFailure)
     if _sha256(raw) != EVALUATION_MANIFEST_SHA256:
         raise SuccessorPreflightFailure("EVALUATION_MANIFEST_SHA256_MISMATCH")
+    if manifest.get("schema_version") != EVALUATION_SCHEMA or manifest.get("complete") is not True:
+        raise SuccessorPreflightFailure("EVALUATION_MANIFEST_BINDING_INVALID")
     if (
-        manifest.get("schema_version") != EVALUATION_SCHEMA
-        or manifest.get("complete") is not True
-        or manifest.get("universe_mode") != "FIXED_V4_300"
+        type(manifest.get("usable_for_evaluation")) is not bool
+        or manifest.get("usable_for_evaluation") is not True
+        or type(manifest.get("ticker_count")) is not int
         or manifest.get("ticker_count") != TICKER_COUNT
-        or manifest.get("ticker_order") != list(ticker_order)
+        or type(manifest.get("attempted_ticker_count")) is not int
+        or manifest.get("attempted_ticker_count") != TICKER_COUNT
+        or type(manifest.get("success_count")) is not int
+        or manifest.get("success_count") != TICKER_COUNT
+        or type(manifest.get("failed_count")) is not int
+        or manifest.get("failed_count") != 0
+        or type(manifest.get("failed_tickers")) is not list
+        or manifest.get("failed_tickers") != []
     ):
         raise SuccessorPreflightFailure("EVALUATION_MANIFEST_BINDING_INVALID")
     payloads = manifest.get("payloads")
     if not isinstance(payloads, list) or len(payloads) != TICKER_COUNT:
         raise SuccessorPreflightFailure("EVALUATION_PAYLOAD_SET_INVALID")
-    seen: list[str] = []
+    expected_tickers = tuple(ticker_order)
+    if (
+        len(expected_tickers) != TICKER_COUNT
+        or any(type(ticker) is not str for ticker in expected_tickers)
+        or len(set(expected_tickers)) != TICKER_COUNT
+    ):
+        raise SuccessorPreflightFailure("UNIVERSE_IDENTITY_INVALID")
+    expected_ticker_set = set(expected_tickers)
+    seen: set[str] = set()
     for item in payloads:
         if not isinstance(item, dict) or not {"ticker", "relative_path", "sha256", "byte_count"}.issubset(item):
             raise SuccessorPreflightFailure("EVALUATION_PAYLOAD_SCHEMA_INVALID")
         ticker = item["ticker"]
-        if ticker not in ticker_order or ticker in seen or item["relative_path"] != f"{RAW}/{ticker}.json":
+        if (
+            type(ticker) is not str
+            or ticker not in expected_ticker_set
+            or ticker in seen
+            or item["relative_path"] != f"{RAW}/{ticker}.json"
+        ):
             raise SuccessorPreflightFailure("EVALUATION_PAYLOAD_BINDING_INVALID")
-        if not _SHA256.fullmatch(str(item["sha256"])) or type(item["byte_count"]) is not int or item["byte_count"] <= 0:
+        if (
+            type(item["relative_path"]) is not str
+            or type(item["sha256"]) is not str
+            or not _SHA256.fullmatch(item["sha256"])
+            or type(item["byte_count"]) is not int
+            or item["byte_count"] <= 0
+        ):
             raise SuccessorPreflightFailure("EVALUATION_PAYLOAD_METADATA_INVALID")
-        seen.append(ticker)
-    if seen != list(ticker_order):
-        raise SuccessorPreflightFailure("EVALUATION_PAYLOAD_ORDER_INVALID")
-    _validate_file_set(root / RAW, {f"{ticker}.json" for ticker in ticker_order})
+        seen.add(ticker)
+    if seen != expected_ticker_set:
+        raise SuccessorPreflightFailure("EVALUATION_PAYLOAD_SET_INVALID")
+    _validate_file_set(root / RAW, {f"{ticker}.json" for ticker in expected_tickers})
     return manifest
 
 

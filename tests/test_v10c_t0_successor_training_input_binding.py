@@ -81,13 +81,14 @@ def _training_manifest(codes: list[str]) -> dict[str, object]:
 def _evaluation_manifest(codes: list[str]) -> dict[str, object]:
     body = b"e"
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "complete": True,
-        "universe_mode": "FIXED_V4_300",
-        "universe_csv_sha256": binding.UNIVERSE_CSV_SHA256,
-        "ticker_list_sha256": binding.TICKER_LIST_SHA256,
         "ticker_count": 300,
-        "ticker_order": codes,
+        "attempted_ticker_count": 300,
+        "success_count": 300,
+        "failed_count": 0,
+        "failed_tickers": [],
+        "usable_for_evaluation": True,
         "payloads": [
             {"ticker": ticker, "relative_path": f"raw/{ticker}.json", "sha256": _sha(body), "byte_count": 1}
             for ticker in codes
@@ -181,6 +182,76 @@ def test_phase_a_does_not_invoke_inherited_parser(tmp_path, monkeypatch):
     training, evaluation, _ = _write_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(binding, "_parse_chart_payload", lambda _body: (_ for _ in ()).throw(AssertionError("parse")))
     binding.phase_a_metadata_preflight(tmp_path / "repo", training, evaluation, tmp_path / "V4_UNIVERSE.csv", "a" * 40)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", 1),
+        ("complete", False),
+        ("usable_for_evaluation", False),
+        ("success_count", 299),
+        ("failed_count", 1),
+        ("failed_tickers", ["T000"]),
+        ("attempted_ticker_count", 299),
+    ],
+)
+def test_evaluation_metadata_success_contract_rejects_tampering(tmp_path, monkeypatch, field, value):
+    training, evaluation, codes = _write_fixture(tmp_path, monkeypatch)
+    manifest = _evaluation_manifest(codes)
+    manifest[field] = value
+    raw = adoption.canonical_json_bytes(manifest)
+    (evaluation / "cache_manifest.json").write_bytes(raw)
+    monkeypatch.setattr(binding, "EVALUATION_MANIFEST_SHA256", _sha(raw))
+    with pytest.raises(binding.SuccessorPreflightFailure):
+        binding.phase_a_metadata_preflight(tmp_path / "repo", training, evaluation, tmp_path / "V4_UNIVERSE.csv", "a" * 40)
+
+
+def test_evaluation_metadata_accepts_unordered_exhaustive_fixed_universe(tmp_path, monkeypatch):
+    training, evaluation, codes = _write_fixture(tmp_path, monkeypatch)
+    manifest = _evaluation_manifest(codes)
+    manifest["payloads"] = list(reversed(manifest["payloads"]))
+    raw = adoption.canonical_json_bytes(manifest)
+    (evaluation / "cache_manifest.json").write_bytes(raw)
+    monkeypatch.setattr(binding, "EVALUATION_MANIFEST_SHA256", _sha(raw))
+    metadata = binding.phase_a_metadata_preflight(
+        tmp_path / "repo", training, evaluation, tmp_path / "V4_UNIVERSE.csv", "a" * 40
+    )
+    assert len(metadata.evaluation_manifest["payloads"]) == 300
+
+
+@pytest.mark.parametrize("field", ["ticker_count", "attempted_ticker_count", "success_count", "failed_count"])
+def test_evaluation_metadata_rejects_boolean_integer_fields(tmp_path, monkeypatch, field):
+    training, evaluation, codes = _write_fixture(tmp_path, monkeypatch)
+    manifest = _evaluation_manifest(codes)
+    manifest[field] = True
+    raw = adoption.canonical_json_bytes(manifest)
+    (evaluation / "cache_manifest.json").write_bytes(raw)
+    monkeypatch.setattr(binding, "EVALUATION_MANIFEST_SHA256", _sha(raw))
+    with pytest.raises(binding.SuccessorPreflightFailure):
+        binding.phase_a_metadata_preflight(tmp_path / "repo", training, evaluation, tmp_path / "V4_UNIVERSE.csv", "a" * 40)
+
+
+def test_evaluation_metadata_rejects_duplicate_missing_and_extra_tickers(tmp_path, monkeypatch):
+    training, evaluation, codes = _write_fixture(tmp_path, monkeypatch)
+    manifest = _evaluation_manifest(codes)
+    payloads = list(manifest["payloads"])
+    payloads[-1] = dict(payloads[0])
+    manifest["payloads"] = payloads
+    raw = adoption.canonical_json_bytes(manifest)
+    (evaluation / "cache_manifest.json").write_bytes(raw)
+    monkeypatch.setattr(binding, "EVALUATION_MANIFEST_SHA256", _sha(raw))
+    with pytest.raises(binding.SuccessorPreflightFailure):
+        binding.phase_a_metadata_preflight(tmp_path / "repo", training, evaluation, tmp_path / "V4_UNIVERSE.csv", "a" * 40)
+
+    manifest = _evaluation_manifest(codes)
+    manifest["payloads"][0]["ticker"] = "EXTRA"
+    manifest["payloads"][0]["relative_path"] = "raw/EXTRA.json"
+    raw = adoption.canonical_json_bytes(manifest)
+    (evaluation / "cache_manifest.json").write_bytes(raw)
+    monkeypatch.setattr(binding, "EVALUATION_MANIFEST_SHA256", _sha(raw))
+    with pytest.raises(binding.SuccessorPreflightFailure):
+        binding.phase_a_metadata_preflight(tmp_path / "repo", training, evaluation, tmp_path / "V4_UNIVERSE.csv", "a" * 40)
 
 
 @pytest.mark.parametrize("field", ["schema_version", "complete", "successful_ticker_count", "failed_tickers"])

@@ -5,7 +5,7 @@ document_role=PROJECT_LEVEL_EXTERNAL_MEMORY
 as_of_base_sha=3791dfa421c54555acc066346c810ee4cf8c95b5
 
 current_study=V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR
-current_stage=V10C_T0_ML_SUCCESSOR_FINAL_FREEZE_F9_PASS_BOOKKEEPING_AWAITING_GPT_REVIEW
+current_stage=V10C_T0_PHASE_A_EVALUATION_MANIFEST_BINDING_REMEDIATION_AWAITING_GPT_REVIEW
 stock_analyzer_review_policy=AI_STOCK_ANALYZER_REVIEW_POLICY.md
 stock_analyzer_review_policy_status=ACTIVE
 authoritative_branch=v9-cross-sectional-close-auction-design
@@ -2735,3 +2735,20 @@ future_profitability_established=false
 - MEDIUM-1 is remediated awaiting GPT review: once the mutation receipt/state is published or launch is attempted/crossed, authority is consumed and mandatory no-network Phase-C safe result inspection follows every Phase-B outcome. It records safe process, output, interpreter, metadata, durable-integrity, authority, and retry state without enabling retry.
 - Full successor metadata validation and invented LightGBM/Ridge probes are conditional on safely established completed-mutation prerequisites. Post-boundary launch/install/interruption/unknown failures remain `CANONICAL_MUTATION_FAILURE`; completed-mutation validation failures remain `LIVE_ENVIRONMENT_VALIDATION_FAILURE`.
 - The global T0 readiness remains `NO`. No network, pip invocation, package import/readiness execution, installation, environment mutation, model fit, T0, payload read, private/sealed access, or human-gate consumption occurred.
+
+## 2026-09-16 — V10C T0 Phase-A evaluation manifest contract remediation
+
+- A prior universe SHA wrapper mismatch was a pre-boundary Windows line-ending
+  hashing bug; no authority was consumed. The corrected no-network restart
+  reached evaluation metadata validation with the exact frozen manifest SHA
+  `797265bf671af2245a342051ffad02aa2929d67ba885945e7762149649148aa5`.
+- The diagnostic safely established schema version `2`, complete metadata,
+  300 tickers/payloads, and no `universe_mode` or `ticker_order` fields. The
+  validator now binds the independently frozen V4 universe by exhaustive
+  payload ticker identity without requiring a manifest ticker order.
+- The evaluation-manifest implementation finding is remediated awaiting GPT
+  exact-SHA review. Phase-A metadata validation remains payload-byte-free:
+  training/evaluation payload bytes read `0`, parser/model fits `0`, T0 runs
+  `0`, network requests `0`, and human-gate consumption `false`. T0 Phase-A
+  PASS is not claimed; global T0 readiness, T0 authority, historical/private
+  authority, and future profitability remain false/unestablished.
