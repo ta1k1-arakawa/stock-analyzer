@@ -2939,3 +2939,14 @@ transitions. This public log must not contain protected material.
   private/sealed access, or human gate was consumed. Future profitability
   remains unestablished.
 - This bookkeeping commit awaits GPT exact-SHA independent review.
+
+## 2026-09-16 — V10C T0 attempt 1 human-gate bookkeeping correction
+
+- GPT exact-SHA review of `bb72394873e858337f539a7e8416772879c69444`
+  identified a MEDIUM-1 bookkeeping contradiction: the attempt-level human
+  gate was recorded as unconsumed even though the fresh one-shot T0 gate was
+  consumed at the Phase-B boundary.
+- Corrected `V10C_T0_ATTEMPT_1_HUMAN_GATE_CONSUMED=true`. No new gate is being
+  consumed by this remediation. Retry, refetch, cache repair, and substitution
+  remain prohibited; `NO_VERDICT_DATA_INCOMPATIBLE` and the unestablished
+  scientific T0 result remain unchanged.
