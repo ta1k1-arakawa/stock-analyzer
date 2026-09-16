@@ -2920,3 +2920,22 @@ transitions. This public log must not contain protected material.
   zero apart from the authorized provenance fetch. Global T0 readiness,
   T0 authority, historical/private authority, and future profitability
   remain `NO`/false/unestablished.
+
+## 2026-09-16 — V10C T0 attempt 1 no-verdict safe adjudication
+
+- Recorded the GPT-adjudicated sequence for implementation SHA
+  `98090eeacc062a956456fb27aa37c87a8822e150`: Phase A `PASS`, Phase B
+  `COMPLETED`, and Phase C `PASS`. The one-shot authority was consumed and
+  retry remains unauthorized.
+- The frozen data-contract outcome is recorded as
+  `NO_VERDICT_DATA_INCOMPATIBLE` for both the result class and T0 result.
+  This is neither STOP nor CONTINUE and is not classified as strategy,
+  profitability, implementation, governance, or preflight failure. No exact
+  payload or failure reason is inferred.
+- Created `V10C_T0_ATTEMPT_1_SAFE_ADJUDICATION.json` with only safe metadata
+  and supplied receipt/output hashes. Refetch, cache repair, substitution,
+  and methodology change remain unauthorized. Phase-C network requests,
+  runner reruns, payload reads, and model fits were zero; no new T0 run,
+  private/sealed access, or human gate was consumed. Future profitability
+  remains unestablished.
+- This bookkeeping commit awaits GPT exact-SHA independent review.
