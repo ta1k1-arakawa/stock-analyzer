@@ -3006,3 +3006,39 @@ transitions. This public log must not contain protected material.
   substitution, or private/sealed authority. V10D implementation remains
   unauthorized until GPT exact-SHA review of the approval-record commit;
   future profitability remains unestablished.
+
+## 2026-09-17 — V10D diagnostic synthetic implementation
+
+- The GPT-reviewed V10D design-freeze approval at
+  `57129b70dbcde9aff3309cc6ad80a6fdb97eb908` authorizes implementation only;
+  implementation authorization is now recorded as `true`. V10D execution,
+  protected-payload reads, refetch, T0, and follow-on scientific authority
+  remain false.
+- Added the metadata-only Phase-A preflight, explicit protected-boundary
+  guard, V10C loader reuse, trace-equivalent structural localization stages,
+  no-model-fit boundary, closed data-versus-implementation exception
+  taxonomy, safe-result validator, and CLI entrypoint. Synthetic targeted
+  tests passed: `14 passed` for the diagnostic module and `4 passed` for the
+  CLI module. No real diagnostic, payload read, model fit, scoring, or T0
+  execution occurred.
+- V10D implementation remains `V10D_DIAGNOSTIC_IMPLEMENTATION_AWAITING_GPT_REVIEW`.
+  This implementation commit must receive GPT exact-SHA review before any
+  Phase-A preflight or fresh point-of-use authority is considered.
+
+## 2026-09-17 — V10D implementation checkpoint
+
+- The GPT-reviewed design-freeze approval record at
+  `57129b70dbcde9aff3309cc6ad80a6fdb97eb908` passed with
+  `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=1`, so V10D implementation
+  preparation is authorized. It does not authorize diagnostic execution or
+  protected-payload access.
+- Implemented the metadata-only Phase-A preflight, explicit protected
+  diagnostic boundary guard, reviewed V10C cache-loader reuse, trace-ordered
+  structural localization, no-model-fit boundary, closed exception taxonomy,
+  safe-result validator, and future CLI entrypoint. Targeted synthetic tests
+  passed (`14 passed` and `4 passed`).
+- No real diagnostic, payload read, model fit, scoring, T0, refetch, cache
+  repair, substitution, or private/sealed access occurred. V10D remains
+  `V10D_DIAGNOSTIC_IMPLEMENTATION_AWAITING_GPT_REVIEW`; execution,
+  protected-payload, refetch, and T0 authorities remain false, and future
+  profitability remains unestablished.
