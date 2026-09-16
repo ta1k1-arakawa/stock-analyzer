@@ -138,30 +138,84 @@ never repeat attempts until a favorable category occurs.
 
 ### 3.1 Deterministic stage order
 
-The future implementation must evaluate stages in this fixed order:
+The future implementation must evaluate logical checkpoints in this exact
+production-trace order. The diagnostic stops at the first failed checkpoint;
+it does not execute the scientific scoring or screening operation represented
+by a later checkpoint.
 
-1. `INPUT_BYTE_OR_FILESET_CONTRACT`: exact public artifact bytes, manifest
-   schemas/hashes, path/file-set closure, payload metadata, V4 universe
-   identity, and V10A calendar identity;
-2. `PARSER_NORMALIZATION_CONTRACT`: exact locked payload byte/hash closure,
-   inherited parser acceptance, canonical code/date/OHLCV/split normalization,
-   and malformed-input behavior;
-3. `COMBINED_SERIES_CONTRACT`: inherited training/evaluation merge, chronology,
-   duplicate-date handling, split-action consistency, and required series
-   availability;
-4. `FEATURE_TARGET_DATASET_CONTRACT`: inherited causal feature construction,
-   D1-to-D3 target attachment, finite-value and dataset-schema preconditions;
-5. `FORMAL_CALENDAR_OR_TARGET_AVAILABILITY_CONTRACT`: exact V10A calendar,
-   signal grid, formal years, target closure, and calendar/target availability;
-6. `MODEL_INPUT_PRECONDITION_CONTRACT`: exact frozen feature/target matrix
-   schema, finite numeric preconditions, causal training-row availability,
-   and fixed model-input shape before any scientific result is considered.
+1. `INPUT_BYTE_OR_FILESET_CONTRACT`: verify exact manifest and file-set
+   closure, raw-byte/hash/size metadata, fixed V4 universe identity, and
+   V10A calendar metadata that are available before protected payload parsing.
+2. `PARSER_NORMALIZATION_CONTRACT`: apply the inherited payload parser and
+   its OHLCV, date, split-action, code, and missing-data normalization to the
+   exact locked payload bytes, including malformed-input behavior.
+3. `COMBINED_SERIES_CONTRACT`: verify the inherited training/evaluation
+   combination, chronology, duplicate-date handling, split-action
+   consistency, and required-series presence.
+4. `FEATURE_TARGET_DATASET_CONTRACT`: follow the production construction
+   order `build_scoreable_population`, `attach_historical_targets`, target
+   percentile construction, and dataset structural, finite-value, and
+   chronology preconditions.
+5. `FORMAL_SCORING_PRECONDITION_CONTRACT`: preserve the pre-model order in
+   `score_formal_dataset`: dataset validation; calendar normalization and
+   `month_start` semantics; formal signal-year completeness; per-month
+   `causal_training_rows`; causal training-row availability; and finite
+   model-input X/y preconditions. This checkpoint ends before any real
+   `Ridge.fit`, `StandardScaler.fit`/`transform` used for scoring,
+   `LightGBM.fit`, prediction, or score generation.
+6. `POST_SCORING_STRUCTURAL_TARGET_CONTRACT`: for conditions checked by the
+   production path only after scoring, derive only their safe structural
+   equivalents from the already-constructed dataset, calendar, and row
+   coverage. This includes `FORMAL_TARGET_UNAVAILABLE`,
+   `KILL_SCREEN_YEAR_INCOMPLETE`, and any other post-scoring
+   `T0DataIncompatible` structural condition whose production order is
+   established. This checkpoint never fits a model, generates predictions,
+   calculates scores, or computes STOP/CONTINUE metrics. It must not be moved
+   ahead of an earlier checkpoint; if exact production order or a safe
+   structural equivalent cannot be established, report
+   `UNKNOWN_DATA_INCOMPATIBILITY`.
 
-The first failed stage alone is reported. If the implementation cannot
-reliably distinguish a stage, it emits `UNKNOWN_DATA_INCOMPATIBILITY` rather
-than guessing. It must not continue to later stages after a failure.
+Only an inherited `T0DataIncompatible` condition may map to one of these
+stage classes. The reported class is the earliest such condition that the
+frozen production trace would encounter; later stages are not evaluated
+after an earlier failure.
 
-### 3.2 Safe diagnostic output
+### 3.2 No-model-fit and exception boundary
+
+V10D is a structural data-contract diagnostic, not a scientific scoring run.
+Its execution must not call `Ridge.fit`, `LightGBM.fit`, or any prediction
+method; calculate model scores, TOP1 edge, yearly or aggregate metrics; or
+calculate or emit scientific `STOP` or `CONTINUE`. `StandardScaler` fit or
+transform operations that would be part of actual scoring are likewise
+forbidden. The implementation may use only the inherited parsing,
+normalization, combination, feature/target structure, calendar, and row
+coverage logic needed to localize the existing incompatibility. A diagnostic
+PASS therefore has zero profitability evidential capacity.
+
+The exception taxonomy is explicit:
+
+- only an inherited `T0DataIncompatible` exception or equivalent established
+  frozen data-contract condition may map to a V10D stage class;
+- inherited `T0ImplementationFailure`, unexpected Python or library
+  exceptions, diagnostic-wrapper defects, serializer or safe-output
+  validator defects, and impossible or ambiguous internal state are
+  `IMPLEMENTATION_FAILURE`;
+- an implementation failure must never be relabeled as
+  `INPUT_BYTE_OR_FILESET_CONTRACT`, `PARSER_NORMALIZATION_CONTRACT`,
+  `COMBINED_SERIES_CONTRACT`, `FEATURE_TARGET_DATASET_CONTRACT`,
+  `FORMAL_SCORING_PRECONDITION_CONTRACT`,
+  `POST_SCORING_STRUCTURAL_TARGET_CONTRACT`, or
+  `UNKNOWN_DATA_INCOMPATIBILITY`;
+- `UNKNOWN_DATA_INCOMPATIBILITY` is reserved for an observed and established
+  `T0DataIncompatible` condition whose exact stage cannot safely be mapped.
+
+Safe evidence must distinguish `RESULT_CLASS=DATA_INCOMPATIBILITY_DIAGNOSTIC`
+from `RESULT_CLASS=IMPLEMENTATION_FAILURE`. Neither result authorizes
+refetch, retry, repair, methodology change, or scientific T0. An
+implementation failure is closed evidence requiring separate reviewed
+handling, not permission to search for a favorable category.
+
+### 3.3 Safe diagnostic output
 
 The only permitted durable or emitted diagnostic fields are:
 
@@ -257,4 +311,3 @@ select favorable tickers, periods, payloads, parser behavior, features,
 targets, models, thresholds, or execution assumptions. Until a separate
 authorized study establishes sufficient forward-only evidence,
 `future_profitability_established=false`.
-

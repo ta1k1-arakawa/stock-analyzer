@@ -2968,3 +2968,25 @@ transitions. This public log must not contain protected material.
   consumed by this remediation. Retry, refetch, cache repair, and substitution
   remain prohibited; `NO_VERDICT_DATA_INCOMPATIBLE` and the unestablished
   scientific T0 result remain unchanged.
+
+## 2026-09-16 — V10D diagnostic stage-order and exception-taxonomy remediation
+
+- GPT exact-SHA review of `f009895f4fff33277aa8af69ff10aa2689be13dc` blocked
+  with `CRITICAL=0`, `HIGH=1`, `MEDIUM=1`, and `LOW=0`. HIGH-1 identified
+  that the diagnostic stages were not trace-equivalent to the frozen V9/V10C
+  production first-failure order; MEDIUM-1 identified an underspecified
+  no-model-fit boundary and exception taxonomy.
+- The V10D design now orders checkpoints as input/file-set, parser/
+  normalization, combined series, feature/target dataset, formal scoring
+  preconditions, and post-scoring structural targets. It stops before model
+  fitting, prediction, scoring, or scientific STOP/CONTINUE computation.
+- The design now maps only established inherited `T0DataIncompatible`
+  conditions to data-contract stages. Wrapper, implementation, unexpected,
+  serializer, validator, and ambiguous-state failures are separately
+  `IMPLEMENTATION_FAILURE`; `UNKNOWN_DATA_INCOMPATIBILITY` is not a bucket
+  for implementation errors.
+- V10D remains design-only. No V10C rerun, payload read, model fit, T0,
+  authority consumption, refetch, repair, substitution, or methodology
+  change occurred. Both findings are remediated awaiting GPT exact-SHA
+  design review; all V10D execution and protected-payload authorities
+  remain false and future profitability remains unestablished.
