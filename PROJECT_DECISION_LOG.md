@@ -2940,6 +2940,24 @@ transitions. This public log must not contain protected material.
   remains unestablished.
 - This bookkeeping commit awaits GPT exact-SHA independent review.
 
+## 2026-09-16 — V10D data-incompatibility diagnostic successor design
+
+- GPT exact-SHA review of `4d4e57ec5f1a5350995a2c398d8440334a6a927e`
+  passed with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=1`.
+- V10C T0 Attempt 1 remains immutable terminal evidence with result class and
+  T0 result `NO_VERDICT_DATA_INCOMPATIBLE`; its consumed authority and human
+  gate are not reusable, and V10C will not be rerun, repaired, refetched, or
+  substituted.
+- Created the new study design
+  `V10D_T0_DATA_INCOMPATIBILITY_DIAGNOSTIC_SUCCESSOR_DESIGN_DRAFT.md`.
+  It is diagnostic-only, inherits the exact V10C/V10A/V9 input identities and
+  methodology, localizes only the earliest failing frozen data boundary, and
+  has zero profitability evidential capacity.
+- V10D execution, protected-payload reads, refetch, T0, and follow-on
+  scientific authority remain false. Any future protected-data diagnostic
+  requires its own design/implementation reviews, fresh one-shot human gate,
+  and no-network safe inspection; `future_profitability_established=false`.
+
 ## 2026-09-16 — V10C T0 attempt 1 human-gate bookkeeping correction
 
 - GPT exact-SHA review of `bb72394873e858337f539a7e8416772879c69444`
