@@ -2886,3 +2886,11 @@ transitions. This public log must not contain protected material.
 - The implementation root cause was Windows-locale-dependent Git stdout decoding in `_run_git()`. A first diagnostic wrapper failed before runner diagnosis because of a PowerShell/Python quoting `SyntaxError`; a corrected read-only diagnostic reached `collect_production` and observed `UnicodeDecodeError`. Neither diagnostic consumed authority or performed live verification.
 - `_run_git()` is remediated to collect bytes and decode Git textual output strictly as UTF-8, with invalid UTF-8 and nonzero Git exits failing closed. No F4 rerun occurred.
 - This remediation remains awaiting GPT exact-SHA review. If it passes, its new commit becomes the replacement exact F3-reviewed SHA for the restarted F4/F6/F8 lineage. F5/F6/F7 remain unexecuted.
+
+## 2026-09-16 — V10C F8 final-freeze safe evidence commit
+
+- GPT exact-SHA review of `d574015cb148f9e172d73b2ad74b5f99e02ff5ea` passed with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=1` safe bookkeeping only; the UTF-8 remediation is resolved.
+- Restarted F4 Phase A and `F4_REMOTE_PRECHECK_2` passed. Fresh F5 authority for `V10C SUCCESSOR FINAL FREEZE VERIFICATION ATTEMPT 1` was granted and consumed once, with reuse forbidden.
+- F6 crossed the final-freeze boundary and passed with process exit `0`, authority consumed, retry forbidden, and the mechanically bound mutation-evidence SHA-256 `8974ea4acc5725903028d6e5a5dd1ed64467b7ba074720327da3ceced7b1c621`. F7 standalone no-network inspection passed and was inspect-only.
+- Durable state, stdout, stderr, and final evidence matched the supplied hashes and sizes; all four durable byte sets were unchanged. The repository safe artifact `V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_FINAL_FREEZE_SAFE_EVIDENCE.json` was created with SHA-256 `b83d02921e571545511e477d4783ed408b8700b790d52c1f7d51d93d850d8ba3`.
+- No F4/F6/F7 rerun occurred in this commit, and no promotion, freeze, global readiness, T0, historical-evaluation, private/sealed, or profitability claim is made before F9. This F8 commit awaits GPT exact-SHA final-freeze review.
