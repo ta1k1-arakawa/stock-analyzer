@@ -2894,3 +2894,10 @@ transitions. This public log must not contain protected material.
 - F6 crossed the final-freeze boundary and passed with process exit `0`, authority consumed, retry forbidden, and the mechanically bound mutation-evidence SHA-256 `8974ea4acc5725903028d6e5a5dd1ed64467b7ba074720327da3ceced7b1c621`. F7 standalone no-network inspection passed and was inspect-only.
 - Durable state, stdout, stderr, and final evidence matched the supplied hashes and sizes; all four durable byte sets were unchanged. The repository safe artifact `V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_FINAL_FREEZE_SAFE_EVIDENCE.json` was created with SHA-256 `b83d02921e571545511e477d4783ed408b8700b790d52c1f7d51d93d850d8ba3`.
 - No F4/F6/F7 rerun occurred in this commit, and no promotion, freeze, global readiness, T0, historical-evaluation, private/sealed, or profitability claim is made before F9. This F8 commit awaits GPT exact-SHA final-freeze review.
+
+## 2026-09-16 — V10C post-F9 final-freeze bookkeeping
+
+- GPT F9 exact-SHA review of `92cc4a964af798f9543155e32eb83a12e7352151` passed with parent `d574015cb148f9e172d73b2ad74b5f99e02ff5ea`, `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`.
+- F9 established `V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_PROMOTED=true`, `V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_ENVIRONMENT_FROZEN=true`, `V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_ENVIRONMENT_STATE=CANONICAL_FROZEN`, and post-gate software-dependency readiness `YES`. The F8 safe evidence is now recorded as GPT-reviewed PASS.
+- Global T0 readiness remains `NO`; T0, historical evaluation, private/sealed access, and future-profitability authority/claims remain false. F5 authority remains consumed and non-reusable, and F6 retry remains false. No new authority was created.
+- This bookkeeping commit performed no phase rerun, canonical-interpreter execution, network/package work, environment mutation, model fit, T0, or protected-data access, and did not modify frozen artifacts. It awaits GPT exact-SHA bookkeeping review.
