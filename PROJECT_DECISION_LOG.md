@@ -3060,3 +3060,23 @@ transitions. This public log must not contain protected material.
   T0, network, or authority consumption occurred. V10D execution,
   protected-payload, refetch, and T0 authorities remain false; future
   profitability remains unestablished.
+
+## 2026-09-17 — V10D cache stage-mapping remediation
+
+- GPT exact-SHA review of V10D implementation
+  `fcb8f2c86256f160160631937a75d41f6e495154` returned
+  `BLOCK_CRITICAL_0_HIGH_1_MEDIUM_1_LOW_0`. HIGH-1 is resolved; this task
+  remediates only HIGH-2, `CACHE_FAILURE_STAGE_MAPPING_NOT_CORRECTLY_CLOSED`.
+  MEDIUM-1, `SAFE_RESULT_VALIDATOR_EXACT_PROVENANCE_NOT_ENFORCED`, remains
+  open.
+- Replaced the broad overlapping cache-reason sets with an exact,
+  pairwise-disjoint mapping for reviewed V10C loader reasons. Hash, path,
+  file, and universe identity failures map to INPUT; JSON/OHLCV/split
+  normalization failures map to PARSER; the four reviewed combination
+  failures map to COMBINED. Unmapped reasons remain UNKNOWN, and detailed
+  reasons are still excluded from safe output.
+- Synthetic targeted tests passed (`40 passed` and `6 passed`). No real
+  Phase A/B/C, payload read, diagnostic execution, model fit, prediction,
+  T0, network, or authority consumption occurred. V10D execution,
+  protected-payload, refetch, and T0 authorities remain false; future
+  profitability remains unestablished.
