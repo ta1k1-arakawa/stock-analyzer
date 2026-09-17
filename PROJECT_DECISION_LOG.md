@@ -3080,3 +3080,21 @@ transitions. This public log must not contain protected material.
   T0, network, or authority consumption occurred. V10D execution,
   protected-payload, refetch, and T0 authorities remain false; future
   profitability remains unestablished.
+
+## 2026-09-17 — V10D safe-result exact-provenance remediation
+
+- GPT exact-SHA review of V10D implementation
+  `f0624f6f4de70f7cac22f50bd427218898df7a46` returned
+  `BLOCK_CRITICAL_0_HIGH_0_MEDIUM_1_LOW_0`. HIGH-1 and HIGH-2 remain
+  resolved; this task remediates only MEDIUM-1,
+  `SAFE_RESULT_VALIDATOR_EXACT_PROVENANCE_NOT_ENFORCED`.
+- Safe-result validation now requires exact frozen provenance values, exact
+  `283/17/300` counts, and exact zero network/model-fit/T0 counters. Fresh
+  expected mappings prevent caller mutation from changing the validation
+  contract; schema, type, authority, retry, stage, and profitability
+  invariants remain fail-closed.
+- Synthetic targeted tests passed (`61 passed` and `6 passed`). No real
+  Phase A/B/C, payload read, diagnostic execution, model fit, prediction,
+  T0, network, or authority consumption occurred. V10D execution,
+  protected-payload, refetch, and T0 authorities remain false; future
+  profitability remains unestablished.

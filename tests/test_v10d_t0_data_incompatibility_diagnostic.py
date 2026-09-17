@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -227,6 +228,113 @@ def test_safe_result_validator_is_closed_and_private_reason_free():
     with pytest.raises(diagnostic.V10DDiagnosticImplementationFailure):
         diagnostic.validate_safe_result({**result, "authority_consumed": False})
     assert "CACHE_PAYLOAD_HASH_MISMATCH" not in str(result)
+
+
+@pytest.mark.parametrize(
+    "key",
+    sorted(
+        {
+            "design_git_commit",
+            "design_git_blob_sha1",
+            "design_sha256",
+            "freeze_approval_git_blob_sha1",
+            "freeze_approval_sha256",
+            "training_manifest_sha256",
+            "evaluation_manifest_sha256",
+            "v4_universe_csv_sha256",
+            "v4_ticker_list_sha256",
+            "v10a_calendar_sha256",
+        }
+    ),
+)
+def test_safe_result_requires_exact_frozen_provenance(key):
+    result = diagnostic._safe_result(
+        IMPLEMENTATION_SHA, diagnostic.RESULT_DATA, "PARSER_NORMALIZATION_CONTRACT"
+    )
+    tampered = copy.deepcopy(result)
+    original = tampered["provenance"][key]
+    tampered["provenance"][key] = ("0" * len(original)) if original != ("0" * len(original)) else ("1" * len(original))
+    with pytest.raises(diagnostic.V10DDiagnosticImplementationFailure):
+        diagnostic.validate_safe_result(tampered)
+
+
+@pytest.mark.parametrize("operation", ["missing", "extra"])
+def test_safe_result_provenance_key_set_is_exact(operation):
+    result = diagnostic._safe_result(
+        IMPLEMENTATION_SHA, diagnostic.RESULT_DATA, "PARSER_NORMALIZATION_CONTRACT"
+    )
+    tampered = copy.deepcopy(result)
+    if operation == "missing":
+        tampered["provenance"].pop("design_sha256")
+    else:
+        tampered["provenance"]["unexpected"] = "0" * 64
+    with pytest.raises(diagnostic.V10DDiagnosticImplementationFailure):
+        diagnostic.validate_safe_result(tampered)
+
+
+def test_safe_result_requires_exact_frozen_counts_and_counters():
+    result = diagnostic._safe_result(
+        IMPLEMENTATION_SHA, diagnostic.RESULT_DATA, "PARSER_NORMALIZATION_CONTRACT"
+    )
+    for key, value in {
+        "training_success_count": 282,
+        "training_failed_count": 18,
+        "evaluation_payload_count": 299,
+    }.items():
+        tampered = copy.deepcopy(result)
+        tampered["counts"][key] = value
+        with pytest.raises(diagnostic.V10DDiagnosticImplementationFailure):
+            diagnostic.validate_safe_result(tampered)
+    for key in ("network_requests", "model_fits", "t0_runs"):
+        tampered = copy.deepcopy(result)
+        tampered["execution_counters"][key] = 1
+        with pytest.raises(diagnostic.V10DDiagnosticImplementationFailure):
+            diagnostic.validate_safe_result(tampered)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("training_success_count", True),
+        ("training_failed_count", "17"),
+        ("evaluation_payload_count", None),
+        ("network_requests", True),
+        ("model_fits", "0"),
+        ("t0_runs", None),
+    ],
+)
+def test_safe_result_rejects_wrong_count_and_counter_types(key, value):
+    result = diagnostic._safe_result(
+        IMPLEMENTATION_SHA, diagnostic.RESULT_DATA, "PARSER_NORMALIZATION_CONTRACT"
+    )
+    tampered = copy.deepcopy(result)
+    target = "counts" if key in diagnostic._SAFE_COUNT_KEYS else "execution_counters"
+    tampered[target][key] = value
+    with pytest.raises(diagnostic.V10DDiagnosticImplementationFailure):
+        diagnostic.validate_safe_result(tampered)
+
+
+def test_safe_result_expected_contracts_are_fresh_not_mutable_aliases():
+    result = diagnostic._safe_result(
+        IMPLEMENTATION_SHA, diagnostic.RESULT_DATA, "PARSER_NORMALIZATION_CONTRACT"
+    )
+    expected_provenance = diagnostic._safe_provenance()
+    expected_provenance["design_sha256"] = "0" * 64
+    expected_counts = diagnostic._safe_counts()
+    expected_counts["training_success_count"] = 0
+    expected_counters = diagnostic._safe_execution_counters()
+    expected_counters["t0_runs"] = 1
+    assert diagnostic.validate_safe_result(result) == result
+
+
+def test_safe_result_rejects_profitability_claim():
+    result = diagnostic._safe_result(
+        IMPLEMENTATION_SHA, diagnostic.RESULT_DATA, "PARSER_NORMALIZATION_CONTRACT"
+    )
+    tampered = copy.deepcopy(result)
+    tampered["future_profitability_established"] = True
+    with pytest.raises(diagnostic.V10DDiagnosticImplementationFailure):
+        diagnostic.validate_safe_result(tampered)
 
 
 def test_no_model_or_scientific_screening_calls_in_diagnostic_source():

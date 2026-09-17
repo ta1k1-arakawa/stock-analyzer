@@ -443,6 +443,22 @@ def _safe_provenance() -> dict[str, Any]:
     }
 
 
+def _safe_counts() -> dict[str, int]:
+    return {
+        "training_success_count": TRAINING_SUCCESS_COUNT,
+        "training_failed_count": TRAINING_FAILED_COUNT,
+        "evaluation_payload_count": EVALUATION_PAYLOAD_COUNT,
+    }
+
+
+def _safe_execution_counters() -> dict[str, int]:
+    return {
+        "network_requests": 0,
+        "model_fits": 0,
+        "t0_runs": 0,
+    }
+
+
 def _safe_result(
     implementation_sha: str,
     result_class: str,
@@ -453,11 +469,7 @@ def _safe_result(
         "study": STUDY_IDENTITY,
         "implementation_sha": implementation_sha,
         "provenance": _safe_provenance(),
-        "counts": {
-            "training_success_count": TRAINING_SUCCESS_COUNT,
-            "training_failed_count": TRAINING_FAILED_COUNT,
-            "evaluation_payload_count": EVALUATION_PAYLOAD_COUNT,
-        },
+        "counts": _safe_counts(),
         "result_class": result_class,
         "first_failed_stage": first_failed_stage,
         "validation": {
@@ -467,11 +479,7 @@ def _safe_result(
         },
         "authority_consumed": True,
         "retry_authorized": False,
-        "execution_counters": {
-            "network_requests": 0,
-            "model_fits": 0,
-            "t0_runs": 0,
-        },
+        "execution_counters": _safe_execution_counters(),
         "future_profitability_established": False,
     }
     return validate_safe_result(result)
@@ -508,7 +516,7 @@ def validate_safe_result(result: Mapping[str, Any]) -> dict[str, Any]:
         raise V10DDiagnosticImplementationFailure("SAFE_RESULT_IDENTITY_INVALID")
     if not _is_sha1(result["implementation_sha"]):
         raise V10DDiagnosticImplementationFailure("SAFE_RESULT_IMPLEMENTATION_SHA_INVALID")
-    if set(result["provenance"]) != _SAFE_PROVENANCE_KEYS:
+    if not isinstance(result["provenance"], Mapping) or set(result["provenance"]) != _SAFE_PROVENANCE_KEYS:
         raise V10DDiagnosticImplementationFailure("SAFE_RESULT_PROVENANCE_SCHEMA_INVALID")
     if any(not _is_sha256(value) and key.endswith("sha256") for key, value in result["provenance"].items()):
         raise V10DDiagnosticImplementationFailure("SAFE_RESULT_PROVENANCE_SHA_INVALID")
@@ -516,10 +524,14 @@ def validate_safe_result(result: Mapping[str, Any]) -> dict[str, Any]:
         result["provenance"]["freeze_approval_git_blob_sha1"]
     ):
         raise V10DDiagnosticImplementationFailure("SAFE_RESULT_PROVENANCE_BLOB_INVALID")
-    if set(result["counts"]) != _SAFE_COUNT_KEYS or any(
+    if result["provenance"] != _safe_provenance():
+        raise V10DDiagnosticImplementationFailure("SAFE_RESULT_PROVENANCE_BINDING_INVALID")
+    if not isinstance(result["counts"], Mapping) or set(result["counts"]) != _SAFE_COUNT_KEYS or any(
         type(value) is not int or value < 0 for value in result["counts"].values()
     ):
         raise V10DDiagnosticImplementationFailure("SAFE_RESULT_COUNTS_INVALID")
+    if result["counts"] != _safe_counts():
+        raise V10DDiagnosticImplementationFailure("SAFE_RESULT_COUNTS_BINDING_INVALID")
     if result["result_class"] not in {RESULT_DATA, RESULT_IMPLEMENTATION}:
         raise V10DDiagnosticImplementationFailure("SAFE_RESULT_CLASS_INVALID")
     stage = result["first_failed_stage"]
@@ -542,10 +554,12 @@ def validate_safe_result(result: Mapping[str, Any]) -> dict[str, Any]:
         raise V10DDiagnosticImplementationFailure("SAFE_RESULT_AUTHORITY_INVALID")
     if type(result["retry_authorized"]) is not bool or result["retry_authorized"] is not False:
         raise V10DDiagnosticImplementationFailure("SAFE_RESULT_RETRY_INVALID")
-    if set(result["execution_counters"]) != _SAFE_COUNTER_KEYS or any(
+    if not isinstance(result["execution_counters"], Mapping) or set(result["execution_counters"]) != _SAFE_COUNTER_KEYS or any(
         type(value) is not int or value < 0 for value in result["execution_counters"].values()
     ):
         raise V10DDiagnosticImplementationFailure("SAFE_RESULT_COUNTERS_INVALID")
+    if result["execution_counters"] != _safe_execution_counters():
+        raise V10DDiagnosticImplementationFailure("SAFE_RESULT_COUNTERS_BINDING_INVALID")
     if type(result["future_profitability_established"]) is not bool or result[
         "future_profitability_established"
     ] is not False:
