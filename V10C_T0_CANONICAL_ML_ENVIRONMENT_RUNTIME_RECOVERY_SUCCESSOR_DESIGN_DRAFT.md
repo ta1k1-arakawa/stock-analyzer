@@ -2,13 +2,14 @@
 
 ```text
 document_type=V10C_T0_CANONICAL_ML_ENVIRONMENT_RUNTIME_RECOVERY_SUCCESSOR_DESIGN
-status=DRAFT_AWAITING_GPT_REVIEW
+status=DRAFT_REMEDIATION_AWAITING_GPT_REVIEW
 study=V10C_T0_CANONICAL_ML_ENVIRONMENT_RUNTIME_RECOVERY_SUCCESSOR
 design_purpose=NO_NETWORK_READ_ONLY_RUNTIME_DIAGNOSTIC_ONLY
 environment_state=CANONICAL_FROZEN
 global_t0_readiness=NO
 t0_authorized=false
 future_profitability_established=false
+frozen_native_byte_identity_status=NOT_ESTABLISHED
 ```
 
 This is a new operational successor design for diagnosing loss of runtime
@@ -62,6 +63,21 @@ final-freeze provenance, and the V10A calendar authority. The V10D diagnostic
 design and approval remain the applicable diagnostic governance. A future
 implementation must bind the exact repository artifacts mechanically; chat
 summaries are not evidence.
+
+The reviewed final-freeze candidate and safe evidence bind package
+name/version identity and safe runtime results, but do not bind an immutable
+freeze-time SHA-256 baseline for `_fitpack` or the other installed native
+SciPy binaries. Consequently the following distinction is mandatory:
+
+```text
+CURRENT_INSTALLATION_RECORD_CONSISTENCY=current installed bytes versus current usable RECORD
+FROZEN_NATIVE_BYTE_IDENTITY_STATUS=NOT_ESTABLISHED
+```
+
+Agreement with the current installed distribution's RECORD cannot prove that
+the bytes equal the bytes present at final freeze. It cannot exclude a later
+same-version reinstall or replacement that also changed the current RECORD.
+No historical native-byte hash is invented or inferred here.
 
 Inherited public bindings remain unchanged:
 
@@ -137,21 +153,48 @@ dependencies. The implementation must record only safe metadata such as
 normalized distribution names/versions, whether a distribution `RECORD`
 exists, and bounded counts. It must not expose private paths.
 
-### 3.3 Installed-byte and RECORD closure
+### 3.3 Current installed-byte and RECORD closure
 
-For `_fitpack` and only the native/dependency files necessary to distinguish
-the incident classes, read installed bytes read-only and compare their
-observed size and SHA-256 with the installed distribution `RECORD` entries
-where those entries are present and usable. Also verify the RECORD metadata
-itself is internally usable. A missing, unsafe, malformed, or conflicting
-record is not silently treated as a match; it produces
-`OBSERVABILITY_INSUFFICIENT` unless a deterministic byte mismatch is already
-established.
+The inspected closure must be deterministic, not chosen ad hoc as
+"necessary dependencies". Enumerate every current SciPy distribution
+`RECORD` entry whose installed filename belongs to the `scipy` distribution
+or `scipy.libs` and has a native Windows suffix required by this diagnostic:
+`.pyd` or `.dll`. The unique `_fitpack` `.pyd` must be present in this set.
+No arbitrary file outside this mechanically defined distribution closure is
+included in the RECORD-integrity predicate. An absent, duplicate, unsafe, or
+ambiguous `_fitpack` entry, or an otherwise incomplete required closure,
+produces `OBSERVABILITY_INSUFFICIENT`.
+
+For every closure entry, decode a usable `sha256` RECORD digest according to
+the RECORD representation and compare it with the actual installed file
+bytes. Compare the recorded size when present. Unsupported, malformed,
+missing, or conflicting hash/size metadata is not silently treated as a
+match; it produces `OBSERVABILITY_INSUFFICIENT` unless a deterministic
+current-record mismatch has already been established.
+
+If an installed native file disagrees with its current usable RECORD hash or
+size, classify the observation as
+`CURRENT_INSTALLATION_RECORD_MISMATCH`. This proves only that the current
+installation is inconsistent with its current RECORD. It does not prove
+drift relative to final freeze and does not establish the frozen native-byte
+identity.
 
 This is an observation of the installed distribution only. It is not a wheel
 manifest check, package operation, repair, or substitute for the frozen
 successor lock. No file may be written, unblocked, copied, deleted, or
 recreated.
+
+The historical identity field is a closed three-value status:
+
+```text
+FROZEN_NATIVE_BYTE_IDENTITY_STATUS=PROVEN_MATCH|PROVEN_MISMATCH|NOT_ESTABLISHED
+```
+
+Under the currently bound evidence it is always
+`NOT_ESTABLISHED`. `PROVEN_MATCH` or `PROVEN_MISMATCH` may be used only after
+a later separately reviewed immutable historical native-byte baseline is
+actually established; this design does not search for or create that
+baseline.
 
 ### 3.4 Windows application-control metadata
 
@@ -194,7 +237,7 @@ classification must use the preceding byte and bounded control observations.
 The future safe result must use exactly one of these result classes:
 
 ```text
-INSTALLED_BINARY_DRIFT
+CURRENT_INSTALLATION_RECORD_MISMATCH
 WINDOWS_APPLICATION_CONTROL_BLOCK
 DEPENDENCY_IMPORT_FAILURE_OTHER
 OBSERVABILITY_INSUFFICIENT
@@ -207,15 +250,19 @@ Classification is closed and ordered:
    established, stop without import probing and report
    `OBSERVABILITY_INSUFFICIENT` (or a separately reviewed implementation
    failure for an impossible wrapper state).
-2. If a required installed native byte differs from its usable RECORD size or
-   hash, report `INSTALLED_BINARY_DRIFT`. This is an observed installed-byte
-   mismatch, not permission to replace the bytes.
-3. If relevant bytes and RECORD identity are unchanged and bounded
+2. If a required installed native byte differs from its usable current RECORD
+   size or hash, report `CURRENT_INSTALLATION_RECORD_MISMATCH`. This is an
+   observed current-installation inconsistency, not proof of historical
+   final-freeze drift and not permission to replace the bytes.
+3. If the deterministic current native closure is internally consistent and
+   bounded
    application-control evidence positively identifies a block for the failed
    native load, report `WINDOWS_APPLICATION_CONTROL_BLOCK`. Do not infer this
-   class from a generic import exception.
-4. If bytes are unchanged, no positive application-control block is
-   established, and a required import still fails, report
+   class from a generic import exception. Current RECORD consistency may be
+   described only as `CURRENT_INSTALLATION_RECORD_CONSISTENT`; it may not be
+   described as unchanged since freeze.
+4. If the current closure is consistent, no positive application-control
+   block is established, and a required import still fails, report
    `DEPENDENCY_IMPORT_FAILURE_OTHER`.
 5. If every exact package/byte/control/import predicate passes, report
    `PASS`.
@@ -225,14 +272,23 @@ report `OBSERVABILITY_INSUFFICIENT` rather than guessing. The diagnostic
 must publish only the earliest established class and must not rerun any stage
 to seek a different class.
 
-`PASS` means only that the exact frozen environment is currently import-ready
-without mutation. It does not automatically authorize V10D execution or any
-future scientific work.
+`PASS` means only that the exact frozen Python/package NAME+VERSION identity
+matches, the current SciPy native installation is internally consistent with
+its current usable RECORD, the required bounded import probes succeed, and no
+mutation occurred during this diagnostic. PASS does not prove historical or
+final-freeze native-byte equality, does not prove that the environment was
+never replaced or reinstalled, and does not automatically authorize V10D
+execution or any future scientific work. Even on PASS:
 
-If installed-byte drift is established, a later separately reviewed recovery
-design must decide whether and how a successor environment may be built and
-promoted. If application-control blocking is established while bytes remain
-unchanged, a later separately reviewed security/environment decision is
+```text
+FROZEN_NATIVE_BYTE_IDENTITY_STATUS=NOT_ESTABLISHED
+```
+
+If a current-installation RECORD mismatch is established, a later separately
+reviewed recovery design must decide whether and how a successor environment
+may be built and promoted; this result does not establish historical drift.
+If application-control blocking is established while the current closure is
+consistent, a later separately reviewed security/environment decision is
 required; this design never bypasses policy. If neither can be established,
 the safe outcome remains `OBSERVABILITY_INSUFFICIENT`.
 

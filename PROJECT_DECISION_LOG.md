@@ -3125,3 +3125,28 @@ transitions. This public log must not contain protected material.
   The canonical environment remains frozen as an identity, global T0
   readiness remains `NO`, T0 remains unauthorized, and future profitability
   remains unestablished.
+
+## 2026-09-17 — V10C runtime-recovery design HIGH-1 remediation
+
+- GPT exact-SHA review of `1607b1ed7ff66ffd019c6cac894677d023b275ce`
+  returned `BLOCK_CRITICAL_0_HIGH_1_MEDIUM_3_LOW_0`. This task remediates
+  only HIGH-1, `CURRENT_RECORD_CANNOT_PROVE_FROZEN_NATIVE_BYTE_IDENTITY`.
+- The runtime-recovery design now distinguishes current installed-distribution
+  self-consistency from historical/final-freeze native-byte identity. Current
+  RECORD equality is classified only as current-installation consistency;
+  `CURRENT_INSTALLATION_RECORD_MISMATCH` does not claim historical drift.
+- The required SciPy native closure is mechanically defined from current
+  RECORD entries under `scipy`/`scipy.libs` with `.pyd` or `.dll` suffixes,
+  including the unique `_fitpack` extension. Malformed, missing, or ambiguous
+  RECORD metadata fails closed as observability-insufficient.
+- `FROZEN_NATIVE_BYTE_IDENTITY_STATUS=NOT_ESTABLISHED` remains the only
+  supported status under the currently bound evidence. No historical native
+  baseline was invented or searched for. PASS, if later observed, will not
+  imply historical byte equality, V10D authorization, T0 authorization, or
+  profitability evidence.
+- HIGH-1 is `REMEDIATED_AWAITING_GPT_REVIEW`. MEDIUM-1
+  `APPLICATION_CONTROL_POSITIVE_CRITERION_NOT_FROZEN`, MEDIUM-2
+  `V10D_TERMINAL_RESULT_LINEAGE_MISATTRIBUTED`, and MEDIUM-3
+  `PROJECT_STATE_REVIEW_LINEAGE_STALE` remain open. No live diagnostic,
+  import, environment mutation, network acquisition, protected-payload read,
+  model fit, T0 run, or authority consumption occurred.
