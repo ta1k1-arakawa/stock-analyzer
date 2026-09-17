@@ -3098,3 +3098,30 @@ transitions. This public log must not contain protected material.
   T0, network, or authority consumption occurred. V10D execution,
   protected-payload, refetch, and T0 authorities remain false; future
   profitability remains unestablished.
+
+## 2026-09-17 — V10C canonical environment runtime recovery successor design
+
+- V10D Phase-A reached a pre-protected-payload runtime block while the
+  runner process had started. Safe incident facts are bound to implementation
+  SHA `729eb6d61f4271f3fd8833fc4a792b4c25d7899c`: Python `3.12.10`, exact
+  27-package identity, blocked import class `scipy.interpolate._fitpack`,
+  and failure class
+  `CANONICAL_ENVIRONMENT_RUNTIME_APPLICATION_CONTROL_BLOCK`.
+- The incident consumed no human authority and performed no network request,
+  protected-payload read, model fit, or T0 run. No exact underlying cause is
+  inferred.
+- Created the prospective
+  `V10C_T0_CANONICAL_ML_ENVIRONMENT_RUNTIME_RECOVERY_SUCCESSOR` design. It is
+  a no-network, read-only runtime diagnostic only; it does not unfreeze,
+  repair, replace, rerun, or alter the frozen V10C/V10D methodology or grant
+  execution authority.
+- The design requires ordered metadata, installed-byte/RECORD, bounded
+  Windows application-control, and import observations with fail-closed
+  result classes. It prohibits automatic repair, policy bypass, protected
+  payload access, T0, and human-gate consumption until later independently
+  reviewed decisions.
+- Current stage is
+  `V10C_CANONICAL_ENVIRONMENT_RUNTIME_RECOVERY_SUCCESSOR_DESIGN_AWAITING_GPT_REVIEW`.
+  The canonical environment remains frozen as an identity, global T0
+  readiness remains `NO`, T0 remains unauthorized, and future profitability
+  remains unestablished.
