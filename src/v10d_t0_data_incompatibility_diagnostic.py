@@ -24,6 +24,7 @@ import pandas as pd
 
 from src import v10c_t0_successor_training_input_binding as v10c
 from src import v9_009_t0_top1_kill_screen as v9
+from scripts import run_v9_009_t0_top1_kill_screen as v10a_calendar_bridge
 
 
 STUDY_IDENTITY = "V10D_T0_DATA_INCOMPATIBILITY_DIAGNOSTIC_SUCCESSOR"
@@ -40,6 +41,12 @@ FREEZE_APPROVAL_SHA256 = "068e99c9c159b6eff115a9bc749a843ec489d33a8177496110b30e
 
 V10C_BINDING_FILE = "src/v10c_t0_successor_training_input_binding.py"
 V10C_BINDING_BLOB = "8ad18fe101aa0afe7aaeb7e0456d77ea86e9cb0b"
+V10A_CALENDAR_BRIDGE_FILE = "scripts/run_v9_009_t0_top1_kill_screen.py"
+V10A_CALENDAR_BRIDGE_BLOB = "bf7c72e62b830ce38f8fa9cc597a5ccc12754222"
+V10A_CALENDAR_ARTIFACT_FILE = "V10A_CANONICAL_CALENDAR.json"
+V10A_CALENDAR_ARTIFACT_BLOB = "b3d9dee8fb20abfd966400873a7f1ff18df2880b"
+V10A_CALENDAR_RECEIPT_FILE = "V10A_CALENDAR_FEASIBILITY_SAFE_RECEIPT.json"
+V10A_CALENDAR_RECEIPT_BLOB = "da76889db285062a8f9ac902263ed7c2e63dc43a"
 EVALUATION_MANIFEST_SHA256 = "797265bf671af2245a342051ffad02aa2929d67ba885945e7762149649148aa5"
 TRAINING_MANIFEST_SHA256 = "887c031a004f91a080fa53ab511711fff92c92527cb119878ab2c295ee13cd44"
 V4_UNIVERSE_CSV_SHA256 = "d40b1fcfd824822c7511f0d4f99445640706b7f5dfae08155636624704c41997"
@@ -80,6 +87,7 @@ class V10DDiagnosticImplementationFailure(RuntimeError):
 class PhaseAMetadata:
     successor_metadata: v10c.SuccessorMetadata
     implementation_sha: str
+    calendar_dates: tuple[str, ...]
 
 
 def _sha256(raw: bytes) -> str:
@@ -284,6 +292,9 @@ def _verify_repository_and_freeze(repository_root: Path, implementation_sha: str
     inherited_blobs = {
         v10c.DESIGN_FILE: v10c.DESIGN_BLOB,
         V10C_BINDING_FILE: V10C_BINDING_BLOB,
+        V10A_CALENDAR_BRIDGE_FILE: V10A_CALENDAR_BRIDGE_BLOB,
+        V10A_CALENDAR_ARTIFACT_FILE: V10A_CALENDAR_ARTIFACT_BLOB,
+        V10A_CALENDAR_RECEIPT_FILE: V10A_CALENDAR_RECEIPT_BLOB,
         v10c.V10A_DESIGN_FILE: v10c.V10A_DESIGN_BLOB,
         v10c.V10B_SOURCE_FILE: v10c.V10B_SOURCE_BLOB,
         v10c.V9_CORE_FILE: v10c.V9_CORE_BLOB,
@@ -305,6 +316,12 @@ def phase_a_metadata_preflight(
     """Run metadata-only preflight; no payload parser is reachable here."""
     _verify_repository_and_freeze(repository_root, implementation_sha)
     try:
+        calendar_dates = v10a_calendar_bridge.load_fixed_calendar_binding(
+            repository_root, implementation_sha
+        )
+    except Exception as exc:
+        raise V10DPreflightFailure("V10A_CALENDAR_BINDING_FAILURE") from exc
+    try:
         metadata = v10c.phase_a_metadata_preflight(
             repository_root,
             training_root,
@@ -316,7 +333,7 @@ def phase_a_metadata_preflight(
         raise V10DPreflightFailure("INHERITED_PHASE_A_FAILURE") from exc
     except Exception as exc:
         raise V10DPreflightFailure("INHERITED_PHASE_A_FAILURE") from exc
-    return PhaseAMetadata(metadata, implementation_sha)
+    return PhaseAMetadata(metadata, implementation_sha, tuple(calendar_dates))
 
 
 _INPUT_REASONS = {
@@ -555,7 +572,6 @@ def phase_a_safe_result(implementation_sha: str) -> dict[str, Any]:
 
 def run_diagnostic(
     phase_a: PhaseAMetadata,
-    calendar_dates: Sequence[object],
     *,
     authority_boundary_token: str | None,
 ) -> dict[str, Any]:
@@ -563,6 +579,7 @@ def run_diagnostic(
     if authority_boundary_token != DIAGNOSTIC_BOUNDARY_TOKEN:
         raise V10DPreflightFailure("DIAGNOSTIC_AUTHORITY_BOUNDARY_REQUIRED")
     implementation_sha = phase_a.implementation_sha
+    calendar_dates = phase_a.calendar_dates
     try:
         frames, actions, _provenance, universe = v10c.load_successor_cache_pair(
             phase_a.successor_metadata
@@ -596,15 +613,6 @@ def run_diagnostic(
     return _safe_result(implementation_sha, RESULT_IMPLEMENTATION, None)
 
 
-def _read_calendar_dates(path: Path) -> list[str]:
-    raw, value = _read_strict_json(path, V10DPreflightFailure)
-    del raw
-    dates = value.get("trading_dates")
-    if not isinstance(dates, list) or any(type(item) is not str for item in dates):
-        raise V10DPreflightFailure("CALENDAR_METADATA_INVALID")
-    return dates
-
-
 def _arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="V10D safe data-incompatibility diagnostic")
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -615,7 +623,6 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--evaluation-cache", type=Path, required=True)
     parser.add_argument("--universe-csv", type=Path, required=True)
     parser.add_argument("--implementation-sha", required=True)
-    parser.add_argument("--calendar-json", type=Path)
     parser.add_argument("--authority-boundary-token")
     return parser.parse_args(argv)
 
@@ -637,14 +644,10 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.phase_a_only:
             _write_json(phase_a_safe_result(phase_a.implementation_sha))
             return 0
-        if arguments.calendar_json is None:
-            raise V10DPreflightFailure("CALENDAR_JSON_REQUIRED")
         if arguments.authority_boundary_token != DIAGNOSTIC_BOUNDARY_TOKEN:
             raise V10DPreflightFailure("DIAGNOSTIC_AUTHORITY_BOUNDARY_REQUIRED")
-        calendar_dates = _read_calendar_dates(arguments.calendar_json)
         diagnostic_result = run_diagnostic(
             phase_a,
-            calendar_dates,
             authority_boundary_token=arguments.authority_boundary_token,
         )
         _write_json(validate_safe_result(diagnostic_result))

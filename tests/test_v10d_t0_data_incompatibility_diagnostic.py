@@ -13,7 +13,7 @@ IMPLEMENTATION_SHA = "a" * 40
 
 
 def _phase_a() -> diagnostic.PhaseAMetadata:
-    return diagnostic.PhaseAMetadata(SimpleNamespace(), IMPLEMENTATION_SHA)
+    return diagnostic.PhaseAMetadata(SimpleNamespace(), IMPLEMENTATION_SHA, ("2018-01-01",))
 
 
 def _raise(reason: str):
@@ -27,6 +27,11 @@ def test_phase_a_reuses_v10c_metadata_preflight_without_payload_or_parser(monkey
     calls = []
     metadata = object()
     monkeypatch.setattr(diagnostic, "_verify_repository_and_freeze", lambda *_: calls.append("repo"))
+    monkeypatch.setattr(
+        diagnostic.v10a_calendar_bridge,
+        "load_fixed_calendar_binding",
+        lambda *args: calls.append("calendar") or ["2018-01-01"],
+    )
     monkeypatch.setattr(v10c, "phase_a_metadata_preflight", lambda *args: calls.append(args) or metadata)
     monkeypatch.setattr(v10c, "_read_payload_bytes", lambda *_: pytest.fail("payload read"))
     monkeypatch.setattr(v10c, "_parse_payload_file", lambda *_: pytest.fail("parser call"))
@@ -41,12 +46,38 @@ def test_phase_a_reuses_v10c_metadata_preflight_without_payload_or_parser(monkey
 
     assert result.successor_metadata is metadata
     assert result.implementation_sha == IMPLEMENTATION_SHA
+    assert result.calendar_dates == ("2018-01-01",)
     assert calls[0] == "repo"
-    assert len(calls) == 2
+    assert calls[1] == "calendar"
+    assert len(calls) == 3
+
+
+def test_phase_a_calendar_binding_failure_is_preflight_and_stops_before_v10c(monkeypatch):
+    monkeypatch.setattr(diagnostic, "_verify_repository_and_freeze", lambda *_: None)
+    monkeypatch.setattr(
+        diagnostic.v10a_calendar_bridge,
+        "load_fixed_calendar_binding",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("calendar drift")),
+    )
+    monkeypatch.setattr(v10c, "phase_a_metadata_preflight", lambda *_: pytest.fail("v10c called"))
+
+    with pytest.raises(diagnostic.V10DPreflightFailure, match="CALENDAR"):
+        diagnostic.phase_a_metadata_preflight(
+            __import__("pathlib").Path("repo"),
+            __import__("pathlib").Path("training"),
+            __import__("pathlib").Path("evaluation"),
+            __import__("pathlib").Path("universe.csv"),
+            IMPLEMENTATION_SHA,
+        )
 
 
 def test_inherited_phase_a_failure_remains_preflight_failure(monkeypatch):
     monkeypatch.setattr(diagnostic, "_verify_repository_and_freeze", lambda *_: None)
+    monkeypatch.setattr(
+        diagnostic.v10a_calendar_bridge,
+        "load_fixed_calendar_binding",
+        lambda *_: ["2018-01-01"],
+    )
 
     def fail(*_args):
         raise v10c.SuccessorPreflightFailure("metadata")
@@ -65,7 +96,7 @@ def test_inherited_phase_a_failure_remains_preflight_failure(monkeypatch):
 def test_diagnostic_requires_boundary_before_loader(monkeypatch):
     monkeypatch.setattr(v10c, "load_successor_cache_pair", lambda *_: pytest.fail("payload loader called"))
     with pytest.raises(diagnostic.V10DPreflightFailure, match="BOUNDARY"):
-        diagnostic.run_diagnostic(_phase_a(), [], authority_boundary_token=None)
+        diagnostic.run_diagnostic(_phase_a(), authority_boundary_token=None)
 
 
 @pytest.mark.parametrize(
@@ -80,7 +111,7 @@ def test_diagnostic_requires_boundary_before_loader(monkeypatch):
 def test_cache_data_failures_map_only_known_reasons(monkeypatch, reason, stage):
     monkeypatch.setattr(v10c, "load_successor_cache_pair", _raise(reason))
     result = diagnostic.run_diagnostic(
-        _phase_a(), [], authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
+        _phase_a(), authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
     )
     assert result["result_class"] == diagnostic.RESULT_DATA
     assert result["first_failed_stage"] == stage
@@ -91,7 +122,7 @@ def test_dataset_data_failure_maps_to_feature_target_stage(monkeypatch):
     monkeypatch.setattr(v10c, "load_successor_cache_pair", lambda *_: ({}, {}, {}, object()))
     monkeypatch.setattr(v9, "build_dataset", lambda *args: (_ for _ in ()).throw(v9.T0DataIncompatible("DATASET_SCHEMA_INVALID")))
     result = diagnostic.run_diagnostic(
-        _phase_a(), [], authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
+        _phase_a(), authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
     )
     assert result["first_failed_stage"] == "FEATURE_TARGET_DATASET_CONTRACT"
 
@@ -105,7 +136,7 @@ def test_formal_and_post_structural_failures_are_separate(monkeypatch):
         lambda *args: (_ for _ in ()).throw(v9.T0DataIncompatible("INSUFFICIENT_CAUSAL_TRAINING_DATA")),
     )
     formal_result = diagnostic.run_diagnostic(
-        _phase_a(), [], authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
+        _phase_a(), authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
     )
     assert formal_result["first_failed_stage"] == "FORMAL_SCORING_PRECONDITION_CONTRACT"
 
@@ -116,7 +147,7 @@ def test_formal_and_post_structural_failures_are_separate(monkeypatch):
         lambda *args: (_ for _ in ()).throw(v9.T0DataIncompatible("FORMAL_TARGET_UNAVAILABLE")),
     )
     post_result = diagnostic.run_diagnostic(
-        _phase_a(), [], authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
+        _phase_a(), authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
     )
     assert post_result["first_failed_stage"] == "POST_SCORING_STRUCTURAL_TARGET_CONTRACT"
 
@@ -128,7 +159,7 @@ def test_implementation_exceptions_never_become_unknown_data(monkeypatch, except
 
     monkeypatch.setattr(v10c, "load_successor_cache_pair", fail)
     result = diagnostic.run_diagnostic(
-        _phase_a(), [], authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
+        _phase_a(), authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
     )
     assert result["result_class"] == diagnostic.RESULT_IMPLEMENTATION
     assert result["first_failed_stage"] is None
@@ -140,7 +171,7 @@ def test_successful_localization_is_not_a_data_pass(monkeypatch):
     monkeypatch.setattr(diagnostic, "_structural_formal_preconditions", lambda *args: object())
     monkeypatch.setattr(diagnostic, "_structural_post_scoring_conditions", lambda *args: None)
     result = diagnostic.run_diagnostic(
-        _phase_a(), [], authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
+        _phase_a(), authority_boundary_token=diagnostic.DIAGNOSTIC_BOUNDARY_TOKEN
     )
     assert result["result_class"] == diagnostic.RESULT_IMPLEMENTATION
     assert result["first_failed_stage"] is None

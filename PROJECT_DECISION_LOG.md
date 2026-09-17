@@ -3042,3 +3042,21 @@ transitions. This public log must not contain protected material.
   `V10D_DIAGNOSTIC_IMPLEMENTATION_AWAITING_GPT_REVIEW`; execution,
   protected-payload, refetch, and T0 authorities remain false, and future
   profitability remains unestablished.
+
+## 2026-09-17 — V10D calendar-binding remediation
+
+- GPT exact-SHA review of V10D implementation
+  `404272cf468ea8775d5b3c7e6fecceada214d3be` returned
+  `BLOCK_CRITICAL_0_HIGH_2_MEDIUM_1_LOW_0`. This task remediates only
+  HIGH-1, `V10A_CALENDAR_PROVENANCE_NOT_BOUND`; HIGH-2 and MEDIUM-1 remain
+  open and await their separately scoped remediation.
+- Phase A now invokes the reviewed V10A `load_fixed_calendar_binding`
+  bridge and carries only its validated calendar dates into the protected
+  diagnostic path. The exact bridge, calendar artifact, and safe-receipt
+  Git blobs are bound as inherited dependencies, and the arbitrary calendar
+  override is removed from the CLI.
+- Synthetic targeted tests passed (`15 passed` and `6 passed`). No real
+  Phase A/B/C, payload read, diagnostic execution, model fit, prediction,
+  T0, network, or authority consumption occurred. V10D execution,
+  protected-payload, refetch, and T0 authorities remain false; future
+  profitability remains unestablished.
