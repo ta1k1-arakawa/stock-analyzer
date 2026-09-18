@@ -3242,6 +3242,27 @@ transitions. This public log must not contain protected material.
   false. Future profitability remains unestablished. Next action is GPT
   exact-SHA review of the V11 design.
 
+## 2026-09-18 — V11 numerical-semantics remediation
+
+- GPT exact-SHA review of V11 design commit
+  `3e0a45fdccdf053c3663e4fa2424e72ee3034051` returned
+  `CRITICAL=0`, `HIGH=2`, `MEDIUM=0`, `LOW=2`, `RESULT=BLOCK`.
+- Remediated only HIGH-1 and HIGH-2. The design now freezes causal
+  split-normalized raw-close feature construction, observed-row lookbacks,
+  no-imputation/fail-closed behavior, split-adjusted target and realized
+  fixed-lot PnL, symmetric scenario friction, normalized sequential equity and
+  drawdown, non-overlapping position lifecycle, exit-year attribution,
+  largest-winner concentration, exposure intervals, and buy-and-hold
+  accounting.
+- The nine threshold/friction scenarios are a frozen robustness acceptance
+  check requiring a positive base and at least 6 of 9 positive scenarios; they
+  cannot be used for post-outcome parameter selection. LOW-1 and LOW-2 remain
+  safely deferred.
+- No ticker selection, historical outcome inspection, JPX/Yahoo acquisition,
+  model fit, backtest, payload read, paper trade, broker action, or authority
+  consumption occurred. V11 remains unfrozen and all V11 execution
+  authorities remain false.
+
 ## 2026-09-18 — Final pause review-lineage remediation
 
 - GPT exact-SHA review of `795391233ecd0326338ecad12e2be60a401bb434` returned

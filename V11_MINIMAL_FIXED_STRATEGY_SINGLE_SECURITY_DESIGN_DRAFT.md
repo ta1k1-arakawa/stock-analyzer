@@ -119,10 +119,50 @@ Use exactly these five price-ratio or return features:
 5. `close_to_ma20`
 
 There is no volume feature, fundamental data, news, alternative data, feature
-search, or feature tuning. Price normalization must be split-consistent.
-Future corporate-action information must not alter a historical decision in a
-way that changes these scale-invariant features. The target and feature
-construction are fixed before any result is observed.
+search, or feature tuning. The exact causal split-normalized construction is
+fixed before any result is observed.
+
+For each decision trading row `t`, use only split events whose effective date
+is less than or equal to `t`. For any observed row `d <= t`:
+
+```text
+split_factor_t(d) = product of split ratios for events s where
+    d < effective_date(s) <= t
+split_ratio = post_split_shares / pre_split_shares = numerator / denominator
+split_factor_t(d) = 1 when no such event exists
+P_t(d) = raw_close(d) / split_factor_t(d)
+```
+
+This is the reviewed causal split normalization direction. Future split events
+with effective date greater than `t` must not affect features at `t`.
+
+Using observed trading rows rather than calendar-day offsets:
+
+```text
+return_1d(t)  = P_t(t) / P_t(t-1row)  - 1
+return_5d(t)  = P_t(t) / P_t(t-5rows) - 1
+return_20d(t) = P_t(t) / P_t(t-20rows) - 1
+r_j = P_t(j) / P_t(j-1row) - 1
+volatility_20(t) = sample standard deviation of the final 20 r_j ending at t
+    ddof=1
+close_to_ma20(t) = P_t(t) / mean(P_t over the final 20 observed price rows
+    including t) - 1
+```
+
+No adjusted-close series may silently replace this definition. Adjusted close
+may be parsed or validated as required by the reviewed Yahoo parser, but V11
+feature construction uses only the causal raw-close/split-normalized series.
+No volume enters a feature.
+
+A feature row requires every preceding observed row needed for its lookbacks;
+rows without sufficient history are mechanically ineligible. Do not impute or
+shorten a lookback. Missing or nonfinite required values after sufficient
+history eligibility fail closed as `DATA_QUALITY_FAILURE`, rather than being
+silently dropped to improve results.
+
+Training features for a historical decision row `d` are the values available
+at `d`, using split events effective no later than `d`. They must not be
+recomputed using splits learned after `d`.
 
 ## 4. Model and causal training
 
@@ -148,10 +188,14 @@ minimum_training_examples=252
 
 The decision occurs after the close on observed trading row `t`. The predicted
 target is the gross return from the next observed raw open `O[t+1]` to the raw
-open `O[t+6]`, a five-trading-interval holding period:
+open `O[t+6]`, a five-trading-interval holding period. Define:
 
 ```text
-target = O[t+6] / O[t+1] - 1
+entry_date = row t+1
+exit_date = row t+6
+R = product of split ratios with entry_date < effective_date <= exit_date
+R = 1 when no such split event exists
+target_5 = (raw_open(exit_date) * R / raw_open(entry_date)) - 1
 holding_intervals=5
 ```
 
@@ -180,10 +224,48 @@ BASE_ROUND_TRIP_FRICTION=0.003
 There is no stop loss, take profit, pyramiding, overlapping position, or short
 selling. The effective friction rates include conservative commission and
 slippage assumptions. No parameter may be altered after outcome inspection.
-Report the maximum required 100-share entry notional. Historical research may
+For any scenario with total round-trip friction `f`, use symmetric rates
+`f/2` per side. For one completed trade:
+
+```text
+entry_cost_rate = f / 2
+exit_cost_rate = f / 2
+entry_cash = 100 * raw_open(entry_date) * (1 + entry_cost_rate)
+exit_share_count = 100 * R
+exit_cash = (100 * R) * raw_open(exit_date) * (1 - exit_cost_rate)
+net_pnl_yen = exit_cash - entry_cash
+net_trade_return = exit_cash / entry_cash - 1
+```
+
+The base rates are `0.0015` per side for `f=0.003`. Do not round
+intermediate values; reporting may round only after all calculations. Report
+the maximum required 100-share entry notional. Historical research may
 simulate the fixed 100-share trade even before real-user affordability is
 approved; real-money deployment requires a separate future human capital
 gate.
+
+When flat after close `t`, evaluate `BUY` or `NO-TRADE`. If `BUY`, enter at
+the `t+1` open and remain non-flat through the scheduled `t+6` exit open. No
+new entry signal may be acted upon while the position is open. Because the
+position was not flat at the close immediately preceding its scheduled exit,
+do not exit and re-enter at the same `t+6` open. The next eligible decision is
+after the close of the exit day. Positions never overlap.
+
+For completed trades in chronological exit order, define normalized sequential
+equity independently from fixed-lot yen PnL:
+
+```text
+E_0 = 1.0
+E_i = E_(i-1) * (1 + net_trade_return_i)
+Peak_i = max(E_0 ... E_i)
+Drawdown_i = (Peak_i - E_i) / Peak_i
+MAX_DRAWDOWN = max(Drawdown_i)
+```
+
+Use this exact normalized equity definition for historical criterion D and the
+forward maximum-drawdown criterion. Do not invent starting yen capital to
+alter the drawdown gate. Fixed-100-share net-yen PnL remains separately
+reported and is used for positive-PnL criteria.
 
 ## 7. Historical screen
 
@@ -200,22 +282,54 @@ The base-screen continuation criteria are frozen:
 - B: base net PnL after costs is positive;
 - C: among complete calendar years 2023, 2024, and 2025, at least two have
   positive realized net PnL;
-- D: normalized sequential-trade equity maximum drawdown is at most `0.15`;
-- E: largest single-winning-trade contribution to total positive PnL is at
-  most `0.50`;
-- F: all nine frozen robustness scenarios are evaluated diagnostically:
+- D: `MAX_DRAWDOWN` from the exact normalized sequential equity definition is
+  at most `0.15`;
+- E: largest winning-trade contribution to total positive net-yen PnL is at
+  most `0.50`, with no positive trades failing the criterion;
+- F: the 3x3 frozen robustness acceptance check covers:
   thresholds `0.004`, `0.006`, `0.008` crossed with round-trip frictions
   `0.002`, `0.003`, `0.005`.
 
 The base scenario is threshold `0.006` and friction `0.003`. The base must be
-positive and at least 6 of 9 scenarios must be positive. The grid is
-diagnostic only; it must not choose a new threshold or cost after results are
-seen.
+positive and at least 6 of 9 scenarios must be positive. The grid is a frozen
+robustness acceptance check; it must not choose a new threshold or cost after
+results are seen.
 
 Report buy-and-hold over the same period, cash baseline, exposure fraction,
 trade count, win rate, average trade, maximum drawdown, maximum required
 100-share lot notional, and yearly PnL. Buy-and-hold is diagnostic only and
 not a pass criterion.
+
+Assign each completed trade's realized net PnL to the calendar year of its
+`exit_date`; criterion C uses this exact attribution. For positive net-yen
+trades:
+
+```text
+positive_pnl_total = sum(max(net_pnl_yen_i, 0))
+largest_winner_contribution =
+    max(max(net_pnl_yen_i, 0)) / positive_pnl_total
+```
+
+If there are no positive trades, criterion E fails.
+
+For the exposure diagnostic, count five held trading intervals for every
+completed non-overlapping trade:
+
+```text
+exposure_intervals = sum of the five held trading intervals per completed trade
+screen_intervals = observed trading-row transitions from the first observed
+    row on/after 2023-01-01 through the final observed row on/before 2026-08-31
+exposure_fraction = exposure_intervals / screen_intervals
+```
+
+Exposure is diagnostic only and is not a pass criterion.
+
+For reproducible buy-and-hold, enter 100 shares at the first observed raw open
+on or after `2023-01-01` and exit at the final observed raw open on or before
+`2026-08-31`. Adjust the share count for intervening splits using the same
+split-ratio convention, apply base entry and exit rates `0.0015` and
+`0.0015`, and exclude dividends. Buy-and-hold remains diagnostic only. The
+cash baseline is `0` yen PnL.
 
 ```text
 if completed_trades < 20:
