@@ -3346,3 +3346,20 @@ transitions. This public log must not contain protected material.
   paper trade, broker action, or additional authority occurred.
 - After GPT review PASS, the next permitted execution is only offline
   reprocessing of the already locked source bytes at the exact SHA-256 above.
+
+## 2026-09-18 — V11 selector remediation provenance correction
+
+- GPT exact-SHA review of final remote head
+  `3bc93a041c511dc6652b8645e1d07c3a83327b6d` returned
+  `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, `LOW=0`, `RESULT=BLOCK` for the
+  multi-commit execution provenance mismatch.
+- The actual chain is preserved explicitly: original start
+  `7085469bda4f5511fb99e02b3abb7255d6d8684a`; primary remediation
+  `1f5cfd2f1b85d814df99f2a153e4f3f66eb57666` with parent the original start;
+  follow-up fixture fix
+  `3bc93a041c511dc6652b8645e1d07c3a83327b6d` with parent the primary
+  remediation; final remote head is the follow-up commit.
+- Functional HIGH-1 and MEDIUM-1 remain
+  `REMEDIATED_AWAITING_GPT_REVIEW`; this bookkeeping finding is also
+  `REMEDIATED_AWAITING_GPT_REVIEW`. No history was rewritten and no selector,
+  locked-PDF, network, model, backtest, or ticker-selection operation occurred.
