@@ -3327,3 +3327,22 @@ transitions. This public log must not contain protected material.
 - This remediation does not select a ticker or read the real JPX PDF. No
   network, historical-price read, model fit, backtest, paper trade, broker
   action, or human-gate consumption occurred.
+
+## 2026-09-18 — V11 real-source selector parser remediation
+
+- The authorized V11 Core30 selection attempt used implementation SHA
+  `7085469bda4f5511fb99e02b3abb7255d6d8684a` and durably locked source bytes
+  with safe count `1299485` and SHA-256
+  `b584ad25a182f4f17341ce2ebd77a23010957a777dde64100d71644bbff6e1ce`.
+  The selector failed before selection with an implementation failure; the
+  one-shot authority is consumed, retry is forbidden, and refetch is not
+  authorized.
+- GPT adjudicated the failure as HIGH-1 shared-code constituent-layout
+  unsupported and MEDIUM-1 suppressed selector-failure reason. This
+  remediation changes only the parser to use the shared `コード` column and
+  adds safe enum-only CLI stderr reporting.
+- The real locked JPX PDF was not read in this remediation. No JPX network,
+  refetch, ticker selection, historical-price read, model fit, backtest,
+  paper trade, broker action, or additional authority occurred.
+- After GPT review PASS, the next permitted execution is only offline
+  reprocessing of the already locked source bytes at the exact SHA-256 above.

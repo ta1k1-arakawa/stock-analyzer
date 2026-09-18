@@ -18,11 +18,16 @@ def _codes() -> list[str]:
     return sorted(set(values), key=int)
 
 
-def _table(codes: list[str] | None = None, *, classification: str = "TOPIX Core30") -> list[list[str]]:
+def _table(
+    codes: list[str] | None = None,
+    *,
+    old_classification: str = "TOPIX Core30",
+    classification: str = "TOPIX Core30",
+) -> list[list[str]]:
     codes = _codes() if codes is None else codes
-    rows = [["旧（2025年10月7日時点）", "", "", "新（2025年10月31日適用）", "", ""]]
-    rows.append(["旧コード", "旧区分", "", "新コード", "新区分", ""])
-    rows.extend([["0000", "TOPIX Core30", "", code, classification, ""] for code in codes])
+    rows = [["No.", "コード", "銘柄名", "TOPIXニューインデックスシリーズ区分", ""]]
+    rows.append(["", "", "", "旧（2025年10月7日時点）", "新（2025年10月31日適用）"])
+    rows.extend([[str(index), code, "Synthetic", old_classification, classification] for index, code in enumerate(codes, 1)])
     return rows
 
 
@@ -71,9 +76,9 @@ def test_core30_shape_and_orientation_fail_closed(codes: list[str], expected: st
 
 
 def test_old_new_orientation_reversal_fails_closed() -> None:
-    rows = [["新（2025年10月31日適用）", "", "", "旧（2025年10月7日時点）", "", ""]]
-    rows.append(["新コード", "新区分", "", "旧コード", "旧区分", ""])
-    rows.extend([[code, "TOPIX Core30", "", "0000", "TOPIX Core30", ""] for code in _codes()])
+    rows = [["No.", "コード", "銘柄名", "", ""]]
+    rows.append(["", "", "", "新（2025年10月31日適用）", "旧（2025年10月7日時点）"])
+    rows.extend([[str(index), code, "Synthetic", "TOPIX Core30", "TOPIX Core30"] for index, code in enumerate(_codes(), 1)])
     with pytest.raises(selector.SelectorError):
         selector.extract_new_core30_codes_from_tables([rows])
 
@@ -81,9 +86,50 @@ def test_old_new_orientation_reversal_fails_closed() -> None:
 def test_malformed_non_numeric_code_fails_closed() -> None:
     codes = _codes()
     table = _table(codes)
-    table[2][3] = "68A7"
+    table[2][1] = "68A7"
     with pytest.raises(selector.SelectorError, match="SECURITY_CODE_INVALID"):
         selector.extract_new_core30_codes_from_tables([table])
+
+
+def test_missing_shared_code_header_fails_closed() -> None:
+    table = _table()
+    table[0][1] = "銘柄名"
+    with pytest.raises(selector.SelectorError, match="CONSTITUENT_SHARED_CODE_HEADER_MISSING"):
+        selector.extract_new_core30_codes_from_tables([table])
+
+
+def test_duplicate_shared_code_header_fails_closed() -> None:
+    table = _table()
+    table[0].insert(2, "コード")
+    with pytest.raises(selector.SelectorError, match="CONSTITUENT_SHARED_CODE_HEADER_AMBIGUOUS"):
+        selector.extract_new_core30_codes_from_tables([table])
+
+
+def test_shared_code_after_classification_fails_closed() -> None:
+    table = [
+        ["No.", "", "銘柄名", "コード", ""],
+        ["", "旧（2025年10月7日時点）", "新（2025年10月31日適用）", "", ""],
+    ]
+    table.extend([[str(index), "TOPIX Core30", "TOPIX Core30", code, ""] for index, code in enumerate(_codes(), 1)])
+    with pytest.raises(selector.SelectorError, match="CONSTITUENT_SHARED_CODE_COLUMN_AFTER_CLASSIFICATION"):
+        selector.extract_new_core30_codes_from_tables([table])
+
+
+def test_short_row_fails_closed() -> None:
+    table = _table()
+    table.append(["31", "6857"])
+    with pytest.raises(selector.SelectorError, match="CONSTITUENT_ROW_SHORT"):
+        selector.extract_new_core30_codes_from_tables([table])
+
+
+def test_old_core30_but_new_not_core30_is_not_selected() -> None:
+    table = _table(old_classification="TOPIX Core30", classification="TOPIX Mid400")
+    with pytest.raises(selector.SelectorError, match="CORE30_COUNT_OR_DUPLICATE_INVALID"):
+        selector.extract_new_core30_codes_from_tables([table])
+
+
+def test_new_core30_selects_using_shared_code_column() -> None:
+    assert selector.extract_new_core30_codes_from_tables([_table()]) == _codes()
 
 
 def test_deterministic_hashes_and_selected_index() -> None:
@@ -159,6 +205,28 @@ def test_real_safe_result_validator_negative_closure(mutation: str) -> None:
         result["selected_index"] = (result["selected_index"] + 1) % result["eligible_count"]
     with pytest.raises(selector.SelectorError):
         selector.validate_safe_result(result)
+
+
+def test_cli_selector_error_is_safe_and_stdout_empty(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    def fail(*_: object, **__: object) -> dict:
+        raise selector.SelectorError("JPX_PDF_UNAVAILABLE")
+
+    monkeypatch.setattr(selector, "build_safe_result", fail)
+    assert selector.main(["--repository-root", ".", "--jpx-pdf", "locked.pdf", "--implementation-sha", "a" * 40]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "SELECTOR_ERROR=JPX_PDF_UNAVAILABLE\n"
+
+
+def test_cli_unexpected_exception_is_safe_and_stdout_empty(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    def fail(*_: object, **__: object) -> dict:
+        raise RuntimeError("private path and PDF contents must not escape")
+
+    monkeypatch.setattr(selector, "build_safe_result", fail)
+    assert selector.main(["--repository-root", ".", "--jpx-pdf", "locked.pdf", "--implementation-sha", "a" * 40]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "SELECTOR_ERROR=UNEXPECTED_IMPLEMENTATION_FAILURE\n"
 
 
 def test_no_eligible_codes_fails() -> None:

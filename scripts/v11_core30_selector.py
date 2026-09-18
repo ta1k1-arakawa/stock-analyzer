@@ -38,6 +38,7 @@ CORE30_CLASSIFICATION = "TOPIX Core30"
 CODE_PATTERN = re.compile(r"^[0-9]{4}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 SHA1_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+SAFE_ERROR_PATTERN = re.compile(r"^[A-Z0-9_]+$")
 
 VALIDATION_KEYS = (
     "frozen_design_binding",
@@ -103,59 +104,44 @@ def _validate_code(value: object) -> str:
     return code
 
 
-def _header_kind(value: object) -> str | None:
-    compact = _compact_cell(value).lower()
-    if "コード" in compact or "code" in compact:
-        return "code"
-    if "区分" in compact or "分類" in compact or "classification" in compact or "category" in compact:
-        return "classification"
-    return None
-
-
-def _find_header_position(rows: Sequence[Sequence[object]], marker: str, kind: str) -> int | None:
+def _header_positions(rows: Sequence[Sequence[object]], marker: str) -> list[tuple[int, int]]:
     marker_compact = _compact_cell(marker)
-    for row in rows[:6]:
-        cells = list(row)
-        for index, cell in enumerate(cells):
-            if marker_compact not in _compact_cell(cell):
-                continue
-            for candidate_row in rows[:6]:
-                for candidate_index, candidate in enumerate(candidate_row):
-                    if candidate_index == index and _header_kind(candidate) == kind:
-                        return candidate_index
-                    if candidate_index >= index and _header_kind(candidate) == kind:
-                        return candidate_index
-    return None
+    return [
+        (row_index, column_index)
+        for row_index, row in enumerate(rows[:6])
+        for column_index, cell in enumerate(row)
+        if _compact_cell(cell) == marker_compact
+    ]
 
 
 def _table_columns(table: object) -> tuple[int, int] | None:
     if not isinstance(table, list) or not table or any(not isinstance(row, list) for row in table):
         raise SelectorError("CONSTITUENT_TABLE_INVALID")
     rows = [["" if cell is None else cell for cell in row] for row in table]
-    old_positions = [
-        index
-        for row in rows[:6]
-        for index, cell in enumerate(row)
-        if _compact_cell(OLD_HEADER) in _compact_cell(cell)
-    ]
-    new_positions = [
-        index
-        for row in rows[:6]
-        for index, cell in enumerate(row)
-        if _compact_cell(NEW_HEADER) in _compact_cell(cell)
-    ]
+    old_positions = _header_positions(rows, OLD_HEADER)
+    new_positions = _header_positions(rows, NEW_HEADER)
     if not old_positions and not new_positions:
         return None
-    if len(old_positions) != 1 or len(new_positions) != 1 or old_positions[0] >= new_positions[0]:
+    if len(old_positions) != 1 or len(new_positions) != 1:
         raise SelectorError("CONSTITUENT_HEADER_ORIENTATION_INVALID")
-    new_start = new_positions[0]
-    code_index = _find_header_position(rows, NEW_HEADER, "code")
-    class_index = _find_header_position(rows, NEW_HEADER, "classification")
-    if code_index is None or class_index is None or code_index < new_start or class_index < new_start:
-        raise SelectorError("CONSTITUENT_HEADER_MALFORMED")
-    if code_index == class_index:
-        raise SelectorError("CONSTITUENT_HEADER_AMBIGUOUS")
-    return code_index, class_index
+    old_classification_index = old_positions[0][1]
+    new_classification_index = new_positions[0][1]
+    if old_classification_index >= new_classification_index:
+        raise SelectorError("CONSTITUENT_HEADER_ORIENTATION_INVALID")
+    code_positions = [
+        (row_index, column_index)
+        for row_index, row in enumerate(rows[:6])
+        for column_index, cell in enumerate(row)
+        if _compact_cell(cell) == "コード"
+    ]
+    if not code_positions:
+        raise SelectorError("CONSTITUENT_SHARED_CODE_HEADER_MISSING")
+    if len(code_positions) != 1:
+        raise SelectorError("CONSTITUENT_SHARED_CODE_HEADER_AMBIGUOUS")
+    shared_code_index = code_positions[0][1]
+    if shared_code_index >= old_classification_index or shared_code_index >= new_classification_index:
+        raise SelectorError("CONSTITUENT_SHARED_CODE_COLUMN_AFTER_CLASSIFICATION")
+    return shared_code_index, new_classification_index
 
 
 def extract_new_core30_codes_from_tables(tables: Sequence[object]) -> list[str]:
@@ -408,7 +394,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         arguments = _parse_args(argv)
         result = build_safe_result(arguments.repository_root.resolve(), arguments.jpx_pdf, arguments.implementation_sha)
+    except SelectorError as error:
+        safe_enum = str(error)
+        if SAFE_ERROR_PATTERN.fullmatch(safe_enum) is None:
+            safe_enum = "UNEXPECTED_IMPLEMENTATION_FAILURE"
+        sys.stderr.write(f"SELECTOR_ERROR={safe_enum}\n")
+        return 1
     except Exception:
+        sys.stderr.write("SELECTOR_ERROR=UNEXPECTED_IMPLEMENTATION_FAILURE\n")
         return 1
     sys.stdout.write(json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
     return 0
