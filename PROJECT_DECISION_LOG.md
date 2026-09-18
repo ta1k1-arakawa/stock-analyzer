@@ -3297,3 +3297,19 @@ transitions. This public log must not contain protected material.
 - No Python/import execution, payload read, diagnostic or Phase-B rerun,
   environment mutation, parser repair, model fit, T0 run, new study, or
   methodology change occurred.
+
+## 2026-09-18 — V11 offline Core30 selector implementation
+
+- The V11 design-freeze approval record commit
+  `f767ef64949265b927824a2c5e151c8d572091fb` was recorded as GPT-reviewed
+  PASS with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`.
+- Implemented the offline, read-only Core30 selector with exact frozen design
+  and approval provenance bindings, synthetic PDF-table parsing helpers,
+  frozen-parent Git-tree exclusion derivation, deterministic SHA-256 selection,
+  and closed safe-result validation.
+- No real JPX PDF was read, no network request was made by the selector, no
+  ticker was selected, and no historical price, model, backtest, paper-trade,
+  or real-trading operation occurred. The pending LOW-1 requirement remains
+  `PENDING_REAL_JPX_SOURCE_BINDING_BEFORE_TICKER_SELECTION`.
+- Targeted synthetic tests passed. The implementation is
+  `IMPLEMENTED_AWAITING_GPT_REVIEW`; no new execution authority was created.
