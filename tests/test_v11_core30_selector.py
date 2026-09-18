@@ -170,14 +170,18 @@ def test_real_exclusion_tree_matches_frozen_parent() -> None:
     ]
 
 
-def test_real_build_safe_result_and_validator_closure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_real_build_safe_result_and_validator_closure(monkeypatch: pytest.MonkeyPatch) -> None:
     repository_root = Path(__file__).parents[1].resolve()
-    locked_pdf = tmp_path / "synthetic_locked_jpx.pdf"
-    locked_pdf.write_bytes(b"synthetic locked PDF boundary bytes")
+    synthetic_bytes = b"synthetic locked PDF boundary bytes"
+    monkeypatch.setattr(
+        selector,
+        "_read_pdf",
+        lambda *_: (synthetic_bytes, hashlib.sha256(synthetic_bytes).hexdigest(), len(synthetic_bytes)),
+    )
     monkeypatch.setattr(selector, "extract_new_core30_codes_from_pdf_bytes", lambda _: _codes())
 
     implementation_sha = selector._git_text(repository_root, "rev-parse", "HEAD")
-    result = selector.build_safe_result(repository_root, locked_pdf, implementation_sha)
+    result = selector.build_safe_result(repository_root, Path("synthetic_locked_jpx.pdf"), implementation_sha)
     expected = selector.select_core30_code(
         _codes(),
         selector._exclusion_codes_from_git_tree(repository_root),
