@@ -3219,6 +3219,29 @@ transitions. This public log must not contain protected material.
   or scoped here. Current stage is `PAUSE_CURRENT_ROUTE` and future
   profitability remains unestablished.
 
+## 2026-09-18 — V11 minimal single-security study design
+
+- The human explicitly began the new study
+  `V11_MINIMAL_FIXED_STRATEGY_SINGLE_SECURITY` after the prior V10C/V10D
+  route remained paused. The practical objective is a minimal, reproducible
+  BUY/NO-TRADE/EXIT notification system for one fixed Japanese security; this
+  is not a generalized stock-research platform.
+- Created the design draft on new branch
+  `v11-minimal-single-security-study`. It freezes deterministic post-review
+  Core30 hash selection with prior benchmark-ticker exclusion, one Ridge
+  pipeline, five features, fixed causal target/timing, fixed execution costs,
+  supporting historical-screen criteria, and separately gated forward-paper
+  evidence. No ticker has been selected and no historical output may select
+  it.
+- This commit is design-only. No JPX/Yahoo acquisition, ticker selection,
+  historical price or profitability inspection, model fit, backtest, payload
+  read, paper trade, Slack message, broker action, environment mutation, or
+  human gate consumption occurred.
+- V10C/V10D remain `PAUSE_CURRENT_ROUTE`; V11 design freeze, acquisition,
+  historical screen, forward paper, and real trading authorities remain
+  false. Future profitability remains unestablished. Next action is GPT
+  exact-SHA review of the V11 design.
+
 ## 2026-09-18 — Final pause review-lineage remediation
 
 - GPT exact-SHA review of `795391233ecd0326338ecad12e2be60a401bb434` returned
