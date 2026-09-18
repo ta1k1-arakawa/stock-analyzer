@@ -2,15 +2,19 @@
 
 ```text
 document_type=PROJECT_RESEARCH_VIABILITY_CHECKPOINT
-status=ACTIVE_AWAITING_GPT_REVIEW
+status=FINAL_ADJUDICATED_PAUSE_CURRENT_ROUTE
 scope=ta1k1-arakawa/stock-analyzer
 purpose=MINIMAL_SCIENTIFICALLY_CREDIBLE_ACTIONABLE_NOTIFICATION_SYSTEM
 feature_expansion_frozen=true
 automatic_successor_creation_allowed=false
 active_work_budget_minutes=480
-active_work_consumed_minutes=0
-active_work_remaining_minutes=480
+active_work_consumed_minutes=60
+active_work_remaining_minutes=420
 budget_exhaustion_disposition=PAUSE_CURRENT_ROUTE
+q1_environment_feasibility=PASS
+q2_fixed_data_feasibility=FIXED_INPUT_INTRINSIC_INCOMPATIBILITY_LOCALIZED
+q2_localized_stage=PARSER_NORMALIZATION_CONTRACT
+project_disposition=PAUSE_CURRENT_ROUTE
 global_t0_readiness=NO
 t0_authorized=false
 future_profitability_established=false
@@ -54,7 +58,62 @@ The already-promoted V10C canonical environment identity remains frozen, but
 runtime feasibility is an operational question below. Nothing here unfreezes
 or reverses that identity.
 
-## 2. Active scope freeze
+## 2. Final Q1/Q2 adjudication
+
+The checkpoint questions are resolved as follows:
+
+```text
+Q1_ENVIRONMENT_FEASIBILITY=PASS
+Q2_FIXED_DATA_FEASIBILITY=FIXED_INPUT_INTRINSIC_INCOMPATIBILITY_LOCALIZED
+Q2_LOCALIZED_STAGE=PARSER_NORMALIZATION_CONTRACT
+PROJECT_DISPOSITION=PAUSE_CURRENT_ROUTE
+```
+
+Q1 PASS is based on safe, read-only reproducibility observations: canonical
+Python `3.12.10`, the exact 27-package identity, SciPy `1.18.1`, scikit-learn
+`1.9.0`, LightGBM `4.6.0`, successful `_fitpack` import, fresh sklearn/Ridge
+subprocess imports, and reviewed V10D Phase-A PASS. The prior application-
+control hypothesis was not proven. No environment mutation or security bypass
+occurred.
+
+Q2 is localized to the frozen parser/normalization contract. The protected
+diagnostic attempt crossed its one-shot boundary and consumed its authority;
+it must not be rerun or repaired:
+
+```text
+V10D_Q2_ATTEMPT_1_IMPLEMENTATION_SHA=6f8182ceccbb7118577e7fcd53af8303e4c36a93
+V10D_Q2_ATTEMPT_1_BOUNDARY_CROSSED=true
+V10D_Q2_ATTEMPT_1_AUTHORITY_CONSUMED=true
+V10D_Q2_ATTEMPT_1_RETRY_AUTHORIZED=false
+V10D_Q2_ATTEMPT_1_PROCESS_STARTED=true
+V10D_Q2_ATTEMPT_1_PROCESS_EXIT_CODE=0
+V10D_Q2_ATTEMPT_1_SAFE_RESULT_SCHEMA=V10D_DATA_INCOMPATIBILITY_DIAGNOSTIC_SAFE_RESULT_V1
+V10D_Q2_ATTEMPT_1_RESULT_CLASS=DATA_INCOMPATIBILITY_DIAGNOSTIC
+V10D_Q2_ATTEMPT_1_FIRST_FAILED_STAGE=PARSER_NORMALIZATION_CONTRACT
+V10D_Q2_ATTEMPT_1_LOCALIZED_DATA_INCOMPATIBILITY=true
+V10D_Q2_ATTEMPT_1_NETWORK_REQUESTS=0
+V10D_Q2_ATTEMPT_1_MODEL_FITS=0
+V10D_Q2_ATTEMPT_1_T0_RUNS=0
+V10D_Q2_ATTEMPT_1_FUTURE_PROFITABILITY_ESTABLISHED=false
+V10D_Q2_ATTEMPT_1_BOUNDARY_RECEIPT_SHA256=c7d7d1c89985d9e899b5996ce8eccef0d9d3a52aea2d376c0c80138bc1ffa00e
+V10D_Q2_ATTEMPT_1_PROCESS_RECEIPT_SHA256=52848cca5d5164f1353fd16c9f1d7bc93b474852909fbc9e21147a3ae8868972
+V10D_Q2_ATTEMPT_1_STDOUT_SHA256=d02ef2910037d3e7e6407332ee01b2e21c9494a690ecdd7ee1ba77b649ff9f6e
+V10D_Q2_ATTEMPT_1_STDERR_SHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+The later Phase-C PowerShell failure is recorded separately as the
+wrapper-only class `PHASE_C_INSPECTION_WRAPPER_EMPTY_STDERR_NULL_HANDLING_BUG`.
+It occurred after the required safe result fields had been parsed and printed
+and does not invalidate the reviewed diagnostic result. It is not a reason to
+rerun the protected attempt.
+
+Because Q2 is an intrinsic incompatibility localized at the parser/
+normalization stage, the historical route is paused. This is not strategy
+failure, profitability failure, or evidence of negative expected return. It
+does not authorize parser repair, refetch, substitution, or a new diagnostic
+successor.
+
+## 3. Active scope freeze
 
 Until this checkpoint is resolved, do not add:
 
@@ -78,7 +137,7 @@ asks whether the already-fixed V10C/V10D inputs satisfy the frozen research
 contract, and, if not, whether the exact incompatibility can be deterministically
 localized and classified.
 
-## 3. Active-work budget
+## 4. Active-work budget
 
 The active-work budget is a project-management limit, not a research metric,
 profitability criterion, or acceptance threshold. It begins only after this
@@ -110,7 +169,7 @@ That disposition is a development cost/benefit decision. It is not strategy
 failure, profitability failure, or evidence that the strategy loses money.
 A future restart requires a new explicit human project decision.
 
-## 4. Q1 — environment feasibility
+## 5. Q1 — environment feasibility
 
 Environment and software diagnosis is operational plumbing and may be
 proportional to its statistical irreversibility. Within the active budget,
@@ -137,7 +196,7 @@ Q1 PASS requires a reproducible supported solution on the target machine, not
 an accidental one-off workaround and not a security-control bypass. A
 runtime import success without reproducibility evidence is insufficient.
 
-## 5. Q2 — fixed-data feasibility
+## 6. Q2 — fixed-data feasibility
 
 Q2 may use only the already-fixed V10C/V10D inputs and frozen V10C
 methodology. It must not refetch until success, substitute a provider, ticker,
@@ -163,7 +222,7 @@ If Q2 resolves to intrinsic incompatibility, the present historical route is
 paused unless a new explicit human decision creates a genuinely new study.
 The result is not silently relabeled as strategy or profitability failure.
 
-## 6. Resolution sequence and authority
+## 7. Resolution sequence and authority
 
 This checkpoint itself is documentation and bookkeeping only. It grants no
 execution authority. After its GPT exact-SHA PASS, work must still follow the
@@ -180,7 +239,7 @@ No result of this checkpoint issues a human gate, permits package/environment
 mutation, authorizes protected payload access, or authorizes T0. No authority
 may be silently reused.
 
-## 7. Only allowed next goal after Q1 and Q2
+## 8. Only allowed next goal after Q1 and Q2
 
 Even if both questions are resolved, do not return to broad system
 development. The next allowed goal is only:
@@ -204,7 +263,7 @@ liquidity, capacity, concentration, loss concentration, drawdown, and fair
 baseline assumptions. Do not assume the highest model score is the best
 executable trade.
 
-## 8. Research integrity and profitability language
+## 9. Research integrity and profitability language
 
 Keep unchanged the V10C/V9 periods, labels and targets, TOP1 estimand,
 D1/D2/D3 semantics, feature set, Ridge/LightGBM parameters and random

@@ -3179,3 +3179,42 @@ transitions. This public log must not contain protected material.
   protected-payload/T0 authorities remain false; future profitability remains
   unestablished. Current stage is
   `RESEARCH_VIABILITY_CHECKPOINT_AWAITING_GPT_REVIEW`.
+
+## 2026-09-18 — Research viability checkpoint final adjudication
+
+- Q1 environment feasibility is `PASS`: canonical Python `3.12.10`, exact
+  27-package identity, SciPy `1.18.1`, scikit-learn `1.9.0`, LightGBM `4.6.0`,
+  `_fitpack` import, fresh sklearn/Ridge subprocess imports, and reviewed V10D
+  Phase-A checks succeeded without mutation, security bypass, payload read, or
+  network request. The prior application-control hypothesis was not proven.
+- Q2 fixed-data feasibility is
+  `FIXED_INPUT_INTRINSIC_INCOMPATIBILITY_LOCALIZED`, with
+  `Q2_LOCALIZED_STAGE=PARSER_NORMALIZATION_CONTRACT`. The protected V10D
+  Attempt 1 crossed its boundary, consumed authority, and has retry=false.
+  Its safe result is diagnostic-only and carries no profitability evidence.
+- Safe V10D Attempt 1 bindings are implementation SHA
+  `6f8182ceccbb7118577e7fcd53af8303e4c36a93`, result schema
+  `V10D_DATA_INCOMPATIBILITY_DIAGNOSTIC_SAFE_RESULT_V1`, result class
+  `DATA_INCOMPATIBILITY_DIAGNOSTIC`, first failed stage
+  `PARSER_NORMALIZATION_CONTRACT`, boundary receipt
+  `c7d7d1c89985d9e899b5996ce8eccef0d9d3a52aea2d376c0c80138bc1ffa00e`,
+  process receipt
+  `52848cca5d5164f1353fd16c9f1d7bc93b474852909fbc9e21147a3ae8868972`,
+  stdout `d02ef2910037d3e7e6407332ee01b2e21c9494a690ecdd7ee1ba77b649ff9f6e`,
+  and empty stderr hash
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- The later Phase-C PowerShell null-handling issue is separately classified
+  as `PHASE_C_INSPECTION_WRAPPER_EMPTY_STDERR_NULL_HANDLING_BUG`; it occurred
+  after required safe fields were parsed and printed and does not invalidate
+  the diagnostic result. No rerun or repair is authorized.
+- Per the checkpoint, project disposition is `PAUSE_CURRENT_ROUTE` because
+  Q2 localized an intrinsic fixed-input incompatibility. This is not strategy
+  failure, profitability failure, or evidence of negative expected return.
+  No diagnostic successor, refetch, substitution, parser repair, new data,
+  model, T0, or human authority is created. Active work is recorded as 60 of
+  480 minutes, leaving 420 minutes; the budget was not the reason for pause.
+- A possible later path is only a new explicitly approved minimal study for
+  one fixed security or a very small fixed universe, with actionable
+  notifications and realistic execution/OOS evidence. It is not authorized
+  or scoped here. Current stage is `PAUSE_CURRENT_ROUTE` and future
+  profitability remains unestablished.
