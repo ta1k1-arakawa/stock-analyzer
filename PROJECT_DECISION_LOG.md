@@ -3313,3 +3313,17 @@ transitions. This public log must not contain protected material.
   `PENDING_REAL_JPX_SOURCE_BINDING_BEFORE_TICKER_SELECTION`.
 - Targeted synthetic tests passed. The implementation is
   `IMPLEMENTED_AWAITING_GPT_REVIEW`; no new execution authority was created.
+
+## 2026-09-18 — V11 Core30 selector production-closure remediation
+
+- GPT exact-SHA review of selector commit
+  `a19d016d54d2074381dfa115dffa2c14de76e5ab` returned
+  `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, `LOW=0`, `RESULT=BLOCK` for missing
+  production selection closure coverage.
+- Added targeted tests that call the real frozen-binding verifier, the real
+  frozen-parent exclusion-tree reader, the real safe-result builder and
+  validator through a synthetic locked-PDF boundary, and real negative
+  validator cases.
+- This remediation does not select a ticker or read the real JPX PDF. No
+  network, historical-price read, model fit, backtest, paper trade, broker
+  action, or human-gate consumption occurred.

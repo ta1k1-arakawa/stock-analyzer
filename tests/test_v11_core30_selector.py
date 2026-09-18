@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -106,6 +103,62 @@ def test_exclusion_set_can_be_derived_from_frozen_style_paths() -> None:
     ]
     codes = {Path(path).stem for path in paths if path.startswith("data/benchmark/ohlcv/") and "/" not in path[len("data/benchmark/ohlcv/") :] and path.lower().endswith(".csv") and Path(path).stem.isdigit()}
     assert sorted(codes, key=int) == ["1301", "7203"]
+
+
+def test_real_frozen_bindings_pass_against_repository() -> None:
+    repository_root = Path(__file__).parents[1].resolve()
+    selector._verify_frozen_bindings(repository_root)
+
+
+def test_real_exclusion_tree_matches_frozen_parent() -> None:
+    repository_root = Path(__file__).parents[1].resolve()
+    assert selector._exclusion_codes_from_git_tree(repository_root) == [
+        "1570",
+        "4188",
+        "4689",
+        "5020",
+        "7211",
+        "7267",
+        "8306",
+        "9432",
+    ]
+
+
+def test_real_build_safe_result_and_validator_closure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    repository_root = Path(__file__).parents[1].resolve()
+    locked_pdf = tmp_path / "synthetic_locked_jpx.pdf"
+    locked_pdf.write_bytes(b"synthetic locked PDF boundary bytes")
+    monkeypatch.setattr(selector, "extract_new_core30_codes_from_pdf_bytes", lambda _: _codes())
+
+    implementation_sha = selector._git_text(repository_root, "rev-parse", "HEAD")
+    result = selector.build_safe_result(repository_root, locked_pdf, implementation_sha)
+    expected = selector.select_core30_code(
+        _codes(),
+        selector._exclusion_codes_from_git_tree(repository_root),
+    )
+
+    assert set(result) == set(selector.SAFE_RESULT_KEYS)
+    assert set(result["validation"]) == set(selector.VALIDATION_KEYS)
+    assert all(value is True for value in result["validation"].values())
+    assert result["core30_count"] == 30
+    assert result["eligible_count"] > 0
+    assert result["selected_index"] == int(result["selection_hash"], 16) % result["eligible_count"]
+    assert result["selected_index"] == expected["selected_index"]
+    assert result["selected_ticker"] == expected["selected_ticker"]
+
+
+@pytest.mark.parametrize("mutation", ["validation", "source_url", "selected_index"])
+def test_real_safe_result_validator_negative_closure(mutation: str) -> None:
+    result = _valid_result()
+    if mutation == "validation":
+        result["validation"] = dict(result["validation"])
+        result["validation"]["no_backtest"] = False
+    elif mutation == "source_url":
+        result["source_url"] = "https://invalid.example/"
+    else:
+        result["selected_index"] = (result["selected_index"] + 1) % result["eligible_count"]
+    with pytest.raises(selector.SelectorError):
+        selector.validate_safe_result(result)
 
 
 def test_no_eligible_codes_fails() -> None:
