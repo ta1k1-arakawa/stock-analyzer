@@ -3150,3 +3150,32 @@ transitions. This public log must not contain protected material.
   `PROJECT_STATE_REVIEW_LINEAGE_STALE` remain open. No live diagnostic,
   import, environment mutation, network acquisition, protected-payload read,
   model fit, T0 run, or authority consumption occurred.
+
+## 2026-09-18 — Project research viability checkpoint
+
+- The human explicitly changed the active project strategy: stop the
+  unbounded successor-diagnostic pattern and assess the smallest
+  scientifically credible route to actionable `BUY`, `NO-TRADE`, and `EXIT`
+  notifications. This is a project-management checkpoint, not a change to
+  V10C methodology and not a new scientific study.
+- GPT review of the prior runtime-recovery remediation commit
+  `1bb64903a19a49989691e0d4dfde6783467d9345` is recorded as
+  `CRITICAL=0`, `HIGH=0`, `MEDIUM=3`, `LOW=0`, `RESULT=BLOCK`.
+- Created `RESEARCH_VIABILITY_CHECKPOINT.md`, freezing scope expansion and
+  defining only `Q1_ENVIRONMENT_FEASIBILITY` and `Q2_FIXED_DATA_FEASIBILITY`.
+  The active work budget is 480 minutes, starts only after checkpoint GPT
+  PASS, and exhaustion has the disposition `PAUSE_CURRENT_ROUTE`.
+- The unfrozen V10C runtime-recovery draft was never frozen and is now
+  `SUPERSEDED_UNFROZEN_BY_RESEARCH_VIABILITY_CHECKPOINT`. Its remaining
+  findings are superseded, not resolved, and its remediation sequence is not
+  continued.
+- Corrected the stale V10D implementation bookkeeping to the completed
+  `729eb6d61f4271f3fd8833fc4a792b4c25d7899c` GPT PASS with the safe LOW
+  coverage deferred. This does not attribute V10C's
+  `NO_VERDICT_DATA_INCOMPATIBLE` result to V10D.
+- No Python/import execution, Windows event-log inspection, package or
+  environment mutation, payload read, model fit, T0 run, acquisition,
+  human-gate consumption, or methodology change occurred. Environment and
+  protected-payload/T0 authorities remain false; future profitability remains
+  unestablished. Current stage is
+  `RESEARCH_VIABILITY_CHECKPOINT_AWAITING_GPT_REVIEW`.

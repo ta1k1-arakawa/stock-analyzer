@@ -2,7 +2,7 @@
 
 ```text
 document_type=V10C_T0_CANONICAL_ML_ENVIRONMENT_RUNTIME_RECOVERY_SUCCESSOR_DESIGN
-status=DRAFT_REMEDIATION_AWAITING_GPT_REVIEW
+status=SUPERSEDED_UNFROZEN_BY_RESEARCH_VIABILITY_CHECKPOINT
 study=V10C_T0_CANONICAL_ML_ENVIRONMENT_RUNTIME_RECOVERY_SUCCESSOR
 design_purpose=NO_NETWORK_READ_ONLY_RUNTIME_DIAGNOSTIC_ONLY
 environment_state=CANONICAL_FROZEN
@@ -17,6 +17,10 @@ readiness in the already-promoted and frozen V10C canonical ML environment.
 It does not unfreeze, repair, replace, recreate, or otherwise mutate that
 environment. It grants no execution authority and does not alter the V10C or
 V10D scientific methodology.
+
+This draft was never frozen. It is superseded by the explicit project
+research-viability checkpoint. Its remaining MEDIUM findings are not claimed
+resolved and must not be continued as an unbounded remediation sequence.
 
 ## 1. Triggering incident and immutable boundaries
 
