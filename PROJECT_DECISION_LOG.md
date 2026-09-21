@@ -3453,3 +3453,22 @@ transitions. This public log must not contain protected material.
   unchanged. No methodology, authority, ticker, data, model, backtest, or
   trading operation occurred.
 - Next action: GPT exact-SHA independent review.
+
+## 2026-09-21 — V12 offline deterministic selector implementation
+
+- GPT exact-SHA review of approval-record commit
+  `7263b18ff5b24ff9960f2be0451cd5c09671a392` passed with `CRITICAL=0`,
+  `HIGH=0`, `MEDIUM=0`, and `LOW=0`. The V12 approval-record review lineage
+  is resolved, and the approval record is recorded as GPT reviewed PASS at
+  that SHA.
+- Added the offline deterministic V12 Core30 selector with the exact frozen
+  design, approval-record, source, candidate-set, exclusion-parent, seed, and
+  selection-hash bindings. It enforces the 31-candidate contract, orientation
+  guards, fail-closed provenance checks, deterministic selection, and safe
+  result validation without research-data network access.
+- All execution, data, ticker, historical-price, model, backtest, forward-paper,
+  real-trading, private/sealed, and profitability authorities remain false or
+  unestablished. No real locked PDF, ticker, price data, model, backtest, or
+  trading operation occurred.
+- The targeted selector suite passed (`33 passed`). Next action: GPT exact-SHA
+  independent review of the implementation commit.
