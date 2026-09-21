@@ -3363,3 +3363,34 @@ transitions. This public log must not contain protected material.
   `REMEDIATED_AWAITING_GPT_REVIEW`; this bookkeeping finding is also
   `REMEDIATED_AWAITING_GPT_REVIEW`. No history was rewritten and no selector,
   locked-PDF, network, model, backtest, or ticker-selection operation occurred.
+
+## 2026-09-21 — V11 terminal pause after remediation budget exhaustion
+
+- The exact-SHA terminal-pause review of `52a23630f5e0d8f566476c3fe5b0bb821ad2bb04`
+  is recorded as `PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0`. The authoritative
+  branch and remote head were verified at that SHA before this record-only
+  update.
+- The locked official JPX source remains bound at byte count `1299485` and
+  SHA-256
+  `b584ad25a182f4f17341ce2ebd77a23010957a777dde64100d71644bbff6e1ce`.
+  Safe diagnostic observations were 31 valid matching rows, 31 unique codes,
+  0 duplicate-code rows, 0 invalid-code rows, 0 short rows,
+  `GUARD_6857_NEW_CORE30=true`, and `GUARD_6981_NEW_CORE30=false`. The source
+  is not adjudicated as corrupt.
+- The production exact-count guard expected 30, while the official locked
+  snapshot yielded 31 unique NEW TOPIX Core30 classifications. The final
+  failure class is
+  `IMPLEMENTATION_ASSUMPTION_FAILURE_EXACT_CORE30_COUNT`; data-quality,
+  strategy, and profitability failures are all false.
+- Substantive remediation rounds 1 and 2 are recorded as used. The provenance
+  correction is bookkeeping only, the substantive remediation budget is
+  exhausted, and no additional substantive remediation is allowed. The V11
+  selection attempt authority remains consumed, retry remains unauthorized,
+  source binding remains established, and no ticker was selected.
+- V11 is terminally paused as `PAUSE_V11`. No constituent may be deleted, no
+  constituent subset may be chosen, the count rule may not be modified, the
+  source may not be refetched, and no selector, public acquisition, historical
+  screen, forward-paper, model-fit, backtest, or real-trading operation is
+  authorized. There is no automatic V11B/V11C/V12; any successor requires an
+  explicit human decision and a new methodology/freeze cycle. Future
+  profitability remains unestablished.
