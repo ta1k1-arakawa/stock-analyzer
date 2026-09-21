@@ -3394,3 +3394,34 @@ transitions. This public log must not contain protected material.
   authorized. There is no automatic V11B/V11C/V12; any successor requires an
   explicit human decision and a new methodology/freeze cycle. Future
   profitability remains unestablished.
+
+## 2026-09-21 — V12 minimal single-security design draft
+
+- The human explicitly requested proceeding to a next study after V11's
+  terminal `PAUSE_V11` disposition. This task is limited to
+  `DESIGN_DRAFT_ONLY`; it creates no ticker-selection, acquisition,
+  historical-screen, model-fit, backtest, forward-paper, or real-trading
+  authority.
+- V12 is the new study identity
+  `V12_MINIMAL_FIXED_STRATEGY_SINGLE_SECURITY` on branch
+  `v12-minimal-single-security-study`, with parent
+  `bd9ab0cb030d00b0e0fb4b563cbae15de947f02f`. V11 remains terminal and is not
+  reopened, repaired, or reinterpreted.
+- The only scientific delta is explicit Core30 universe semantics: use every
+  unique numeric code whose normalized NEW classification is exactly
+  `TOPIX Core30`, without assuming the label means 30 constituents. The
+  locked public source remains bound at byte count `1299485` and SHA-256
+  `b584ad25a182f4f17341ce2ebd77a23010957a777dde64100d71644bbff6e1ce`;
+  safe candidate provenance is count `31` with candidate-set SHA-256
+  `acb8777834e2f836e0f815f739515f9ab6dd25ecbe8e1f9db77b15015b793344`.
+- V12 preserves the V11 Yahoo source contract, historical window, causal
+  split normalization, five features, StandardScaler plus Ridge with
+  `alpha=10.0` and `fit_intercept=true`, minimum training count `252`,
+  `t+1` to `t+6` timing, long-only 100-share rule, costs, non-overlap,
+  normalized equity/drawdown, 2023-01-01 through 2026-08-31 screen, criteria
+  A-F, 3x3 robustness grid, buy-and-hold diagnostic, forward 60/120-session
+  and at-least-8-trade rules, and no same-study tuning or substitution.
+- No source PDF was read, no JPX or research-data network request occurred,
+  no ticker was selected, and no price data, model, backtest, paper-trade,
+  broker, or environment operation occurred. V12 remains unfrozen with all
+  execution authorities false and future profitability unestablished.
