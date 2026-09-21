@@ -573,7 +573,11 @@ does not replace operation-specific reachable-dependency probes. The V12
 selector-compatible profile additionally requires the reviewed synthetic
 `pdfplumber` operational probe to PASS before `CURRENT_ENVIRONMENT_READY` can
 be true; future protected tasks must bind the probes applicable to their own
-post-gate execution path.
+post-gate execution path. The current checker performs the package and PDF
+observation inside an exact-canonical-interpreter isolated child using `-I`,
+`-B`, controlled no-user-site/no-bytecode environment variables, no ambient
+`PYTHONPATH`, and explicit repository-file loading; parent validation fails
+closed on child launch, schema, identity, package, or probe failure.
 
 `V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FREEZE_RECORD.json`
 (Stage E12, this same commit) is the distinct V9_014-specific successor

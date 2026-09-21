@@ -230,13 +230,18 @@ current V10C canonical frozen authority (the 27-package successor lock) from
 the F9-reviewed Git tree and current project-state promotion fields, then
 checks the exact canonical interpreter, Python `3.12.10`, and the live
 installed package identity through `importlib.metadata.distributions()` with
-normalized names, exact versions, exact cardinality, and duplicate rejection.
-It also runs the reviewed synthetic PDF operational probe for the V12
-selector's reachable `pdfplumber` parser path. `pip freeze` presentation,
+normalized names, exact versions, exact cardinality, and duplicate rejection
+inside an isolated child launched by that exact interpreter with `-I` and
+`-B`. The child removes ambient `PYTHONPATH`/`PYTHONHOME` authority, disables
+user-site and bytecode, and loads repository-local probe code by explicit
+file path. It also runs the reviewed synthetic PDF operational probe for the
+V12 selector's reachable `pdfplumber` parser path. `pip freeze` presentation,
 including direct-reference lines, is not installed-identity authority.
-`check_current_protected_environment.py` resolving this current authority
-does not replace operation-specific reachable-dependency probes; each future
-protected task must bind and pass the probes applicable to its post-gate path.
+The parent fails closed on child launch/nonzero/schema/identity/package/probe
+failure. `check_current_protected_environment.py` resolving this current
+authority does not replace operation-specific reachable-dependency probes;
+each future protected task must bind and pass the probes applicable to its
+post-gate path.
 `scripts/check_real_execution_env.py` remains an independent
 historical V9_014 generic 15-package checker; it must not be named as the
 current PRE_GATE authority unless a later reviewed project-state transition

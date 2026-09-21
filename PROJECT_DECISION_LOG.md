@@ -3543,3 +3543,26 @@ transitions. This public log must not contain protected material.
   installation, environment mutation, or human-gate consumption occurred.
 - Status: `IMPLEMENTED_AWAITING_GPT_REVIEW`; next action is exact-SHA GPT
   independent review of Issue #13's implementation commit.
+
+## 2026-09-21 — V12 current environment isolated runtime remediation
+
+- Issue #14 remediates the GPT exact-SHA HIGH finding on Issue #13. Current
+  27-package metadata observation and the mandatory synthetic PDF probe now
+  execute in a child launched through the exact canonical interpreter with
+  `-I` and `-B`, controlled no-user-site/no-bytecode environment settings,
+  and no ambient `PYTHONPATH`/`PYTHONHOME` authority.
+- The child returns only a closed safe JSON schema containing canonical
+  interpreter/platform identity, normalized installed distribution evidence,
+  and the reviewed PDF fixture SHA-256, `pdfplumber` version, page count, and
+  probe status. Repository-local probe code is loaded by an explicit file
+  path. The parent fails closed on launch, nonzero exit, stderr, malformed or
+  extra/missing JSON, identity, package, or probe failures.
+- Targeted tests cover canonical-child command binding, ambient path removal,
+  direct CLI topology, exact 27-package success, package drift/duplicate/
+  malformed cases, PDF success/failure/fixture/version cases, historical
+  checker preservation, and the no-network/no-private/no-payload/no-install/
+  no-mutation/no-gate boundary. No V12 methodology, frozen design, selector,
+  authority, ticker selection, locked payload read, network request, package
+  installation, environment mutation, or human-gate consumption occurred.
+- Status: `IMPLEMENTED_AWAITING_GPT_REVIEW`; next action is exact-SHA GPT
+  independent review of Issue #14's implementation commit.

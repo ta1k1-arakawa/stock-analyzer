@@ -389,7 +389,10 @@ Resolving the current environment authority does not by itself establish
 readiness for a protected operation. The task must also bind and pass the
 operation-specific synthetic/runtime probes for every reachable post-gate
 dependency; a historical checker or package-presence result cannot replace
-those probes.
+those probes. The current V12 PRE_GATE checker performs its live observation
+in an exact-canonical-interpreter isolated child (`-I`, controlled no-user-
+site/no-bytecode environment, no ambient `PYTHONPATH`, explicit repository
+file loading); protected tasks must preserve this boundary when reusing it.
 
 Claude Code, Codex, and any reviewer agent must read `AGENTS.md`, this
 file, and every task-specific authoritative doc named in the current

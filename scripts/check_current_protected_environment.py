@@ -7,18 +7,18 @@ module resolves the current V10C 27-package authority from its reviewed
 promotion/final-freeze chain and never treats the historical checker or its
 lock as the current authority.
 
-The checker is no-network, no-private-data, and read-only. It observes live
-installed package identity through ``importlib.metadata`` under the exact
-canonical interpreter and runs the reviewed synthetic PDF operational probe;
-it never installs packages, opens research payloads, or consumes a gate. A
-missing, ambiguous, stale, or contradictory authority fails closed.
+The checker is no-network, no-private-data, and read-only. It launches an
+isolated child through the exact canonical interpreter; that child observes
+installed package identity through ``importlib.metadata`` and runs the
+reviewed synthetic PDF operational probe. It never installs packages, opens
+research payloads, or consumes a gate. A missing, ambiguous, stale, or
+contradictory authority fails closed.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.metadata
 import json
 import os
 import platform
@@ -68,6 +68,30 @@ PDF_PROBE_EXPECTED_FIXTURE_SHA256 = "5eecb758a50e829af16bd42833f89a8329bfaaaa561
 PDF_PROBE_REQUIRED_PDFPLUMBER_VERSION = "0.11.10"
 PDF_PROBE_EXPECTED_PAGE_COUNT = 1
 PDF_PROBE_PASS = "SYNTHETIC_PDF_PROBE_PASS"
+ISOLATED_CHILD_SCHEMA = "V12_CURRENT_PROTECTED_ENVIRONMENT_ISOLATED_OBSERVER_V1"
+ISOLATED_CHILD_TOP_KEYS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "isolated",
+        "no_user_site",
+        "pythonpath_env_absent",
+        "bytecode_disabled",
+        "python_implementation",
+        "python_version",
+        "executable",
+        "platform_system",
+        "platform_machine",
+        "sysconfig_platform",
+        "packages",
+        "package_observation_status",
+        "package_failure",
+        "pdf_probe",
+    }
+)
+ISOLATED_CHILD_PDF_KEYS = frozenset(
+    {"status", "fixture_sha256", "pdfplumber_version", "page_count"}
+)
 
 _PINNED_LINE = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s#]+)$")
 _KEY_LINE = re.compile(r"^(?P<key>[A-Z0-9_]+)=(?P<value>.*)$")
@@ -332,20 +356,10 @@ def _package_map_from_installed_metadata(distributions: Any) -> tuple[dict[str, 
 def check_live_package_set(
     expected_packages: dict[str, str], observed_distributions: Any = None
 ) -> dict[str, Any]:
-    """Compare the live installed distribution metadata with the reviewed lock.
-
-    The production path deliberately does not invoke pip.  ``pip freeze`` is a
-    presentation of an environment and may contain direct-reference lines;
-    ``importlib.metadata`` is the reviewed V10C installed-identity observer.
-    ``observed_distributions`` exists only to make the observer deterministic
-    in no-network tests.
-    """
+    """Validate injected metadata records; production uses the isolated child."""
 
     if observed_distributions is None:
-        try:
-            observed_distributions = importlib.metadata.distributions()
-        except Exception:
-            return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_INSTALLED_METADATA_OBSERVATION_FAILED"}
+        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_ISOLATED_CHILD_REQUIRED"}
     actual, observation_reason = _package_map_from_installed_metadata(observed_distributions)
     if observation_reason is not None or actual is None:
         return {"status": "FAIL", "reason": observation_reason}
@@ -362,64 +376,311 @@ def check_live_package_set(
     return {"status": "PASS", "package_count": len(actual)}
 
 
-def _run_reviewed_pdf_probe(fixture_path: Path) -> Any:
-    from scripts.v9_014_pdf_env_successor import run_synthetic_pdf_operational_probe
+def _isolated_child_script() -> str:
+    """Return the reviewed-F6-style isolated observer program."""
 
-    return run_synthetic_pdf_operational_probe(fixture_path=fixture_path)
+    return r'''
+import importlib.metadata
+import importlib.util
+import json
+import os
+import platform
+import re
+import sys
+import sysconfig
+from pathlib import Path
+
+SCHEMA = "V12_CURRENT_PROTECTED_ENVIRONMENT_ISOLATED_OBSERVER_V1"
+PDF_PASS = "SYNTHETIC_PDF_PROBE_PASS"
 
 
-def check_pdf_parser_synthetic_probe() -> dict[str, Any]:
-    """Run the reviewed no-network synthetic PDF parser operational probe."""
+def emit(status, packages, package_status, package_failure, pdf_probe):
+    result = {
+        "schema_version": SCHEMA,
+        "status": status,
+        "isolated": type(sys.flags.isolated) is int and sys.flags.isolated == 1,
+        "no_user_site": type(sys.flags.no_user_site) is int and sys.flags.no_user_site == 1,
+        "pythonpath_env_absent": "PYTHONPATH" not in os.environ,
+        "bytecode_disabled": sys.dont_write_bytecode is True,
+        "python_implementation": platform.python_implementation(),
+        "python_version": platform.python_version(),
+        "executable": str(Path(sys.executable).resolve(strict=False)),
+        "platform_system": platform.system(),
+        "platform_machine": platform.machine(),
+        "sysconfig_platform": sysconfig.get_platform(),
+        "packages": packages,
+        "package_observation_status": package_status,
+        "package_failure": package_failure,
+        "pdf_probe": pdf_probe,
+    }
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
 
+
+def empty_pdf_probe():
+    return {"status": "FAIL", "fixture_sha256": None, "pdfplumber_version": None, "page_count": None}
+
+
+packages = []
+package_status = "PASS"
+package_failure = None
+pdf_probe = empty_pdf_probe()
+try:
+    if len(sys.argv) != 2:
+        raise ValueError("REPOSITORY_ROOT_ARGUMENT_INVALID")
+    repository_root = Path(sys.argv[1]).resolve(strict=True)
+    probe_module_path = repository_root / "scripts" / "v9_014_pdf_env_successor.py"
+    fixture_path = repository_root / "tests" / "fixtures" / "v9_014_synthetic_pdf_env_probe.pdf"
+    if not probe_module_path.is_file() or not fixture_path.is_file():
+        raise OSError("REVIEWED_PROBE_ARTIFACT_MISSING")
+
+    names = set()
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata.get("Name")
+        version = distribution.version
+        if not isinstance(name, str) or not isinstance(version, str) or not name or not version:
+            package_status = "FAIL"
+            package_failure = "MALFORMED_METADATA"
+            break
+        normalized = re.sub(r"[-_.]+", "-", name).lower()
+        if normalized in names:
+            package_status = "FAIL"
+            package_failure = "DUPLICATE_NORMALIZED_METADATA"
+            break
+        names.add(normalized)
+        packages.append({"name": name, "version": version})
+
+    module_spec = importlib.util.spec_from_file_location("_v12_reviewed_pdf_probe", probe_module_path)
+    if module_spec is None or module_spec.loader is None:
+        raise ImportError("REVIEWED_PROBE_LOAD_FAILED")
+    probe_module = importlib.util.module_from_spec(module_spec)
+    sys.modules[module_spec.name] = probe_module
+    module_spec.loader.exec_module(probe_module)
+    probe_result = probe_module.run_synthetic_pdf_operational_probe(fixture_path=fixture_path)
+    pdf_probe = {
+        "status": getattr(probe_result, "status", None),
+        "fixture_sha256": getattr(probe_result, "observed_fixture_sha256", None),
+        "pdfplumber_version": getattr(probe_result, "observed_pdfplumber_version", None),
+        "page_count": getattr(probe_result, "observed_page_count", None),
+    }
+except Exception:
+    if package_status == "PASS":
+        package_status = "FAIL"
+        package_failure = "ISOLATED_OBSERVER_EXCEPTION"
+    if pdf_probe["status"] == "FAIL" and pdf_probe["fixture_sha256"] is None:
+        pdf_probe = empty_pdf_probe()
+
+identity_pass = (
+    platform.python_implementation() == "CPython"
+    and platform.python_version() == "3.12.10"
+    and platform.system() == "Windows"
+    and platform.machine() == "AMD64"
+    and sysconfig.get_platform() == "win-amd64"
+)
+overall_status = "PASS" if identity_pass and package_status == "PASS" and pdf_probe["status"] == PDF_PASS else "FAIL"
+emit(overall_status, packages, package_status, package_failure, pdf_probe)
+'''
+
+
+def _controlled_child_environment() -> dict[str, str]:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() not in {"PYTHONPATH", "PYTHONHOME"}
+    }
+    environment.update(
+        {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PIP_CONFIG_FILE": os.devnull,
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        }
+    )
+    return environment
+
+
+def _validate_isolated_child_json(value: Any) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(value, dict) or set(value) != ISOLATED_CHILD_TOP_KEYS:
+        return None, "CURRENT_AUTHORITY_CHILD_JSON_SCHEMA_INVALID"
+    if value.get("schema_version") != ISOLATED_CHILD_SCHEMA:
+        return None, "CURRENT_AUTHORITY_CHILD_JSON_SCHEMA_INVALID"
+    for key in ("isolated", "no_user_site", "pythonpath_env_absent", "bytecode_disabled"):
+        if type(value.get(key)) is not bool:
+            return None, "CURRENT_AUTHORITY_CHILD_JSON_TYPES_INVALID"
+    for key in (
+        "status",
+        "python_implementation",
+        "python_version",
+        "executable",
+        "platform_system",
+        "platform_machine",
+        "sysconfig_platform",
+        "package_observation_status",
+    ):
+        if not isinstance(value.get(key), str):
+            return None, "CURRENT_AUTHORITY_CHILD_JSON_TYPES_INVALID"
+    if value.get("status") not in {"PASS", "FAIL"} or value.get("package_observation_status") not in {"PASS", "FAIL"}:
+        return None, "CURRENT_AUTHORITY_CHILD_JSON_ENUM_INVALID"
+    if value.get("package_failure") is not None and not isinstance(value.get("package_failure"), str):
+        return None, "CURRENT_AUTHORITY_CHILD_JSON_TYPES_INVALID"
+    packages = value.get("packages")
+    if not isinstance(packages, list):
+        return None, "CURRENT_AUTHORITY_CHILD_JSON_TYPES_INVALID"
+    for package in packages:
+        if not isinstance(package, dict) or set(package) != {"name", "version"}:
+            return None, "CURRENT_AUTHORITY_CHILD_PACKAGE_SCHEMA_INVALID"
+        if not isinstance(package["name"], str) or not package["name"] or not isinstance(package["version"], str) or not package["version"]:
+            return None, "CURRENT_AUTHORITY_CHILD_PACKAGE_TYPES_INVALID"
+    pdf_probe = value.get("pdf_probe")
+    if not isinstance(pdf_probe, dict) or set(pdf_probe) != ISOLATED_CHILD_PDF_KEYS:
+        return None, "CURRENT_AUTHORITY_CHILD_PDF_SCHEMA_INVALID"
+    if not isinstance(pdf_probe["status"], str):
+        return None, "CURRENT_AUTHORITY_CHILD_PDF_TYPES_INVALID"
+    for key in ("fixture_sha256", "pdfplumber_version"):
+        if pdf_probe[key] is not None and not isinstance(pdf_probe[key], str):
+            return None, "CURRENT_AUTHORITY_CHILD_PDF_TYPES_INVALID"
+    if pdf_probe["page_count"] is not None and (type(pdf_probe["page_count"]) is not int or isinstance(pdf_probe["page_count"], bool)):
+        return None, "CURRENT_AUTHORITY_CHILD_PDF_TYPES_INVALID"
+    return value, None
+
+
+def _run_isolated_observer() -> dict[str, Any]:
     try:
-        probe = _run_reviewed_pdf_probe(PDF_PROBE_FIXTURE_PATH)
-    except Exception:
-        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PDF_PROBE_EXCEPTION"}
+        result = subprocess.run(
+            [
+                str(CANONICAL_INTERPRETER),
+                "-I",
+                "-B",
+                "-c",
+                _isolated_child_script(),
+                str(REPO_ROOT),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_controlled_child_environment(),
+        )
+    except OSError:
+        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_CHILD_LAUNCH_FAILED"}
+    if result.returncode != 0:
+        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_CHILD_NONZERO_EXIT"}
+    if result.stderr.strip():
+        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_CHILD_STDERR_NOT_EMPTY"}
+    try:
+        value = json.loads(result.stdout)
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_CHILD_JSON_INVALID"}
+    validated, reason = _validate_isolated_child_json(value)
+    if reason is not None or validated is None:
+        return {"status": "FAIL", "reason": reason}
+    return {"status": "PASS", "evidence": validated}
 
-    if isinstance(probe, dict):
-        value = probe.get
-    else:
-        value = lambda key: getattr(probe, key, None)
-    if value("status") != PDF_PROBE_PASS:
+
+def _validate_child_identity(evidence: dict[str, Any]) -> dict[str, Any]:
+    try:
+        executable_match = os.path.normcase(str(Path(evidence["executable"]).resolve(strict=False))) == os.path.normcase(
+            str(CANONICAL_INTERPRETER.resolve(strict=False))
+        )
+    except OSError:
+        executable_match = False
+    passed = (
+        evidence["status"] == "PASS"
+        and evidence["isolated"] is True
+        and evidence["no_user_site"] is True
+        and evidence["pythonpath_env_absent"] is True
+        and evidence["bytecode_disabled"] is True
+        and evidence["python_implementation"] == "CPython"
+        and evidence["python_version"] == "3.12.10"
+        and evidence["platform_system"] == "Windows"
+        and evidence["platform_machine"] == "AMD64"
+        and evidence["sysconfig_platform"] == "win-amd64"
+        and executable_match
+    )
+    return {
+        "status": "PASS" if passed else "FAIL",
+        "reason": None if passed else "CURRENT_AUTHORITY_CHILD_IDENTITY_MISMATCH",
+    }
+
+
+def _package_map_from_records(records: list[dict[str, str]]) -> tuple[dict[str, str] | None, str | None]:
+    actual: dict[str, str] = {}
+    for record in records:
+        normalized = _normalize_package_name(record["name"])
+        if normalized in actual:
+            return None, "CURRENT_AUTHORITY_INSTALLED_METADATA_DUPLICATE"
+        actual[normalized] = record["version"]
+    return actual, None
+
+
+def _validate_child_package_set(expected_packages: dict[str, str], evidence: dict[str, Any]) -> dict[str, Any]:
+    if evidence["package_observation_status"] != "PASS":
+        return {
+            "status": "FAIL",
+            "reason": evidence["package_failure"] or "CURRENT_AUTHORITY_INSTALLED_METADATA_OBSERVATION_FAILED",
+        }
+    actual, reason = _package_map_from_records(evidence["packages"])
+    if reason is not None or actual is None:
+        return {"status": "FAIL", "reason": reason}
+    if actual != expected_packages:
+        return {
+            "status": "FAIL",
+            "reason": "CURRENT_AUTHORITY_PACKAGE_SET_MISMATCH",
+            "missing_packages": sorted(set(expected_packages) - set(actual)),
+            "extra_packages": sorted(set(actual) - set(expected_packages)),
+            "version_mismatches": sorted(
+                key for key in set(expected_packages) & set(actual) if expected_packages[key] != actual[key]
+            ),
+        }
+    return {"status": "PASS", "package_count": len(actual)}
+
+
+def _validate_child_pdf_probe(evidence: dict[str, Any]) -> dict[str, Any]:
+    probe = evidence["pdf_probe"]
+    if probe["status"] != PDF_PROBE_PASS:
         return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PDF_PROBE_FAILED"}
-    if value("observed_fixture_sha256") != PDF_PROBE_EXPECTED_FIXTURE_SHA256:
+    if probe["fixture_sha256"] != PDF_PROBE_EXPECTED_FIXTURE_SHA256:
         return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PDF_PROBE_FIXTURE_IDENTITY_MISMATCH"}
-    if value("observed_pdfplumber_version") != PDF_PROBE_REQUIRED_PDFPLUMBER_VERSION:
+    if probe["pdfplumber_version"] != PDF_PROBE_REQUIRED_PDFPLUMBER_VERSION:
         return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PDF_PROBE_VERSION_MISMATCH"}
-    if value("observed_page_count") != PDF_PROBE_EXPECTED_PAGE_COUNT:
+    if probe["page_count"] != PDF_PROBE_EXPECTED_PAGE_COUNT:
         return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PDF_PROBE_PAGE_COUNT_MISMATCH"}
     return {
         "status": "PASS",
-        "fixture_sha256": value("observed_fixture_sha256"),
-        "pdfplumber_version": value("observed_pdfplumber_version"),
-        "page_count": value("observed_page_count"),
+        "fixture_sha256": probe["fixture_sha256"],
+        "pdfplumber_version": probe["pdfplumber_version"],
+        "page_count": probe["page_count"],
     }
 
 
 def run_current_readiness() -> dict[str, Any]:
     authority = resolve_current_authority()
     interpreter = check_interpreter_identity()
-    packages = (
-        check_live_package_set(authority["package_map"])
+    isolated = (
+        _run_isolated_observer()
         if authority["status"] == "PASS" and interpreter["status"] == "PASS"
         else {"status": "NOT_RUN", "reason": "CURRENT_AUTHORITY_PRECONDITION_FAILED"}
     )
-    pdf_probe = (
-        check_pdf_parser_synthetic_probe()
-        if authority["status"] == "PASS"
-        and interpreter["status"] == "PASS"
-        and packages["status"] == "PASS"
-        else {"status": "NOT_RUN", "reason": "CURRENT_AUTHORITY_PRECONDITION_FAILED"}
-    )
+    if isolated["status"] == "PASS":
+        evidence = isolated["evidence"]
+        child_identity = _validate_child_identity(evidence)
+        packages = _validate_child_package_set(authority["package_map"], evidence)
+        pdf_probe = _validate_child_pdf_probe(evidence)
+    else:
+        child_identity = {"status": "NOT_RUN", "reason": isolated["reason"]}
+        packages = {"status": "NOT_RUN", "reason": isolated["reason"]}
+        pdf_probe = {"status": "NOT_RUN", "reason": isolated["reason"]}
     ready = (
         authority["status"] == "PASS"
         and interpreter["status"] == "PASS"
+        and isolated["status"] == "PASS"
+        and child_identity["status"] == "PASS"
         and packages["status"] == "PASS"
         and pdf_probe["status"] == "PASS"
     )
     return {
         "CURRENT_PROTECTED_ENVIRONMENT_AUTHORITY": authority,
         "INTERPRETER": interpreter,
+        "ISOLATED_RUNTIME": {"status": isolated["status"], "reason": isolated.get("reason")},
+        "ISOLATED_CHILD_IDENTITY": child_identity,
         "LIVE_PACKAGE_SET": packages,
         "PDF_OPERATIONAL_PROBE": pdf_probe,
         "CURRENT_ENVIRONMENT_READY": ready,
