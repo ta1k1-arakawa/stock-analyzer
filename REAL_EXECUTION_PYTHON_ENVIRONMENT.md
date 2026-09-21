@@ -568,7 +568,12 @@ provenance. Resolve and validate this distinction mechanically with
 a protected task. If the repository later records a different reviewed
 current chain, this checker must fail closed until a separately reviewed
 implementation binds that transition; do not repoint the historical checker
-silently.
+silently. Current-authority resolution is only one readiness component: it
+does not replace operation-specific reachable-dependency probes. The V12
+selector-compatible profile additionally requires the reviewed synthetic
+`pdfplumber` operational probe to PASS before `CURRENT_ENVIRONMENT_READY` can
+be true; future protected tasks must bind the probes applicable to their own
+post-gate execution path.
 
 `V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FREEZE_RECORD.json`
 (Stage E12, this same commit) is the distinct V9_014-specific successor

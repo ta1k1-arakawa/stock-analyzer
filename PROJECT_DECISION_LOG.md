@@ -3517,3 +3517,29 @@ transitions. This public log must not contain protected material.
 - Status: `IMPLEMENTED_AWAITING_GPT_REVIEW`; next action is exact-SHA GPT
   independent review. Issue #11 remains blocked until that review passes and
   Issue #11 binds the corrected PRE_GATE checker.
+
+## 2026-09-21 — V12 current environment observer and PDF PRE_GATE remediation
+
+- Issue #13 remediates the two coupled HIGH findings from the GPT exact-SHA
+  review of Issue #12. Current installed-package identity is now observed
+  with the reviewed V10C `importlib.metadata.distributions()` semantics:
+  normalized names, exact versions, exact 27-package equality, duplicate
+  detection, and fail-closed malformed/missing/extra/version-drift handling.
+  `pip freeze` presentation, including direct-reference lines, is not used as
+  current installed-identity authority.
+- The current readiness path now requires the reviewed no-network synthetic
+  PDF operational probe for the V12 selector's reachable `pdfplumber` path,
+  including fixture SHA-256, `pdfplumber==0.11.10`, page-count, and probe
+  status validation. Probe failure, exception, fixture mismatch, runtime
+  mismatch, or result mismatch makes readiness false.
+- Stable governance documentation records that current-authority resolution
+  does not replace operation-specific reachable-dependency probes. The
+  historical V9_014 15-package checker remains independently bound and is not
+  repointed. Targeted tests cover both HIGH findings and the no-network,
+  no-private-read, no-locked-payload, no-install, no-mutation, and no-gate
+  boundaries.
+- No V12 methodology, frozen design, selector semantics, source identity,
+  authority, ticker selection, locked payload read, network request, package
+  installation, environment mutation, or human-gate consumption occurred.
+- Status: `IMPLEMENTED_AWAITING_GPT_REVIEW`; next action is exact-SHA GPT
+  independent review of Issue #13's implementation commit.

@@ -7,17 +7,18 @@ module resolves the current V10C 27-package authority from its reviewed
 promotion/final-freeze chain and never treats the historical checker or its
 lock as the current authority.
 
-The checker is no-network, no-private-data, and read-only.  It may inspect
-Git objects and invoke ``pip freeze --all`` through the exact canonical
-interpreter, but it never installs packages, opens research payloads, or
-consumes a gate.  A missing, ambiguous, stale, or contradictory authority
-fails closed.
+The checker is no-network, no-private-data, and read-only. It observes live
+installed package identity through ``importlib.metadata`` under the exact
+canonical interpreter and runs the reviewed synthetic PDF operational probe;
+it never installs packages, opens research payloads, or consumes a gate. A
+missing, ambiguous, stale, or contradictory authority fails closed.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 import platform
@@ -61,6 +62,12 @@ CURRENT_AUTHORITY_SAFE_EVIDENCE_SHA256 = "b83d02921e571545511e477d4783ed408b8700
 CANONICAL_VENV_DIR = REPO_ROOT / ".venv-real-execution"
 CANONICAL_INTERPRETER = CANONICAL_VENV_DIR / "Scripts" / "python.exe"
 CANONICAL_PYTHON_VERSION = (3, 12, 10)
+
+PDF_PROBE_FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "v9_014_synthetic_pdf_env_probe.pdf"
+PDF_PROBE_EXPECTED_FIXTURE_SHA256 = "5eecb758a50e829af16bd42833f89a8329bfaaaa561aee209fbd2249b507b413"
+PDF_PROBE_REQUIRED_PDFPLUMBER_VERSION = "0.11.10"
+PDF_PROBE_EXPECTED_PAGE_COUNT = 1
+PDF_PROBE_PASS = "SYNTHETIC_PDF_PROBE_PASS"
 
 _PINNED_LINE = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9_.-]*)==(?P<version>[^\s#]+)$")
 _KEY_LINE = re.compile(r"^(?P<key>[A-Z0-9_]+)=(?P<value>.*)$")
@@ -294,33 +301,54 @@ def check_interpreter_identity() -> dict[str, Any]:
         and platform.machine() == "AMD64"
         and sysconfig.get_platform() == "win-amd64"
     )
+    identity_match = interpreter_match and version_match and platform_match
     return {
-        "status": "PASS" if interpreter_match and version_match and platform_match else "FAIL",
+        "status": "PASS" if identity_match else "FAIL",
         "interpreter_match": interpreter_match,
         "python_version": ".".join(str(item) for item in version),
         "python_patch_match": version_match,
         "platform_match": platform_match,
-        "failure_class": None if interpreter_match else "PRE_GATE_WRONG_PYTHON_ENVIRONMENT",
+        "failure_class": None if identity_match else "PRE_GATE_WRONG_PYTHON_ENVIRONMENT",
     }
 
 
-def check_live_package_set(expected_packages: dict[str, str], freeze_text: str | None = None) -> dict[str, Any]:
-    if freeze_text is None:
+def _package_map_from_installed_metadata(distributions: Any) -> tuple[dict[str, str] | None, str | None]:
+    actual: dict[str, str] = {}
+    try:
+        for distribution in distributions:
+            name = distribution.metadata.get("Name")
+            version = distribution.version
+            if not isinstance(name, str) or not isinstance(version, str) or not name or not version:
+                return None, "CURRENT_AUTHORITY_INSTALLED_METADATA_MALFORMED"
+            normalized = _normalize_package_name(name)
+            if normalized in actual:
+                return None, "CURRENT_AUTHORITY_INSTALLED_METADATA_DUPLICATE"
+            actual[normalized] = version
+    except Exception:
+        return None, "CURRENT_AUTHORITY_INSTALLED_METADATA_OBSERVATION_FAILED"
+    return actual, None
+
+
+def check_live_package_set(
+    expected_packages: dict[str, str], observed_distributions: Any = None
+) -> dict[str, Any]:
+    """Compare the live installed distribution metadata with the reviewed lock.
+
+    The production path deliberately does not invoke pip.  ``pip freeze`` is a
+    presentation of an environment and may contain direct-reference lines;
+    ``importlib.metadata`` is the reviewed V10C installed-identity observer.
+    ``observed_distributions`` exists only to make the observer deterministic
+    in no-network tests.
+    """
+
+    if observed_distributions is None:
         try:
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "freeze", "--all"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except OSError:
-            return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PIP_FREEZE_FAILED"}
-        if result.returncode != 0:
-            return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PIP_FREEZE_FAILED"}
-        freeze_text = result.stdout
-    actual, invalid_lines, duplicate_lines = _parse_pinned_lines(freeze_text)
-    if invalid_lines or duplicate_lines:
-        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PIP_FREEZE_NOT_EXACT"}
+            observed_distributions = importlib.metadata.distributions()
+        except Exception:
+            return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_INSTALLED_METADATA_OBSERVATION_FAILED"}
+    actual, observation_reason = _package_map_from_installed_metadata(observed_distributions)
+    if observation_reason is not None or actual is None:
+        return {"status": "FAIL", "reason": observation_reason}
     if actual != expected_packages:
         return {
             "status": "FAIL",
@@ -334,19 +362,66 @@ def check_live_package_set(expected_packages: dict[str, str], freeze_text: str |
     return {"status": "PASS", "package_count": len(actual)}
 
 
-def run_current_readiness(freeze_text: str | None = None) -> dict[str, Any]:
+def _run_reviewed_pdf_probe(fixture_path: Path) -> Any:
+    from scripts.v9_014_pdf_env_successor import run_synthetic_pdf_operational_probe
+
+    return run_synthetic_pdf_operational_probe(fixture_path=fixture_path)
+
+
+def check_pdf_parser_synthetic_probe() -> dict[str, Any]:
+    """Run the reviewed no-network synthetic PDF parser operational probe."""
+
+    try:
+        probe = _run_reviewed_pdf_probe(PDF_PROBE_FIXTURE_PATH)
+    except Exception:
+        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PDF_PROBE_EXCEPTION"}
+
+    if isinstance(probe, dict):
+        value = probe.get
+    else:
+        value = lambda key: getattr(probe, key, None)
+    if value("status") != PDF_PROBE_PASS:
+        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PDF_PROBE_FAILED"}
+    if value("observed_fixture_sha256") != PDF_PROBE_EXPECTED_FIXTURE_SHA256:
+        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PDF_PROBE_FIXTURE_IDENTITY_MISMATCH"}
+    if value("observed_pdfplumber_version") != PDF_PROBE_REQUIRED_PDFPLUMBER_VERSION:
+        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PDF_PROBE_VERSION_MISMATCH"}
+    if value("observed_page_count") != PDF_PROBE_EXPECTED_PAGE_COUNT:
+        return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_PDF_PROBE_PAGE_COUNT_MISMATCH"}
+    return {
+        "status": "PASS",
+        "fixture_sha256": value("observed_fixture_sha256"),
+        "pdfplumber_version": value("observed_pdfplumber_version"),
+        "page_count": value("observed_page_count"),
+    }
+
+
+def run_current_readiness() -> dict[str, Any]:
     authority = resolve_current_authority()
     interpreter = check_interpreter_identity()
     packages = (
-        check_live_package_set(authority["package_map"], freeze_text)
+        check_live_package_set(authority["package_map"])
         if authority["status"] == "PASS" and interpreter["status"] == "PASS"
         else {"status": "NOT_RUN", "reason": "CURRENT_AUTHORITY_PRECONDITION_FAILED"}
     )
-    ready = authority["status"] == "PASS" and interpreter["status"] == "PASS" and packages["status"] == "PASS"
+    pdf_probe = (
+        check_pdf_parser_synthetic_probe()
+        if authority["status"] == "PASS"
+        and interpreter["status"] == "PASS"
+        and packages["status"] == "PASS"
+        else {"status": "NOT_RUN", "reason": "CURRENT_AUTHORITY_PRECONDITION_FAILED"}
+    )
+    ready = (
+        authority["status"] == "PASS"
+        and interpreter["status"] == "PASS"
+        and packages["status"] == "PASS"
+        and pdf_probe["status"] == "PASS"
+    )
     return {
         "CURRENT_PROTECTED_ENVIRONMENT_AUTHORITY": authority,
         "INTERPRETER": interpreter,
         "LIVE_PACKAGE_SET": packages,
+        "PDF_OPERATIONAL_PROBE": pdf_probe,
         "CURRENT_ENVIRONMENT_READY": ready,
         "REAL_NETWORK_REQUESTS": 0,
         "PRIVATE_READS": 0,

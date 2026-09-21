@@ -229,7 +229,15 @@ The checker is no-network, no-private-data, and read-only. It resolves the
 current V10C canonical frozen authority (the 27-package successor lock) from
 the F9-reviewed Git tree and current project-state promotion fields, then
 checks the exact canonical interpreter, Python `3.12.10`, and the live
-package set. `scripts/check_real_execution_env.py` remains an independent
+installed package identity through `importlib.metadata.distributions()` with
+normalized names, exact versions, exact cardinality, and duplicate rejection.
+It also runs the reviewed synthetic PDF operational probe for the V12
+selector's reachable `pdfplumber` parser path. `pip freeze` presentation,
+including direct-reference lines, is not installed-identity authority.
+`check_current_protected_environment.py` resolving this current authority
+does not replace operation-specific reachable-dependency probes; each future
+protected task must bind and pass the probes applicable to its post-gate path.
+`scripts/check_real_execution_env.py` remains an independent
 historical V9_014 generic 15-package checker; it must not be named as the
 current PRE_GATE authority unless a later reviewed project-state transition
 explicitly makes it current. A missing, ambiguous, stale, or contradictory
@@ -585,9 +593,12 @@ CAN_EVERY_REACHABLE_POST_GATE_SOFTWARE_DEPENDENCY_BE_PROVEN_READY_PRE_GATE?
 Allowed answers: `YES`, `NO`, `UNKNOWN`. `NO` or `UNKNOWN` => STOP; do not
 proceed across the applicable authority boundary until the answer is `YES`
 with mechanical evidence (§15-§16), including the operational
-synthetic-parser probe, not merely `import <package>` succeeding. This is a
-readiness control; it does not prove that each public transport attempt
-requires a one-shot statistical gate.
+synthetic-parser probe, not merely `import <package>` succeeding. Current
+authority resolution is not a substitute for this operation-specific probe:
+the checker or task must prove every reachable post-gate parser/runtime path
+that the protected operation will use. This is a readiness control; it does
+not prove that each public transport attempt requires a one-shot statistical
+gate.
 
 ## 19. Exact environment lock/fingerprint
 
