@@ -3472,3 +3472,18 @@ transitions. This public log must not contain protected material.
   trading operation occurred.
 - The targeted selector suite passed (`33 passed`). Next action: GPT exact-SHA
   independent review of the implementation commit.
+
+## 2026-09-21 — V12 selector review-lineage state remediation
+
+- The V12 selector implementation at
+  `3ad0d9c27dcb41074185ee9221e62a60edc78eec` received GPT exact-SHA PASS
+  with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`.
+- The governance workflow commit
+  `67eeb9e422f44c8b37e2f951d587cec85eb7286e` received GPT exact-SHA BLOCK
+  with `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, and `LOW=0`; the finding was
+  `PROJECT_STATE_SELECTOR_REVIEW_LINEAGE_STALE`.
+- This remediation corrects durable project state and review lineage only.
+  It changes no methodology, frozen artifact, execution authority, ticker
+  selection state, data access, model, backtest, forward-paper, trading, or
+  profitability state. The governance remediation commit remains awaiting
+  GPT exact-SHA independent review.
