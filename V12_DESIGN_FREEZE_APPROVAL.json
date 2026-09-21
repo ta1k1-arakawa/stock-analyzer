@@ -1,0 +1,21 @@
+{
+  "schema": "V12_DESIGN_FREEZE_APPROVAL_V1",
+  "study": "V12_MINIMAL_FIXED_STRATEGY_SINGLE_SECURITY",
+  "authoritative_branch": "v12-minimal-single-security-study",
+  "reviewed_sha": "f9855da7a2809e16e447af2cfb035b750644554a",
+  "design_path": "V12_MINIMAL_FIXED_STRATEGY_SINGLE_SECURITY_DESIGN_DRAFT.md",
+  "design_blob_sha1": "7fdeee81da151a22d72fb713c5b1954adcd19212",
+  "gpt_review_result": "PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0",
+  "human_approved": true,
+  "approval_scope": "DESIGN_FREEZE_ONLY",
+  "ticker_selection_authorized": false,
+  "jpx_refetch_authorized": false,
+  "yahoo_acquisition_authorized": false,
+  "historical_screen_authorized": false,
+  "model_fit_authorized": false,
+  "backtest_authorized": false,
+  "forward_paper_authorized": false,
+  "real_trading_authorized": false,
+  "private_or_sealed_access_authorized": false,
+  "future_profitability_established": false
+}

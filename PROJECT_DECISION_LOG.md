@@ -3425,3 +3425,17 @@ transitions. This public log must not contain protected material.
   no ticker was selected, and no price data, model, backtest, paper-trade,
   broker, or environment operation occurred. V12 remains unfrozen with all
   execution authorities false and future profitability unestablished.
+
+## 2026-09-21 — V12 design freeze approval record
+
+- GPT exact-SHA design review of `f9855da7a2809e16e447af2cfb035b750644554a`
+  passed with `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`.
+- The frozen design blob is
+  `7fdeee81da151a22d72fb713c5b1954adcd19212` for
+  `V12_MINIMAL_FIXED_STRATEGY_SINGLE_SECURITY_DESIGN_DRAFT.md`.
+- Human approval was recorded with scope `DESIGN_FREEZE_ONLY`; no raw human
+  identity or verbatim authorization message is stored.
+- Ticker selection, public acquisition, historical screening, model fitting,
+  backtesting, forward paper, real trading, private/sealed access, and future
+  profitability remain unauthorized or unestablished.
+- Next action: GPT exact-SHA review of the approval-record commit.
