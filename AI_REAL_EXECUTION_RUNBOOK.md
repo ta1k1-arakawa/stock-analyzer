@@ -215,6 +215,40 @@ Local Claude Code remains prohibited by repository governance. Normal local
 Codex editing and short validation are separate from direct execution and do
 not authorize a private or network boundary.
 
+### 7a. Active protected-environment authority resolution
+
+Before a protected PRE_GATE Issue names an environment checker, resolve the
+current canonical authority from repository evidence and bind the exact
+reviewed promotion/freeze chain in that Issue. Use:
+
+```text
+.venv-real-execution\Scripts\python.exe scripts/check_current_protected_environment.py
+```
+
+The checker is no-network, no-private-data, and read-only. It resolves the
+current V10C canonical frozen authority (the 27-package successor lock) from
+the F9-reviewed Git tree and current project-state promotion fields, then
+checks the exact canonical interpreter, Python `3.12.10`, and the live
+package set. `scripts/check_real_execution_env.py` remains an independent
+historical V9_014 generic 15-package checker; it must not be named as the
+current PRE_GATE authority unless a later reviewed project-state transition
+explicitly makes it current. A missing, ambiguous, stale, or contradictory
+chain is `CHATGPT_DECISION_REQUIRED`/`PRE_GATE_ENVIRONMENT_BLOCK`; do not
+invent a lock, package count, promotion, or checker binding.
+
+An Orca/SSH/Termux-operated Windows PowerShell session is an acceptable
+transport to the Windows machine for direct PowerShell and read-only
+preflight work. That transport does not grant execution authority. An
+elevated Windows token is required only for an operation that actually needs
+administrator rights. One-shot or long-running protected work must run on
+the Windows side and must not depend on an Orca, Codex, or Claude agent
+session remaining alive.
+
+Agent-created pytest caches, temporary directories, and other transient
+state inside the repository must remain readable by the host user. An
+unreadable repository-root cache/temp directory is a PRE_GATE clean-tree
+blocker; avoid creating one or safely remove it before handoff.
+
 ## 8. Durable-state collision check
 
 Before consuming a gate, read-only check every relevant existing durable

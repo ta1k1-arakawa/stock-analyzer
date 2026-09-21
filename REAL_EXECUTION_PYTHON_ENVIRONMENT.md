@@ -555,6 +555,21 @@ research execution is authorized under either environment's authority
 while this state holds. `future_protected_execution_authorized` remains
 `false` in every one of these artifacts.
 
+### 7b. Current authority versus preserved historical authority
+
+The V9_014 15-package generic checker and its lock remain preserved historical
+evidence and regression tooling. They are not the current authority for a
+future protected PRE_GATE. The reviewed V10C successor chain is the current
+canonical protected-environment authority: its final-freeze F9 review
+established `CANONICAL_FROZEN`, the successor lock has 27 exact packages,
+and the predecessor 20-package lock is retained only as predecessor
+provenance. Resolve and validate this distinction mechanically with
+`scripts/check_current_protected_environment.py` before naming a checker in
+a protected task. If the repository later records a different reviewed
+current chain, this checker must fail closed until a separately reviewed
+implementation binds that transition; do not repoint the historical checker
+silently.
+
 `V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_SUCCESSOR_FREEZE_RECORD.json`
 (Stage E12, this same commit) is the distinct V9_014-specific successor
 freeze/promotion record (design §4, artifact 5): it binds the E7/E8/E9/E10/

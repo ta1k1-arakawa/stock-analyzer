@@ -377,6 +377,14 @@ Claude Code Cloud, and reviewer agents must read and apply it whenever the
 task is in scope. Its operational rules do not change the authority hierarchy
 or any frozen methodology; a stricter task-specific rule still wins.
 
+Before a protected PRE_GATE Issue names an environment checker, the task
+author must first resolve the active canonical protected-environment
+authority from its reviewed promotion/freeze chain. Historical checkers and
+predecessor locks may remain executable for evidence preservation, but they
+must not be silently treated as the current authority. Missing, ambiguous,
+or contradictory resolution is a fail-closed `CHATGPT_DECISION_REQUIRED`
+condition.
+
 Claude Code, Codex, and any reviewer agent must read `AGENTS.md`, this
 file, and every task-specific authoritative doc named in the current
 prompt before acting.

@@ -3487,3 +3487,33 @@ transitions. This public log must not contain protected material.
   selection state, data access, model, backtest, forward-paper, trading, or
   profitability state. The governance remediation commit remains awaiting
   GPT exact-SHA independent review.
+
+## 2026-09-21 — V12 PRE_GATE canonical environment authority reconciliation
+
+- Issue #11 is durably recorded as blocked before its locked-JPX content
+  boundary: the historical 15-package generic checker did not match the
+  current 20-package working-tree predecessor lock, so no gate was consumed,
+  no locked payload was read, and no network request or environment mutation
+  occurred.
+- Issue #12 resolves the current authority mechanically from the reviewed
+  V10C F9 chain at `92cc4a964af798f9543155e32eb83a12e7352151`: the current
+  canonical authority is the 27-package successor lock with normalized SHA-256
+  `f38dd4c7319465bb7e6ff429e8dff4a476d9966c744b19e50264dcc0b18e8300`.
+  The historical 15-package checker remains preserved and independently
+  testable; the 20-package V10C predecessor remains predecessor provenance.
+- Added `scripts/check_current_protected_environment.py` and targeted tests.
+  The checker is no-network, no-private-data, read-only, validates the exact
+  canonical interpreter/Python `3.12.10`, and fails closed on missing,
+  ambiguous, stale, contradictory, or drifted authority. Documentation now
+  requires active-authority resolution before a protected PRE_GATE Issue names
+  a checker, records the Orca/SSH/Termux-to-Windows PowerShell transport rule,
+  and blocks unreadable repository-root pytest/temp state at handoff.
+- This implementation task changes operational governance/tooling only. V12
+  methodology, frozen design, candidate set, selection hash, source identity,
+  human one-shot semantics, and all research/trading authorities are
+  unchanged. No ticker selection, locked payload read, public acquisition,
+  historical price read, model fit, backtest, paper trade, broker action,
+  private/sealed read, package installation, or environment mutation occurred.
+- Status: `IMPLEMENTED_AWAITING_GPT_REVIEW`; next action is exact-SHA GPT
+  independent review. Issue #11 remains blocked until that review passes and
+  Issue #11 binds the corrected PRE_GATE checker.

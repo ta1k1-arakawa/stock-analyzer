@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -40,6 +41,12 @@ V9_014_FREEZE_RECORD_PATH = REPO_ROOT / "V9_014_PDF_REAL_EXECUTION_ENVIRONMENT_S
 
 def _load_json(path: Path) -> dict:
     return json.loads(path.read_bytes().decode("utf-8"))
+
+
+def _historical_lock_text() -> str:
+    blob = checker._git_blob_bytes(REPO_ROOT, checker.REVIEWED_LOCK_GIT_BLOB_SHA1)
+    assert blob is not None
+    return blob.decode("utf-8")
 
 
 def _real_e11_evidence() -> dict:
@@ -74,7 +81,7 @@ def _run_lock_and_freeze_checks(*, live_lock_text: str | None = None):
     fake_interpreter["interpreter_match"] = True
     fake_interpreter["python_patch_match"] = True
 
-    lock_text = live_lock_text if live_lock_text is not None else checker.LOCK_FILE_PATH.read_text(encoding="utf-8")
+    lock_text = live_lock_text if live_lock_text is not None else _historical_lock_text()
     real_run = subprocess.run
 
     def fake_run(cmd, **kwargs):
@@ -82,9 +89,17 @@ def _run_lock_and_freeze_checks(*, live_lock_text: str | None = None):
             return mock.Mock(returncode=0, stdout=lock_text)
         return real_run(cmd, **kwargs)
 
+    default_working_path = checker.REPO_ROOT / "requirements-real-execution.lock.txt"
+    if checker.LOCK_FILE_PATH == default_working_path:
+        historical_path = mock.Mock()
+        historical_path.read_text.return_value = _historical_lock_text()
+        historical_path.read_bytes.return_value = historical_path.read_text.return_value.encode("utf-8")
+        lock_path_context = mock.patch.object(checker, "LOCK_FILE_PATH", historical_path)
+    else:
+        lock_path_context = nullcontext()
     mocks = _canonical_platform_mocks()
     mocks.append(mock.patch.object(checker.subprocess, "run", side_effect=fake_run))
-    with mocks[0], mocks[1], mocks[2], mocks[3], mocks[4], mocks[5]:
+    with lock_path_context, mocks[0], mocks[1], mocks[2], mocks[3], mocks[4], mocks[5]:
         lock = checker.check_environment_lock(fake_interpreter)
         freeze = checker.check_freeze_record(fake_interpreter, lock)
     return lock, freeze
@@ -166,7 +181,7 @@ def test_environment_lock_and_freeze_record_pass_under_simulated_canonical_envir
 
 def test_crlf_working_tree_lock_is_semantically_equivalent_to_canonical_git_blob(tmp_path, monkeypatch):
     crlf_lock = tmp_path / "requirements-real-execution.lock.txt"
-    crlf_lock.write_bytes(checker.LOCK_FILE_PATH.read_bytes().replace(b"\n", b"\r\n"))
+    crlf_lock.write_bytes(_historical_lock_text().encode("utf-8").replace(b"\n", b"\r\n"))
     monkeypatch.setattr(checker, "LOCK_FILE_PATH", crlf_lock)
 
     lock, _freeze = _run_lock_and_freeze_checks()
@@ -266,7 +281,7 @@ def test_wrong_generic_lock_missing_package_fails_environment_lock_check():
 
 
 def test_wrong_generic_lock_package_version_fails_environment_lock_check():
-    live_lock_text = checker.LOCK_FILE_PATH.read_text(encoding="utf-8").replace("pandas==3.0.5", "pandas==2.0.0")
+    live_lock_text = _historical_lock_text().replace("pandas==3.0.5", "pandas==2.0.0")
     lock, _freeze = _run_lock_and_freeze_checks(live_lock_text=live_lock_text)
     assert lock["status"] == "FAIL"
     assert lock["reason"] == "PIP_FREEZE_PACKAGE_SET_MISMATCH"
@@ -449,6 +464,10 @@ def test_pdf_fixture_identity_tamper_fails_environment_lock_check(tmp_path, monk
     wrong_fixture = tmp_path / "wrong_v9_014_synthetic_pdf_env_probe.pdf"
     wrong_fixture.write_bytes(b"not the reviewed synthetic pdf fixture bytes")
     monkeypatch.setattr(checker, "SYNTHETIC_PDF_FIXTURE_PATH", wrong_fixture)
+    historical_path = mock.Mock()
+    historical_path.read_text.return_value = _historical_lock_text()
+    historical_path.read_bytes.return_value = historical_path.read_text.return_value.encode("utf-8")
+    monkeypatch.setattr(checker, "LOCK_FILE_PATH", historical_path)
     fake_interpreter = dict(checker.check_interpreter_identity())
     result = checker.check_environment_lock(fake_interpreter)
     assert result["status"] == "FAIL"
