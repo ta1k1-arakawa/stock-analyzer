@@ -3439,3 +3439,17 @@ transitions. This public log must not contain protected material.
   backtesting, forward paper, real trading, private/sealed access, and future
   profitability remain unauthorized or unestablished.
 - Next action: GPT exact-SHA review of the approval-record commit.
+
+## 2026-09-21 — V12 design-freeze approval review-lineage remediation
+
+- GPT exact-SHA review of approval-record commit
+  `6b18af7770de24ce7a44d6657c2754a139dda4a3` returned
+  `CRITICAL=0`, `HIGH=0`, `MEDIUM=1`, `LOW=0`, `RESULT=BLOCK`, finding
+  `APPROVAL_REVIEW_LINEAGE_MISATTRIBUTED`.
+- Corrected `PROJECT_STATE.md` so the approval record remains
+  `AWAITING_GPT_REVIEW` without claiming an approval-record reviewed SHA;
+  `V12_DESIGN_FREEZE_APPROVAL_MEDIUM_1=REMEDIATED_AWAITING_GPT_REVIEW`.
+- `V12_DESIGN_FREEZE_APPROVAL.json` and the frozen V12 design remain
+  unchanged. No methodology, authority, ticker, data, model, backtest, or
+  trading operation occurred.
+- Next action: GPT exact-SHA independent review.
