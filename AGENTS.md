@@ -1,3 +1,13 @@
+## GitHub-Issue-first orchestration entrypoint
+
+`AGENTS.md` is the repository entrypoint for ChatGPT, GPT reviewers,
+orchestrators, Codex, and other execution agents. Before planning, creating
+or updating a task, or reviewing an exact SHA, read
+`AI_GITHUB_ISSUE_ORCHESTRATION_WORKFLOW.md` together with the governance and
+task-specific documents it references. Use the READY GitHub Issue as the
+execution-unit specification; do not rely on conversational memory when the
+repository and GitHub contain the recoverable state.
+
 ## AI research/execution governance
 
 For every important stock-analyzer research-planning, methodology-decision,

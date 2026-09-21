@@ -1,6 +1,7 @@
 # CLAUDE.md
 
-Read `AGENTS.md` first, then `AI_RESEARCH_EXECUTION_RULES.md`. For any
+Read `AGENTS.md` first, then `AI_GITHUB_ISSUE_ORCHESTRATION_WORKFLOW.md` for
+GitHub-Issue-driven work, then `AI_RESEARCH_EXECUTION_RULES.md`. For any
 in-scope real execution or preparation/review of direct Windows PowerShell
 for real network, private data, human-gated, durable-state, raw-acquisition,
 or research-opening work, also read `AI_REAL_EXECUTION_RUNBOOK.md` before

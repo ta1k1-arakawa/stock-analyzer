@@ -341,7 +341,19 @@ incorrect model name from a report template.
 
 ---
 
-## 9. Repository-first concise prompt protocol
+## 9. GitHub-Issue-first execution workflow
+
+`AI_GITHUB_ISSUE_ORCHESTRATION_WORKFLOW.md` is the canonical repository
+workflow for cross-chat task dispatch, exact-HEAD execution units, one-writer
+branch discipline, and GPT exact-SHA review cadence. For a GitHub-dispatched
+task, the READY Issue is authoritative for that execution unit but remains
+subordinate to this file, `AGENTS.md`, frozen designs, human gates, and any
+stricter task-specific artifact. It creates no methodology or execution
+authority. The executor must follow the workflow's exact-HEAD preflight,
+allowed-file scope, STOP conditions, commit/push conditions, and report
+contract.
+
+## 10. Repository-first concise prompt protocol
 
 ```text
 prompt_style=REPOSITORY_FIRST_DELTA_ONLY
@@ -410,7 +422,7 @@ this document.
 
 ---
 
-## 10. Rule application
+## 11. Rule application
 
 This file is the canonical collaboration rule for this repository unless
 a later explicit human decision supersedes it. Future ChatGPT prompts
