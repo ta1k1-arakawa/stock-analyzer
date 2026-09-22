@@ -3710,3 +3710,11 @@ transitions. This public log must not contain protected material.
 - Implemented the round-zero, synthetic-only V13 mechanics in `src/v13_feasibility.py`, its deterministic fixture, offline CLI, contract matrix, and targeted tests. The path includes manifest selection, staged transforms, monthly model fits, rankings, execution boundary mechanics, and safe deterministic serialization.
 - Active implementation time was mechanically measured at 6 rounded-up minutes. Remediation remains `0 used / 2 remaining` pending GPT implementation review.
 - No real acquisition, real ticker selection, historical-price read, outcome-bearing fit/backtest, or execution action occurred. Synthetic outputs are explicitly not research evidence.
+
+## 2026-09-23 — Issue #29 synthetic feasibility remediation round 1
+
+- Recorded the Issue #28 exact-SHA block at `21865efc66ec805cd0dd5da1b5ee406b5456a534` with H1/H2 findings; the remediation budget gate is `WITHIN_LIMIT`, this is substantive round 1, and one round remains.
+- Corrected the synthetic path so raw artificial OHLCV and split-only fields feed Stage A, relative features are created only from the frozen Stage-A population in Stage B, and the 19 stock-varying fields receive one Stage-C transform pass.
+- Added raw-derived labels, January/February 2020 monthly as-of fits, deterministic execution replay, base/stress metrics, comparator declarations, frozen-binding checks, and 30 collected targeted tests.
+- Cached offline runtime result: 30 tests pass; the CLI was run twice with byte-identical output and identical SHA-256. No real-market data, network request, ticker selection, historical price read, outcome-bearing fit/backtest, forward paper, private/sealed access, or trading action occurred.
+- `V13_SYNTHETIC_FEASIBILITY_HIGH_1` and `V13_SYNTHETIC_FEASIBILITY_HIGH_2` are `REMEDIATED_AWAITING_GPT_REVIEW`; synthetic output remains `SYNTHETIC_ONLY_NOT_RESEARCH_EVIDENCE=true`, `REAL_MARKET_DATA_USED=false`, and `V13_HISTORICAL_VIABILITY_RESULT=NOT_RUN`.

@@ -10,7 +10,8 @@ import pytest
 
 from src.v13_feasibility import (FEATURES, Q_KEYS, SessionCalendar, adjudicate, base_target,
     build_rank_population, canonical_json, diagnostics, lightgbm_factory, monthly_predictions,
-    random_key, rank_candidates, ridge_factory, select_universe, simulate, trade_metrics)
+    random_key, rank_candidates, ridge_factory, select_universe, simulate, trade_metrics,
+    stage_a_from_raw, monthly_training_rows, verify_frozen_bindings)
 from src.v13_synthetic_fixture import active_rows, stage_a_rows, synthetic_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,3 +80,34 @@ def test_cli_is_offline_safe_and_byte_deterministic():
     result = json.loads(one)
     assert result["SYNTHETIC_ONLY_NOT_RESEARCH_EVIDENCE"] is True
     assert result["REAL_MARKET_DATA_USED"] is False and result["V13_HISTORICAL_VIABILITY_RESULT"] == "NOT_RUN"
+
+@pytest.mark.parametrize("field", ["ret_1","ret_3","ret_5","ret_20","intraday_1","overnight_1","log_traded_value_ratio_20","log_median_traded_value_20","log_amihud_20","volatility_20","dist_52w_high"])
+def test_stage_a_has_only_native_raw_derived_fields(field):
+    from src.v13_synthetic_fixture import raw_ohlcv, synthetic_calendar, synthetic_metadata
+    rows=stage_a_from_raw(synthetic_calendar(),raw_ohlcv(),synthetic_metadata(),date(2020,1,2))
+    assert rows and field in rows[0]
+    assert not any(k.startswith("sector_rel_") or k.startswith("market_") for k in rows[0])
+
+@pytest.mark.parametrize("strategy", ["LIGHTGBM","RIDGE","SECTOR_REL_REVERSAL_1D","SECTOR_REL_MOMENTUM_20D","RANDOM_500"])
+def test_comparator_ranking_is_deterministic(strategy):
+    rows=[{"code":"1000","lightgbm_score":1.,"ridge_score":2.,"sector_rel_ret_1":-.1,"sector_rel_ret_20":.1},{"code":"1001","lightgbm_score":2.,"ridge_score":1.,"sector_rel_ret_1":.1,"sector_rel_ret_20":-.1}]
+    args=(date(2020,1,2),202609220000) if strategy=="RANDOM_500" else (None,None)
+    assert rank_candidates(rows,strategy,*args)==rank_candidates(rows,strategy,*args)
+
+def test_real_training_identities_are_before_month_cutoff():
+    rows=active_rows(); selected=monthly_training_rows(rows,"2020-01")
+    assert selected and all(r["exit"]<date(2020,1,1) and r["signal"].year>=2016 for r in selected)
+
+def test_frozen_binding_contract_shape():
+    result=verify_frozen_bindings()
+    assert set(result)=={"base_design","base_approval","amendment","amendment_approval"}
+
+@pytest.mark.parametrize("variant", ["affordability","missing_open","missing_exit","no_rank"])
+def test_isolated_fixture_variants_are_deterministic(variant):
+    from src.v13_synthetic_fixture import raw_ohlcv
+    a,b=raw_ohlcv(variant),raw_ohlcv(variant)
+    assert set(a)==set(b)
+    first=next(iter(a)); assert a[first].keys()==b[first].keys()
+    for key in a[first]:
+        if isinstance(a[first][key],float) and np.isnan(a[first][key]): assert np.isnan(b[first][key])
+        else: assert a[first][key]==b[first][key]

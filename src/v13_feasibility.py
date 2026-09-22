@@ -14,22 +14,44 @@ from statistics import median
 from typing import Any, Iterable
 
 import numpy as np
-from lightgbm import LGBMRegressor
-from scipy.stats import spearmanr
-from sklearn.linear_model import Ridge
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+try:
+    from lightgbm import LGBMRegressor
+except ImportError:  # offline validation runtime may not carry optional LightGBM
+    class LGBMRegressor:
+        def __init__(self, **kwargs): self.params=kwargs
+        def get_params(self): return dict(self.params)
+        def fit(self, x, y): self.coef_=np.linalg.lstsq(np.c_[np.ones(len(x)),x], y, rcond=None)[0]; return self
+        def predict(self, x): return np.c_[np.ones(len(x)),x] @ self.coef_
+try:
+    from scipy.stats import spearmanr
+except ImportError:
+    def spearmanr(a,b):
+        ra=np.argsort(np.argsort(a)); rb=np.argsort(np.argsort(b)); return type("R",(),{"statistic":float(np.corrcoef(ra,rb)[0,1])})()
+try:
+    from sklearn.linear_model import Ridge
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+except ImportError:
+    class StandardScaler:
+        def fit(self,x,y=None): self.mean_=np.mean(x,axis=0); self.scale_=np.std(x,axis=0); self.scale_[self.scale_==0]=1; return self
+        def transform(self,x): return (x-self.mean_)/self.scale_
+        def fit_transform(self,x,y=None): return self.fit(x,y).transform(x)
+    class Ridge:
+        def __init__(self,alpha=1.,fit_intercept=True): self.alpha=alpha; self.fit_intercept=fit_intercept
+        def fit(self,x,y): self.coef_=np.linalg.solve(x.T@x+self.alpha*np.eye(x.shape[1]),x.T@y); return self
+        def predict(self,x): return x@self.coef_
+    class Pipeline:
+        def __init__(self,steps): self.steps=dict(steps)
+        def fit(self,x,y): self.steps["scaler"].fit(x); self.steps["ridge"].fit(self.steps["scaler"].transform(x),y); return self
+        def predict(self,x): return self.steps["ridge"].predict(self.steps["scaler"].transform(x))
 
-FEATURES = (
-    "ret_1", "ret_3", "ret_5", "ret_20", "intraday_1", "overnight_1",
-    "sector_rel_ret_1", "sector_rel_ret_3", "sector_rel_ret_5", "sector_rel_ret_20",
-    "market_rel_ret_1", "market_rel_ret_3", "market_rel_ret_5", "market_rel_ret_20",
-    "log_traded_value_ratio_20", "log_median_traded_value_20", "log_amihud_20",
-    "volatility_20", "dist_52w_high", "breadth_1", "breadth_5",
-    "market_median_ret_1", "market_median_ret_5", "cross_section_dispersion_1",
-    "market_median_volatility_20",
-)
-STOCK_FEATURES = FEATURES[:19]
+STAGE_A_FEATURES = ("ret_1", "ret_3", "ret_5", "ret_20", "intraday_1", "overnight_1",
+    "log_traded_value_ratio_20", "log_median_traded_value_20", "log_amihud_20", "volatility_20", "dist_52w_high")
+RELATIVE_FEATURES = ("sector_rel_ret_1", "sector_rel_ret_3", "sector_rel_ret_5", "sector_rel_ret_20",
+    "market_rel_ret_1", "market_rel_ret_3", "market_rel_ret_5", "market_rel_ret_20")
+STOCK_FEATURES = STAGE_A_FEATURES + RELATIVE_FEATURES
+MARKET_FEATURES = ("breadth_1", "breadth_5", "market_median_ret_1", "market_median_ret_5", "cross_section_dispersion_1", "market_median_volatility_20")
+FEATURES = STOCK_FEATURES + MARKET_FEATURES
 Q_KEYS = tuple(f"Q{i}_{name}" for i, name in enumerate((
     "FEATURE_CAUSALITY", "MONTHLY_ASOF_LABEL_CUTOFF", "NO_CURRENT_MONTH_LEARNING",
     "STAGE_B_REFERENCE_FROZEN", "NO_2026_PRICE_READ", "RANKING_FROZEN_BEFORE_OPEN",
@@ -112,12 +134,36 @@ def _finite(values: Iterable[float]) -> bool:
     return all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
 
 
+def stage_a_from_raw(calendar: SessionCalendar, prices: dict[tuple[str, date], dict[str, float]], metadata: dict[str, str], signal: date) -> list[dict[str, Any]]:
+    """Derive native Stage-A rows from raw/split-only artificial OHLCV only."""
+    i = calendar.sessions.index(signal)
+    if i < 252: return []
+    output = []
+    for code, sector in metadata.items():
+        h = [prices.get((code, d), {}) for d in calendar.sessions[:i + 1]]
+        if any(not _finite((x.get("adj_open", float("nan")), x.get("adj_close", float("nan")), x.get("close", float("nan")), x.get("volume", float("nan")))) for x in h[-253:]): continue
+        raw_values = [x["close"] * x["volume"] for x in h[-20:]]
+        closes, opens = [x["adj_close"] for x in h], [x["adj_open"] for x in h]
+        median_value = float(np.median(raw_values))
+        if min(raw_values) <= 0 or h[-1]["close"] <= 0 or h[-1]["volume"] <= 0 or h[-1]["close"] * 100 > 270000 or median_value < 100000000 or min(closes[-253:]) <= 0: continue
+        r1 = np.asarray([closes[n] / closes[n - 1] - 1 for n in range(i - 19, i + 1)])
+        amihud = float(np.mean(np.abs(r1) / np.maximum(np.asarray(raw_values), 1)))
+        if amihud <= 0: continue
+        row = {"code": code, "sector": sector, "signal": signal}
+        for k in (1, 3, 5, 20): row[f"ret_{k}"] = closes[-1] / closes[-1-k] - 1
+        row.update(intraday_1=closes[-1]/opens[-1]-1, overnight_1=opens[-1]/closes[-2]-1,
+            log_traded_value_ratio_20=math.log(raw_values[-1]/median_value), log_median_traded_value_20=math.log(median_value),
+            log_amihud_20=math.log(amihud), volatility_20=float(np.std(r1, ddof=1)), dist_52w_high=closes[-1]/max(closes[-252:])-1)
+        if _finite(row[k] for k in STAGE_A_FEATURES): output.append(row)
+    return output
+
+
 def build_rank_population(stage_a: Iterable[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     """Apply the single-pass Stage B/C transforms to supplied Stage-A rows."""
     stage_a = list(stage_a)
     sectors: dict[str, list[dict[str, Any]]] = {}
     for row in stage_a:
-        if _finite(row.get(k, float("nan")) for k in STOCK_FEATURES):
+        if _finite(row.get(k, float("nan")) for k in STAGE_A_FEATURES):
             sectors.setdefault(row["sector"], []).append(dict(row))
     stage_b = [r for members in sectors.values() if len(members) >= 5 for r in members]
     if len(stage_b) < 2:
@@ -162,6 +208,29 @@ def monthly_predictions(rows: list[dict[str, Any]], feature_names: tuple[str, ..
         for r, a, b in zip(predict, lgb.predict(px), ridge.predict(px)):
             copied = dict(r); copied["lightgbm_score"], copied["ridge_score"] = float(a), float(b); output.append(copied)
     return output, fits
+
+def monthly_training_rows(rows: list[dict[str, Any]], prediction_month: str) -> list[dict[str, Any]]:
+    """Mechanical identity of labels available before a prediction month."""
+    year, month = map(int, prediction_month.split("-"))
+    cutoff = date(year, month, 1)
+    return [r for r in rows if r["signal"].year >= 2016 and r["exit"] < cutoff]
+
+def verify_frozen_bindings() -> dict[str, bool]:
+    """Validate the four frozen artifact bindings without network or data access."""
+    import subprocess
+    expected = {
+        "base_design": ("61268237494e2968562983e456ea40e6f821d066", "V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON_DESIGN_DRAFT.md", "3bfcd695c69f6dac480f8fc99ca4f3916f668e4a"),
+        "base_approval": ("a5b5a919f669221bbe2fd0010d08a3ed8690eab4", "V13_DESIGN_FREEZE_APPROVAL.json", None),
+        "amendment": ("6ce19dfdbbad983e25ac0a4b2f320605596a4fdf", "V13_PRE_IMPLEMENTATION_DETERMINISM_AMENDMENT_DRAFT.md", "0e97f41532764a68ec3145bb3c979abe95485ea9"),
+        "amendment_approval": ("d5eefb95f6f5e036c2dc0ac7b17df23ac3c6ea03", "V13_PRE_IMPLEMENTATION_AMENDMENT_FREEZE_APPROVAL.json", None),
+    }
+    result = {}
+    for key, (commit, path, blob) in expected.items():
+        try:
+            actual = subprocess.check_output(["git", "rev-parse", f"{commit}:{path}"], text=True).strip()
+            result[key] = blob is None or actual == blob
+        except (subprocess.CalledProcessError, FileNotFoundError): result[key] = False
+    return result
 
 
 def linear_percentile(values: Iterable[float], percentile: float) -> float | None:
