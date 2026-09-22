@@ -104,6 +104,21 @@ FROZEN_REMEDIATION_BUDGET_STATUS=WITHIN_LIMIT|EXHAUSTED|NOT_APPLICABLE|UNKNOWN
 Do not reconstruct these values only after a later review. Bookkeeping-only
 corrections are tracked separately from substantive remediation.
 
+### Engineering diagnostics versus scientific stops
+
+Remediation count and active time are engineering diagnostics unless a human-
+approved, study-specific rule explicitly freezes them as scientific stopping
+conditions. Ordinary methodology-preserving implementation, plumbing,
+targeted-test, deterministic reporting, and bookkeeping corrections do not
+automatically consume a scientific-remediation round or force study pause.
+They still require correction, appropriate checks, and exact-SHA review before
+advancement. If an engineering threshold is exceeded, set the corresponding
+escalation diagnostic and reconsider decomposition or scope; do not terminate
+the study automatically and do not relax correctness or scientific
+requirements to improve throughput. Scientific ambiguity, methodology
+change, leakage, unauthorized access, irreversible-boundary failure, and
+other frozen hard stops remain strict.
+
 ## Measurement windows and interpretation
 
 Use these windows:

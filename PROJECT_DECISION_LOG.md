@@ -3747,3 +3747,25 @@ transitions. This public log must not contain protected material.
 - Existing project venv `C:\taiki\hobbies\stock-analyzer\.venv` passed the required read-only imports; package installations and environment mutations were zero. No real-market data, network request, ticker selection, historical price read, outcome-bearing fit/backtest, forward paper, private/sealed access, or trading action occurred.
 - Targeted tests (41 collected, all pass) and two deterministic CLI runs were completed using the real project venv; stdout SHA-256 is `9872e7f4da77f0a1b8ac0ff7dc79875c16695ff2bbd3dbba2f2b77c6e0bf4775`. The final remediation active-time ledger is 20 rounded-up minutes, cumulative 46 minutes, within the 240-minute budget. Substantive remediation is now 2 used / 0 remaining.
 - Next action is exact-SHA GPT independent review. If that review blocks, no further substantive V13 implementation remediation is allowed under the frozen study.
+
+## 2026-09-23 — Issue #32 implementation-remediation policy amendment
+
+- Issue #30 PASS at `7d2af5322973f04a6c4cc0760be63687926f1300` and Issue #31
+  exact-SHA BLOCK at `3a75fd93cc51c122ea78a56f6a1699ac93d3c786` are recorded;
+  the BLOCK findings are `H3/M1/L1=3/1/1` (`HIGH=3`, `MEDIUM=1`, and
+  `LOW=1`).
+- No irreversible or outcome boundary was crossed: no real-market data,
+  network request, real ticker selection, historical price read,
+  outcome-bearing fit/backtest, forward paper, private/sealed access, or
+  trading action occurred.
+- The human decision separates ordinary methodology-preserving implementation
+  correction from scientific stopping. The prior remediation-count and
+  active-time hard-stop semantics are superseded for such pre-measurement
+  fixes; the count and time remain engineering diagnostics, with 240 minutes
+  as an escalation threshold only.
+- Strict scientific and irreversible stops remain unchanged. The frozen V13
+  methodology, execution authority, data authority, human gates, and future
+  profitability status are unchanged; future profitability remains
+  unestablished.
+- After GPT exact-SHA PASS of this policy amendment, the next action is a
+  bounded methodology-preserving remediation of Issue #31 H1/H2/H3/M1.

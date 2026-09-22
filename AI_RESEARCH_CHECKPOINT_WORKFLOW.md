@@ -51,12 +51,17 @@ REMEDIATION_ROUNDS_USED=
 REMEDIATION_ROUNDS_REMAINING=
 ```
 
-When `EXHAUSTED`, do not create or activate another substantive remediation
-task; perform the required terminal, pause, or state-record action. When a
-possibly applicable limit is `UNKNOWN`, use `CHATGPT_DECISION_REQUIRED` and
-do not guess. Bookkeeping-only corrections must be classified separately and
-must not disguise substantive remediation. A later out-of-budget PASS cannot
-retroactively erase a terminal disposition.
+When a study-specific scientific remediation limit is `EXHAUSTED`, do not
+create or activate another substantive remediation task; perform the required
+terminal, pause, or state-record action. Ordinary methodology-preserving
+implementation, plumbing, test-coverage, deterministic reporting, and
+bookkeeping corrections are not mechanically counted as scientific
+remediation merely because they occur during implementation. They remain
+subject to exact-SHA review and any applicable study-specific rule. When a
+possibly applicable scientific limit is `UNKNOWN`, use
+`CHATGPT_DECISION_REQUIRED` and do not guess. Bookkeeping-only corrections
+must be classified separately and must not disguise substantive remediation.
+A later out-of-budget PASS cannot retroactively erase a terminal disposition.
 
 ## 2. Implementation checkpoint
 
@@ -66,6 +71,18 @@ and the commit + push -- as one unit, followed by one GPT exact-SHA
 independent review of that unit. This is the existing pattern already used
 throughout this repository's `V9_006` implementation remediation chain; this
 document only names it as the default, it does not introduce it.
+
+Implementation defects discovered before a relevant irreversible or outcome
+boundary are engineering corrections, not automatic scientific stops. This
+includes deterministic code defects, missing targeted tests, contract-matrix
+coverage gaps, generated-worktree or interpreter/dependency discovery
+plumbing, bookkeeping, and deterministic serialization/reporting defects.
+They still require correction, appropriate targeted checks, and GPT exact-SHA
+PASS before advancement. A defect at or affecting an irreversible boundary,
+or a defect that changes or leaves ambiguous the frozen methodology, remains
+strictly governed as a scientific or safety remediation. A stricter
+study-specific rule applies unless explicitly amended by the human for the
+study.
 
 ## 3. Real execution checkpoint
 
