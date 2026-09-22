@@ -88,8 +88,8 @@ The strong parent remains responsible for integration, targeted checks, final
 diff, commit, push, and report.
 
 By default, only one repository-writing task may be `READY` or executing
-against an authoritative branch at a time. Before editing and again before
-push, the executor must verify:
+against an authoritative branch at a time. For ordinary/local checkout mode,
+before editing and again before push, the executor must verify:
 
 - branch matches the Issue;
 - local HEAD equals the exact `EXPECTED_HEAD`;
@@ -97,7 +97,10 @@ push, the executor must verify:
 - working tree is clean; and
 - no unexpected files or history exist.
 
-Any mismatch is `EXPECTED_HEAD_MISMATCH` and requires STOP. A future task is
+Any ordinary/local checkout mismatch is `EXPECTED_HEAD_MISMATCH` and requires
+STOP. If `CODEX_MANAGED_TASK_WORKSPACE` applies, route to §5 before treating
+the generated branch/worktree name or base/local-HEAD mismatch as a STOP;
+after §5 realignment, the same exact-HEAD checks apply. A future task is
 activated only after GPT reviews the preceding exact SHA and updates the next
 Issue with the new exact parent.
 
