@@ -174,7 +174,24 @@ posts the review to the GitHub Issue and closes the Issue only after PASS.
 On BLOCK, keep the originating task traceable. Normally create one bounded
 remediation Issue per finding, at most two only when findings are strongly
 coupled. Each remediation Issue gets its own exact `EXPECTED_HEAD` after the
-prior commit, and the execution/review loop repeats.
+prior commit, and the execution/review loop repeats. Before creating or
+activating any substantive remediation Issue, first inspect every applicable
+frozen remediation-round ceiling, implementation/time budget, terminal
+stopping/disposition rule, and one-shot or human-gate constraint. Record:
+
+```text
+FROZEN_REMEDIATION_BUDGET_STATUS=WITHIN_LIMIT|EXHAUSTED|NOT_APPLICABLE|UNKNOWN
+REMEDIATION_ROUNDS_USED=
+REMEDIATION_ROUNDS_REMAINING=
+```
+
+`EXHAUSTED` means do not create or activate another substantive remediation
+Issue; perform the required terminal, pause, or state-record action instead.
+If a frozen limit may apply but the status is `UNKNOWN`, use
+`CHATGPT_DECISION_REQUIRED` and do not guess. Classify bookkeeping-only
+corrections separately; they must not disguise substantive remediation. A
+later successful out-of-budget remediation cannot retroactively erase a
+terminal disposition already triggered by the frozen rule.
 
 ## 8. Cross-chat bootstrap
 

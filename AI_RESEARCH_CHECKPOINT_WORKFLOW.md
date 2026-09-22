@@ -39,7 +39,24 @@ discretion, one bounded, scope-local mechanical closure sweep over that
 same design document (see section 5). Default one finding per remediation
 task; at most two only when they are strongly coupled (the same root cause,
 the same section, or fixing one is mechanically impossible without the
-other).
+other). This cadence is subordinate to any stricter study-specific
+anti-sprawl budget or stopping rule. Before taking the default `BLOCK ->
+remediation task` path, inspect all applicable frozen remediation-round
+ceilings, implementation/time budgets, terminal stopping/disposition rules,
+and one-shot or human-gate constraints. Record:
+
+```text
+FROZEN_REMEDIATION_BUDGET_STATUS=WITHIN_LIMIT|EXHAUSTED|NOT_APPLICABLE|UNKNOWN
+REMEDIATION_ROUNDS_USED=
+REMEDIATION_ROUNDS_REMAINING=
+```
+
+When `EXHAUSTED`, do not create or activate another substantive remediation
+task; perform the required terminal, pause, or state-record action. When a
+possibly applicable limit is `UNKNOWN`, use `CHATGPT_DECISION_REQUIRED` and
+do not guess. Bookkeeping-only corrections must be classified separately and
+must not disguise substantive remediation. A later out-of-budget PASS cannot
+retroactively erase a terminal disposition.
 
 ## 2. Implementation checkpoint
 
@@ -95,6 +112,9 @@ only when they are strongly coupled (section 1). Do not batch unrelated
 findings into one remediation merely to save a round trip -- that trades
 reviewability for speed in exactly the wrong direction; each finding should
 remain independently traceable to its own fix and its own review.
+
+The budget gate in section 1 is evaluated before this granularity rule. A
+normal remediation cadence never overrides a stricter frozen study budget.
 
 ## 7. Long work
 

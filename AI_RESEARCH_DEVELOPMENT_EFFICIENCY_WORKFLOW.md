@@ -74,6 +74,36 @@ Report raw commit count, record-only/admin commit count, and substantive
 commit count as diagnostics only. They are never optimization targets and do
 not replace any primary metric.
 
+## Pre-implementation contract and remediation tracking
+
+For complex protected `PRE_GATE`, environment-checker, parser, or runtime
+boundary work, complete a lightweight `PRE_IMPLEMENTATION_CONTRACT_MATRIX`
+before implementation or commit. It must map the task to:
+
+- exact reviewed predecessor semantics to reuse;
+- reachable post-boundary dependencies and required synthetic probes;
+- process-isolation and runtime-identity requirements;
+- task-specific runbook constraints;
+- negative and fail-closed cases; and
+- current frozen remediation-budget status.
+
+The matrix is a closure aid, not a new review authority and not boilerplate
+that duplicates the full design. It should expose obvious predecessor or
+runbook omissions before the first GPT exact-SHA review. Any unresolved
+methodology, authority, or scope choice remains `CHATGPT_DECISION_REQUIRED`.
+
+Anti-sprawl studies must track remediation rounds from round zero in durable
+state or the active Issue:
+
+```text
+REMEDIATION_ROUNDS_USED=
+REMEDIATION_ROUNDS_REMAINING=
+FROZEN_REMEDIATION_BUDGET_STATUS=WITHIN_LIMIT|EXHAUSTED|NOT_APPLICABLE|UNKNOWN
+```
+
+Do not reconstruct these values only after a later review. Bookkeeping-only
+corrections are tracked separately from substantive remediation.
+
 ## Measurement windows and interpretation
 
 Use these windows:
