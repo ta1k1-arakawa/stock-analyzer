@@ -3690,3 +3690,16 @@ transitions. This public log must not contain protected material.
 - Implementation remains blocked pending GPT exact-SHA review and explicit
   human amendment-freeze approval. The implementation remediation budget
   remains `0 used / 2 remaining`.
+
+## 2026-09-22 — V13 pre-implementation amendment freeze approval record
+
+- The amendment exact-SHA review at `6ce19df...` passed with C/H/M/L=0/0/0/0.
+- The human explicitly approved the amendment freeze with scope
+  `AMENDMENT_FREEZE_ONLY`.
+- The base frozen design and amendment content remain unchanged.
+- Implementation remains unauthorized until this approval-record commit
+  receives GPT exact-SHA PASS.
+- Acquisition, ticker selection, historical-price access, model fit,
+  backtest, forward paper, private/sealed access, and trading remain
+  unauthorized.
+- The implementation budget remains `0 used / 2 remaining`.
