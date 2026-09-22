@@ -3651,3 +3651,15 @@ transitions. This public log must not contain protected material.
 - `V13_DESIGN_FREEZE_APPROVAL_RECORD` remains `AWAITING_GPT_REVIEW`; the
   implementation budget remains `0 used / 2 remaining` and no methodology or
   frozen design file/blob was changed.
+
+## 2026-09-22 — V13 approval-record literal contract remediation
+
+- Review of `20e8ddb5533ab4fea69686b2c152d4fb75c38e0d` was BLOCK with
+  `CRITICAL=0`, `HIGH=1`, `MEDIUM=1`, and `LOW=0`.
+- HIGH_1 was an unauthorized invention of approval-schema and authority
+  semantics; MEDIUM_1 was missing durable review lineage.
+- This commit restores the literal closed approval contract and exact review
+  state lineage. The frozen design commit/blob remain unchanged, and the
+  human design-freeze approval remains valid.
+- No implementation, data, model, backtest, or trading authority is created;
+  the implementation remediation budget remains `0 used / 2 remaining`.
