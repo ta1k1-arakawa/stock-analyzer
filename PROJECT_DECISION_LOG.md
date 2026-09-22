@@ -3601,3 +3601,23 @@ transitions. This public log must not contain protected material.
 - No design freeze, acquisition, historical viability run, model fit, backtest,
   forward paper, or real-trading authorization is created. Future profitability
   remains unestablished. Next action: GPT exact-SHA independent review.
+
+## 2026-09-22 — V13 design MEDIUM-1/MEDIUM-2 closure remediation
+
+- GPT exact-SHA review of `453f6c8664723975a1de2da6703faf8753c2984b` returned
+  `CRITICAL=0`, `HIGH=0`, `MEDIUM=2`, `LOW=0`, `RESULT=BLOCK` with findings
+  `CROSS_SECTIONAL_REFERENCE_POPULATION_NOT_CLOSED` and
+  `EXIT_DAY_NEXT_SIGNAL_EVENT_ORDER_NOT_CLOSED`.
+- The V13 draft now fixes a non-iterating Stage A/B/C population contract,
+  including the frozen Stage-B reference population, fail-closed rank-data
+  quality semantics, exact base/stress friction formulas, and the undefined
+  IC/top-decile/concentration/random-baseline metric conventions.
+- The draft now fixes the daily event order: Open entry, holding/mark, Close
+  exit, after-close signal generation, and next-session availability of sale
+  proceeds, with no same-session re-entry.
+- This is pre-freeze design remediation only. V13 remains unfrozen; no
+  acquisition, ticker selection, historical-price read, model fit, backtest,
+  forward paper, trading action, or future-profitability authority occurred.
+  The future implementation budget remains 0 used / 2 remaining.
+- Both findings are `REMEDIATED_AWAITING_GPT_REVIEW`; next action is GPT
+  exact-SHA independent review.

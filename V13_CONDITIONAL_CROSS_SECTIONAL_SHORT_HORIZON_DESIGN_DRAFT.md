@@ -69,17 +69,76 @@ COMMISSION_SEPARATE=0
 
 Use identical friction mechanics in labels and portfolio execution. Evaluate the stress-cost portfolio without retraining. Rows lacking required future prices are invalid training labels. If an actually selected/executed simulated trade loses its required exit, classify `DATA_QUALITY_FAILURE`; never silently drop it.
 
-## Signal-date eligibility
+The exact target is the base-cost percentage-point return:
 
-A ticker is rank-eligible at `t` only when all conditions hold:
+```text
+entry_exec_base = raw_open_(t+1) * (1 + 0.001)
+exit_exec_base  = raw_close_(t+3) * (1 - 0.001)
+realized_net_return_percent = 100 * (exit_exec_base / entry_exec_base - 1)
+```
 
-- At least 252 prior valid trading observations exist and all required features are finite.
-- Raw Close and Volume are positive.
-- `raw_close_t * 100 <= 270000 JPY`.
-- Trailing 20-session median raw yen traded value is at least `100,000,000 JPY`.
-- Its current 33-sector group has at least five valid study-universe members on that date for sector-relative calculations.
+Stress execution uses `entry_exec_stress = raw_open_(t+1) * (1 + 0.002)` and
+`exit_exec_stress = raw_close_(t+3) * (1 - 0.002)`. Stress evaluation reuses
+the base-trained model predictions and frozen rankings; it does not retrain or
+rerank, but it re-simulates affordability, quantity, fallback, and no-fill
+outcomes under stress friction.
 
-No imputation is allowed; a failure omits that ticker for the signal date. The 270,000-JPY cap is the fixed 10% signal-date affordability buffer for the 300,000-JPY cash budget. Actual affordability is checked again at the next Open.
+## Signal-date staged population contract
+
+For each signal date `t`, start from the fixed selected 500-code V13 universe.
+The population is constructed once, in three non-iterating stages.
+
+### Stage A — `PRE_CROSS_SECTION_ELIGIBLE(t)`
+
+A ticker enters Stage A only when a valid row exists at `t`, at least 252 valid
+observations exist before `t` in addition to `t`, all required single-ticker
+inputs are finite with strictly positive divisors, raw Close and Volume are
+positive, `raw_close_t * 100 <= 270000 JPY`, and trailing 20-observation
+median raw yen traded value (including `t`) is at least `100,000,000 JPY`.
+Every fixed single-ticker feature must be finite before cross-sectional or
+sector transforms. The rolling mechanics are:
+
+```text
+ret_k(t) = adj_close_t / adj_close_(k valid observations before t) - 1
+intraday_1(t) = adj_close_t / adj_open_t - 1
+overnight_1(t) = adj_open_t / adj_close_(1 valid observation before t) - 1
+raw_traded_value(s) = raw_close_s * raw_volume_s
+median_traded_value_20(t) = median(raw_traded_value over t and previous 19 valid observations)
+log_traded_value_ratio_20(t) = ln(raw_traded_value_t / median_traded_value_20(t))
+log_median_traded_value_20(t) = ln(median_traded_value_20(t))
+amihud_component(s) = abs(ret_1(s)) / max(raw_traded_value(s), 1)
+log_amihud_20(t) = ln(arithmetic_mean(amihud_component over t and previous 19 valid observations))
+volatility_20(t) = sample_std_ddof_1(ret_1 over t and previous 19 valid observations)
+dist_52w_high(t) = adj_close_t / max(adj_close over t and previous 251 valid observations) - 1
+```
+
+All rolling windows include `t` and use the stated number of valid ticker
+observations. No forward fill or imputation is allowed.
+
+### Stage B — `CROSS_SECTION_REFERENCE(t)`
+
+Count current 33-sector membership using Stage A only. A ticker enters Stage B
+iff its sector has at least five Stage-A members. Stage B is the single frozen
+reference population for every sector and market cross-sectional calculation
+on that date. Using un-winsorized Stage-A returns for Stage-B members, compute
+the sector-relative and market-relative returns, breadth, market medians,
+cross-sectional dispersion, and median volatility defined in the fixed feature
+list below. Market-state values are identical for all Stage-B tickers.
+
+### Stage C — transformed rank population
+
+For every fixed stock-varying feature, use Stage B only: compute linear-
+interpolation 1st/99th percentiles, clip inclusively, then compute the clipped
+arithmetic mean and sample standard deviation (`ddof=1`) and z-score. If any
+required percentile, mean, or standard deviation is non-finite or has
+`std <= 0`, the entire date is `NO_RANK_DATA_QUALITY`; no model or comparator
+trade may open from that date. Market-state features remain raw aggregates.
+
+After this one pass, omit any ticker with a non-finite final feature without
+recomputing Stage B or any aggregate. This final set is `RANK_ELIGIBLE(t)`;
+iterative population recomputation is forbidden. The 270,000-JPY cap is the
+fixed 10% signal-date affordability buffer; actual affordability is checked
+again at the next Open.
 
 ## Fixed features and causal transforms
 
@@ -160,7 +219,28 @@ MAX_CONCURRENT_POSITIONS=1
 LOT_SIZE=100
 ```
 
-When flat after signal date `t`, sort eligible candidates by LightGBM predicted net-return score descending, with numeric code ascending for exact ties. Only scores strictly greater than zero qualify. At `t+1` Open, traverse the frozen ranking and take the first candidate with a valid Open and at least one 100-share lot affordable after entry friction. Buy the largest affordable multiple of 100 shares. If none is executable, record `NO_FILL` and stay in cash. Hold exactly through `t+3` Close and exit with exit friction. Open no new position while one is held; sale proceeds are available for the next trading session. Negative cash, duplicate allocation, overlapping positions, and double use of cash are forbidden. Ranking while a position is open may be computed for diagnostics but creates no order.
+For every exchange session `d`, process events in this exact order:
+
+1. At Open, if a pending order exists and the portfolio is flat, traverse the
+   frozen ranking using raw Open `d` and active-friction affordability; do not
+   change the ranking using Open information.
+2. Maintain at most one position and mark it daily using raw Close.
+3. At Close, if `d` is the scheduled third-session exit date, execute the exit
+   with exit friction before determining the signal state.
+4. After that exit, the portfolio is flat for after-close signal generation;
+   data through Close `d` may create the frozen ranking for next-session Open.
+5. Sale proceeds become available at the next session Open. There is no
+   same-session re-entry.
+6. If still held after the close-exit phase, any ranking is diagnostic-only
+   and creates no pending order.
+
+When flat after signal date `t`, sort `RANK_ELIGIBLE(t)` by LightGBM predicted
+net-return score descending, numeric code ascending on exact ties. Only scores
+strictly greater than zero qualify. At `t+1` Open, traverse the ranking and buy
+the largest affordable multiple of 100 shares for the first valid candidate.
+If none is executable, record `NO_FILL` and remain in cash. Negative cash,
+duplicate allocation, overlapping positions, and double use of cash are
+forbidden.
 
 ## Baselines and comparators
 
@@ -177,6 +257,29 @@ No comparator parameter may be tuned after outcomes are seen.
 ## Required metrics
 
 Report at minimum for LightGBM and relevant baselines: base-cost total net profit and ending equity; stress-cost total net profit; daily mark-to-market maximum drawdown; closed-trade count; win rate; profit factor; mean and median trade net return; positive calendar-year count and per-year PnL; best-year positive-profit share; maximum single-ticker positive-profit share; maximum current-sector positive-profit share; exposure fraction; `NO_FILL`/affordability skips; daily cross-sectional Spearman IC mean/median and per-year mean; fraction of signal dates with positive IC; and mean net target return of the predicted top decile versus the full eligible cross-section. Daily equity marks open positions at that day's raw Close without pretending liquidation.
+
+IC and top-decile metrics use `RANK_ELIGIBLE(t)` and the base-cost target.
+With fewer than two rank-eligible tickers, or constant/non-finite predictions or
+targets, daily Spearman IC is undefined, excluded from means, and counted as
+`IC_UNDEFINED_DATE_COUNT`; it is never imputed as zero. Sort rank-eligible
+tickers by score descending/code ascending. With fewer than two valid targets,
+top-decile spread is undefined and reported; otherwise its size is
+`max(1, ceil(0.10 * N))`, and spread is top-decile mean target minus all-N mean
+target. Criterion K is the mean of defined daily spreads; criterion L counts
+years whose mean defined spread is strictly positive.
+
+Use these concentration formulas:
+
+```text
+best_year_positive_profit_share = max_y(max(year_net_pnl_y, 0)) / sum_y(max(year_net_pnl_y, 0))
+single_ticker_positive_profit_share(code) = sum(max(closed_trade_pnl, 0) for that code) / sum(max(closed_trade_pnl, 0) for all closed trades)
+single_sector_positive_profit_share(sector) = sum(max(closed_trade_pnl, 0) for trades in that current sector) / sum(max(closed_trade_pnl, 0) for all closed trades)
+```
+
+Criteria N/O/P use the maxima. A zero positive-profit denominator fails the
+corresponding criterion closed. Criterion H uses the linear-interpolation 95th
+percentile of the 500 RANDOM_500 base-cost profits, and LightGBM must be
+strictly greater.
 
 ## Frozen historical-viability criteria
 
