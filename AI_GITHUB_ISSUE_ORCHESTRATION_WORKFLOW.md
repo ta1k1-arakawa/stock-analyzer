@@ -173,6 +173,44 @@ STOP. Force push is prohibited. This mode must never be used to perform a
 protected/direct-real-execution operation that requires the direct Windows
 PowerShell runbook; those stricter rules remain in force.
 
+### 5.1 Generated-worktree existing environment discovery
+
+Git worktrees share Git history and object storage, but they do not copy
+ignored or untracked files such as `.venv`. Generated task-worktree path
+isolation is therefore not itself a reason to create a new virtual
+environment.
+
+For ordinary repository-writing Python tasks, when an Issue requires tests
+and forbids environment mutation:
+
+1. enumerate worktrees read-only with `git worktree list --porcelain`;
+2. inspect each existing project candidate at
+   `<worktree>\.venv\Scripts\python.exe`;
+3. prefer a candidate whose import and version probe satisfies the task;
+4. invoke that interpreter explicitly against the generated worktree's code
+   and tests; activation is not required;
+5. perform no package or environment mutation.
+
+Never silently use a different system Python merely because it is first on
+PATH when a valid existing project virtual environment is available. Never
+implement dependency substitutes, fallback model libraries, or fallback
+statistical libraries to bypass a missing environment. If no valid candidate
+exists, fail closed and STOP with the task's environment-unavailable failure
+class.
+
+The generic Windows discovery and invocation shape is:
+
+```powershell
+git worktree list --porcelain
+& "<existing-worktree>\.venv\Scripts\python.exe" -c "import <required_modules>"
+& "<existing-worktree>\.venv\Scripts\python.exe" -m pytest ...
+```
+
+This rule changes execution plumbing only; it does not change research
+methodology or human gates. Protected/direct-real execution is excluded:
+its exact canonical interpreter and runbook take precedence, including
+`.venv-real-execution` where applicable.
+
 ## 6. Methodology, authority, and STOP discipline
 
 Execution agents never infer missing research choices or broaden authority.

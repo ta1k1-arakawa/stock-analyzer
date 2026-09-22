@@ -3718,3 +3718,23 @@ transitions. This public log must not contain protected material.
 - Added raw-derived labels, January/February 2020 monthly as-of fits, deterministic execution replay, base/stress metrics, comparator declarations, frozen-binding checks, and 30 collected targeted tests.
 - Cached offline runtime result: 30 tests pass; the CLI was run twice with byte-identical output and identical SHA-256. No real-market data, network request, ticker selection, historical price read, outcome-bearing fit/backtest, forward paper, private/sealed access, or trading action occurred.
 - `V13_SYNTHETIC_FEASIBILITY_HIGH_1` and `V13_SYNTHETIC_FEASIBILITY_HIGH_2` are `REMEDIATED_AWAITING_GPT_REVIEW`; synthetic output remains `SYNTHETIC_ONLY_NOT_RESEARCH_EVIDENCE=true`, `REAL_MARKET_DATA_USED=false`, and `V13_HISTORICAL_VIABILITY_RESULT=NOT_RUN`.
+
+## 2026-09-23 — Issue #30 governance/bookkeeping record
+
+- The Issue #29 round-1 remediation was reviewed at exact SHA
+  `e3d6cee186bdea3820d3ee20398dcb7d8d7dcb3b` and returned
+  `BLOCK_CRITICAL_0_HIGH_3_MEDIUM_1_LOW_0`.
+- Findings were incomplete complete-path closure, repeated relative-feature
+  transformation, unauthorized dependency substitution, and duplicate
+  current-state keys.
+- No real/outcome boundary was crossed: no real-market data, network request,
+  real ticker selection, historical price read, outcome-bearing model fit or
+  backtest, forward paper, private/sealed access, or trading action occurred.
+- Substantive remediation remains round `1` used / `1` remaining.
+- The environment/worktree failure was execution plumbing: the generated
+  worktree lacked ignored `.venv`, and PATH Python was unsuitable. Future
+  ordinary tasks must discover existing project virtual environments from
+  Git worktrees read-only rather than mutating an environment or substituting
+  dependencies.
+- This governance/bookkeeping task does not consume a substantive remediation
+  round and changes neither methodology nor execution authority.

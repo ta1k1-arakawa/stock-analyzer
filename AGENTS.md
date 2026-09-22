@@ -25,6 +25,19 @@ ordinary repository-writing tasks, handle that condition only through the
 mismatch STOP. Protected/direct-real-execution tasks remain subject to their
 stricter rules.
 
+For ordinary Python development/test tasks in a generated Orca/Codex
+worktree, do not assume ignored or untracked environments such as `.venv`
+exist there. If environment mutation is not authorized, discover existing
+Git worktree roots read-only and probe each `<worktree>\.venv\Scripts\python.exe`
+for the required imports/version before invoking it explicitly. Do not
+create, copy, repair, install, upgrade, uninstall, or otherwise mutate an
+environment, and do not substitute handwritten or fallback dependencies. If
+no valid existing environment is found, STOP with the task's
+environment-unavailable failure class. This ordinary-development rule does
+not override protected/direct-real execution contracts such as
+`.venv-real-execution`; see the canonical detailed rule in
+`AI_GITHUB_ISSUE_ORCHESTRATION_WORKFLOW.md`.
+
 ## AI research/execution governance
 
 For every important stock-analyzer research-planning, methodology-decision,
