@@ -3566,3 +3566,21 @@ transitions. This public log must not contain protected material.
   installation, environment mutation, or human-gate consumption occurred.
 - Status: `IMPLEMENTED_AWAITING_GPT_REVIEW`; next action is exact-SHA GPT
   independent review of Issue #14's implementation commit.
+
+## 2026-09-22 — V12 anti-sprawl pause state record
+
+- Issue #15 records the already-binding frozen V12 §10 disposition after the
+  substantive remediation-round limit was exceeded before the first
+  historical screen: the frozen maximum is `1`, while Issues #13 and #14
+  constitute at least `2` substantive remediation rounds after Issue #12.
+- The durable project disposition is `PAUSE_V12` with reason
+  `MAX_SUBSTANTIVE_REMEDIATION_ROUNDS_EXCEEDED`. This is a state/bookkeeping
+  transition only; it changes no V12 methodology, frozen design, selector
+  semantics, source identity, execution authority, or research result.
+- The local V3R1 runner artifact was statically prepared and independently
+  recorded as never executed:
+  `V12_RUNNER_V3R1_SHA256=8f430676a4e186bf35b726cebad7bc1ea3ad371c820790198991618653789734`.
+- Before and during this transition, the V12 ticker-selection gate remained
+  unconsumed, no ticker was selected, no locked JPX content was read, and no
+  Yahoo/JPX request, historical-price read, model fit, backtest, forward
+  paper, or real-trading operation occurred.
