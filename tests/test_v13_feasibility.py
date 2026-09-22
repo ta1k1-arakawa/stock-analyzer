@@ -11,6 +11,7 @@ import pytest
 from src.v13_feasibility import (FEATURES, Q_KEYS, SessionCalendar, adjudicate, base_target,
     build_rank_population, canonical_json, diagnostics, lightgbm_factory, monthly_predictions,
     random_key, rank_candidates, ridge_factory, select_universe, simulate, trade_metrics,
+    linear_percentile,
     stage_a_from_raw, monthly_training_rows, verify_frozen_bindings)
 from src.v13_synthetic_fixture import active_rows, stage_a_rows, synthetic_manifest
 
@@ -43,10 +44,13 @@ def test_factories_actual_fit_and_monthly_asof():
     assert ridge_factory().fit(x,y).predict(x[:1]).shape == (1,)
     predicted, fits = monthly_predictions(active_rows())
     assert len(fits) >= 2 and all(n == 2 for n in fits.values())
-    # The production implementation filters every fit to labels known before
-    # the prediction-month boundary; predictions themselves naturally exit later.
-    import inspect
-    assert 'r["exit"] < date(year, mon, 1)' in inspect.getsource(monthly_predictions)
+    # The production implementation exposes the actual training identities and
+    # cutoff facts; the assertion is behavioral rather than source inspection.
+    audit = {}
+    _, audited = monthly_predictions(active_rows(), audit=audit)
+    assert all(all(exit_day < record["prediction_month_first_session"]
+                   for exit_day in record["training_exit_dates"])
+               for record in audited.values())
 
 def test_rankings_random_and_diagnostics():
     rows = [{"code":"1001","lightgbm_score":1.,"ridge_score":1.,"sector_rel_ret_1":.1,"sector_rel_ret_20":.2}, {"code":"1000","lightgbm_score":1.,"ridge_score":1.,"sector_rel_ret_1":-.1,"sector_rel_ret_20":.1}]
@@ -111,3 +115,73 @@ def test_isolated_fixture_variants_are_deterministic(variant):
     for key in a[first]:
         if isinstance(a[first][key],float) and np.isnan(a[first][key]): assert np.isnan(b[first][key])
         else: assert a[first][key]==b[first][key]
+
+def test_real_dependency_identity_and_exact_feature_contract():
+    import lightgbm, scipy, sklearn
+    from src.v13_feasibility import MARKET_FEATURES, RELATIVE_FEATURES, STAGE_A_FEATURES
+    assert lightgbm_factory().__class__.__module__.startswith("lightgbm")
+    assert scipy.__version__ and sklearn.__version__
+    assert len(STAGE_A_FEATURES) == 11 and len(RELATIVE_FEATURES) == 8 and len(FEATURES) == 25
+    assert FEATURES == STAGE_A_FEATURES + RELATIVE_FEATURES + MARKET_FEATURES
+
+def test_stage_c_transform_audit_has_one_pass_for_each_stock_field():
+    from src.v13_feasibility import build_rank_population_audit
+    status, rows, audit = build_rank_population_audit(stage_a_rows())
+    assert status == "OK" and len(rows) == 12
+    assert tuple(audit["transforms"]) == tuple(STOCK for STOCK in FEATURES[:19])
+    assert len(audit["transforms"]) == 19
+
+def test_stage_a_rejects_invalid_signal_divisor_without_imputation():
+    from src.v13_synthetic_fixture import raw_ohlcv, synthetic_calendar, synthetic_metadata
+    prices = raw_ohlcv(); signal = date(2020, 1, 2); code = next(iter(synthetic_metadata()))
+    prices[code, signal]["adj_open"] = 0.
+    assert not any(row["code"] == code for row in stage_a_from_raw(synthetic_calendar(), prices, synthetic_metadata(), signal))
+
+def test_scipy_spearman_tie_semantics_are_used():
+    rows = [{"code": f"{1000+i:04d}", "signal": date(2020,1,2), "lightgbm_score": score, "target": target} for i, (score, target) in enumerate([(1., 1.), (1., 2.), (2., 3.)])]
+    result = diagnostics(rows)
+    from scipy.stats import spearmanr
+    assert result["ic"] == pytest.approx(float(spearmanr([1., 1., 2.], [1., 2., 3.]).statistic))
+
+def test_training_audit_contains_actual_row_identities_and_month_cutoff():
+    audit = {}
+    _, fits = monthly_predictions(active_rows(), audit=audit)
+    assert fits and audit["monthly_fits"] is fits
+    for month, record in fits.items():
+        assert record["fit_count"] == 2
+        assert all(exit_day < record["prediction_month_first_session"] for exit_day in record["training_exit_dates"])
+        assert all("|" in row_id for row_id in record["training_row_ids"])
+
+def test_fixture_has_no_2026_session_or_price():
+    from src.v13_synthetic_fixture import raw_ohlcv, synthetic_calendar
+    assert synthetic_calendar().sessions[-1] == date(2025, 12, 31)
+    assert all(day.year <= 2025 for _, day in raw_ohlcv())
+
+def test_all_comparator_sign_and_tie_rules():
+    rows = [{"code":"1000", "lightgbm_score":1., "ridge_score":-1., "sector_rel_ret_1":0., "sector_rel_ret_20":0.}, {"code":"1001", "lightgbm_score":2., "ridge_score":1., "sector_rel_ret_1":-.1, "sector_rel_ret_20":.2}]
+    assert [r["code"] for r in rank_candidates(rows, "RIDGE")] == ["1001"]
+    assert [r["code"] for r in rank_candidates(rows, "SECTOR_REL_REVERSAL_1D")] == ["1001", "1000"]
+    assert [r["code"] for r in rank_candidates(rows, "SECTOR_REL_MOMENTUM_20D")] == ["1001", "1000"]
+
+def test_linear_p95_matches_numpy_interpolation():
+    assert linear_percentile([0., 1., 2., 3., 4.], 95) == pytest.approx(3.8)
+
+def test_cash_comparator_contract_from_production_run():
+    from src.v13_feasibility import run_synthetic_feasibility
+    result = run_synthetic_feasibility()
+    cash = result["strategies"]["CASH"]["base"]
+    assert cash["trades"] == 0 and cash["total_net_profit"] == 0 and cash["ending_equity"] == 300000
+    assert set(result["Q"]) == set(Q_KEYS)
+
+def test_production_result_has_actual_a_to_p_and_q_without_research_verdict():
+    from src.v13_feasibility import run_synthetic_feasibility
+    result = run_synthetic_feasibility()
+    assert set(result["A_P"]) == set("ABCDEFGHIJKLMNOP")
+    assert set(result["Q"]) == set(Q_KEYS)
+    assert result["V13_HISTORICAL_VIABILITY_RESULT"] == "NOT_RUN"
+
+def test_random_500_production_identity_is_proven_for_all_seeds():
+    from src.v13_feasibility import run_synthetic_feasibility
+    result = run_synthetic_feasibility()
+    identity = result["RANDOM_500"]["all_seed_ranking_identity"]
+    assert len(identity) == 500 and all(identity.values())

@@ -3738,3 +3738,12 @@ transitions. This public log must not contain protected material.
   dependencies.
 - This governance/bookkeeping task does not consume a substantive remediation
   round and changes neither methodology nor execution authority.
+
+## 2026-09-23 — Issue #31 synthetic feasibility final remediation round 2
+
+- Issue #30 exact-SHA PASS lineage is recorded at `7d2af5322973f04a6c4cc0760be63687926f1300`; the final substantive remediation round was activated after successful read-only discovery of the existing project venv.
+- Closed H1/H2/H3 mechanically while preserving the resolved M1 bookkeeping state: one `run_synthetic_feasibility` production path, exact one-pass Stage C, and direct real LightGBM/scikit-learn/SciPy dependencies.
+- The deterministic fixture now ends at 2025-12-31, executes the complete comparator set including CASH and 500 RANDOM base/stress paths, derives full portfolio/diagnostic metrics and A-P/Q1-Q12 evidence from run audits, and emits no synthetic research verdict.
+- Existing project venv `C:\taiki\hobbies\stock-analyzer\.venv` passed the required read-only imports; package installations and environment mutations were zero. No real-market data, network request, ticker selection, historical price read, outcome-bearing fit/backtest, forward paper, private/sealed access, or trading action occurred.
+- Targeted tests (41 collected, all pass) and two deterministic CLI runs were completed using the real project venv; stdout SHA-256 is `9872e7f4da77f0a1b8ac0ff7dc79875c16695ff2bbd3dbba2f2b77c6e0bf4775`. The final remediation active-time ledger is 20 rounded-up minutes, cumulative 46 minutes, within the 240-minute budget. Substantive remediation is now 2 used / 0 remaining.
+- Next action is exact-SHA GPT independent review. If that review blocks, no further substantive V13 implementation remediation is allowed under the frozen study.
