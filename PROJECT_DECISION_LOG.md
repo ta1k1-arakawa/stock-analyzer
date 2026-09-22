@@ -3676,3 +3676,17 @@ transitions. This public log must not contain protected material.
   tasks must, when checks pass and commit/push is required, complete
   commit+non-force push rather than stopping at local edits is persisted in
   `AGENTS.md` and `AI_GITHUB_ISSUE_ORCHESTRATION_WORKFLOW.md`.
+
+## 2026-09-22 — V13 pre-implementation determinism amendment draft
+
+- Issue #25 exact-SHA review passed at
+  `2b3735f9cdf010244c77ff1f7e1a9a92a4c2925e`.
+- Pre-implementation inspection found deterministic under-specification
+  before any outcome acquisition; the additive amendment closes the
+  exchange-session calendar boundary, comparator and random rankings,
+  calendar-year PnL, reporting metrics, and the exact Q invariant set.
+- No outcome data was accessed. The V13 frozen design and approval artifact
+  remain unchanged, and no implementation or execution authority is created.
+- Implementation remains blocked pending GPT exact-SHA review and explicit
+  human amendment-freeze approval. The implementation remediation budget
+  remains `0 used / 2 remaining`.
