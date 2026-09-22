@@ -18,7 +18,7 @@ disable-model-invocation: true
 4. current study の design、review、凍結・承認記録、関連する GitHub Issue または repository 内の Issue mirror が、`PROJECT_STATE.md` と整合するか確認する。READY Issue が実在する場合はその実行単位仕様も読む。会話の記憶で補わない。
 5. `PROJECT_STATE.md` など権威ある repository state から `authoritative_branch` を復元する。`main`、default branch、現在 checkout 中のbranch、最終更新日時が新しいbranch、過去チャットのbranch、Claude/Codex の一時branchを推測で採用してはならない。`main` は state が明示的に `authoritative_branch=main` の場合だけ対象にできる。
 6. その branch が remote に実在することを確認し、remote branch の最新 HEAD を取得・確認する。レビュー基準点はその remote HEAD であり、local checkout の都合ではない。`git ls-remote` で存在と最新SHAを確認し、必要なら `git fetch origin <authoritative_branch>` でその exact SHA を安全に取得して読む。
-7. state 内の複数キー、design、Issue、remote branch が相互に矛盾する、branch名やHEADを一意に決められない、remote branch が存在しない、または local branch/HEAD が対象 remote HEAD と一致しない場合は推測・branch切替・mergeをせず停止する。branchの権威が不明な場合は `AUTHORITATIVE_BRANCH_STATUS=AMBIGUOUS` と報告する。local sync 不整合も明示してレビューを実質開始しない。
+7. state 内の複数キー、design、Issue、remote branch が相互に矛盾する、branch名やHEADを一意に決められない、remote branch が存在しない、または authoritative remote HEAD を一意に取得できない場合は推測せず停止する。branchの権威が不明な場合は `AUTHORITATIVE_BRANCH_STATUS=AMBIGUOUS` と報告する。local branch/HEAD が authoritative remote branch/HEAD と一致しないことだけでは停止しない。local checkoutを自動でswitch、checkout、reset、merge、rebaseせず、必要なら `LOCAL_CHECKOUT_STATUS=MISMATCH` と補足し、取得したremote HEADのrepository evidenceをread-onlyでレビューする。
 
 レビューだけを目的とする読み取りでは、ネットワーク市場データ、private/sealed data、ticker選択、model fit、backtest、historical screen、forward paper、real trading、Slack送信を実行しない。既存の frozen methodology、execution authority、human gate、研究結果、現在 study の意味を変更しない。レビューの提案は authority の付与、gate の消費、方法論の変更、studyの自動継続を意味しない。方法論上の選択が必要で、既存文書に指定がなければ `CHATGPT_DECISION_REQUIRED` とし、勝手に選ばない。
 
