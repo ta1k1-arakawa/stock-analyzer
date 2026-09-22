@@ -3663,3 +3663,16 @@ transitions. This public log must not contain protected material.
   human design-freeze approval remains valid.
 - No implementation, data, model, backtest, or trading authority is created;
   the implementation remediation budget remains `0 used / 2 remaining`.
+
+## 2026-09-22 — V13 approval-record PASS and commit/push completion rule
+
+- Exact-SHA PASS of approval-record remediation at
+  `a5b5a919f669221bbe2fd0010d08a3ed8690eab4`, C/H/M/L=0/0/0/0; the V13
+  design-freeze approval record is now GPT-reviewed PASS.
+- The frozen design remains unchanged and all execution, data, model,
+  backtest, forward-paper, trading, and profitability authorities remain
+  false; the implementation remediation budget remains 0 used / 2 remaining.
+- The human workflow decision that ordinary Issue-driven repository-writing
+  tasks must, when checks pass and commit/push is required, complete
+  commit+non-force push rather than stopping at local edits is persisted in
+  `AGENTS.md` and `AI_GITHUB_ISSUE_ORCHESTRATION_WORKFLOW.md`.

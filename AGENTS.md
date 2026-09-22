@@ -8,6 +8,15 @@ task-specific documents it references. Use the READY GitHub Issue as the
 execution-unit specification; do not rely on conversational memory when the
 repository and GitHub contain the recoverable state.
 
+For an ordinary repository-writing Issue whose task contract includes
+commit/push, once all required checks pass and no STOP condition applies, the
+executor must finish the task by creating the required commit, performing the
+required non-force push, verifying authoritative remote HEAD, verifying a
+clean working tree, and reporting the resulting commit/remote state. It must
+not stop merely after local edits, static checks, or saying that files are
+"ready to commit/push." See
+`AI_GITHUB_ISSUE_ORCHESTRATION_WORKFLOW.md` for the canonical detailed rule.
+
 GitHub/Codex Start-button tasks may begin in a generated task branch or
 worktree whose name or base differs from the authoritative branch. For
 ordinary repository-writing tasks, handle that condition only through the

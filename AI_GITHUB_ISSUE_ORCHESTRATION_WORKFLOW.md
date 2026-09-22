@@ -104,6 +104,37 @@ after §5 realignment, the same exact-HEAD checks apply. A future task is
 activated only after GPT reviews the preceding exact SHA and updates the next
 Issue with the new exact parent.
 
+### 4.1 Normal repository-writing commit/push completion
+
+For a normal repository-writing task, if the Issue's Commit/push section
+requires or authorizes commit+push and all required checks pass, successful
+task completion includes:
+
+1. required commit creation;
+2. non-force push to the exact authoritative branch/ref;
+3. remote HEAD verification;
+4. clean working-tree verification; and
+5. a final report containing commit SHA, parent SHA, push result, remote HEAD,
+   and clean-tree status.
+
+The executor must not voluntarily stop after file edits, JSON/static
+validation, targeted tests, or "ready to commit/push" when no defined STOP
+condition exists. Missing optional/unrequired tests or dependencies must not
+be used as a reason to stop when the Issue explicitly says those tests are not
+required. If a required test/check genuinely cannot run, follow the Issue's
+fail-closed/STOP contract; do not bypass it merely to commit.
+
+This rule does not override:
+
+- an Issue that explicitly says `COMMIT/PUSH=NOT_APPLICABLE`;
+- direct real-execution tasks with repository writes prohibited;
+- remote-moved, dirty-tree, wrong-history, non-fast-forward, or ambiguity STOP
+  conditions; or
+- human gates or stricter task-specific rules.
+
+`CODEX_MANAGED_TASK_WORKSPACE` tasks follow the same completion rule after
+successful realignment.
+
 ## 5. CODEX_MANAGED_TASK_WORKSPACE mode
 
 When an ordinary repository-writing task is launched from the GitHub/Codex
