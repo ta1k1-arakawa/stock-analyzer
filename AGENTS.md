@@ -8,6 +8,14 @@ task-specific documents it references. Use the READY GitHub Issue as the
 execution-unit specification; do not rely on conversational memory when the
 repository and GitHub contain the recoverable state.
 
+GitHub/Codex Start-button tasks may begin in a generated task branch or
+worktree whose name or base differs from the authoritative branch. For
+ordinary repository-writing tasks, handle that condition only through the
+`CODEX_MANAGED_TASK_WORKSPACE` procedure in
+`AI_GITHUB_ISSUE_ORCHESTRATION_WORKFLOW.md`; it is not by itself a branch-
+mismatch STOP. Protected/direct-real-execution tasks remain subject to their
+stricter rules.
+
 ## AI research/execution governance
 
 For every important stock-analyzer research-planning, methodology-decision,

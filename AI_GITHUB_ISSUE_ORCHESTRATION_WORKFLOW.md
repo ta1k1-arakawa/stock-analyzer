@@ -101,7 +101,45 @@ Any mismatch is `EXPECTED_HEAD_MISMATCH` and requires STOP. A future task is
 activated only after GPT reviews the preceding exact SHA and updates the next
 Issue with the new exact parent.
 
-## 5. Methodology, authority, and STOP discipline
+## 5. CODEX_MANAGED_TASK_WORKSPACE mode
+
+When an ordinary repository-writing task is launched from the GitHub/Codex
+Start button, Codex may receive a generated task branch/worktree based on a
+branch other than the authoritative branch. The generated name or base is not
+by itself a mismatch. This compatibility mode changes workspace alignment
+only; it creates no research, network, private-data, production, trading,
+human-gate, or other execution authority.
+
+Before editing, the executor must:
+
+1. record the generated task branch/worktree identity;
+2. require a clean working tree;
+3. fetch/read Git metadata for the exact authoritative branch as needed;
+4. require the authoritative remote HEAD to equal the Issue `EXPECTED_HEAD`;
+5. require the exact `EXPECTED_HEAD` commit to be locally available;
+6. realign only the generated task branch/worktree to that exact
+   `EXPECTED_HEAD`; never check out or mutate another worktree's
+   authoritative local branch;
+7. evaluate target files and scope only after that exact-head realignment.
+
+After editing and the required checks, the executor must create exactly one
+task commit whose parent is the Issue `EXPECTED_HEAD`, unless the Issue
+explicitly specifies otherwise. Immediately before pushing, it must verify
+that the authoritative remote HEAD still equals the original `EXPECTED_HEAD`,
+then push non-force with an explicit refspec from the task HEAD to the
+authoritative branch:
+
+```text
+git push origin HEAD:refs/heads/<authoritative-branch>
+```
+
+If the remote moved, the parent or history is wrong or unexpected, the tree
+is dirty, the push is non-fast-forward, or any required fact is ambiguous,
+STOP. Force push is prohibited. This mode must never be used to perform a
+protected/direct-real-execution operation that requires the direct Windows
+PowerShell runbook; those stricter rules remain in force.
+
+## 6. Methodology, authority, and STOP discipline
 
 Execution agents never infer missing research choices or broaden authority.
 If the Issue or repository leaves a materially methodological choice
@@ -118,7 +156,7 @@ unexpected file/history, frozen-blob mismatch, missing artifact or authority,
 scope conflict, or methodology ambiguity. It must not repair the blocker by
 guessing, broadening scope, or changing methodology.
 
-## 6. Review lifecycle
+## 7. Review lifecycle
 
 The execution agent reports the exact commit SHA, parent, changed-file scope,
 tests, push result, remote HEAD, clean-tree status, and boundary counts
@@ -135,7 +173,7 @@ remediation Issue per finding, at most two only when findings are strongly
 coupled. Each remediation Issue gets its own exact `EXPECTED_HEAD` after the
 prior commit, and the execution/review loop repeats.
 
-## 7. Cross-chat bootstrap
+## 8. Cross-chat bootstrap
 
 When a new ChatGPT chat continues stock-analyzer and connected GitHub is
 available:
@@ -153,7 +191,7 @@ Do not ask the human to re-enter task state recoverable from the repository.
 Repository and frozen artifacts override Issue text if they conflict;
 stricter authority wins.
 
-## 8. Prompt minimization
+## 9. Prompt minimization
 
 Once this workflow is active, normal executor dispatch should contain only:
 
@@ -169,7 +207,7 @@ repository documents, not in every dispatcher prompt. A short prompt must
 not create ambiguity; missing rules must be stated explicitly or added to
 the canonical repository document before being relied upon.
 
-## 9. Activation checks and precedence
+## 10. Activation checks and precedence
 
 When this workflow is activated for a task, perform the exact branch, HEAD,
 remote, clean-tree, and scope preflight; change only the Issue-planned files;
@@ -184,7 +222,7 @@ stricter task-specific rules override this workflow. This document changes
 only cross-chat task dispatch and review cadence; it creates no authority and
 is not a methodology or review-authority document.
 
-## 10. Required final report
+## 11. Required final report
 
 When an Issue specifies this workflow's governance task, report:
 
