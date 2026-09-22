@@ -19,8 +19,14 @@ disable-model-invocation: true
 5. `PROJECT_STATE.md` など権威ある repository state から `authoritative_branch` を復元する。`main`、default branch、現在 checkout 中のbranch、最終更新日時が新しいbranch、過去チャットのbranch、Claude/Codex の一時branchを推測で採用してはならない。`main` は state が明示的に `authoritative_branch=main` の場合だけ対象にできる。
 6. その branch が remote に実在することを確認し、remote branch の最新 HEAD を取得・確認する。レビュー基準点はその remote HEAD であり、local checkout の都合ではない。`git ls-remote` で存在と最新SHAを確認し、必要なら `git fetch origin <authoritative_branch>` でその exact SHA を安全に取得して読む。
 7. state 内の複数キー、design、Issue、remote branch が相互に矛盾する、branch名やHEADを一意に決められない、remote branch が存在しない、または authoritative remote HEAD を一意に取得できない場合は推測せず停止する。branchの権威が不明な場合は `AUTHORITATIVE_BRANCH_STATUS=AMBIGUOUS` と報告する。local branch/HEAD が authoritative remote branch/HEAD と一致しないことだけでは停止しない。local checkoutを自動でswitch、checkout、reset、merge、rebaseせず、必要なら `LOCAL_CHECKOUT_STATUS=MISMATCH` と補足し、取得したremote HEADのrepository evidenceをread-onlyでレビューする。
+8. 証拠の状態を混同しない。`current authoritative remote repository state`、アクセス可能な `live GitHub Issue state`、`PROJECT_STATE` / `PROJECT_DECISION_LOG` などの repository mirror、過去の review record をそれぞれ別の層として記録する。live Issue にアクセスできる場合は、その現在の open/closed、status、next action と mirror を照合し、stale な next-action 文言を検出する。live Issue にアクセスできない場合はその制約を明記し、stale かもしれない mirror から live Issue の現在状態を事実として断定しない。stale な `CURRENT_STAGE`、`last_gpt_reviewed_sha`、next-action は、より新しい exact-SHA review、closed Issue、またはより厳格な frozen artifact を上書きしない。
+9. `DIRECTION_VERDICT` または `HIGHEST_VALUE_NEXT_STEP` を選ぶ前に、適用される frozen design、approval、current Issue、terminal disposition を明示的に確認する。implementation/time budget、maximum remediation rounds、stopping rule、terminal disposition rule、one-shot/gate constraint、authority limitation の有無と状態を調べる。`FROZEN_STOPPING_RULE_STATUS` は `NOT_APPLICABLE`、`WITHIN_LIMIT`、`LIMIT_EXCEEDED`、`UNKNOWN` のいずれかで回答する。binding な frozen condition が pause、stop、terminal disposition を要求している場合、route の科学的な形が合理的でも同じ study の継続を推奨してはならない。route quality と現在の authorized/disposition state は別物であることを説明し、verdict と next step に binding な stop/pause を反映する。この場合の highest-value next step は追加の implementation や execution ではなく、必要な state transition、review、recording action とし、frozen rule を再解釈・免除・waive してはならない。`LIMIT_EXCEEDED` の場合は、正確な repository evidence を示し、同じ frozen study の継続を防止する。
 
 レビューだけを目的とする読み取りでは、ネットワーク市場データ、private/sealed data、ticker選択、model fit、backtest、historical screen、forward paper、real trading、Slack送信を実行しない。既存の frozen methodology、execution authority、human gate、研究結果、現在 study の意味を変更しない。レビューの提案は authority の付与、gate の消費、方法論の変更、studyの自動継続を意味しない。方法論上の選択が必要で、既存文書に指定がなければ `CHATGPT_DECISION_REQUIRED` とし、勝手に選ばない。
+
+## 出力言語
+
+機械可読な field name、固定 enum、status token、branch name、SHA、study ID、task/status token は正確な表記を維持する。それ以外の free-text value、箇条書き、説明、根拠、要約、caveat、recommendation は、必ず自然な日本語で記述する。repository terminology として必要な英語 technical term は日本語の文中に含めてよいが、参照資料が英語であることを理由に英語の説明文を返してはならない。
 
 `PROJECT_STATE.md` の現在値、対象 remote HEAD、current study の design/review、実装、テスト、provenance、利用可能な成果物だけを根拠にする。implementation PASS は profitability の証明ではなく、historical profit 増加も将来利益性の証明ではない。`future profitability` が forward evidence で確立されていない限り、確立済みと表現しない。
 
@@ -60,6 +66,8 @@ disable-model-invocation: true
 
 原則として、次の1つだけを `HIGHEST_VALUE_NEXT_STEP` にする。候補は、`profitability impact × information gain × 重要な不確実性を解消する確率` が大きく、`implementation cost + research time + overfitting risk + operational complexity + governance cost` が小さいものを優先する。根拠のない数値expected valueは作らない。提案は現行のauthority範囲内の安全な次のレビュー・実装単位として記述し、追加の方法論、data source、threshold、ticker、gate、executionを暗黙に決めない。
 
+ただし、上記の frozen stop-rule inspection が `LIMIT_EXCEEDED`、または binding な pause/stop/terminal disposition を示す場合は、この原則より frozen rule を優先する。route が合理的であることを理由に、停止後の同じ study の implementation、execution、継続調査を `HIGHEST_VALUE_NEXT_STEP` にしてはならない。
+
 ## 標準出力契約
 
 以下の形式を維持し、値が不明なら推測せず `UNKNOWN`、不整合なら上記の `AMBIGUOUS` とする。`AUTHORITATIVE_BRANCH_SOURCE` は state と設計・Issueのどの権威資料から判断したかを簡潔に示す。`REMOTE_HEAD` と `REVIEWED_HEAD` は原則として authoritative remote branch の最新HEADに一致させる。
@@ -70,6 +78,9 @@ AUTHORITATIVE_BRANCH=
 AUTHORITATIVE_BRANCH_SOURCE=
 REMOTE_HEAD=
 REVIEWED_HEAD=
+
+FROZEN_STOPPING_RULE_STATUS=
+FROZEN_STOPPING_RULE_EVIDENCE=
 
 CURRENT_STUDY=
 CURRENT_STAGE=
@@ -110,4 +121,4 @@ DEFERRED_IDEAS=
 AUTHORITY_BOUNDARY=
 ```
 
-最後に、過去のVersionを守ることではなく、stock-analyzerの最終目的に近づくことを優先したかを確認する。ただし、このSkill自身は研究methodology、frozen design、execution authority、human gate、研究結果、study identityを変更しない。
+最後に、過去のVersionを守ることではなく、stock-analyzerの最終目的に近づくことを優先したか、live Issue と repository mirror の差異を確認したか、frozen stop-rule を先に評価したかを確認する。ただし、このSkill自身は研究methodology、frozen design、execution authority、human gate、研究結果、study identityを変更しない。
