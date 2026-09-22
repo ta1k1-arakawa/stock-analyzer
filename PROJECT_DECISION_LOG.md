@@ -3621,3 +3621,19 @@ transitions. This public log must not contain protected material.
   The future implementation budget remains 0 used / 2 remaining.
 - Both findings are `REMEDIATED_AWAITING_GPT_REVIEW`; next action is GPT
   exact-SHA independent review.
+
+## 2026-09-22 — V13 design freeze approval record
+
+- GPT exact-SHA review of `61268237494e2968562983e456ea40e6f821d066` passed with
+  `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, and `LOW=0`.
+- The frozen design blob is
+  `3bfcd695c69f6dac480f8fc99ca4f3916f668e4a` for
+  `V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON_DESIGN_DRAFT.md`.
+- Human approval was recorded with scope `DESIGN_FREEZE_ONLY`; no raw human
+  identity or verbatim authorization message is stored.
+- Ticker selection, public acquisition, historical viability, model fitting,
+  backtesting, forward paper, real trading, and private/sealed access remain
+  unauthorized; future profitability remains unestablished.
+- This record does not alter the prior V12 `PAUSE_V12` disposition.
+- The approval record remains `AWAITING_GPT_REVIEW`; next action is GPT
+  exact-SHA independent review of the approval-record commit.
