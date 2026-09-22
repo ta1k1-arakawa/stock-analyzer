@@ -3703,3 +3703,10 @@ transitions. This public log must not contain protected material.
   backtest, forward paper, private/sealed access, and trading remain
   unauthorized.
 - The implementation budget remains `0 used / 2 remaining`.
+
+## 2026-09-23 — V13 offline synthetic feasibility implementation
+
+- Recorded Issue #27 GPT PASS for `d5eefb95f6f5e036c2dc0ac7b17df23ac3c6ea03` and completed the amendment-approval checkpoint.
+- Implemented the round-zero, synthetic-only V13 mechanics in `src/v13_feasibility.py`, its deterministic fixture, offline CLI, contract matrix, and targeted tests. The path includes manifest selection, staged transforms, monthly model fits, rankings, execution boundary mechanics, and safe deterministic serialization.
+- Active implementation time was mechanically measured at 6 rounded-up minutes. Remediation remains `0 used / 2 remaining` pending GPT implementation review.
+- No real acquisition, real ticker selection, historical-price read, outcome-bearing fit/backtest, or execution action occurred. Synthetic outputs are explicitly not research evidence.
