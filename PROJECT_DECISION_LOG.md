@@ -3584,3 +3584,20 @@ transitions. This public log must not contain protected material.
   unconsumed, no ticker was selected, no locked JPX content was read, and no
   Yahoo/JPX request, historical-price read, model fit, backtest, forward
   paper, or real-trading operation occurred.
+
+## 2026-09-22 — V13 short-horizon direction adopted; design draft
+
+- After V12's terminal `PAUSE_V12`, the human explicitly adopted the new
+  V13 short-horizon individual-stock direction. Issue #20 fixes its methodology
+  and authorizes a design draft only, parented to exact SHA
+  `f9c38ad771710ffd157ac4fad0da15185db82707`.
+- `V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON_DESIGN_DRAFT.md` records that
+  binding design as `DRAFT_UNFROZEN`; the current stage is
+  `V13_DESIGN_DRAFT_AWAITING_GPT_REVIEW`. V13 is a new study identity and does
+  not alter V3–V12 findings or the `PAUSE_V12` disposition.
+- The future implementation budget is 240 active minutes before first
+  measurement, with initial round zero and at most two substantive remediation
+  rounds. Implementation has not started; rounds used are zero and two remain.
+- No design freeze, acquisition, historical viability run, model fit, backtest,
+  forward paper, or real-trading authorization is created. Future profitability
+  remains unestablished. Next action: GPT exact-SHA independent review.
