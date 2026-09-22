@@ -3637,3 +3637,17 @@ transitions. This public log must not contain protected material.
 - This record does not alter the prior V12 `PAUSE_V12` disposition.
 - The approval record remains `AWAITING_GPT_REVIEW`; next action is GPT
   exact-SHA independent review of the approval-record commit.
+
+## 2026-09-22 — V13 approval-record contract remediation
+
+- The V13 approval artifact was normalized to the repository's exact
+  design-freeze approval contract: explicit artifact role and approval status,
+  separate frozen-design commit/blob bindings, implementation-only scope, and
+  the post-freeze methodology boundary.
+- The artifact explicitly requires independent GPT exact-SHA review of the
+  approval-record commit before implementation can begin. All acquisition,
+  evaluation, model-fitting, backtest, forward-paper, trading, and
+  private/sealed authorities remain false.
+- `V13_DESIGN_FREEZE_APPROVAL_RECORD` remains `AWAITING_GPT_REVIEW`; the
+  implementation budget remains `0 used / 2 remaining` and no methodology or
+  frozen design file/blob was changed.
