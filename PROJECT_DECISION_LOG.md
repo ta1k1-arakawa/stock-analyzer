@@ -3838,3 +3838,30 @@ transitions. This public log must not contain protected material.
   `ADDITIONAL_EXPOSED_IDENTITIES_OUTSIDE_V4_LEGACY_COUNT=0`.
 - No JPX/Yahoo/provider network request, private/sealed read, historical-price
   read, model fit, backtest, or V13 ticker selection occurred in this audit.
+
+## 2026-09-23 — Issue #37 V8 T1 partial acquisition provenance correction
+
+- Issue #36 exact-SHA review at `fadf65ae33ee2c267e24cc848902ee53ef67938a`
+  returned `BLOCK_CRITICAL_0_HIGH_1_MEDIUM_0_LOW_0` for
+  `V8_PARTIAL_T1_PRICE_ACQUISITION_MISCLASSIFIED_AS_NO_ACQUIRED_IDENTITY_SET`.
+- The prior closed audit verdict misclassified V8 T1 attempt #1 because no
+  complete block bundle remained. `V8_STATE.json` and the attempt-1
+  implementation prove that 298 real Yahoo requests occurred and at least
+  297 successful T1 ticker payloads were staged before request 298 failed.
+  Fail-closed cleanup deleted staging but does not undo acquisition.
+- Frozen V8 T1 membership is the fresh next-unused 300 after
+  `T0=FIXED_V4_300`; every fresh block excludes the seven `LEGACY_8` codes
+  outside T0. The acquired identities are therefore outside the V4/LEGACY
+  foundation, while remaining private/uncommitted and publicly unresolved.
+- No research or validation outcome was opened from those staged bytes. This
+  is acquisition provenance, not strategy/profitability exposure. The audit
+  removes the stale zero-additional-identities and complete 307-code
+  exclusion-list/hash claims; it records
+  `BLOCKED_UNRESOLVED_PRIVATE_OR_UNCOMMITTED_IDENTITIES` instead.
+- This correction made no JPX/Yahoo market-data request, private/sealed read,
+  historical-price read, V13 ticker selection, model fit, or backtest. Public
+  acquisition remains authorized but unexecuted; all outcome-bearing gates
+  remain false.
+- After GPT exact-SHA PASS, the next action is a human decision on how to
+  resolve the private exclusion identities before V13 universe construction,
+  not V13 JPX/Yahoo acquisition.

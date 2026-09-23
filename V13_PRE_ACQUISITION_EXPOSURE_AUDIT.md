@@ -3,12 +3,13 @@
 ## A. Exact audit boundary
 
 This is a repository-evidence audit at the exact public committed HEAD below.
-Only tracked repository files and public Git history/evidence were inspected.
-Ignored caches, private/sealed manifests and payloads, and market-data
-providers were not read or contacted. No V13 universe was selected.
+Only tracked repository files and public GitHub/Git history/evidence were
+inspected. Ignored caches, private/sealed manifests and payloads, and
+market-data providers were not read or contacted. No V13 universe was
+selected.
 
 ```text
-AUDIT_HEAD=61d2ca8f409d61c49d822402cfa740eec7ab81b5
+AUDIT_HEAD=fadf65ae33ee2c267e24cc848902ee53ef67938a
 NETWORK_REQUESTS=0
 PRIVATE_OR_SEALED_READS=0
 HISTORICAL_PRICE_READS=0
@@ -21,8 +22,9 @@ V13_TICKER_SELECTIONS=0
 acquisition. Public GitHub issue/commit evidence was used only as the task and
 provenance boundary.
 
-The prior Issue #35 authorization record is GPT-reviewed PASS at this exact
-HEAD. It authorizes only retriable public JPX/Yahoo plumbing; it does not
+The Issue #35 authorization record is GPT-reviewed PASS at its reviewed HEAD
+`61d2ca8f409d61c49d822402cfa740eec7ab81b5`. It authorizes only retriable
+public JPX/Yahoo plumbing; it does not
 authorize historical viability, model fitting, backtesting, private/sealed
 access, forward paper, or trading.
 
@@ -63,15 +65,11 @@ LEGACY_OUTSIDE_V4_CODE_LIST_SHA256=1c840273c60f8b901f954694e869f2218368f72a2940f
 Only `4188` from `LEGACY_8` is inside `FIXED_V4_300`; the seven-code list
 above is therefore the unique legacy addition.
 
-For the closed verdict below, the mechanically constructed exclusion list has
-also been hashed. Its canonical order is the code column in the tracked
-`V4_UNIVERSE.csv` row order, followed by the numeric-ascending
-`LEGACY_OUTSIDE_V4` list above, encoded as UTF-8 with a final LF:
-
-```text
-EXCLUSION_LIST_COUNT=307
-EXCLUSION_LIST_SHA256=4eb007a41a9dc60c788279b35ae2ef29e1e5ad8fa0ae59a8adacee5d4b005167
-```
+These public components establish the existing V4/LEGACY exclusion
+foundation. They do not form a complete current V13 exclusion set: committed
+V8 T1 evidence proves additional acquired price payloads whose identities are
+not publicly resolvable. Do not treat a combined V4/LEGACY count or hash as
+the completed V13 exclusion list while those identities remain unresolved.
 
 ## C. V8–V12 exposure scan
 
@@ -82,7 +80,7 @@ evidence through `AUDIT_HEAD`.
 
 | Version/study | Evidence artifact / commit | Complete real historical-price payload acquired? | Public ticker count / identity resolution | All acquired identities covered by V4/LEGACY? | Additional exclusion identities required? | Metadata-only / no-price classification |
 | --- | --- | --- | --- | --- | --- | --- |
-| V8 T1 raw acquisition attempts | `V8_STATE.json`, `V8_PROJECT_STATE.md` at `61d2ca8f...` | No complete acquisition bundle. The public state is `raw_data_acquired=false`, `t1_successfully_acquired=false`, and `t1_final_bundle_exists=false`; the attempts terminated at the malformed-OHLCV quality gate. | Frozen T1 block size is 300; the private membership is not publicly resolvable. | N/A: no completed price set was evidenced. | No; do not infer identities from private partition hashes. | Acquisition attempted, but no complete historical-price payload/bundle; not an outcome-bearing run. |
+| V8 T1 raw acquisition attempts | `V8_STATE.json` at `fadf65ae...`; attempt-1 implementation `d5441020389452d85cb19a94f647448775fba8d8` | Attempt #1 made 298 real Yahoo requests. Its first 297 successful ticker payloads passed the per-ticker quality check and were written to staging before request 298 failed `MALFORMED_OHLCV`. No complete bundle remained; staging was cleaned. | Frozen T1 block size is 300; the identities are private/uncommitted and not publicly resolvable. | No. Frozen T1 membership is fresh after T0=`FIXED_V4_300`, and every fresh block excludes all seven `LEGACY_8` codes outside T0. | Yes; the acquired identity set is unresolved private/uncommitted. Do not infer or publish identities or a complete list/hash. | Partial historical-price byte acquisition is proven. The staged bytes were not opened for research; cleanup does not undo acquisition. This is provenance, not outcome/model exposure. |
 | V8B T1B | `V8B_T1B_ACQUISITION_FAILURE_ADJUDICATION.json` at `61d2ca8f...` | No. `t1b_staging_count=0`, `t1b_final_bundle_exists=false`, and the raw acquisition result is `BLOCKED`. | No public ticker count or identities. | N/A. | No. | Acquisition attempted and transport-blocked; no price payload set or outcome. |
 | V8C–V8J successor/preservation work | `V8C_PREFREEZE_PRESERVATION_RECHECK.md`, `V8D_T2_PREFREEZE_PRESERVATION_RECHECK.md`, `V8E_T2_PREFREEZE_PRESERVATION_RECHECK.md`, `V8I_SOURCE_SNAPSHOT_TERMINAL_ADJUDICATION.json`, and `V8J_SOURCE_SNAPSHOT_ENVIRONMENT_SUCCESSOR_DESIGN_DRAFT.md` at `61d2ca8f...` | No historical-price payload. The committed T2 and successor records retain `raw_data_acquired=false`/no research opening. | No public price-ticker identities. | N/A. | No. | Gate, source-snapshot, and environment evidence only; no price/outcome exposure. |
 | V8K public source preparation | `V8K_TERMINATION_RECORD.md` and `PROJECT_STATE.md` at `61d2ca8f...` | No historical-price payload. A complete public universe-source payload was locked, but it is listing/eligibility metadata, not prices. | Safe evidence reports 3,110 eligible rows and a list hash, not identities. | N/A: metadata-only. | No. | Metadata/current-universe preparation only; Stage-2/T1 and profitability result were not run. |
@@ -95,22 +93,31 @@ evidence through `AUDIT_HEAD`.
 
 The absence of a ticker identity in a safe metadata artifact is not treated as
 evidence of freshness. The V10B row closes only because its positive fixed-V4
-universe binding covers the acquired subset; the other rows are excluded from
-the historical-price set because their committed evidence is metadata/source
-activity or an attempted acquisition without a completed price bundle.
+universe binding covers the acquired subset. V8 T1 is a separate confirmed
+partial historical-price acquisition: its acquired identities fall outside
+the known V4/LEGACY foundation, but cannot be resolved from public committed
+evidence. The other rows remain classified by their committed metadata/source
+or no-price evidence.
 
-## D. Closed exclusion verdict
-
-```text
-EXPOSURE_PROVENANCE_STATUS=CLOSED_FROM_PUBLIC_COMMITTED_EVIDENCE
-ADDITIONAL_EXPOSED_IDENTITIES_OUTSIDE_V4_LEGACY_COUNT=0
-```
-
-No additional public ticker identities need to be loaded later:
+## D. Unresolved exclusion identity verdict
 
 ```text
-ADDITIONAL_PUBLIC_IDENTITY_SOURCE_ARTIFACTS=NONE
+EXPOSURE_PROVENANCE_STATUS=BLOCKED_UNRESOLVED_PRIVATE_OR_UNCOMMITTED_IDENTITIES
+V8_T1_ATTEMPT1_REAL_YAHOO_REQUESTS=298
+V8_T1_ATTEMPT1_FAILING_REQUEST_POSITION=298_OF_300
+V8_T1_ATTEMPT1_DEFINITELY_STAGED_SUCCESSFUL_PAYLOAD_COUNT=297
+V8_T1_IDENTITIES_PUBLICLY_RESOLVABLE=false
+V8_T1_IDENTITIES_OUTSIDE_V4_LEGACY=true
+ADDITIONAL_EXCLUSION_IDENTITY_SET_STATUS=UNRESOLVED_PRIVATE_OR_UNCOMMITTED
 ```
+
+The 298th request triggered the whole-block failure. This bookkeeping does
+not assign an exclusion treatment to that failing request or infer any
+private ticker identity. Fail-closed cleanup deleted staging; it does not
+retroactively mean the first 297 price payloads were never acquired. No V8
+research or validation outcome was opened from those bytes, so this finding
+records acquisition provenance rather than strategy, profitability, or
+outcome exposure.
 
 The canonical exclusion construction rule is:
 
@@ -118,7 +125,10 @@ The canonical exclusion construction rule is:
 EXCLUSION_SET = codes(V4_UNIVERSE.csv) UNION LEGACY_8 UNION any additional public code whose complete historical-price payload or outcome-bearing execution is positively evidenced before V13 universe creation
 ```
 
-At this audit HEAD the final term is empty. The resulting 307-code public
-exclusion list and its SHA-256 are recorded in §B. This closes only the
-provenance reconciliation; it does not select V13, acquire V13 data, or
-authorize historical viability/model/backtest execution.
+The additional identity set is not publicly resolvable, so a complete
+exclusion list or hash cannot be published and the provenance audit remains
+blocked. A separate explicit access or methodology decision is required to
+resolve the private exclusion identities before V13 universe construction
+can proceed. The public acquisition authorization remains granted but
+unexecuted; it does not unblock universe construction or authorize historical
+viability, model fitting, or backtesting.
