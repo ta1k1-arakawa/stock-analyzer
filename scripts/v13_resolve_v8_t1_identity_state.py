@@ -15,7 +15,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, Callable
 
 
 EXPECTED_MANIFEST_STATED_SHA256 = "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62"
@@ -466,7 +466,7 @@ def _write_once(destination: Path, payload: bytes) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         _ensure_output_does_not_exist(destination)
         descriptor, staging_path = tempfile.mkstemp(
-            prefix=".v13-t1-identity-state-", dir=str(destination.parent)
+            prefix=f".{destination.name}.", dir=str(destination.parent)
         )
         with os.fdopen(descriptor, "wb") as stream:
             descriptor = None
@@ -504,17 +504,33 @@ def _resolve_identity_state(
     repository_root: str | os.PathLike[str],
     *,
     bindings: _ExpectedBindings,
+    on_first_byte: Callable[[], None] | None = None,
+    on_state_written: Callable[[], None] | None = None,
+    source_opener: Callable[[Path], BinaryIO] | None = None,
 ) -> dict[str, Any]:
     """Private seam used by synthetic tests; production uses fixed bindings."""
     destination = _validate_output_destination(output_path, repository_root)
     _ensure_output_does_not_exist(destination)
     try:
-        with Path(manifest_path).open("rb") as stream:
-            raw = stream.read()
+        source = Path(manifest_path)
+        opener = source_opener or (lambda path: path.open("rb"))
+        with opener(source) as stream:
+            first_byte = stream.read(1)
+            if not first_byte:
+                raise IdentityResolutionBlocked("MANIFEST_INVALID_OR_AMBIGUOUS")
+            if on_first_byte is not None:
+                try:
+                    on_first_byte()
+                except Exception:
+                    raise IdentityResolutionBlocked("POST_BOUNDARY_RECEIPT_PUBLISH_FAILED") from None
+            try:
+                raw = first_byte + stream.read()
+            except Exception:
+                raise IdentityResolutionBlocked("SOURCE_READ_FAILED_POST_BOUNDARY") from None
+    except IdentityResolutionBlocked:
+        raise
     except (OSError, TypeError, ValueError):
         raise IdentityResolutionBlocked("SOURCE_READ_FAILED") from None
-    if not raw:
-        raise IdentityResolutionBlocked("MANIFEST_INVALID_OR_AMBIGUOUS")
     scanner = _SelectiveManifestScanner(raw)
     stated_manifest_sha, stated_t1_sha, _schema, block_sizes_t1_count, members = scanner.read_t1()
     if stated_manifest_sha != bindings.manifest_stated_sha256:
@@ -534,6 +550,11 @@ def _resolve_identity_state(
         "utf-8"
     )
     _write_once(destination, payload)
+    if on_state_written is not None:
+        try:
+            on_state_written()
+        except Exception:
+            raise IdentityResolutionBlocked("POST_BOUNDARY_REPORTING_FAILED") from None
     return state
 
 
@@ -541,6 +562,9 @@ def resolve_identity_state(
     manifest_path: str | os.PathLike[str],
     output_path: str | os.PathLike[str],
     repository_root: str | os.PathLike[str],
+    *,
+    on_first_byte: Callable[[], None] | None = None,
+    on_state_written: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Resolve only T1 and atomically persist the bound private state once.
 
@@ -552,6 +576,8 @@ def resolve_identity_state(
         output_path,
         repository_root,
         bindings=_PRODUCTION_BINDINGS,
+        on_first_byte=on_first_byte,
+        on_state_written=on_state_written,
     )
 
 

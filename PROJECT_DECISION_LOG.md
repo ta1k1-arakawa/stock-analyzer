@@ -3892,3 +3892,17 @@ transitions. This public log must not contain protected material.
   occurred.
 - The actual private read remains pending a separate direct-Windows task after
   GPT exact-SHA review of the resolver implementation.
+
+## 2026-09-23 — Issue #42 one-shot T1 private-read execution harness
+
+- Issue #41 exact-SHA GPT PASS C0/H0/M0/L0 at
+  `63fa6b7541694565eb171a98d11df0092ab20034` is recorded.
+- This task adds only the reviewed execution harness and synthetic
+  first-byte/consumed-receipt proof; the one-shot authorization remains
+  unconsumed.
+- No real private content/path, market data, model fit, or backtest boundary
+  was accessed or crossed.
+- Tooling incident: net-zero commits `0952d5f` (accidental `NOOP2`) and
+  `43f80b7` (its removal) followed the #41 review. GitHub compare from
+  `63fa6b7` to `43f80b7` has zero changed files and the final tree is
+  identical; no scientific or methodological state changed.

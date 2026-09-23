@@ -113,8 +113,9 @@ def _resolve_synthetic(
     output: Path,
     repo: Path,
     bindings: _ExpectedBindings,
+    **kwargs,
 ) -> dict[str, object]:
-    return _resolve_identity_state(source, output, repo, bindings=bindings)
+    return _resolve_identity_state(source, output, repo, bindings=bindings, **kwargs)
 
 
 def test_valid_fixture_extracts_only_t1_and_writes_private_state_equivalent_output(
@@ -143,6 +144,46 @@ def test_valid_fixture_extracts_only_t1_and_writes_private_state_equivalent_outp
     assert saved["known_definitely_acquired_prefix_count"] == 297
     assert saved["source_partition_manifest_stated_sha256"] == bindings.manifest_stated_sha256
     assert saved["t1_ticker_list_sha256"] == bindings.t1_ticker_list_sha256
+
+
+def test_first_byte_callback_precedes_scanner_and_is_invoked_once(test_dir: Path) -> None:
+    manifest, bindings = _fixture()
+    source = _write_source(test_dir, manifest)
+    events: list[str] = []
+    original_open = Path.open
+
+    class ObservedStream:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            events.append("open")
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            events.append("close")
+            return self.stream.__exit__(*args)
+
+        def read(self, size=-1):
+            events.append("first-byte" if size == 1 else "remainder")
+            return self.stream.read(size)
+
+    def observed_open(path, *args, **kwargs):
+        return ObservedStream(original_open(path, *args, **kwargs))
+
+    def on_first_byte():
+        assert events == ["open", "first-byte"]
+        events.append("callback")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "open", observed_open)
+        result = _resolve_synthetic(
+            source, test_dir / "state.json", test_dir.parent / "repository-root", bindings,
+            on_first_byte=on_first_byte,
+        )
+    assert events == ["open", "first-byte", "callback", "remainder", "close"]
+    assert result["t1_count"] == 300
 
 
 def test_production_entrypoint_uses_fixed_public_bindings() -> None:
