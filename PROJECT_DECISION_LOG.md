@@ -3920,3 +3920,37 @@ transitions. This public log must not contain protected material.
 - The one-shot authorization remains unconsumed. No real private content or
   private path was accessed or discovered; no market-data request, model fit,
   or backtest occurred.
+
+## 2026-09-23 — Issue #43 PASS and Issue #44 locator-preparation termination
+
+- Issue #43 exact-SHA GPT review passed at
+  `8ae1c050e418ea94cee46f1246d5125dbfbb7f44`, with
+  CRITICAL=0, HIGH=0, MEDIUM=0, LOW=0. The consumed-receipt durability
+  remediation is therefore reviewed PASS; this does not consume the separate
+  one-shot V8 T1 identity-read authorization.
+- Issue #44 ended because repository-recorded provenance did not define a
+  sufficiently bounded candidate-root convention for a deterministic
+  metadata-only locator, and the human operator did not find the original V8
+  manifest in the machines/locations checked. The locator was not implemented.
+  The original-manifest locator search is terminated; do not retry with a
+  filesystem-wide or otherwise unbounded search.
+
+## 2026-09-23 — Issue #45 V8 partition recovery decision
+
+- Record the human decision
+  `V8_PARTITION_RECOVERY_DECISION=DETERMINISTIC_RECONSTRUCTION` before any
+  reconstruction design or implementation. The target is byte-exact recovery
+  of the original trusted V8 partition identity, preserving its identity; it
+  does not authorize creating or substituting a new experimental partition.
+- Treat existing repository-recorded hashes and provenance as validation
+  anchors. If byte-exact recovery proves impossible, obtain a later explicit
+  human methodology decision before considering any semantic substitute.
+- No reconstruction algorithm or implementation is decided here.
+  Implementation before design freeze is prohibited. GPT-5.6 Sol owns the
+  reconstruction design and final review; after design freeze, low-cost Codex
+  may implement it under a separately bounded task.
+- V13 execution must not resume before a reconstruction pass. The one-shot
+  authorization remains unconsumed. This record-only task read no private
+  content, performed no private-path discovery or market-data request, and ran
+  no model fit or backtest. No reconstruction code was written or executed,
+  and the frozen V13 design was not changed.
