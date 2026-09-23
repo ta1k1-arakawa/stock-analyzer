@@ -4059,3 +4059,36 @@ transitions. This public log must not contain protected material.
 - This task made no additional JPX or market-data request, private-content or
   sealed-identity read, model fit, backtest, or trade. Frozen methodology and
   partition membership were unchanged.
+
+## 2026-09-23 — Issue #60 third V8 recovery HTTP 404 and historical-source design
+
+- The Issue #60 one-shot authorization was consumed when its single JPX
+  request crossed the network boundary. The reviewed terminal script blob
+  was `7c1ccfc2c4968557b8ed8695cdfc0e55c9fa3bc0`. Its result was
+  `RECOVERY_RESULT=BLOCK NETWORK_BOUNDARY_CROSSED=true JPX_SOURCE_REQUESTS=1
+  STAGE=SOURCE_ACQUISITION REASON=SOURCE_HTTP_STATUS_404`, with protected
+  script exit code 1.
+- Record Issue #60 as the third terminal V8 recovery attempt. Complete source
+  bytes were not ready, the recovery pipeline was not entered, no recovery
+  artifact was published, and there is no T0, eligible-universe, block
+  identity, data-quality, strategy, or profitability failure evidence from
+  this attempt. The failure class is
+  `PLUMBING_OR_TRANSPORT_FAILURE`; no retry is authorized.
+- Freeze `V13_V8_HISTORICAL_SOURCE_RECOVERY_DESIGN.md` as
+  `EXACT_RAW_BYTE_IDENTITY`, pending GPT exact-SHA review. The only acceptable
+  historical source payload must match the originally recorded 830464-byte
+  count and SHA-256
+  `6e401867d9ddf2524e4752f08fd3e3e434cd308c6d423839ca6e24fc7b1e1653`.
+  A mismatch must be rejected before semantic parsing or recovery-pipeline
+  entry. Retrying the moving attachment, substituting current-month data, and
+  substituting a new partition are prohibited.
+- The exact-byte gate does not grant acquisition authority. Candidate
+  metadata discovery may identify archives/caches/mirrors, but this task made
+  no candidate acquisition or additional JPX request. Any future raw payload
+  acquisition requires separate explicit human authorization and a reviewed
+  direct-execution contract. If no exact-byte candidate can be recovered,
+  stop for GPT/human adjudication without substitution.
+- No additional network or market-data request, archive payload request,
+  private/sealed read, model fit, backtest, or trade occurred during this
+  bookkeeping/design task. No source bytes or recovery artifact were
+  published, and V8 partition methodology was not changed.
