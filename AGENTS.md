@@ -38,6 +38,13 @@ not override protected/direct-real execution contracts such as
 `.venv-real-execution`; see the canonical detailed rule in
 `AI_GITHUB_ISSUE_ORCHESTRATION_WORKFLOW.md`.
 
+Short tests expected to finish in under 10 minutes may run in Codex. Tests or
+verification commands expected or known to take at least 10 minutes use the
+human Windows PowerShell handoff: Codex supplies the complete command and
+resumes the task's commit/push flow after the human returns the result. The
+canonical details are in `AI_RESEARCH_EXECUTION_RULES.md` and
+`AI_GITHUB_ISSUE_ORCHESTRATION_WORKFLOW.md`.
+
 ## AI research/execution governance
 
 For every important stock-analyzer research-planning, methodology-decision,

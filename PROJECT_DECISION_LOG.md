@@ -3794,3 +3794,15 @@ transitions. This public log must not contain protected material.
   trading action occurred. Synthetic output remains non-research evidence.
 - LOW_1's historical user-specific absolute path remains safe-deferred
   append-only history and is not repeated.
+
+## 2026-09-23 — Issue #33 PASS and Issue #34 long-test handoff governance
+
+- Issue #33 exact-SHA review passed at
+  `5d1c493d19b183cba56c9a5ead114906a4c99de7`, with C/H/M/L=0/0/0/1.
+- H1/H2/H3/M1 are resolved; inherited LOW_1 is safe-deferred in append-only
+  history. No real or outcome boundary was crossed.
+- The human changed the operator workflow so tests expected or known to take
+  at least 10 minutes are handed off to direct Windows PowerShell instead of
+  being held in an agent background terminal.
+- Codex still owns complete command construction, result validation, and the
+  subsequent commit/push completion flow.

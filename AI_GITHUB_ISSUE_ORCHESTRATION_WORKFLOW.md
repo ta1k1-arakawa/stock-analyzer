@@ -135,6 +135,24 @@ This rule does not override:
 `CODEX_MANAGED_TASK_WORKSPACE` tasks follow the same completion rule after
 successful realignment.
 
+### 4.2 Long-running test handoff
+
+When the Issue requires a test or verification command that is expected or
+known to take at least 10 minutes, the executor uses the human PowerShell
+handoff defined in `AI_RESEARCH_EXECUTION_RULES.md`. The executor resolves the
+exact task worktree, interpreter, and arguments and supplies one complete
+copy-paste-ready command block before the command is run.
+
+`WAITING_FOR_HUMAN_LONG_TEST_RESULT` is a permitted temporary task state. It
+is not a STOP, failure, or completed task, and it does not authorize skipping
+the required test. No commit or push may be performed before the required
+long-test PASS unless the Issue explicitly allows otherwise.
+
+After the human returns PASS evidence, the executor validates the exact
+command, exit code, and required summary, then resumes the ordinary remaining
+checks and commit/push completion flow itself. No duplicate concurrent long
+test run is allowed. No user manual git branch/commit/push work is required.
+
 ## 5. CODEX_MANAGED_TASK_WORKSPACE mode
 
 When an ordinary repository-writing task is launched from the GitHub/Codex

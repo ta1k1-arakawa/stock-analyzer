@@ -93,20 +93,94 @@ They do not change research methodology, human gates, or security rules.
 
 ### Long-running execution rule
 
-- Do not make long-running commands depend on the lifetime or timeout of a
-  Claude Code Cloud or Codex agent session. This includes long-running
-  pytest, full regression tests, backtests, large data acquisition,
-  unpacking, and other long-running commands.
-- If long-running processing may be unstable in an agent session, the AI
-  agent must not hold the processing itself for a long time. It must prepare
-  a complete PowerShell command that can be executed directly on the
-  Windows PC.
-- The user executes that PowerShell command through Android
-  Termux/Tailscale/SSH.
-- When necessary, use a design such as `Start-Process` so processing
-  continues on the Windows side after the SSH connection is disconnected.
-- Do not force a long-running command to remain held by Claude Code Cloud or
-  Codex.
+`LONG_RUNNING_TEST_HANDOFF_THRESHOLD_MINUTES=10`
+
+For local Codex execution, route tests and verification commands as follows:
+
+1. **Pre-launch routing**
+
+   - If a test or verification command is reasonably expected to take at
+     least 10 minutes, or repository/task history already shows that the
+     same or a similar command takes at least 10 minutes, local Codex must
+     not launch it as a background terminal job and wait or poll for it.
+   - This includes long targeted pytest suites, full pytest/regression,
+     backtests, large deterministic CLI verification, and other long-running
+     validation. Short targeted tests expected to finish in under 10 minutes
+     may run directly in Codex.
+
+2. **Complete command handoff**
+
+   - Before the long command is launched, Codex resolves the exact current
+     task worktree, exact interpreter/environment required by the task, and
+     exact test arguments.
+   - Codex then provides one complete, copy-paste-ready Windows PowerShell
+     block for the human. The human must not have to discover the worktree,
+     virtual environment, test path, arguments, or environment variables.
+   - Concrete user-specific paths must not be hardcoded in committed
+     documentation; the execution agent resolves them at runtime.
+
+3. **PowerShell block requirements**
+
+   The generated block normally:
+
+   - uses `Set-Location` for the exact generated task worktree;
+   - invokes the exact resolved interpreter executable explicitly when a
+     project virtual environment is required, rather than ambient PATH
+     Python;
+   - contains the exact test or validation command;
+   - preserves stdout and stderr visibility;
+   - clearly exposes the final process exit code and required test summary;
+   - avoids package or environment mutation unless separately authorized.
+
+   The human executes this block directly on the Windows PC, ordinarily
+   through the established Termux/Tailscale/SSH workflow.
+
+   Generic documentation example only:
+
+   ```powershell
+   Set-Location "<exact-task-worktree>"
+   $Python = "<exact-existing-project-venv>\Scripts\python.exe"
+   & $Python -m pytest <exact-test-arguments>
+   $Code = $LASTEXITCODE
+   Write-Output "LONG_TEST_EXIT_CODE=$Code"
+   exit $Code
+   ```
+
+4. **Explicit wait state**
+
+   After emitting the command, the executor reports:
+
+   `STATUS=WAITING_FOR_HUMAN_LONG_TEST_RESULT`
+
+   This is an allowed temporary task state, not task completion, a STOP, or
+   a research/human authorization gate. It does not permit skipping the
+   required test.
+
+5. **Resume after the human result**
+
+   - The human returns the relevant terminal output/result to the same Codex
+     task.
+   - Codex verifies that the exact requested command/test completed
+     successfully and that the reported exit code and summary satisfy the
+     Issue contract.
+   - On PASS, Codex continues remaining checks, commit, non-force push,
+     remote-HEAD verification, and clean-tree verification. On FAIL, Codex
+     diagnoses and remediates only within the Issue authority, then issues a
+     new complete command when rerunning the long test is required.
+
+6. **No duplicate long tests**
+
+   Never start the same long test concurrently in a Codex background terminal
+   and a human PowerShell terminal. The 10-minute threshold is primarily a
+   pre-launch routing decision: do not kill or duplicate a command merely
+   because an already-running command unexpectedly crosses 10 minutes.
+
+7. **Precedence**
+
+   Protected/direct-real execution runbooks and explicit task-specific
+   execution contracts still win. This rule does not allow bypassing sealed,
+   private, or network gates. Long-running real acquisition and backtest
+   commands remain subject to `AI_REAL_EXECUTION_RUNBOOK.md` where applicable.
 
 ### Normal execution rule
 
