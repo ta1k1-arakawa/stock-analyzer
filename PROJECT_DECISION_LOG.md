@@ -4092,3 +4092,42 @@ transitions. This public log must not contain protected material.
   private/sealed read, model fit, backtest, or trade occurred during this
   bookkeeping/design task. No source bytes or recovery artifact were
   published, and V8 partition methodology was not changed.
+
+## 2026-09-23 — Issue #63 reviewer-created no-op history adjudication
+
+- During GPT review of Issue #62, two accidental file writes were immediately
+  deleted, producing four content-neutral commits:
+  `b92dff7`/`a06c992` and `0241b7e`/`7b9bb74`. The intended Issue #62 commit
+  `a65b16c1a68fc86053142000f7c9e5fa07d8fc61` and current tree both have tree
+  SHA `5e1d19256456d6d046d73acaf47ca499075ea54b`; GitHub compare found zero
+  changed files. Adopt `7b9bb74eed80a0ee6eb7aa340350345bf47a152e` as the
+  transport head for subsequent tasks, preserve history without rewriting,
+  and classify the event as a governance/tooling incident only.
+- The incident changed no methodology, research execution, market-data
+  requests, private reads, or execution authority. It is folded into this
+  substantive successor-design record rather than treated as research work.
+
+## 2026-09-23 — Issue #64 J-Quants Standard semantic and block identity design
+
+- The human's existing J-Quants Standard access decision supersedes the
+  practical exact-raw-byte recovery route. The historical design remains
+  immutable provenance; the current successor accepts only exact semantic
+  eligible-universe identity and exact identity for every deterministic V8
+  block. No source request was made by this Issue.
+- Freeze the J-Quants V2 `/v2/equities/master` query for `date=20260731`,
+  effective date exactly 2026-07-31, accepted market codes `0111,0112`, and
+  product category `011`. Preserve the declared code normalization, eligible
+  list hash semantics, deterministic ordering, block construction, and all
+  pinned eligible/T0/T1/T2/T3/T_spare hashes in
+  `V13_V8_JQUANTS_IDENTITY_RECOVERY_DESIGN.md`.
+- A successful semantic recovery requires the exact date, count, eligible
+  hash, and every block hash in sequence. Any mismatch is terminal BLOCK;
+  adaptive filtering, adjacent-date queries, category changes, and partition
+  substitutions are prohibited. Raw J-Quants rows are not persisted or
+  committed. No API key is read or requested.
+- Issue #63's no-op reviewer history is recorded above as governance/tooling
+  chronology, not methodology or research execution. This design task used no
+  J-Quants/JPX/archive/market-data request, private or sealed read, model fit,
+  backtest, or trade. Exact-byte recovery remains false; original block
+  identity recovery remains false pending a later separately reviewed
+  execution.
