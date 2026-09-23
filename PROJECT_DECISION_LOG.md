@@ -4031,3 +4031,31 @@ transitions. This public log must not contain protected material.
   backtest, or trade occurred during this bookkeeping task. Frozen design,
   pins, and recovery artifact were not modified. Further V13 execution stays
   prohibited pending the required recovery pass and subsequent review.
+
+## 2026-09-23 — Issue #56 second V8 recovery transport block adjudication
+
+- The Issue #56 one-shot real-source authorization was consumed when its
+  single JPX request crossed the network boundary. The authoritative safe
+  terminal result was
+  `RECOVERY_RESULT=BLOCK NETWORK_BOUNDARY_CROSSED=true JPX_SOURCE_REQUESTS=1
+  STAGE=SOURCE_ACQUISITION REASON=SOURCE_TRANSPORT_OR_HTTP_FAILED` with
+  protected script exit code 1.
+- Classify this attempt as `PLUMBING_OR_TRANSPORT_FAILURE`. Complete source
+  bytes were not ready, the recovery pipeline was not entered, and no recovery
+  artifact was published. No new partition was substituted, and sealed
+  identities were not publicly disclosed.
+- This attempt is no evidence of T0, eligible-universe, T1/T2/T3/T_spare
+  identity, data-quality, strategy, or profitability failure: source
+  acquisition failed before those stages. The prior attempt's chronology is
+  retained above; the current V8 recovery state in `PROJECT_STATE.md` now
+  describes Issue #56 instead of leaving generic post-network `UNKNOWN`
+  values as the apparent current result.
+- Issue #56 authorization is consumed. No retry or further JPX request is
+  authorized. A successor GPT/human decision is required before any further
+  V8 recovery source request. That decision must separately choose between
+  another bounded request with the reviewed runner unchanged and a
+  transport-only remediation if evidence warrants it. This bookkeeping task
+  makes neither choice and changes no code or frozen methodology.
+- This task made no additional JPX or market-data request, private-content or
+  sealed-identity read, model fit, backtest, or trade. Frozen methodology and
+  partition membership were unchanged.
