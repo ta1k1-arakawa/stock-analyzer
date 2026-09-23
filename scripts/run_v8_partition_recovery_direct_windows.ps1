@@ -1,7 +1,15 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9a-fA-F]{40}$')]
+    [string]$ExpectedScriptBlob
+)
+
 & {
     $ErrorActionPreference = 'Stop'
     $expectedBranch = 'v13-conditional-cross-sectional-short-horizon'
-    $expectedHead = '13c7e6f30bf7f5be10e0f47f2b67a0410084d15c'
+    $recoveryImplementationHead = '13c7e6f30bf7f5be10e0f47f2b67a0410084d15c'
+    $scriptRelativePath = 'scripts/run_v8_partition_recovery_direct_windows.ps1'
     $designBlob = 'ec94b32cfd1249e0635e0fcfee4e3c173d1d8e50'
     $recoveryBlob = '795912a8be6c8e79b7ed021014715dbd476e9668'
     $partitionBlob = '659473ee3ad3b8910225f53fe90f35849027d85e'
@@ -37,15 +45,21 @@
         if ($origin -notin @('https://github.com/ta1k1-arakawa/stock-analyzer.git', 'git@github.com:ta1k1-arakawa/stock-analyzer.git')) { throw 'PRE_GATE_WRONG_ORIGIN' }
         $remoteLine = Invoke-GitReadOnly @('-C', $repoRoot, 'ls-remote', '--exit-code', 'origin', "refs/heads/$expectedBranch")
         $remoteHead = ($remoteLine -split '\s+')[0]
-        if ($remoteHead -cne $expectedHead) { throw 'PRE_GATE_REMOTE_HEAD_MISMATCH' }
         $localHead = Invoke-GitReadOnly @('-C', $repoRoot, 'rev-parse', 'HEAD')
-        if ($localHead -cne $expectedHead) { throw 'PRE_GATE_LOCAL_HEAD_MISMATCH' }
+        if ($remoteHead -cne $localHead) { throw 'PRE_GATE_LOCAL_REMOTE_HEAD_MISMATCH' }
         if ((Invoke-GitReadOnly @('-C', $repoRoot, 'status', '--porcelain')) -ne '') { throw 'PRE_GATE_DIRTY_WORKTREE' }
+        & git -C $repoRoot merge-base --is-ancestor $recoveryImplementationHead $localHead 2>$null
+        if ($LASTEXITCODE -ne 0) { throw 'PRE_GATE_RECOVERY_IMPLEMENTATION_ANCESTRY_MISMATCH' }
 
-        if ((Invoke-GitReadOnly @('-C', $repoRoot, 'rev-parse', "${expectedHead}:V13_V8_PARTITION_RECONSTRUCTION_DESIGN.md")) -cne $designBlob -or
-            (Invoke-GitReadOnly @('-C', $repoRoot, 'rev-parse', "${expectedHead}:src/v8_partition_recovery.py")) -cne $recoveryBlob -or
-            (Invoke-GitReadOnly @('-C', $repoRoot, 'rev-parse', "${expectedHead}:src/v8_partition.py")) -cne $partitionBlob -or
-            (Invoke-GitReadOnly @('-C', $repoRoot, 'rev-parse', "${expectedHead}:scripts/check_current_protected_environment.py")) -cne $checkerBlob) {
+        $committedScriptBlob = Invoke-GitReadOnly @('-C', $repoRoot, 'rev-parse', "${localHead}:$scriptRelativePath")
+        if ($committedScriptBlob -cne $ExpectedScriptBlob) { throw 'PRE_GATE_REVIEWED_SCRIPT_BLOB_MISMATCH' }
+        $workingScriptBlob = Invoke-GitReadOnly @('-C', $repoRoot, 'hash-object', '--path', $scriptRelativePath, $scriptRelativePath)
+        if ($workingScriptBlob -cne $ExpectedScriptBlob) { throw 'PRE_GATE_REVIEWED_SCRIPT_WORKTREE_BLOB_MISMATCH' }
+
+        if ((Invoke-GitReadOnly @('-C', $repoRoot, 'rev-parse', "${localHead}:V13_V8_PARTITION_RECONSTRUCTION_DESIGN.md")) -cne $designBlob -or
+            (Invoke-GitReadOnly @('-C', $repoRoot, 'rev-parse', "${localHead}:src/v8_partition_recovery.py")) -cne $recoveryBlob -or
+            (Invoke-GitReadOnly @('-C', $repoRoot, 'rev-parse', "${localHead}:src/v8_partition.py")) -cne $partitionBlob -or
+            (Invoke-GitReadOnly @('-C', $repoRoot, 'rev-parse', "${localHead}:scripts/check_current_protected_environment.py")) -cne $checkerBlob) {
             throw 'PRE_GATE_REVIEWED_BLOB_MISMATCH'
         }
         foreach ($relativePath in @('V13_V8_PARTITION_RECONSTRUCTION_DESIGN.md', 'src/v8_partition_recovery.py', 'src/v8_partition.py', 'scripts/check_current_protected_environment.py')) {

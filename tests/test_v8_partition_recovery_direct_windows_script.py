@@ -11,7 +11,10 @@ def _script() -> str:
 
 def test_script_is_atomic_and_cleans_transient_state():
     source = _script()
-    assert source.startswith("& {\n")
+    assert source.startswith("[CmdletBinding()]\nparam(")
+    assert "[Parameter(Mandatory = $true)]" in source
+    assert "[string]$ExpectedScriptBlob" in source
+    assert "& {\n    $ErrorActionPreference = 'Stop'" in source
     assert "$ErrorActionPreference = 'Stop'" in source
     assert "    finally {" in source
     assert "SetEnvironmentVariable($pythonPayloadPath, $null, 'Process')" in source
@@ -27,9 +30,11 @@ def test_all_preflight_gates_precede_network_boundary():
         "PRE_GATE_NOT_AUTHORITATIVE_CHECKOUT",
         "PRE_GATE_GENERATED_WORKTREE",
         "PRE_GATE_WRONG_BRANCH",
-        "PRE_GATE_REMOTE_HEAD_MISMATCH",
-        "PRE_GATE_LOCAL_HEAD_MISMATCH",
+        "PRE_GATE_LOCAL_REMOTE_HEAD_MISMATCH",
         "PRE_GATE_DIRTY_WORKTREE",
+        "PRE_GATE_RECOVERY_IMPLEMENTATION_ANCESTRY_MISMATCH",
+        "PRE_GATE_REVIEWED_SCRIPT_BLOB_MISMATCH",
+        "PRE_GATE_REVIEWED_SCRIPT_WORKTREE_BLOB_MISMATCH",
         "PRE_GATE_REVIEWED_BLOB_MISMATCH",
         "PRE_GATE_ARTIFACT_ROOT_INSIDE_REPOSITORY",
         "PRE_GATE_ARTIFACT_ALREADY_EXISTS",
@@ -39,6 +44,25 @@ def test_all_preflight_gates_precede_network_boundary():
         assert source.index(gate) < boundary
     assert "'ls-remote', '--exit-code'" in source
     assert "fetch" not in source.lower()
+
+
+def test_review_binding_requires_remote_local_equality_ancestor_and_exact_script_blobs():
+    source = _script()
+    boundary = source.index("$networkBoundaryCrossed = $true")
+    preflight = source[:boundary]
+    assert "$remoteHead -cne $localHead" in preflight
+    assert "merge-base --is-ancestor $recoveryImplementationHead $localHead" in preflight
+    assert "$recoveryImplementationHead = '13c7e6f30bf7f5be10e0f47f2b67a0410084d15c'" in preflight
+    assert "${localHead}:$scriptRelativePath" in preflight
+    assert "'hash-object', '--path', $scriptRelativePath, $scriptRelativePath" in preflight
+    assert "$committedScriptBlob -cne $ExpectedScriptBlob" in preflight
+    assert "$workingScriptBlob -cne $ExpectedScriptBlob" in preflight
+    assert "PRE_GATE_LOCAL_HEAD_MISMATCH" not in source
+    assert "git reset" not in source.lower()
+    assert "git checkout" not in source.lower()
+    assert "git pull" not in source.lower()
+    assert "git merge " not in source.lower()
+    assert "git rebase" not in source.lower()
 
 
 def test_destination_is_mechanical_outside_repository_and_write_once():
