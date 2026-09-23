@@ -3806,3 +3806,18 @@ transitions. This public log must not contain protected material.
   being held in an agent background terminal.
 - Codex still owns complete command construction, result validation, and the
   subsequent commit/push completion flow.
+
+## 2026-09-23 — V13 public JPX/Yahoo acquisition human gate record
+
+- Issue #34 exact-SHA GPT PASS at
+  `4cfcfe21454ed79f71e4e7d37305c0b17e7be57f`, C/H/M/L=0/0/0/0, is recorded.
+- The human explicitly approved the bounded V13 public JPX/Yahoo acquisition
+  plumbing scope; the authority class is `RETRIABLE_PUBLIC_PLUMBING` only.
+- The first complete public payload must be preserved and content-locked
+  before semantic inspection, and downstream repair must reuse those same
+  bytes.
+- Historical viability, model fit, backtest, forward paper, private/sealed
+  access, and real trading remain unauthorized; future profitability remains
+  unestablished.
+- No network request or real market-data access occurred in this bookkeeping
+  task; acquisition remains unexecuted and its counters remain zero.
