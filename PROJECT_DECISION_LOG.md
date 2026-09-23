@@ -3954,3 +3954,28 @@ transitions. This public log must not contain protected material.
   content, performed no private-path discovery or market-data request, and ran
   no model fit or backtest. No reconstruction code was written or executed,
   and the frozen V13 design was not changed.
+
+## 2026-09-23 — Issue #47 V8 block-identity recovery methodology freeze
+
+- The human approved semantic recovery of the original V8 partition identity.
+  Byte-exact recovery of the lost `V8_PARTITION_MANIFEST_V3` bytes is not
+  required; exact canonical ticker-list SHA equality for T1, T2, T3, and
+  T_spare is required. This supersedes the Issue #45 byte-exact recovery target
+  only as to recovery acceptance methodology; it does not permit a replacement
+  partition or a claim that the original manifest bytes were recovered.
+- The frozen contract requires the pinned eligible-universe count/hash and T0
+  reproduction as upstream gates, followed by exact equality for every pinned
+  block hash. Any mismatch fails closed before a recovery artifact is created
+  or accepted. No new random draw, partition ordering, ticker substitution, or
+  methodology choice is allowed.
+- A recovery artifact must use `V8_PARTITION_RECOVERY_MANIFEST_V1` and record
+  `original_manifest_byte_exact_recovered=false`. It may record
+  `original_partition_block_identity_recovered=true` only after all identity
+  gates pass.
+- The methodology freeze authorizes no implementation by this issue and no
+  real-source acquisition or execution. Following GPT exact-SHA PASS, a
+  separate issue may delegate the mechanical implementation; any real-source
+  execution remains separately human-gated.
+- No reconstruction, source acquisition, private read/path discovery,
+  market-data request, model fit, or backtest occurred. No implementation code
+  was written and no replacement partition was accepted.

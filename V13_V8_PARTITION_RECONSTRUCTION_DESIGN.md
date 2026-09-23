@@ -2,11 +2,12 @@
 
 ```text
 document_type=V8_PARTITION_RECOVERY_DESIGN
-status=DESIGN_COMPLETE_AWAITING_GPT_EXACT_SHA_REVIEW
-issue=46
-base_sha=b0c152013c8d5c4b6ddeb69cc572ba0e6c8d0df0
+status=METHODOLOGY_FROZEN_AWAITING_GPT_EXACT_SHA_REVIEW
+issue=47
+base_sha=b9fd346860e50f1d4ffaa55df7c00885ea6d72a6
 design_owner=GPT-5.6_SOL
 implementation_authorized=false
+human_approval_recorded=true
 reconstruction_executed=false
 ```
 
@@ -61,22 +62,24 @@ The original manifest contains dynamic fields in addition to deterministic block
 
 Consequently the original complete manifest bytes cannot currently be regenerated from repository-recorded provenance alone. The trusted full manifest SHA is an acceptance oracle，but it cannot supply the missing preimage fields.
 
-## 4. Disposition
+## 4. Frozen human-approved disposition
 
 ```text
-RECONSTRUCTION_DISPOSITION=SEMANTIC_RECONSTRUCTION_ONLY_REQUIRES_HUMAN_DECISION
-BYTE_EXACT_RECONSTRUCTION_DESIGN_READY=false
-ORIGINAL_BLOCK_IDENTITY_RECONSTRUCTION_POTENTIALLY_VERIFIABLE=true
-ORIGINAL_MANIFEST_BYTE_EXACT_RECONSTRUCTION_PROVEN=false
+RECONSTRUCTION_DISPOSITION=SEMANTIC_BLOCK_IDENTITY_RECOVERY_APPROVED
+ORIGINAL_MANIFEST_BYTE_EXACT_RECOVERY_REQUIRED=false
+ORIGINAL_PARTITION_BLOCK_IDENTITY_EXACT_MATCH_REQUIRED=true
+ORIGINAL_MANIFEST_BYTE_EXACT_RECOVERED=false
+ORIGINAL_BLOCK_IDENTITY_RECOVERY_PROVEN=false
+HUMAN_APPROVAL_RECORDED=true
 ```
 
-This disposition is deliberately fail-closed. Issue #45 prohibits silently substituting a new partition. Therefore no implementation may be authorized merely to fetch today's JPX file and rebuild a new partition.
+The human approved exact reproduction of the original V8 block identities as the recovery criterion. The lost V3 manifest bytes are not required and MUST NOT be claimed as recovered. This recovers the original partition identity; it does not permit substituting a new partition. Recovery acceptance requires exact equality with each pinned T1, T2, T3, and T_spare canonical ticker-list SHA shown in §1.
 
 ## 5. What can be recovered safely
 
 The block allocation itself is deterministic if and only if an eligible ticker universe can be obtained whose canonical ordered ticker-list SHA equals the original recorded value `37630f8f...63405`. Once that equality holds，the trusted implementation algorithm mechanically yields block assignments that can be independently checked against all four recorded T1/T2/T3/T_spare hashes.
 
-Thus a future recovery can prove **semantic/original block identity** without recovering the original manifest bytes，provided all of these gates pass:
+Thus recovery can prove **semantic/original block identity** without recovering the original manifest bytes, provided every gate below passes. Eligible-universe and T0 checks are mandatory upstream gates and MUST pass before fresh-block allocation:
 
 1. Use the exact partition logic from Git commit `36cbed941050e728f7f96ce2af505e81175cc02c` or a mechanically demonstrated equivalent implementation.
 2. Reproduce T0 exactly against committed V4 provenance.
@@ -84,36 +87,40 @@ Thus a future recovery can prove **semantic/original block identity** without re
 4. Require eligible ticker-list SHA `37630f8f754c1a1f0f3e07f0ffc26711c83e635b5eaf24533659f37970263405` before allocating fresh blocks.
 5. Allocate with the exact deterministic no-RNG slicing contract above.
 6. Require exact equality of T1，T2，T3 and T_spare ticker-list hashes to their recorded trusted hashes.
-7. Reject on any mismatch. No partial acceptance，redraw，new snapshot semantics，or alternative ordering is allowed.
+7. Reject on any mismatch. A mismatch MUST fail closed before creating or accepting a replacement partition or recovery artifact. No partial acceptance, redraw, new snapshot semantics, ticker substitution, or alternative ordering is allowed.
 
 Passing these gates proves the recovered block assignments have the same canonical ticker-list identities as the original trusted V8 partition. It does **not** prove the replacement manifest bytes equal the lost manifest.
 
-## 6. Human methodology gate required before implementation
+## 6. Frozen implementation contract and authority
 
-Because Issue #45 requires byte-exact recovery as the target and prohibits a semantic substitute without an explicit later human methodology decision，implementation remains blocked.
+The Issue #47 human decision explicitly approves this methodology:
 
-The required human decision is narrowly:
+The approved human decision is:
 
 > Permit recovery of the original V8 partition by exact block-identity reproduction，where every original block's canonical ticker-list SHA must match the already-pinned public hashes，while acknowledging that the replacement recovery manifest will have a new schema/provenance identity and MUST NOT claim the lost `V8_PARTITION_MANIFEST_V3` full-manifest SHA.
 
-If the human does not approve this change，recovery remains blocked unless the original manifest or enough missing provenance to reproduce its exact bytes is recovered.
+Implementation must use the fixed ordering and slicing contract in §2. It MUST NOT make a new random draw, change partition ordering, substitute tickers, or select another methodology. Implementation may be delegated mechanically to Codex only after this methodology freeze receives GPT exact-SHA PASS and a separate implementation issue defines its scope. Implementation authorization remains false in this documentation-only task.
 
-## 7. Design for the later implementation if the human approves
+Real external source acquisition, including any JPX request for this recovery, remains separately human-gated. This issue does not authorize it. A later implementation may provide repository-only/synthetic behavior; execution against a real source requires a separate issue that explicitly authorizes that execution.
 
-A later frozen amendment SHALL define a new recovery artifact，not counterfeit the lost V3 manifest. Recommended schema name:
+## 7. Frozen recovery artifact contract
+
+A recovery artifact SHALL use a new schema/provenance identity, not counterfeit the lost V3 manifest. The frozen schema name is:
 
 ```text
 V8_PARTITION_RECOVERY_MANIFEST_V1
 ```
 
-It SHALL contain，at minimum，the original trusted manifest SHA，original implementation commit，original source fingerprints，eligible-universe hash，all original block hashes，the recovered block assignments，recovery implementation SHA，recovery timestamp，and explicit fields:
+It SHALL contain, at minimum, the original trusted manifest SHA, original implementation commit, original source fingerprints, eligible-universe count and hash, T0 result/hash, all original block hashes, the recovered block assignments, recovery implementation SHA, recovery timestamp, and explicit fields:
 
 ```text
 original_manifest_byte_exact_recovered=false
 original_partition_block_identity_recovered=true
 ```
 
-The implementation SHALL be mechanical enough for `CHEAP_CODEX_AGENT_OK` after amendment freeze. It SHALL have a repository-only/synthetic test mode and a separately authorized real-source execution mode. Any real JPX network request remains a separate human-gated execution task.
+`original_partition_block_identity_recovered=true` may be recorded only after every mandatory eligible-universe, T0, and four-block identity gate has passed. Before then, no accepted recovery artifact may be written or reported.
+
+After GPT exact-SHA PASS, a separately scoped issue may delegate the frozen mechanical implementation to Codex. The implementation SHALL have a repository-only/synthetic mode. Any real-source execution mode remains separately human-gated, and no real JPX network request is authorized by this design or Issue #47.
 
 The real recovery path SHALL NOT publish an artifact until every eligible-universe and block-hash gate has passed. A current JPX source whose canonical eligible ticker-list hash differs from the original must terminate with a recovery-source mismatch and produce no accepted recovery manifest.
 
@@ -135,7 +142,7 @@ Real execution acceptance SHALL require all trusted hashes to match and shall ex
 
 ## 9. Authority boundaries
 
-This document performs no reconstruction and creates no network，private-data，model-fit，backtest，or trading authority. It does not authorize implementation because the required semantic-recovery methodology decision has not yet been granted.
+This document performs no reconstruction and creates no network, private-data, model-fit, backtest, or trading authority. The semantic-recovery methodology decision is frozen as approved, but implementation awaits GPT exact-SHA review and a separate implementation issue. Real-source acquisition and execution remain unauthorized pending a separate explicit human-gated issue.
 
 ```text
 PRIVATE_READ_AUTHORIZATION_CONSUMED=false
@@ -147,4 +154,6 @@ BACKTESTS=0
 RECONSTRUCTION_EXECUTED=false
 REPLACEMENT_PARTITION_ACCEPTED=false
 IMPLEMENTATION_AUTHORIZED=false
+REAL_SOURCE_EXECUTION_AUTHORIZED=false
+V8_RECOVERY_REAL_SOURCE_ACQUISITION_AUTHORIZED=false
 ```
