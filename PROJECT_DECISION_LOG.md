@@ -3979,3 +3979,23 @@ transitions. This public log must not contain protected material.
 - No reconstruction, source acquisition, private read/path discovery,
   market-data request, model fit, or backtest occurred. No implementation code
   was written and no replacement partition was accepted.
+
+## 2026-09-23 — Issue #47 GPT PASS and Issue #48 recovery harness implementation
+
+- GPT exact-SHA review of the frozen recovery design at
+  `b60b8eb985484dc4428e05bdc59c47e27cef9c71` returned
+  `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, `LOW=0`, `RESULT=PASS`; the reviewed
+  parent was `b9fd346860e50f1d4ffaa55df7c00885ea6d72a6`, and the authoritative
+  remote head matched the reviewed SHA. The methodology freeze is PASS.
+- Issue #48 authorizes only mechanical implementation and synthetic or
+  repository-safe tests. The implementation reuses the byte-identical
+  historical `src/v8_partition.py` at commit
+  `36cbed941050e728f7f96ce2af505e81175cc02c`, gates T0, eligible-universe
+  count/hash, and each trusted block hash before accepted artifact creation,
+  and publishes the new recovery schema atomically without overwrite.
+- Real-source execution remains unauthorized. No JPX request, market-data
+  request, private content/path discovery, real T1 identity read, recovery
+  execution, replacement partition acceptance, model fit, or backtest
+  occurred. Synthetic tests use only the committed public T0 plus generated
+  fake tickers; safe output omits block assignments.
+- Implementation status: `IMPLEMENTED_AWAITING_GPT_EXACT_SHA_REVIEW`.
