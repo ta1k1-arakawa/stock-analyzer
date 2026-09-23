@@ -84,8 +84,8 @@ def test_destination_is_mechanical_outside_repository_and_write_once():
     assert "CreateDirectory($artifactRoot)" in source
     assert source.index("CreateDirectory($artifactRoot)") < source.index("$networkBoundaryCrossed = $true")
     assert "PRE_GATE_ARTIFACT_ALREADY_EXISTS" in source
-    assert "write_v8_partition_recovery_manifest_once" not in source
-    assert "recover_and_publish_v8_partition_once(" in source
+    assert "recover_and_publish_v8_partition_once(" not in source
+    assert source.index("_validate_accepted_manifest(manifest)") < source.index("write_v8_partition_recovery_manifest_once(manifest,")
 
 
 def test_request_guard_is_one_shot_and_no_redirect_or_retry():
@@ -104,12 +104,119 @@ def test_request_guard_is_one_shot_and_no_redirect_or_retry():
 
 def test_safe_report_does_not_emit_paths_payload_or_member_assignments():
     source = _script()
-    assert "RECOVERY_RESULT=PASS NETWORK_BOUNDARY_CROSSED=true JPX_SOURCE_REQUESTS=1" in source
+    assert "RECOVERY_RESULT=PASS NETWORK_BOUNDARY_CROSSED=true JPX_SOURCE_REQUESTS=1 STAGE=SUCCESSFUL_PUBLICATION" in source
     assert "SEALED_IDENTITIES_PUBLICLY_DISCLOSED=false" in source
     assert "Write-Output $artifactPath" not in source
     assert "Write-Output $temporaryPayload" not in source
     assert "Write-Output $payloadBytes" not in source
     assert "RECOVERY_RESULT=NOT_EXECUTED NETWORK_BOUNDARY_CROSSED=false JPX_SOURCE_REQUESTS=0" in source
+    assert "if ($networkBoundaryCrossed) {\n            if ($postNetworkReason)" in source
+    assert "REASON=EXECUTION_BLOCKED" not in source[source.index("$networkBoundaryCrossed = $true"):]
+
+
+def test_closed_post_network_stage_pipeline_and_publication_order():
+    source = _script()
+    runner_start = source.index("$runner = @'\n") + len("$runner = @'\n")
+    runner_end = source.index("\n'@", runner_start)
+    runner = source[runner_start:runner_end]
+    compile(runner, "embedded_v8_recovery_runner.py", "exec")
+    steps = (
+        '"SOURCE_PARSE", "SOURCE_PARSE_FAILED"',
+        '"T0", "T0_IDENTITY_MISMATCH"',
+        '"ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_COUNT_MISMATCH"',
+        '"ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_HASH_MISMATCH"',
+        '"BLOCK_IDENTITY", block_name.upper() + "_IDENTITY_MISMATCH"',
+        'build_v8_partition_recovery_manifest(',
+        '_validate_accepted_manifest(manifest)',
+        'write_v8_partition_recovery_manifest_once(manifest,',
+        '"SUCCESSFUL_PUBLICATION"',
+    )
+    offsets = [runner.index(step) for step in steps]
+    assert offsets == sorted(offsets)
+    assert 'except Exception:\n    emit_block("RECOVERY_PIPELINE", "POST_NETWORK_UNEXPECTED_FAILURE")' in runner
+    assert '"sealed_identity_values_included": False' in runner
+    assert '"network_requests": 1' in runner
+    assert 'print(json.dumps({"schema_version": recovery.SCHEMA_VERSION, "status": "ACCEPTED"' in runner
+    assert '"stage": "SUCCESSFUL_PUBLICATION", "reason": "RECOVERY_PUBLISHED"' in runner
+    assert 'recovery.SCHEMA_VERSION' in runner
+    assert "write_v8_partition_recovery_manifest_once(manifest" in runner
+
+
+def _run_failure_formatter_with_powershell(cases: list[tuple[str, str]], tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    source = _script()
+    helper_start = source.index("    function Format-PostNetworkFailure(")
+    helper_end = source.index("\n\n    function Invoke-OperationParserProbe", helper_start)
+    helper = source[helper_start:helper_end]
+    ps_cases = ",\n".join(
+        "@{{Stage='{}';Reason='{}'}}".format(stage, reason) for stage, reason in cases
+    )
+    harness = f"""
+$ErrorActionPreference = 'Stop'
+{helper}
+$cases = @(
+{ps_cases}
+)
+foreach ($case in $cases) {{
+    Format-PostNetworkFailure $case.Stage $case.Reason 1
+}}
+"""
+    encoded = base64.b64encode(harness.encode("utf-16le")).decode("ascii")
+    powershell = _powershell_executable()
+    assert powershell is not None
+    result = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert list(tmp_path.iterdir()) == []
+    return result
+
+
+@pytest.mark.parametrize(
+    ("stage", "reason"),
+    [
+        ("SOURCE_ACQUISITION", "SOURCE_TRANSPORT_OR_HTTP_FAILED"),
+        ("SOURCE_BYTES", "SOURCE_BYTES_VALIDATION_FAILED"),
+        ("SOURCE_BYTES_READY", "SOURCE_BYTES_HANDOFF_FAILED"),
+        ("SOURCE_PARSE", "SOURCE_PARSE_FAILED"),
+        ("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_EMPTY"),
+        ("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_DUPLICATE"),
+        ("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_CONSTRUCTION_FAILED"),
+        ("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_COUNT_MISMATCH"),
+        ("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_HASH_MISMATCH"),
+        ("T0", "T0_IDENTITY_MISMATCH"),
+        ("T0", "T0_REPRODUCTION_FAILED"),
+        ("BLOCK_IDENTITY", "BLOCK_IDENTITY_CONSTRUCTION_FAILED"),
+        ("BLOCK_IDENTITY", "T1_IDENTITY_MISMATCH"),
+        ("BLOCK_IDENTITY", "T2_IDENTITY_MISMATCH"),
+        ("BLOCK_IDENTITY", "T3_IDENTITY_MISMATCH"),
+        ("BLOCK_IDENTITY", "T_SPARE_IDENTITY_MISMATCH"),
+        ("RECOVERY_MANIFEST_CONSTRUCTION", "RECOVERY_MANIFEST_CONSTRUCTION_FAILED"),
+        ("RECOVERY_MANIFEST_VALIDATION", "RECOVERY_MANIFEST_VALIDATION_FAILED"),
+        ("DESTINATION_PUBLICATION", "DESTINATION_PUBLICATION_FAILED"),
+        ("SAFE_REPORT_VALIDATION", "POST_NETWORK_SAFE_REPORT_INVALID"),
+        ("RECOVERY_PIPELINE", "POST_NETWORK_UNEXPECTED_FAILURE"),
+    ],
+)
+def test_synthetic_post_network_failures_have_exact_safe_terminal_reason(stage, reason, tmp_path):
+    powershell = _powershell_executable()
+    if os.name != "nt" or powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    result = _run_failure_formatter_with_powershell([(stage, reason)], tmp_path)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert output.strip() == (
+        f"RECOVERY_RESULT=BLOCK NETWORK_BOUNDARY_CROSSED=true JPX_SOURCE_REQUESTS=1 STAGE={stage} REASON={reason}"
+    )
+    assert "TICKER" not in output and "ticker" not in output and "C:\\" not in output
+
+
+def test_unexpected_post_network_failure_keeps_coarse_stage():
+    source = _script()
+    assert "$Stage = 'RECOVERY_PIPELINE'" in source
+    assert "$Reason = 'POST_NETWORK_UNEXPECTED_FAILURE'" in source
 
 
 def _powershell_executable() -> str | None:

@@ -18,6 +18,8 @@ param(
     $artifactName = 'V8_PARTITION_RECOVERY_MANIFEST_V1.json'
     $requestCount = 0
     $networkBoundaryCrossed = $false
+    $postNetworkStage = 'NOT_STARTED'
+    $postNetworkReason = $null
     $temporaryDirectory = $null
     $temporaryPayload = $null
     $temporaryProbePath = $null
@@ -29,6 +31,27 @@ param(
         $result = & git @GitArguments 2>$null
         if ($LASTEXITCODE -ne 0) { throw 'PRE_GATE_GIT_CHECK_FAILED' }
         return ($result -join "`n").Trim()
+    }
+
+    function Format-PostNetworkFailure([string]$Stage, [string]$Reason, [int]$Requests) {
+        $knownStages = @('SOURCE_ACQUISITION', 'SOURCE_BYTES', 'SOURCE_PARSE', 'ELIGIBLE_UNIVERSE', 'T0',
+            'BLOCK_IDENTITY', 'RECOVERY_MANIFEST_CONSTRUCTION', 'RECOVERY_MANIFEST_VALIDATION',
+            'DESTINATION_PUBLICATION', 'RECOVERY_PIPELINE', 'SOURCE_BYTES_READY', 'SAFE_REPORT_VALIDATION',
+            'REQUEST_INITIATED')
+        $knownReasons = @('SOURCE_TRANSPORT_OR_HTTP_FAILED', 'SOURCE_BYTES_HANDOFF_FAILED',
+            'SOURCE_BYTES_VALIDATION_FAILED', 'SOURCE_PARSE_FAILED', 'ELIGIBLE_UNIVERSE_EMPTY',
+            'ELIGIBLE_UNIVERSE_DUPLICATE', 'ELIGIBLE_UNIVERSE_CONSTRUCTION_FAILED',
+            'ELIGIBLE_UNIVERSE_COUNT_MISMATCH', 'ELIGIBLE_UNIVERSE_HASH_MISMATCH',
+            'T0_IDENTITY_MISMATCH', 'T0_REPRODUCTION_FAILED', 'BLOCK_IDENTITY_CONSTRUCTION_FAILED',
+            'T1_IDENTITY_MISMATCH', 'T2_IDENTITY_MISMATCH', 'T3_IDENTITY_MISMATCH',
+            'T_SPARE_IDENTITY_MISMATCH', 'RECOVERY_MANIFEST_CONSTRUCTION_FAILED',
+            'RECOVERY_MANIFEST_VALIDATION_FAILED', 'DESTINATION_PUBLICATION_FAILED',
+            'POST_NETWORK_UNEXPECTED_FAILURE', 'POST_NETWORK_SAFE_REPORT_INVALID')
+        if ($Stage -notin $knownStages -or $Reason -notin $knownReasons -or $Requests -ne 1) {
+            $Stage = 'RECOVERY_PIPELINE'
+            $Reason = 'POST_NETWORK_UNEXPECTED_FAILURE'
+        }
+        return "RECOVERY_RESULT=BLOCK NETWORK_BOUNDARY_CROSSED=true JPX_SOURCE_REQUESTS=1 STAGE=$Stage REASON=$Reason"
     }
 
     function Invoke-OperationParserProbe([string]$PythonExe, [string]$ProbePath, [string]$ProbeText) {
@@ -145,6 +168,7 @@ print("OPERATION_PARSER_PROBE_PASS")
         # One non-redirecting HTTP request. A transport or semantic failure is terminal.
         $networkBoundaryCrossed = $true
         $requestCount = 1
+        $postNetworkStage = 'SOURCE_ACQUISITION'
         $request = [System.Net.HttpWebRequest]::Create($sourceUrl)
         $request.Method = 'GET'
         $request.AllowAutoRedirect = $false
@@ -176,68 +200,162 @@ print("OPERATION_PARSER_PROBE_PASS")
             finally { $sha256.Dispose() }
             [Array]::Clear($payloadBytes, 0, $payloadBytes.Length)
             $payloadBytes = $null
+            $postNetworkStage = 'SOURCE_BYTES_READY'
         }
         finally { $response.Dispose() }
 
         [System.Environment]::SetEnvironmentVariable($pythonPayloadPath, $temporaryPayload, 'Process')
         [System.Environment]::SetEnvironmentVariable($pythonArtifactPath, $artifactPath, 'Process')
         [System.Environment]::SetEnvironmentVariable($pythonPayloadHash, $payloadDigest, 'Process')
+        $postNetworkStage = 'RECOVERY_PIPELINE'
         $runner = @'
-import io, json, os, sys
-import hashlib
+import hashlib, io, json, os, sys
 from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, os.getcwd())
 from src import v8_partition_recovery as recovery
+from src import v8_partition as historical
+
+def emit_block(stage, reason):
+    print(json.dumps({"schema_version": recovery.SCHEMA_VERSION, "status": "BLOCKED",
+        "stage": stage, "reason": reason, "network_requests": 1,
+        "sealed_identity_values_included": False}, sort_keys=True))
+    sys.exit(2)
+
+raw = None
 try:
     raw = Path(os.environ["V8_RECOVERY_TRANSIENT_PAYLOAD"]).read_bytes()
-    if not raw:
-        raise recovery.V8PartitionRecoveryBlocked("RECOVERY_SOURCE_BYTES_INVALID")
-    if hashlib.sha256(raw).hexdigest() != os.environ["V8_RECOVERY_TRANSIENT_SHA256"]:
-        raise recovery.V8PartitionRecoveryBlocked("RECOVERY_CONTENT_LOCK_MISMATCH")
-    import pandas as pd
-    def parse_source_table(payload):
-        return pd.read_excel(io.BytesIO(payload), engine="xlrd")
+    if not raw or hashlib.sha256(raw).hexdigest() != os.environ["V8_RECOVERY_TRANSIENT_SHA256"]:
+        emit_block("SOURCE_BYTES", "SOURCE_BYTES_VALIDATION_FAILED")
+    try:
+        import pandas as pd
+        frame = pd.read_excel(io.BytesIO(raw), engine="xlrd")
+    except Exception:
+        emit_block("SOURCE_PARSE", "SOURCE_PARSE_FAILED")
+
+    try:
+        eligible_rows, _excluded_counts = historical.parse_eligible_universe(frame)
+        if not eligible_rows:
+            emit_block("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_EMPTY")
+        ordered_codes = historical.canonical_order([row["code"] for row in eligible_rows])
+        rows_by_code = {row["code"]: row for row in eligible_rows}
+        if len(rows_by_code) != len(eligible_rows):
+            emit_block("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_DUPLICATE")
+        ordered_rows = [rows_by_code[code] for code in ordered_codes]
+        eligible_hash = historical.ticker_list_sha256(ordered_codes)
+    except SystemExit:
+        raise
+    except Exception:
+        emit_block("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_CONSTRUCTION_FAILED")
+    try:
+        provenance = historical.load_v4_provenance("V4_UNIVERSE_MANIFEST.json")
+        historical.load_v4_universe_csv_bytes("V4_UNIVERSE.csv")
+        t0 = historical.verify_t0_reproduction(ordered_rows, provenance)
+        if historical.ticker_list_sha256(t0) != recovery.EXPECTED_T0_SHA256:
+            emit_block("T0", "T0_IDENTITY_MISMATCH")
+    except historical.V8PartitionBlocked as error:
+        if error.reason == "V8_T0_REPRODUCTION_MISMATCH":
+            emit_block("T0", "T0_IDENTITY_MISMATCH")
+        emit_block("T0", "T0_REPRODUCTION_FAILED")
+    except SystemExit:
+        raise
+    except Exception:
+        emit_block("T0", "T0_REPRODUCTION_FAILED")
+
+    if len(ordered_codes) != recovery.EXPECTED_ELIGIBLE_COUNT:
+        emit_block("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_COUNT_MISMATCH")
+    if eligible_hash != recovery.EXPECTED_ELIGIBLE_SHA256:
+        emit_block("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_HASH_MISMATCH")
+
+    try:
+        blocks = historical.allocate_fresh_blocks(ordered_codes, t0)
+        for block_name in ("T1", "T2", "T3", "T_spare"):
+            if historical.ticker_list_sha256(blocks[block_name]) != recovery.EXPECTED_BLOCK_SHA256[block_name]:
+                emit_block("BLOCK_IDENTITY", block_name.upper() + "_IDENTITY_MISMATCH")
+    except SystemExit:
+        raise
+    except Exception:
+        emit_block("BLOCK_IDENTITY", "BLOCK_IDENTITY_CONSTRUCTION_FAILED")
+
+    def parse_source_table(_payload):
+        return frame
     head = __import__("subprocess").run(["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-    recovery.recover_and_publish_v8_partition_once(
-        raw_source_bytes=raw,
-        parse_source_table=parse_source_table,
-        v4_manifest_path="V4_UNIVERSE_MANIFEST.json",
-        v4_universe_csv_path="V4_UNIVERSE.csv",
-        recovery_source_url="https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls",
-        recovery_source_acquisition_utc=datetime.now(timezone.utc),
-        recovery_timestamp_utc=datetime.now(timezone.utc),
-        recovery_implementation_commit=head,
-        output_path=os.environ["V8_RECOVERY_TRANSIENT_ARTIFACT"],
-        repository_root=os.getcwd(),
-    )
-    print(json.dumps(recovery.safe_recovery_status(accepted=True, eligible_ticker_count=recovery.EXPECTED_ELIGIBLE_COUNT, eligible_ticker_list_sha256=recovery.EXPECTED_ELIGIBLE_SHA256, block_hashes=recovery.EXPECTED_BLOCK_SHA256, network_requests=1), sort_keys=True))
-except recovery.V8PartitionRecoveryBlocked as error:
-    print(json.dumps({"schema_version": recovery.SCHEMA_VERSION, "status": "BLOCKED", "reason": error.reason, "network_requests": 1, "sealed_identity_values_included": False}, sort_keys=True))
-    sys.exit(2)
+    try:
+        manifest = recovery.build_v8_partition_recovery_manifest(
+            raw_source_bytes=raw, parse_source_table=parse_source_table,
+            v4_manifest_path="V4_UNIVERSE_MANIFEST.json", v4_universe_csv_path="V4_UNIVERSE.csv",
+            recovery_source_url="https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls",
+            recovery_source_acquisition_utc=datetime.now(timezone.utc), recovery_timestamp_utc=datetime.now(timezone.utc),
+            recovery_implementation_commit=head)
+    except recovery.V8PartitionRecoveryBlocked as error:
+        reason = error.reason
+        if reason == "RECOVERY_T0_TRUST_PIN_MISMATCH":
+            emit_block("T0", "T0_IDENTITY_MISMATCH")
+        if reason == "RECOVERY_ELIGIBLE_COUNT_MISMATCH":
+            emit_block("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_COUNT_MISMATCH")
+        if reason == "RECOVERY_ELIGIBLE_UNIVERSE_HASH_MISMATCH":
+            emit_block("ELIGIBLE_UNIVERSE", "ELIGIBLE_UNIVERSE_HASH_MISMATCH")
+        for block_name in ("T1", "T2", "T3", "T_SPARE"):
+            if reason == "RECOVERY_" + block_name + "_HASH_MISMATCH":
+                emit_block("BLOCK_IDENTITY", block_name + "_IDENTITY_MISMATCH")
+        emit_block("RECOVERY_MANIFEST_CONSTRUCTION", "RECOVERY_MANIFEST_CONSTRUCTION_FAILED")
+    except Exception:
+        emit_block("RECOVERY_MANIFEST_CONSTRUCTION", "RECOVERY_MANIFEST_CONSTRUCTION_FAILED")
+
+    try:
+        recovery._validate_accepted_manifest(manifest)
+    except Exception:
+        emit_block("RECOVERY_MANIFEST_VALIDATION", "RECOVERY_MANIFEST_VALIDATION_FAILED")
+    try:
+        recovery.write_v8_partition_recovery_manifest_once(manifest,
+            os.environ["V8_RECOVERY_TRANSIENT_ARTIFACT"], os.getcwd())
+    except Exception:
+        emit_block("DESTINATION_PUBLICATION", "DESTINATION_PUBLICATION_FAILED")
+    print(json.dumps({"schema_version": recovery.SCHEMA_VERSION, "status": "ACCEPTED",
+        "stage": "SUCCESSFUL_PUBLICATION", "reason": "RECOVERY_PUBLISHED", "network_requests": 1,
+        "sealed_identity_values_included": False}, sort_keys=True))
+except SystemExit:
+    raise
 except Exception:
-    print(json.dumps({"schema_version": recovery.SCHEMA_VERSION, "status": "BLOCKED", "reason": "RECOVERY_EXECUTION_BLOCKED", "network_requests": 1, "sealed_identity_values_included": False}, sort_keys=True))
-    sys.exit(3)
+    emit_block("RECOVERY_PIPELINE", "POST_NETWORK_UNEXPECTED_FAILURE")
 finally:
     raw = None
 '@
         $runnerOutput = & $pythonExe -I -B -c $runner 2>$null
         $runnerExit = $LASTEXITCODE
+        $postNetworkStage = 'SAFE_REPORT_VALIDATION'
         if ($runnerOutput.Count -ne 1) { throw 'POST_GATE_SAFE_REPORT_INVALID' }
         $safeReport = $runnerOutput[0] | ConvertFrom-Json
-        if ($safeReport.network_requests -ne 1 -or $safeReport.sealed_identity_values_included -ne $false) { throw 'POST_GATE_SAFE_REPORT_INVALID' }
+        if ($safeReport.network_requests -ne 1 -or $safeReport.sealed_identity_values_included -ne $false -or
+            $safeReport.stage -notmatch '^(SOURCE_BYTES|SOURCE_PARSE|ELIGIBLE_UNIVERSE|T0|BLOCK_IDENTITY|RECOVERY_MANIFEST_CONSTRUCTION|RECOVERY_MANIFEST_VALIDATION|DESTINATION_PUBLICATION|RECOVERY_PIPELINE|SUCCESSFUL_PUBLICATION)$' -or
+            $safeReport.reason -notmatch '^[A-Z0-9_]+$') { throw 'POST_GATE_SAFE_REPORT_INVALID' }
         if ($runnerExit -ne 0 -or $safeReport.status -ne 'ACCEPTED') {
-            throw ('POST_GATE_' + [string]$safeReport.reason)
+            $postNetworkStage = [string]$safeReport.stage
+            $postNetworkReason = [string]$safeReport.reason
+            throw 'POST_GATE_PIPELINE_BLOCKED'
         }
-        $terminalReport = 'RECOVERY_RESULT=PASS NETWORK_BOUNDARY_CROSSED=true JPX_SOURCE_REQUESTS=1 SCHEMA=V8_PARTITION_RECOVERY_MANIFEST_V1 SEALED_IDENTITIES_PUBLICLY_DISCLOSED=false'
+        if ($safeReport.stage -cne 'SUCCESSFUL_PUBLICATION' -or $safeReport.reason -cne 'RECOVERY_PUBLISHED') { throw 'POST_GATE_SAFE_REPORT_INVALID' }
+        $postNetworkStage = [string]$safeReport.stage
+        $terminalReport = 'RECOVERY_RESULT=PASS NETWORK_BOUNDARY_CROSSED=true JPX_SOURCE_REQUESTS=1 STAGE=SUCCESSFUL_PUBLICATION REASON=RECOVERY_PUBLISHED SCHEMA=V8_PARTITION_RECOVERY_MANIFEST_V1 SEALED_IDENTITIES_PUBLICLY_DISCLOSED=false'
         $terminalExitCode = 0
     }
     catch {
         $safeError = [string]$_.Exception.Message
-        if ($safeError -notmatch '^(PRE_GATE_[A-Z0-9_]+|POST_GATE_[A-Z0-9_]+)$') { $safeError = 'EXECUTION_BLOCKED' }
+        if ($safeError -match '^PRE_GATE_[A-Z0-9_]+$') {
+            $safeReason = $safeError
+        }
+        elseif ($networkBoundaryCrossed) {
+            if ($postNetworkReason) { $safeReason = $postNetworkReason }
+            elseif ($postNetworkStage -eq 'SOURCE_ACQUISITION') { $safeReason = 'SOURCE_TRANSPORT_OR_HTTP_FAILED' }
+            elseif ($postNetworkStage -eq 'SOURCE_BYTES_READY') { $safeReason = 'SOURCE_BYTES_HANDOFF_FAILED' }
+            elseif ($postNetworkStage -eq 'SAFE_REPORT_VALIDATION') { $safeReason = 'POST_NETWORK_SAFE_REPORT_INVALID' }
+            else { $safeReason = 'POST_NETWORK_UNEXPECTED_FAILURE' }
+            if (-not $postNetworkStage -or $postNetworkStage -eq 'NOT_STARTED') { $postNetworkStage = 'REQUEST_INITIATED' }
+        }
+        else { $safeReason = 'PRE_GATE_UNEXPECTED_FAILURE' }
         if (-not $terminalReport) {
             if ($networkBoundaryCrossed) {
-                $terminalReport = "RECOVERY_RESULT=BLOCK NETWORK_BOUNDARY_CROSSED=true JPX_SOURCE_REQUESTS=$requestCount REASON=$safeError"
+                $terminalReport = Format-PostNetworkFailure $postNetworkStage $safeReason $requestCount
             }
             else {
                 $terminalReport = "RECOVERY_RESULT=NOT_EXECUTED NETWORK_BOUNDARY_CROSSED=false JPX_SOURCE_REQUESTS=0 REASON=$safeError"
@@ -266,6 +384,7 @@ finally:
         $artifactRoot = $null
         $localAppData = $null
         $safeError = $null
+        $safeReason = $null
         $safeReport = $null
         $runnerOutput = $null
         $temporaryPayload = $null
