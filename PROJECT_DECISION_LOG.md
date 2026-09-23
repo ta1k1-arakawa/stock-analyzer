@@ -3821,3 +3821,20 @@ transitions. This public log must not contain protected material.
   unestablished.
 - No network request or real market-data access occurred in this bookkeeping
   task; acquisition remains unexecuted and its counters remain zero.
+
+## 2026-09-23 — V13 pre-acquisition exposure provenance reconciliation
+
+- Issue #35 exact-SHA GPT PASS at
+  `61d2ca8f409d61c49d822402cfa740eec7ab81b5`, C/H/M/L=0/0/0/0, is recorded;
+  the public acquisition authority is reviewed but remains unexecuted.
+- The frozen V13 exclusion rule was reconciled against public committed V8–V12
+  evidence before any V13 universe selection or JPX/Yahoo acquisition.
+- V10B/V10C positively records 283 complete historical Yahoo payloads from a
+  terminal fixed 300-ticker `FIXED_V4_300` process; this adds no identities
+  outside the existing V4 exclusion. V8 attempts produced no completed price
+  bundle, and V8K–V12 source, calendar, environment, and selector evidence
+  produced no additional historical-price outcome set.
+- Safe verdict: `EXPOSURE_PROVENANCE_STATUS=CLOSED_FROM_PUBLIC_COMMITTED_EVIDENCE`;
+  `ADDITIONAL_EXPOSED_IDENTITIES_OUTSIDE_V4_LEGACY_COUNT=0`.
+- No JPX/Yahoo/provider network request, private/sealed read, historical-price
+  read, model fit, backtest, or V13 ticker selection occurred in this audit.
