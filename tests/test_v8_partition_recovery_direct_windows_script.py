@@ -1,4 +1,7 @@
+import atexit
 import base64
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -8,6 +11,7 @@ import sys
 import tempfile
 
 import pytest
+from test_v8_partition_recovery import _fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +144,124 @@ def test_closed_post_network_stage_pipeline_and_publication_order():
     assert '"stage": "SUCCESSFUL_PUBLICATION", "reason": "RECOVERY_PUBLISHED"' in runner
     assert 'recovery.SCHEMA_VERSION' in runner
     assert "write_v8_partition_recovery_manifest_once(manifest" in runner
+
+
+def test_synthetic_post_network_runner_reaches_successful_publication(tmp_path):
+    """Execute the embedded runner with synthetic pins and its real safe-report gate."""
+    frame, _rows, blocks, pins, _parser, _calls = _fixture()
+    source = _script()
+    runner_start = source.index("$runner = @'\n") + len("$runner = @'\n")
+    runner_end = source.index("\n'@", runner_start)
+    runner = source[runner_start:runner_end]
+
+    raw = b"repository-safe synthetic publication fixture"
+    payload_path = tmp_path / "synthetic-source.bin"
+    frame_path = tmp_path / "synthetic-frame.pkl"
+    publication_root = Path(tempfile.mkdtemp(prefix="v8-synthetic-publication-"))
+    atexit.register(shutil.rmtree, publication_root, ignore_errors=True)
+    artifact_path = publication_root / "published-recovery.json"
+    payload_path.write_bytes(raw)
+    frame.to_pickle(frame_path)
+
+    # This prelude only substitutes the data parser and frozen production pins
+    # at their module boundary. The extracted post-network runner remains intact.
+    prelude = f'''import os, sys
+sys.path.insert(0, os.getcwd())
+from src import v8_partition_recovery as recovery
+from src import v8_partition as historical
+import pandas as pd
+pd.read_excel = lambda *_args, **_kwargs: pd.read_pickle(os.environ["SYNTHETIC_FRAME_PATH"])
+recovery.EXPECTED_ELIGIBLE_COUNT = {pins.eligible_count}
+recovery.EXPECTED_ELIGIBLE_SHA256 = {pins.eligible_sha256!r}
+recovery.EXPECTED_BLOCK_SHA256 = {dict(pins.block_sha256)!r}
+synthetic_pins = recovery._TrustPins(
+    eligible_count={pins.eligible_count},
+    eligible_sha256={pins.eligible_sha256!r},
+    t0_sha256={pins.t0_sha256!r},
+    block_sha256={dict(pins.block_sha256)!r})
+def synthetic_build(**kwargs):
+    return recovery._build_recovery_manifest(**kwargs, _trust_pins=synthetic_pins)
+recovery.build_v8_partition_recovery_manifest = synthetic_build
+'''
+    environment = os.environ.copy()
+    environment.update({
+        "V8_RECOVERY_TRANSIENT_PAYLOAD": str(payload_path),
+        "V8_RECOVERY_TRANSIENT_ARTIFACT": str(artifact_path),
+        "V8_RECOVERY_TRANSIENT_SHA256": hashlib.sha256(raw).hexdigest(),
+        "SYNTHETIC_FRAME_PATH": str(frame_path),
+    })
+    execution = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", prelude + runner],
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert execution.returncode == 0, execution.stderr
+    assert len(execution.stdout.splitlines()) == 1
+    safe_report = json.loads(execution.stdout)
+    assert safe_report == {
+        "schema_version": "V8_PARTITION_RECOVERY_MANIFEST_V1",
+        "status": "ACCEPTED",
+        "stage": "SUCCESSFUL_PUBLICATION",
+        "reason": "RECOVERY_PUBLISHED",
+        "network_requests": 1,
+        "sealed_identity_values_included": False,
+    }
+
+    manifest = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert set(manifest) == {
+        "schema_version", "original_trusted_manifest_sha256",
+        "historical_partition_implementation_commit", "original_source_fingerprint",
+        "recovery_source_fingerprint", "v4_provenance_fingerprint",
+        "eligible_ticker_count", "eligible_ticker_list_sha256", "t0_reproduction_status",
+        "t0_ticker_list_sha256", "trusted_block_ticker_list_sha256", "block_sizes",
+        "block_assignments", "recovery_implementation_provenance", "recovery_timestamp_utc",
+        "original_manifest_byte_exact_recovered", "original_partition_block_identity_recovered",
+        "manifest_sha256",
+    }
+    assert manifest["schema_version"] == "V8_PARTITION_RECOVERY_MANIFEST_V1"
+    assert manifest["schema_version"] != "V8_PARTITION_MANIFEST_V3"
+    assert manifest["original_manifest_byte_exact_recovered"] is False
+    assert manifest["original_partition_block_identity_recovered"] is True
+    assert manifest["eligible_ticker_count"] == pins.eligible_count
+    assert manifest["eligible_ticker_list_sha256"] == pins.eligible_sha256
+    assert manifest["trusted_block_ticker_list_sha256"] == dict(pins.block_sha256)
+    assert manifest["block_assignments"] == blocks
+    assert len(list(publication_root.iterdir())) == 1
+    assert "TICKER" not in execution.stdout and "ticker" not in execution.stdout
+    assert str(artifact_path) not in execution.stdout
+
+    powershell = _powershell_executable()
+    assert powershell is not None
+    ps_start = source.index("        $postNetworkStage = 'SAFE_REPORT_VALIDATION'")
+    ps_end = source.index("        $terminalExitCode = 0", ps_start) + len("        $terminalExitCode = 0")
+    validation = source[ps_start:ps_end]
+    validation = validation.replace(
+        "        $runnerOutput = & $pythonExe -I -B -c $runner 2>$null\n"
+        "        $runnerExit = $LASTEXITCODE\n", "")
+    encoded = base64.b64encode((
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$runnerOutput = @('{json.dumps(safe_report, separators=(',', ':'))}')\n"
+        "$runnerExit = 0\n"
+        + validation
+        + "\nWrite-Output $terminalReport\n"
+    ).encode("utf-16le")).decode("ascii")
+    publication = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert publication.returncode == 0, publication.stdout + publication.stderr
+    assert publication.stdout.strip() == (
+        "RECOVERY_RESULT=PASS NETWORK_BOUNDARY_CROSSED=true JPX_SOURCE_REQUESTS=1 "
+        "STAGE=SUCCESSFUL_PUBLICATION REASON=RECOVERY_PUBLISHED "
+        "SCHEMA=V8_PARTITION_RECOVERY_MANIFEST_V1 SEALED_IDENTITIES_PUBLICLY_DISCLOSED=false"
+    )
+    assert "C:\\" not in publication.stdout
 
 
 def _run_failure_formatter_with_powershell(cases: list[tuple[str, str]], tmp_path: Path) -> subprocess.CompletedProcess[str]:
