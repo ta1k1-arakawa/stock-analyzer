@@ -3879,3 +3879,16 @@ transitions. This public log must not contain protected material.
 - The private read remains unexecuted and the one-shot authority remains
   unconsumed pending exact-SHA GPT review and a separately reviewed direct
   Windows execution task.
+
+## 2026-09-23 — Issue #41 selective T1 identity resolver implementation
+
+- Issue #38 GPT exact-SHA PASS at
+  `18a99fbb3740ecb827abc14513fad1402f7632ec`, C/H/M/L=0/0/0/1, is recorded;
+  its LOW stale `as_of_base_sha` is corrected in `PROJECT_STATE.md`.
+- This task implements the selective T1-only resolver and synthetic proof.
+  The one-shot identity authorization remains unconsumed.
+- No real private/sealed content, private path, price payload, outcome, or
+  market-data provider was accessed; no model fit, backtest, or network request
+  occurred.
+- The actual private read remains pending a separate direct-Windows task after
+  GPT exact-SHA review of the resolver implementation.
