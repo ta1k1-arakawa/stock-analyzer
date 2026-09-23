@@ -3999,3 +3999,35 @@ transitions. This public log must not contain protected material.
   occurred. Synthetic tests use only the committed public T0 plus generated
   fake tickers; safe output omits block assignments.
 - Implementation status: `IMPLEMENTED_AWAITING_GPT_EXACT_SHA_REVIEW`.
+
+## 2026-09-23 — Issue #53 consumed one-shot V8 recovery adjudication
+
+- Issue #49 granted one JPX-source recovery attempt. Issue #49's agent
+  dispatch stopped pre-gate with zero requests; Issues #50 and #51 repaired
+  reviewed-script binding, and Issue #52's parser-probe quoting failure also
+  stopped pre-gate with zero requests. Issue #52's remediation at
+  `4fc046e8793a6a5369e88e449c5439880dcd6348` is the exact parent used here.
+- The human then ran the reviewed direct-Windows script at that parent; its
+  Git blob is `bd3c3e7460542e4e96e985c9fbab5eae28d090d4`. The reported safe
+  output was `RECOVERY_RESULT=BLOCK`, `NETWORK_BOUNDARY_CROSSED=true`, and
+  `JPX_SOURCE_REQUESTS=1`. The one-shot authorization is consumed; no retry
+  is authorized.
+- The report does not establish whether complete source bytes were obtained
+  or whether the recovery parser, T0, eligible-universe, or block-identity
+  gates ran. These are recorded `UNKNOWN`. The current canonical artifact
+  destination was checked for file existence only and was absent; no artifact
+  contents or sealed identities were opened. No accepted recovery artifact
+  is recorded as published.
+- Static inspection found that the script's outer catch maps any post-request
+  exception message outside its `PRE_GATE_*`/`POST_GATE_*` allowlist to the
+  generic `EXECUTION_BLOCKED`. This can collapse response/status/stream
+  handling, transient payload write/hash, and safe runner-output/report
+  failures into the same result. The observed output does not identify which
+  path occurred. Record this as a finding for a later implementation issue;
+  do not remediate it in this adjudication.
+- `RECOVERY_RESULT=BLOCK`; no replacement partition was substituted or
+  accepted. No market-data request beyond the reported single JPX request,
+  private/sealed identity read or disclosure, price/outcome read, model fit,
+  backtest, or trade occurred during this bookkeeping task. Frozen design,
+  pins, and recovery artifact were not modified. Further V13 execution stays
+  prohibited pending the required recovery pass and subsequent review.
