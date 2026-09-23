@@ -83,17 +83,18 @@ def stage_a_from_raw(calendar: SessionCalendar, prices: dict[tuple[str, date], d
     for code, sector in metadata.items():
         history = [prices.get((code, d), {}) for d in calendar.sessions[:end + 1]]
         signal_row = prices.get((code, signal), {})
-        if not _finite((signal_row.get("adj_open", float("nan")), signal_row.get("adj_close", float("nan")), signal_row.get("close", float("nan")), signal_row.get("volume", float("nan")))): continue
-        valid = [r for r in history if _finite((r.get("adj_open", float("nan")), r.get("adj_close", float("nan")), r.get("close", float("nan")), r.get("volume", float("nan"))))]
+        required = ("adj_open", "adj_close", "close", "volume")
+        def valid_observation(row: dict[str, Any]) -> bool:
+            values = tuple(row.get(field, float("nan")) for field in required)
+            return _finite(values) and all(value > 0 for value in values)
+        if not valid_observation(signal_row): continue
+        valid = [r for r in history if valid_observation(r)]
         if len(valid) < 253: continue
         window, current = valid[-20:], valid[-1]
-        calendar_window = [prices.get((code, d), {}) for d in calendar.sessions[max(0, end - 19):end + 1]]
-        if len(calendar_window) != 20 or any(not _finite((r.get("adj_open", float("nan")), r.get("adj_close", float("nan")), r.get("close", float("nan")), r.get("volume", float("nan")))) or r["adj_open"] <= 0 or r["adj_close"] <= 0 or r["close"] <= 0 or r["volume"] <= 0 for r in calendar_window): continue
-        if any(not _finite((r["adj_open"], r["adj_close"], r["close"], r["volume"])) or r["adj_open"] <= 0 or r["adj_close"] <= 0 or r["close"] <= 0 or r["volume"] <= 0 for r in window) or current["close"] * 100 > 270000: continue
+        if current["close"] * 100 > 270000: continue
         traded = [r["close"] * r["volume"] for r in window]; median_value = float(np.median(traded))
         if not _finite(traded) or min(traded) <= 0 or median_value < 100000000: continue
         closes = [r["adj_close"] for r in valid]
-        if any(not math.isfinite(v) or v <= 0 for v in closes[-252:]): continue
         returns_1 = np.asarray([closes[i] / closes[i - 1] - 1 for i in range(len(closes) - 20, len(closes))]); amihud = float(np.mean(np.abs(returns_1) / np.maximum(np.asarray(traded), 1.0)))
         if not _finite(returns_1) or not math.isfinite(amihud) or amihud <= 0: continue
         row = {"code": code, "sector": sector, "signal": signal}
@@ -120,19 +121,33 @@ def _stage_reference(stage_a: list[dict[str, Any]]) -> tuple[list[dict[str, Any]
     identity = sha256_text(canonical_json([{k: r[k] for k in ("code", "signal", "sector") + STAGE_A_FEATURES} for r in sorted(stage_b, key=lambda x: numeric_code(x["code"]))]))
     return stage_b, identity
 
-def build_rank_population_audit(stage_a: Iterable[dict[str, Any]]) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+def _ordered_population_identity(rows: Iterable[dict[str, Any]]) -> tuple[tuple[str, str, str], ...]:
+    return tuple((r["code"], r["signal"].isoformat(), r["sector"]) for r in sorted(rows, key=lambda x: (numeric_code(x["code"]), x["signal"], x["sector"])))
+
+def _identity_hash(identity: tuple[tuple[str, str, str], ...]) -> str:
+    return sha256_text(canonical_json(identity))
+
+def build_rank_population_audit(stage_a: Iterable[dict[str, Any]], stage_c_omit_codes: Iterable[str] | None = None) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     stage_b, reference = _stage_reference(list(stage_a))
-    if len(stage_b) < 2: return "NO_RANK_DATA_QUALITY", [], {"reference_hash": reference, "transforms": {}}
+    stage_b_identity_before = _ordered_population_identity(stage_b)
+    stage_b_hash_before = _identity_hash(stage_b_identity_before)
+    base_audit = {"reference_hash": reference, "stage_b_hash": stage_b_hash_before, "stage_b_identity": stage_b_identity_before, "stage_b_recomputation_count": 0, "stage_b_recomputation_event": False, "transforms": {}}
+    if len(stage_b) < 2: return "NO_RANK_DATA_QUALITY", [], base_audit
     transforms = {}
     for field in STOCK_FEATURES:
         values = np.asarray([r[field] for r in stage_b], dtype=float)
-        if not _finite(values): return "NO_RANK_DATA_QUALITY", [], {"reference_hash": reference, "transforms": transforms}
+        if not _finite(values): base_audit["transforms"] = transforms; return "NO_RANK_DATA_QUALITY", [], base_audit
         lo, hi = np.percentile(values, [1, 99], method="linear"); clipped = np.clip(values, lo, hi); mean, std = float(np.mean(clipped)), float(np.std(clipped, ddof=1))
-        if not all(math.isfinite(x) for x in (lo, hi, mean, std)) or std <= 0: return "NO_RANK_DATA_QUALITY", [], {"reference_hash": reference, "transforms": transforms}
+        if not all(math.isfinite(x) for x in (lo, hi, mean, std)) or std <= 0: base_audit["transforms"] = transforms; return "NO_RANK_DATA_QUALITY", [], base_audit
         transforms[field] = {"lower": float(lo), "upper": float(hi), "mean": mean, "std": std}
         for row, value in zip(stage_b, clipped): row[field] = float((value - mean) / std)
-    rank = [r for r in stage_b if _finite(r.get(k, float("nan")) for k in FEATURES)]
-    return "OK", rank, {"reference_hash": reference, "transforms": transforms, "stage_b_count": len(stage_b), "rank_count": len(rank)}
+    stage_b_identity_after = _ordered_population_identity(stage_b)
+    stage_b_hash_after = _identity_hash(stage_b_identity_after)
+    omitted = set(stage_c_omit_codes or ())
+    rank = [r for r in stage_b if r["code"] not in omitted and _finite(r.get(k, float("nan")) for k in FEATURES)]
+    rank_identity = _ordered_population_identity(rank)
+    base_audit.update({"transforms": transforms, "stage_b_count": len(stage_b), "rank_count": len(rank), "stage_b_hash_after": stage_b_hash_after, "stage_b_identity_after": stage_b_identity_after, "rank_eligible_identity": rank_identity, "rank_eligible_hash": _identity_hash(rank_identity), "stage_c_omitted_codes": tuple(sorted(omitted, key=numeric_code))})
+    return "OK", rank, base_audit
 
 def build_rank_population(stage_a: Iterable[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     status, rows, _ = build_rank_population_audit(stage_a); return status, rows
@@ -161,7 +176,7 @@ def monthly_predictions(rows: list[dict[str, Any]], feature_names: tuple[str, ..
 def labeled_rows_from_raw(calendar: SessionCalendar, prices: dict[tuple[str, date], dict[str, float]], metadata: dict[str, str], signal_dates: Iterable[date]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     rows, audits = [], {}
     for signal in signal_dates:
-        stage_a = stage_a_from_raw(calendar, prices, metadata, signal); status, population, audit = build_rank_population_audit(stage_a); audits[signal.isoformat()] = {"stage_a_count": len(stage_a), "status": status, "source_max_session": signal, "reference_hash": audit.get("reference_hash"), "stage_b_hash": audit.get("reference_hash"), "stage_c_transforms": tuple(audit.get("transforms", {}))}
+        stage_a = stage_a_from_raw(calendar, prices, metadata, signal); status, population, audit = build_rank_population_audit(stage_a); audits[signal.isoformat()] = {"stage_a_count": len(stage_a), "status": status, "source_max_session": signal, "reference_hash": audit.get("reference_hash"), "stage_b_hash": audit.get("stage_b_hash"), "stage_b_hash_after": audit.get("stage_b_hash_after"), "stage_b_recomputation_count": audit.get("stage_b_recomputation_count"), "stage_b_recomputation_event": audit.get("stage_b_recomputation_event"), "rank_eligible_hash": audit.get("rank_eligible_hash"), "rank_eligible_identity": audit.get("rank_eligible_identity", ()), "stage_c_transforms": tuple(audit.get("transforms", {})), "q4_stage_b_reference_frozen": status == "OK" and audit.get("stage_b_hash") == audit.get("stage_b_hash_after") and audit.get("stage_b_recomputation_count") == 0 and not audit.get("stage_b_recomputation_event", True)}
         if status != "OK": continue
         entry, exit_day = calendar.plus(signal, 1), calendar.plus(signal, 3)
         if entry is None or exit_day is None: continue
@@ -257,7 +272,7 @@ def adjudicate(criteria: dict[str, bool], q: dict[str, bool]) -> dict[str, Any]:
 def _criterion_number(value: Any) -> bool: return isinstance(value, (int, float)) and math.isfinite(value)
 def _derive_criteria(lgb: dict[str, Any], ridge: dict[str, Any], reversal: dict[str, Any], momentum: dict[str, Any], stress: dict[str, Any], p95: float | None, diag: dict[str, Any]) -> dict[str, bool]:
     def gt(a: Any, b: Any) -> bool: return _criterion_number(a) and _criterion_number(b) and a > b
-    return {"A": _criterion_number(lgb["total_net_profit"]) and lgb["total_net_profit"] > 0, "B": lgb["positive_year_count"] >= 4, "C": _criterion_number(lgb["max_drawdown_pct"]) and lgb["max_drawdown_pct"] <= 20, "D": lgb["trades"] >= 150, "E": gt(lgb["total_net_profit"], ridge["total_net_profit"]), "F": gt(lgb["total_net_profit"], reversal["total_net_profit"]), "G": gt(lgb["total_net_profit"], momentum["total_net_profit"]), "H": p95 is not None and lgb["total_net_profit"] > p95, "I": _criterion_number(diag["mean_ic"]) and diag["mean_ic"] > .01, "J": sum(_criterion_number(v) and v > .01 for v in diag["per_year_mean_ic"].values()) >= 4, "K": _criterion_number(diag["top_decile_spread"]) and diag["top_decile_spread"] > 0, "L": diag["positive_spread_year_count"] >= 4, "M": _criterion_number(stress["total_net_profit"]) and stress["total_net_profit"] >= 0, "N": _criterion_number(lgb["best_year_positive_profit_share"]) and lgb["best_year_positive_profit_share"] <= .50, "O": _criterion_number(lgb["max_ticker_positive_profit_share"]) and lgb["max_ticker_positive_profit_share"] <= .25, "P": _criterion_number(lgb["max_sector_positive_profit_share"]) and lgb["max_sector_positive_profit_share"] <= .40}
+    return {"A": _criterion_number(lgb["total_net_profit"]) and lgb["total_net_profit"] > 0, "B": lgb["positive_year_count"] >= 4, "C": _criterion_number(lgb["max_drawdown_pct"]) and lgb["max_drawdown_pct"] <= 20, "D": lgb["trades"] >= 150, "E": gt(lgb["total_net_profit"], ridge["total_net_profit"]), "F": gt(lgb["total_net_profit"], reversal["total_net_profit"]), "G": gt(lgb["total_net_profit"], momentum["total_net_profit"]), "H": p95 is not None and lgb["total_net_profit"] > p95, "I": _criterion_number(diag["mean_ic"]) and diag["mean_ic"] > .01, "J": sum(_criterion_number(v) and v > 0 for v in diag["per_year_mean_ic"].values()) >= 4, "K": _criterion_number(diag["top_decile_spread"]) and diag["top_decile_spread"] > 0, "L": diag["positive_spread_year_count"] >= 4, "M": _criterion_number(stress["total_net_profit"]) and stress["total_net_profit"] >= 0, "N": _criterion_number(lgb["best_year_positive_profit_share"]) and lgb["best_year_positive_profit_share"] <= .50, "O": _criterion_number(lgb["max_ticker_positive_profit_share"]) and lgb["max_ticker_positive_profit_share"] <= .25, "P": _criterion_number(lgb["max_sector_positive_profit_share"]) and lgb["max_sector_positive_profit_share"] <= .40}
 
 @lru_cache(maxsize=1)
 def run_synthetic_feasibility() -> dict[str, Any]:
@@ -269,5 +284,5 @@ def run_synthetic_feasibility() -> dict[str, Any]:
     for seed in RANDOM_SEEDS:
         rankings = {d: rank_candidates([r for r in predictions if r["signal"] == d], "RANDOM_500", d, seed) for d in dates}; base, stress = simulate(calendar, prices, rankings, .001, start, end), simulate(calendar, prices, rankings, .002, start, end); random_profits.append(trade_metrics(base)["total_net_profit"]); random_identity[str(seed)] = ({d.isoformat(): ranking_hash(r) for d, r in rankings.items()}, {d.isoformat(): ranking_hash(r) for d, r in rankings.items()})
     cash_audit = simulate(calendar, prices, {}, .001, start, end); cash_metrics = trade_metrics(cash_audit); cash_metrics.update(total_net_profit=0., ending_equity=300000., max_drawdown_pct=0., exposure_fraction=0., trades=0); results["CASH"] = {"base": cash_metrics, "stress": dict(cash_metrics), "base_audit": cash_audit, "stress_audit": cash_audit}; p95, diag, lgb_base = linear_percentile(random_profits, 95), diagnostics(predictions), results["LIGHTGBM"]["base"]; results["RANDOM_500"] = {"base": {"path_count": 500, "total_net_profit_p95": p95}, "stress": {"path_count": 500}, "base_audit": {"ranking_hashes": {seed: pair[0] for seed, pair in random_identity.items()}}, "stress_audit": {"ranking_hashes": {seed: pair[1] for seed, pair in random_identity.items()}}}; criteria = _derive_criteria(lgb_base, results["RIDGE"]["base"], results["SECTOR_REL_REVERSAL_1D"]["base"], results["SECTOR_REL_MOMENTUM_20D"]["base"], results["LIGHTGBM"]["stress"], p95, diag); base_audit, stress_audit = results["LIGHTGBM"]["base_audit"], results["LIGHTGBM"]["stress_audit"]
-    q = {Q_KEYS[0]: all(a["source_max_session"] <= date.fromisoformat(day) for day, a in stage_audit.items()), Q_KEYS[1]: all(all(x < info["prediction_month_first_session"] for x in info["training_exit_dates"]) for info in fits.values()), Q_KEYS[2]: all(info["fit_count"] == 2 for info in fits.values()), Q_KEYS[3]: all(a["reference_hash"] == a["stage_b_hash"] for a in stage_audit.values()), Q_KEYS[4]: max(d.year for _, d in prices) <= 2025 and calendar.sessions[-1].year == 2025, Q_KEYS[5]: bool(base_audit["consumed_ranking_hashes"]), Q_KEYS[6]: base_audit["Q7_SINGLE_POSITION_AND_CASH_SAFETY"], Q_KEYS[7]: base_audit["Q8_EXIT_EVENT_ORDER"], Q_KEYS[8]: base_audit["Q9_REQUIRED_EXIT_DATA"], Q_KEYS[9]: base_audit["consumed_ranking_hashes"] == stress_audit["consumed_ranking_hashes"], Q_KEYS[10]: tuple(FEATURES) == tuple(STOCK_FEATURES + MARKET_FEATURES) and lightgbm_factory().__class__.__module__.startswith("lightgbm") and isinstance(ridge_factory().named_steps["scaler"], StandardScaler) and isinstance(ridge_factory().named_steps["ridge"], Ridge), Q_KEYS[11]: set(results) == set(COMPARATOR_STRATEGIES) and len(RANDOM_SEEDS) == 500}
-    return {"SYNTHETIC_ONLY_NOT_RESEARCH_EVIDENCE": True, "REAL_MARKET_DATA_USED": False, "V13_HISTORICAL_VIABILITY_RESULT": "NOT_RUN", "frozen_bindings": bindings, "manifest_count": len(manifest["selected"]), "manifest_sha256": manifest["selected_sha256"], "raw_ohlcv_rows": len(prices), "calendar_last_session": calendar.sessions[-1], "stage_a_from_raw": True, "stage_b_relative_only": True, "stage_c_transform_once": True, "prediction_months": sorted(fits), "synthetic_model_fits": sum(x["fit_count"] for x in fits.values()), "strategies": {k: {"base": v["base"], "stress": v["stress"]} for k, v in results.items()}, "RANDOM_500": {"seed_first": RANDOM_SEEDS[0], "seed_last": RANDOM_SEEDS[-1], "base_paths": 500, "stress_paths": 500, "base_profit_p95_linear": p95, "ranking_identity_pass": all(a == b for a, b in random_identity.values()), "all_seed_ranking_identity": {seed: a == b for seed, (a, b) in random_identity.items()}}, "diagnostics": diag, "A_P": criteria, "Q": q, "Q_SAFETY_AND_LEAKAGE_INVARIANTS_PASS": all(q.values()), "audit": {"stage_dates": stage_audit, "monthly_fits": fits, "per_seed_ranking_hashes": {seed: {"base": a, "stress": b} for seed, (a, b) in random_identity.items()}}}
+    q = {Q_KEYS[0]: all(a["source_max_session"] <= date.fromisoformat(day) for day, a in stage_audit.items()), Q_KEYS[1]: all(all(x < info["prediction_month_first_session"] for x in info["training_exit_dates"]) for info in fits.values()), Q_KEYS[2]: all(info["fit_count"] == 2 for info in fits.values()), Q_KEYS[3]: all(a.get("q4_stage_b_reference_frozen", False) for a in stage_audit.values()), Q_KEYS[4]: max(d.year for _, d in prices) <= 2025 and calendar.sessions[-1].year == 2025, Q_KEYS[5]: bool(base_audit["consumed_ranking_hashes"]), Q_KEYS[6]: base_audit["Q7_SINGLE_POSITION_AND_CASH_SAFETY"], Q_KEYS[7]: base_audit["Q8_EXIT_EVENT_ORDER"], Q_KEYS[8]: base_audit["Q9_REQUIRED_EXIT_DATA"], Q_KEYS[9]: base_audit["consumed_ranking_hashes"] == stress_audit["consumed_ranking_hashes"], Q_KEYS[10]: tuple(FEATURES) == tuple(STOCK_FEATURES + MARKET_FEATURES) and lightgbm_factory().__class__.__module__.startswith("lightgbm") and isinstance(ridge_factory().named_steps["scaler"], StandardScaler) and isinstance(ridge_factory().named_steps["ridge"], Ridge), Q_KEYS[11]: set(results) == set(COMPARATOR_STRATEGIES) and len(RANDOM_SEEDS) == 500}
+    return {"SYNTHETIC_ONLY_NOT_RESEARCH_EVIDENCE": True, "REAL_MARKET_DATA_USED": False, "V13_HISTORICAL_VIABILITY_RESULT": "NOT_RUN", "frozen_bindings": bindings, "manifest_count": len(manifest["selected"]), "manifest_sha256": manifest["selected_sha256"], "raw_ohlcv_rows": len(prices), "active_metadata_codes": tuple(sorted(metadata)), "active_subset_sha256": sha256_text("|".join(sorted(metadata))), "active_codes_subset_of_selected": set(metadata) <= set(manifest["selected"]), "raw_ohlcv_codes": tuple(sorted({code for code, _ in prices})), "stage_a_from_raw": True, "stage_b_relative_only": True, "stage_c_transform_once": True, "prediction_months": sorted(fits), "synthetic_model_fits": sum(x["fit_count"] for x in fits.values()), "strategies": {k: {"base": v["base"], "stress": v["stress"]} for k, v in results.items()}, "RANDOM_500": {"seed_first": RANDOM_SEEDS[0], "seed_last": RANDOM_SEEDS[-1], "base_paths": 500, "stress_paths": 500, "base_profit_p95_linear": p95, "ranking_identity_pass": all(a == b for a, b in random_identity.values()), "all_seed_ranking_identity": {seed: a == b for seed, (a, b) in random_identity.items()}}, "diagnostics": diag, "A_P": criteria, "Q": q, "Q_SAFETY_AND_LEAKAGE_INVARIANTS_PASS": all(q.values()), "audit": {"stage_dates": stage_audit, "monthly_fits": fits, "per_seed_ranking_hashes": {seed: {"base": a, "stress": b} for seed, (a, b) in random_identity.items()}}}

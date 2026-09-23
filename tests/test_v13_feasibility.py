@@ -9,11 +9,12 @@ import numpy as np
 import pytest
 
 from src.v13_feasibility import (FEATURES, Q_KEYS, SessionCalendar, adjudicate, base_target,
-    build_rank_population, canonical_json, diagnostics, lightgbm_factory, monthly_predictions,
+    build_rank_population, build_rank_population_audit, canonical_json, diagnostics, lightgbm_factory, monthly_predictions,
     random_key, rank_candidates, ridge_factory, select_universe, simulate, trade_metrics,
     linear_percentile,
-    stage_a_from_raw, monthly_training_rows, verify_frozen_bindings)
-from src.v13_synthetic_fixture import active_rows, stage_a_rows, synthetic_manifest
+    stage_a_from_raw, monthly_training_rows, verify_frozen_bindings, _derive_criteria)
+from src.v13_synthetic_fixture import (active_rows, raw_ohlcv, stage_a_rows, synthetic_calendar,
+    synthetic_manifest, synthetic_metadata)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,6 +22,26 @@ def test_frozen_bindings_and_manifest_are_deterministic():
     assert subprocess.check_output(["git", "rev-parse", "61268237494e2968562983e456ea40e6f821d066:V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON_DESIGN_DRAFT.md"], cwd=ROOT, text=True).strip() == "3bfcd695c69f6dac480f8fc99ca4f3916f668e4a"
     assert synthetic_manifest() == synthetic_manifest()
     assert len(synthetic_manifest()["selected"]) == 500
+
+def test_synthetic_manifest_uses_exact_frozen_seed_and_active_subset():
+    manifest = synthetic_manifest()
+    metadata = synthetic_metadata()
+    assert manifest["seed"] == "V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON|f9c38ad771710ffd157ac4fad0da15185db82707"
+    assert len(manifest["selected"]) == 500
+    assert set(metadata) <= set(manifest["selected"])
+    assert set(metadata).isdisjoint(manifest["excluded"])
+    assert len(metadata) == 12 and list(metadata.values()).count("SYNTHETIC_ALPHA") == 6
+    assert list(metadata.values()).count("SYNTHETIC_BETA") == 6
+
+def test_synthetic_selected_and_active_subset_hashes_are_deterministic():
+    first_manifest, second_manifest = synthetic_manifest(), synthetic_manifest()
+    first_active = hashlib.sha256("|".join(sorted(synthetic_metadata())).encode()).hexdigest()
+    second_active = hashlib.sha256("|".join(sorted(synthetic_metadata())).encode()).hexdigest()
+    assert first_manifest["selected_sha256"] == second_manifest["selected_sha256"]
+    assert first_active == second_active
+
+def test_synthetic_raw_codes_equal_active_metadata_codes():
+    assert {code for code, _ in raw_ohlcv()} == set(synthetic_metadata())
 
 def test_selection_and_calendar_target_semantics():
     with pytest.raises(ValueError): select_universe(["1000"], [], "x")
@@ -131,11 +152,59 @@ def test_stage_c_transform_audit_has_one_pass_for_each_stock_field():
     assert tuple(audit["transforms"]) == tuple(STOCK for STOCK in FEATURES[:19])
     assert len(audit["transforms"]) == 19
 
+def test_stage_b_audit_has_independent_matching_pre_post_identity_hashes():
+    status, rows, audit = build_rank_population_audit(stage_a_rows())
+    assert status == "OK" and len(rows) == 12
+    assert audit["reference_hash"] != audit["stage_b_hash"]
+    assert audit["stage_b_hash"] == audit["stage_b_hash_after"]
+    assert audit["stage_b_identity"] == audit["stage_b_identity_after"]
+    assert audit["stage_b_recomputation_count"] == 0
+    assert audit["stage_b_recomputation_event"] is False
+    assert audit["rank_eligible_hash"] == hashlib.sha256(canonical_json(audit["rank_eligible_identity"]).encode()).hexdigest()
+
+def test_stage_c_omission_does_not_recompute_stage_b_reference():
+    source = stage_a_rows()
+    omitted = source[0]["code"]
+    status, rows, audit = build_rank_population_audit(source, stage_c_omit_codes={omitted})
+    assert status == "OK" and len(rows) == len(source) - 1
+    assert omitted not in {row[0] for row in audit["rank_eligible_identity"]}
+    assert audit["stage_b_hash"] == audit["stage_b_hash_after"]
+    assert audit["stage_b_recomputation_count"] == 0
+
 def test_stage_a_rejects_invalid_signal_divisor_without_imputation():
     from src.v13_synthetic_fixture import raw_ohlcv, synthetic_calendar, synthetic_metadata
     prices = raw_ohlcv(); signal = date(2020, 1, 2); code = next(iter(synthetic_metadata()))
     prices[code, signal]["adj_open"] = 0.
     assert not any(row["code"] == code for row in stage_a_from_raw(synthetic_calendar(), prices, synthetic_metadata(), signal))
+
+def test_stage_a_uses_valid_observations_through_recent_calendar_gap():
+    calendar, prices, metadata = synthetic_calendar(), raw_ohlcv(), synthetic_metadata()
+    signal, code = date(2020, 1, 2), next(iter(metadata))
+    signal_index = calendar.sessions.index(signal)
+    prices.pop((code, calendar.sessions[signal_index - 10]))
+    row = next(row for row in stage_a_from_raw(calendar, prices, metadata, signal) if row["code"] == code)
+    valid = [prices[(code, day)] for day in calendar.sessions[:signal_index + 1] if (code, day) in prices]
+    traded = [item["close"] * item["volume"] for item in valid[-20:]]
+    closes = [item["adj_close"] for item in valid]
+    returns_1 = np.asarray([closes[i] / closes[i - 1] - 1 for i in range(len(closes) - 20, len(closes))])
+    assert row["ret_3"] == pytest.approx(closes[-1] / closes[-4] - 1)
+    assert row["log_median_traded_value_20"] == pytest.approx(np.log(np.median(traded)))
+    assert row["volatility_20"] == pytest.approx(np.std(returns_1, ddof=1))
+    assert row["log_amihud_20"] == pytest.approx(np.log(np.mean(np.abs(returns_1) / np.maximum(traded, 1.0))))
+
+def test_stage_a_invalid_signal_observation_excludes_ticker():
+    calendar, prices, metadata = synthetic_calendar(), raw_ohlcv(), synthetic_metadata()
+    signal, code = date(2020, 1, 2), next(iter(metadata))
+    prices[code, signal]["adj_close"] = float("nan")
+    assert code not in {row["code"] for row in stage_a_from_raw(calendar, prices, metadata, signal)}
+
+def test_stage_a_fewer_than_253_valid_observations_excludes_ticker():
+    calendar, prices, metadata = synthetic_calendar(), raw_ohlcv(), synthetic_metadata()
+    signal, code = date(2020, 1, 2), next(iter(metadata))
+    prior_days = [day for day in calendar.sessions if day < signal]
+    for day in prior_days[:-251]:
+        prices.pop((code, day))
+    assert code not in {row["code"] for row in stage_a_from_raw(calendar, prices, metadata, signal)}
 
 def test_scipy_spearman_tie_semantics_are_used():
     rows = [{"code": f"{1000+i:04d}", "signal": date(2020,1,2), "lightgbm_score": score, "target": target} for i, (score, target) in enumerate([(1., 1.), (1., 2.), (2., 3.)])]
@@ -173,6 +242,15 @@ def test_cash_comparator_contract_from_production_run():
     assert cash["trades"] == 0 and cash["total_net_profit"] == 0 and cash["ending_equity"] == 300000
     assert set(result["Q"]) == set(Q_KEYS)
 
+def test_production_q4_is_derived_from_stage_b_audit_facts():
+    from src.v13_feasibility import run_synthetic_feasibility
+    result = run_synthetic_feasibility()
+    audits = result["audit"]["stage_dates"].values()
+    assert all(a["stage_b_hash"] == a["stage_b_hash_after"] for a in audits)
+    assert all(a["stage_b_recomputation_count"] == 0 for a in audits)
+    assert all(a["rank_eligible_hash"] for a in audits)
+    assert result["Q"][Q_KEYS[3]] is True
+
 def test_production_result_has_actual_a_to_p_and_q_without_research_verdict():
     from src.v13_feasibility import run_synthetic_feasibility
     result = run_synthetic_feasibility()
@@ -185,3 +263,15 @@ def test_random_500_production_identity_is_proven_for_all_seeds():
     result = run_synthetic_feasibility()
     identity = result["RANDOM_500"]["all_seed_ranking_identity"]
     assert len(identity) == 500 and all(identity.values())
+
+def test_criterion_j_counts_positive_annual_mean_ic_at_zero_point_one_threshold():
+    metrics = {"total_net_profit": 1., "positive_year_count": 4, "max_drawdown_pct": 0., "trades": 150, "best_year_positive_profit_share": 0., "max_ticker_positive_profit_share": 0., "max_sector_positive_profit_share": 0.}
+    diagnostics_with_small_positive_years = {"mean_ic": .02, "per_year_mean_ic": {str(year): value for year, value in zip(range(2020, 2026), (.001, .002, .003, .004, 0., -.001))}, "top_decile_spread": 1., "positive_spread_year_count": 4}
+    criteria = _derive_criteria(metrics, {"total_net_profit": 0.}, {"total_net_profit": 0.}, {"total_net_profit": 0.}, metrics, 0., diagnostics_with_small_positive_years)
+    assert criteria["I"] is True and criteria["J"] is True
+
+def test_criterion_i_retains_global_strictly_greater_than_point_zero_one():
+    metrics = {"total_net_profit": 1., "positive_year_count": 4, "max_drawdown_pct": 0., "trades": 150, "best_year_positive_profit_share": 0., "max_ticker_positive_profit_share": 0., "max_sector_positive_profit_share": 0.}
+    diagnostics_with_small_global_ic = {"mean_ic": .01, "per_year_mean_ic": {str(year): .001 for year in range(2020, 2026)}, "top_decile_spread": 1., "positive_spread_year_count": 4}
+    criteria = _derive_criteria(metrics, {"total_net_profit": 0.}, {"total_net_profit": 0.}, {"total_net_profit": 0.}, metrics, 0., diagnostics_with_small_global_ic)
+    assert criteria["I"] is False and criteria["J"] is True

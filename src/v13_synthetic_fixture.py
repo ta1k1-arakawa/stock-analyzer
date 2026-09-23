@@ -19,13 +19,14 @@ def synthetic_calendar() -> SessionCalendar:
 def synthetic_manifest() -> dict:
     eligible = [f"{n:04d}" for n in range(1000, 1705)]
     excluded = ["1001", "1011", "1021"]
-    seed = "V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON|f9c38ad771710ffd157ac4ad0da15185db82707"
+    seed = "V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON|f9c38ad771710ffd157ac4fad0da15185db82707"
     selected = select_universe(eligible, excluded, seed)
     return {"seed": seed, "eligible": eligible, "excluded": excluded, "selected": selected, "selected_sha256": sha256_text("|".join(selected))}
 
 
 def synthetic_metadata() -> dict[str, str]:
-    return {f"{1000 + i:04d}": ("SYNTHETIC_ALPHA" if i < 6 else "SYNTHETIC_BETA") for i in range(12)}
+    selected = synthetic_manifest()["selected"]
+    return {code: ("SYNTHETIC_ALPHA" if i < 6 else "SYNTHETIC_BETA") for i, code in enumerate(selected[:12])}
 
 
 def synthetic_signal_dates() -> tuple[date, ...]:
@@ -36,8 +37,9 @@ def synthetic_signal_dates() -> tuple[date, ...]:
 def raw_ohlcv(variant: str = "success") -> dict[tuple[str, date], dict[str, float]]:
     out: dict[tuple[str, date], dict[str, float]] = {}
     calendar = synthetic_calendar()
+    metadata = synthetic_metadata()
     for i, day in enumerate(calendar.sessions):
-        for j, code in enumerate(synthetic_metadata()):
+        for j, code in enumerate(metadata):
             close = (850 + j * 31) * (1 + .00028 * i + .025 * math.sin(i * .071 + j * .43))
             opening = close * (1 + .003 * math.sin(i * .13 + j))
             out[code, day] = {"open": opening, "high": max(opening, close) * 1.01, "low": min(opening, close) * .99, "close": close, "volume": 220000 + j * 8000., "adj_open": opening, "adj_close": close}

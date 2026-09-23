@@ -3769,3 +3769,28 @@ transitions. This public log must not contain protected material.
   unestablished.
 - After GPT exact-SHA PASS of this policy amendment, the next action is a
   bounded methodology-preserving remediation of Issue #31 H1/H2/H3/M1.
+
+## 2026-09-23 — Issue #33 synthetic feasibility method-preserving remediation
+
+- Issue #32 exact-SHA PASS is recorded at
+  `e2d3a870428e7706e751915fc46ff468f42996cf`; its human-approved policy
+  removes the implementation hard cap for methodology-preserving,
+  pre-measurement fixes while retaining engineering escalation at 240 minutes.
+- Remediated Issue #31 H1/H2/H3/M1: the synthetic path now binds active
+  artificial codes to the exact frozen-seed selected-500 manifest, Stage A
+  uses valid ticker observations for all rolling windows without a calendar-
+  contiguity gate or imputation, criterion J counts annual mean IC strictly
+  above zero while criterion I retains its global threshold, and Q4 exposes
+  independent pre/post Stage-B identity hashes plus rank-eligible identity.
+- The real project interpreter was discovered read-only from an existing
+  worktree; no package installation or environment mutation occurred. Fifty-
+  two targeted tests passed. Two CLI runs were byte-identical with SHA-256
+  `3ab204defdba0e0e2e517f14daf774027503a2bab24ed7055bbc3ca99b8e9306`.
+- This task used 20 rounded-up active implementation minutes, cumulative 66
+  minutes, below the 240-minute engineering escalation threshold. No
+  irreversible or outcome boundary was crossed: no real-market data,
+  network request, real ticker selection, historical price read,
+  outcome-bearing fit/backtest, forward paper, private/sealed access, or
+  trading action occurred. Synthetic output remains non-research evidence.
+- LOW_1's historical user-specific absolute path remains safe-deferred
+  append-only history and is not repeated.
