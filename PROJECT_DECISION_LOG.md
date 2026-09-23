@@ -3865,3 +3865,17 @@ transitions. This public log must not contain protected material.
 - After GPT exact-SHA PASS, the next action is a human decision on how to
   resolve the private exclusion identities before V13 universe construction,
   not V13 JPX/Yahoo acquisition.
+
+## 2026-09-23 — Issue #38 V8 T1 identity-only private-read authorization
+
+- Issue #37 exact-SHA GPT PASS at
+  `71364e0602571acd147401eb43bf11f04aa9ef3b` is recorded.
+- The human explicitly approved one-shot V8 T1 identity-only private access
+  for V13 exclusion provenance; the operation class is
+  `STATISTICALLY_IRREVERSIBLE_GATE`.
+- Scope is limited to T1 membership identity. No price payload, outcome,
+  T2/T3/T_spare membership, historical viability, model fit, or backtest
+  authority is granted.
+- The private read remains unexecuted and the one-shot authority remains
+  unconsumed pending exact-SHA GPT review and a separately reviewed direct
+  Windows execution task.
