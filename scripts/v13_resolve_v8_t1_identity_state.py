@@ -459,9 +459,65 @@ def _ensure_output_does_not_exist(destination: Path) -> None:
         raise IdentityResolutionBlocked("OUTPUT_ALREADY_EXISTS")
 
 
+def _publish_windows_write_through(staging_path: str, destination: Path) -> None:
+    """Publish by same-directory no-replace rename and wait for disk commit."""
+    import ctypes
+
+    move_file_ex = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+    move_file_ex.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
+    move_file_ex.restype = ctypes.c_int
+    # MOVEFILE_WRITE_THROUGH; omitting REPLACE_EXISTING preserves no-overwrite.
+    if not move_file_ex(staging_path, str(destination), 0x00000008):
+        error = ctypes.get_last_error()
+        if error in {80, 183}:  # ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS
+            raise FileExistsError(error, "destination already exists", str(destination))
+        raise OSError(error, "durable Windows publication failed", str(destination))
+
+
+def _flush_windows_file(destination: Path) -> None:
+    """Flush the published file after its write-through namespace move."""
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    )
+    create_file.restype = ctypes.c_void_p
+    flush_file = kernel32.FlushFileBuffers
+    flush_file.argtypes = (ctypes.c_void_p,)
+    flush_file.restype = ctypes.c_int
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (ctypes.c_void_p,)
+    close_handle.restype = ctypes.c_int
+    # GENERIC_WRITE; share read/write/delete; OPEN_EXISTING.
+    handle = create_file(str(destination), 0x40000000, 0x00000001 | 0x00000002 | 0x00000004,
+                         None, 3, 0x00000080, None)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle == invalid_handle:
+        raise OSError(ctypes.get_last_error(), "published file open for flush failed", str(destination))
+    try:
+        if not flush_file(handle):
+            raise OSError(ctypes.get_last_error(), "published file flush failed", str(destination))
+    finally:
+        close_handle(handle)
+
+
+def _flush_directory(directory: Path) -> None:
+    """Persist POSIX directory-entry changes after publication."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(directory, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _write_once(destination: Path, payload: bytes) -> None:
     staging_path: str | None = None
     descriptor: int | None = None
+    published = False
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         _ensure_output_does_not_exist(destination)
@@ -474,11 +530,22 @@ def _write_once(destination: Path, payload: bytes) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         try:
-            os.link(staging_path, destination)
+            if os.name == "nt":
+                _publish_windows_write_through(staging_path, destination)
+                staging_path = None  # MoveFileExW consumed the staging name.
+                published = True
+                _flush_windows_file(destination)
+            else:
+                os.link(staging_path, destination)
+                published = True
+                os.unlink(staging_path)
+                staging_path = None
+                _flush_directory(destination.parent)
         except FileExistsError:
             raise IdentityResolutionBlocked("OUTPUT_ALREADY_EXISTS") from None
         except OSError:
-            raise IdentityResolutionBlocked("ATOMIC_OUTPUT_PUBLISH_FAILED") from None
+            reason = "OUTPUT_DURABILITY_FLUSH_FAILED" if published else "ATOMIC_OUTPUT_PUBLISH_FAILED"
+            raise IdentityResolutionBlocked(reason) from None
     except IdentityResolutionBlocked:
         raise
     except (OSError, TypeError, ValueError):

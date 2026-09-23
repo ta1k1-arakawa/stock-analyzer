@@ -87,11 +87,43 @@ def _resolve(source: Path, output: Path, repo: Path, bindings, **kwargs):
     return resolver._resolve_identity_state(source, output, repo, bindings=bindings, **kwargs)
 
 
-def test_valid_one_open_first_byte_receipt_then_same_stream_remainder_and_state(synthetic_paths):
+def test_valid_one_open_first_byte_receipt_then_same_stream_remainder_and_state(synthetic_paths, monkeypatch):
     repo, outside, source, bindings = synthetic_paths
     raw = source.read_bytes()
     events: list[str] = []
     receipt = outside / "consumed.json"
+
+    if __import__("os").name == "nt":
+        original_publish = resolver._publish_windows_write_through
+        original_flush = resolver._flush_windows_file
+
+        def observed_durable_publish(staging_path, destination):
+            events.append("publish_begin")
+            original_publish(staging_path, destination)
+            events.append("publish_done")
+
+        def observed_flush(destination):
+            events.append("durability_begin")
+            original_flush(destination)
+            events.append("durability_done")
+
+        monkeypatch.setattr(resolver, "_publish_windows_write_through", observed_durable_publish)
+        monkeypatch.setattr(resolver, "_flush_windows_file", observed_flush)
+    else:
+        original_link = resolver.os.link
+        original_flush = resolver._flush_directory
+
+        def observed_link(staging_path, destination):
+            original_link(staging_path, destination)
+            events.append("publish")
+
+        def observed_flush(directory):
+            events.append("durability_begin")
+            original_flush(directory)
+            events.append("durability_done")
+
+        monkeypatch.setattr(resolver.os, "link", observed_link)
+        monkeypatch.setattr(resolver, "_flush_directory", observed_flush)
 
     def opened(path: Path):
         assert path == source
@@ -104,11 +136,61 @@ def test_valid_one_open_first_byte_receipt_then_same_stream_remainder_and_state(
 
     state = _resolve(source, outside / "state.json", repo, bindings,
                      on_first_byte=boundary, source_opener=opened)
-    assert events == ["open", "read1", "receipt", "read_rest", "close"]
+    assert events.index("read1") < events.index("publish_begin" if __import__("os").name == "nt" else "publish")
+    if __import__("os").name == "nt":
+        assert events.index("publish_done") < events.index("durability_begin")
+    assert events.index("durability_done") < events.index("receipt")
+    assert events.index("receipt") < events.index("read_rest")
     assert events.count("open") == 1
     assert json.loads(receipt.read_text(encoding="ascii"))["authorization_consumed"] is True
     assert state["t1_count"] == 300
     assert (outside / "state.json").exists()
+
+
+def test_durability_failure_after_publication_stops_before_remainder_and_is_post_boundary(
+    synthetic_paths, monkeypatch
+):
+    repo, outside, source, bindings = synthetic_paths
+    raw = source.read_bytes()
+    events: list[str] = []
+    receipt = outside / "consumed.json"
+
+    if __import__("os").name == "nt":
+        original_publish = resolver._publish_windows_write_through
+        def observed_publish(staging_path, destination):
+            original_publish(staging_path, destination)
+            events.append("published")
+        monkeypatch.setattr(resolver, "_publish_windows_write_through", observed_publish)
+        monkeypatch.setattr(resolver, "_flush_windows_file", lambda _path: (_ for _ in ()).throw(
+            OSError("synthetic durability failure")
+        ))
+    else:
+        original_link = resolver.os.link
+        def observed_link(staging_path, destination):
+            original_link(staging_path, destination)
+            events.append("published")
+        monkeypatch.setattr(resolver.os, "link", observed_link)
+        monkeypatch.setattr(resolver, "_flush_directory", lambda _path: (_ for _ in ()).throw(
+            OSError("synthetic durability failure")
+        ))
+
+    def opener(_path):
+        return _ObservedStream(raw, events)
+
+    report = runner.execute(
+        source, outside / "state.json", receipt, repo,
+        repo / "V13_V8_T1_IDENTITY_ONLY_PRIVATE_READ_AUTHORIZATION.json",
+        resolver=lambda source_arg, output_arg, repo_arg, *, on_first_byte, on_state_written: resolver._resolve_identity_state(
+            source_arg, output_arg, repo_arg, bindings=bindings, on_first_byte=on_first_byte,
+            on_state_written=on_state_written, source_opener=opener,
+        ),
+    )
+    assert "PRIVATE_BOUNDARY_CROSSED=true" in report
+    assert "AUTHORIZATION_REUSABLE=false" in report
+    assert "SECOND_EXECUTION_ALLOWED=false" in report
+    assert "POST_BOUNDARY_RECEIPT_PUBLISH_FAILED" in report
+    assert events.index("published") < events.index("close")
+    assert "read_rest" not in events
 
 
 def test_runner_valid_synthetic_execution_emits_only_safe_report(synthetic_paths, monkeypatch):

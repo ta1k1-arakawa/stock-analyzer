@@ -3906,3 +3906,17 @@ transitions. This public log must not contain protected material.
   `43f80b7` (its removal) followed the #41 review. GitHub compare from
   `63fa6b7` to `43f80b7` has zero changed files and the final tree is
   identical; no scientific or methodological state changed.
+
+## 2026-09-23 — Issue #42 GPT BLOCK and Issue #43 receipt durability remediation
+
+- GPT exact-SHA review of `4ba71efac3a311dd0337b0b70ad784ffefb75fb4`
+  returned BLOCK with HIGH_1: consumed-receipt publication was atomic but
+  lacked durable namespace publication evidence.
+- Issue #43 remediation adds POSIX directory fsync after no-overwrite link
+  publication and Windows same-directory `MoveFileExW` publication with
+  `MOVEFILE_WRITE_THROUGH` and no replace flag. Synthetic checks cover the
+  ordering and fail-closed behavior; this remediation awaits GPT exact-SHA
+  review.
+- The one-shot authorization remains unconsumed. No real private content or
+  private path was accessed or discovered; no market-data request, model fit,
+  or backtest occurred.

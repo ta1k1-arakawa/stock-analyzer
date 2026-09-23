@@ -17,6 +17,7 @@ from scripts.v13_resolve_v8_t1_identity_state import (
     IdentityResolutionBlocked,
     _ExpectedBindings,
     _resolve_identity_state,
+    _write_once,
     resolve_identity_state,
 )
 
@@ -304,6 +305,14 @@ def test_existing_output_blocks_without_overwrite(test_dir: Path) -> None:
     output.write_bytes(b"preserve-existing")
     with pytest.raises(IdentityResolutionBlocked, match="OUTPUT_ALREADY_EXISTS"):
         _resolve_synthetic(source, output, test_dir.parent / "repository-root", bindings)
+    assert output.read_bytes() == b"preserve-existing"
+
+
+def test_write_once_publication_is_no_overwrite_and_preserves_existing_bytes(test_dir: Path) -> None:
+    output = test_dir / "already-published.json"
+    output.write_bytes(b"preserve-existing")
+    with pytest.raises(IdentityResolutionBlocked, match="OUTPUT_ALREADY_EXISTS"):
+        _write_once(output, b"replacement")
     assert output.read_bytes() == b"preserve-existing"
 
 
