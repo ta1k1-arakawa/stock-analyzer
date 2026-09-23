@@ -33,12 +33,40 @@ param(
         return ($result -join "`n").Trim()
     }
 
+    function Get-SourceResponseOrThrow([System.Net.HttpWebRequest]$Request) {
+        try {
+            $response = $Request.GetResponse()
+        }
+        catch [System.Net.WebException] {
+            $webException = $_.Exception
+            if ($webException.Response -is [System.Net.HttpWebResponse]) {
+                $statusCode = [int]$webException.Response.StatusCode
+                $webException.Response.Dispose()
+                if ($statusCode -ge 300 -and $statusCode -lt 400) { throw "SOURCE_REDIRECT_HTTP_$statusCode" }
+                throw "SOURCE_HTTP_STATUS_$statusCode"
+            }
+            if ($webException.Status -eq [System.Net.WebExceptionStatus]::Timeout) { throw 'SOURCE_TIMEOUT' }
+            throw 'SOURCE_TRANSPORT_FAILED'
+        }
+        catch {
+            throw 'SOURCE_ACQUISITION_UNEXPECTED_FAILURE'
+        }
+
+        $statusCode = [int]$response.StatusCode
+        if ($statusCode -ne 200) {
+            $response.Dispose()
+            if ($statusCode -ge 300 -and $statusCode -lt 400) { throw "SOURCE_REDIRECT_HTTP_$statusCode" }
+            throw "SOURCE_HTTP_STATUS_$statusCode"
+        }
+        return $response
+    }
+
     function Format-PostNetworkFailure([string]$Stage, [string]$Reason, [int]$Requests) {
         $knownStages = @('SOURCE_ACQUISITION', 'SOURCE_BYTES', 'SOURCE_PARSE', 'ELIGIBLE_UNIVERSE', 'T0',
             'BLOCK_IDENTITY', 'RECOVERY_MANIFEST_CONSTRUCTION', 'RECOVERY_MANIFEST_VALIDATION',
             'DESTINATION_PUBLICATION', 'RECOVERY_PIPELINE', 'SOURCE_BYTES_READY', 'SAFE_REPORT_VALIDATION',
             'REQUEST_INITIATED')
-        $knownReasons = @('SOURCE_TRANSPORT_OR_HTTP_FAILED', 'SOURCE_BYTES_HANDOFF_FAILED',
+        $knownReasons = @('SOURCE_TIMEOUT', 'SOURCE_TRANSPORT_FAILED', 'SOURCE_ACQUISITION_UNEXPECTED_FAILURE', 'SOURCE_BYTES_HANDOFF_FAILED',
             'SOURCE_BYTES_VALIDATION_FAILED', 'SOURCE_PARSE_FAILED', 'ELIGIBLE_UNIVERSE_EMPTY',
             'ELIGIBLE_UNIVERSE_DUPLICATE', 'ELIGIBLE_UNIVERSE_CONSTRUCTION_FAILED',
             'ELIGIBLE_UNIVERSE_COUNT_MISMATCH', 'ELIGIBLE_UNIVERSE_HASH_MISMATCH',
@@ -47,7 +75,8 @@ param(
             'T_SPARE_IDENTITY_MISMATCH', 'RECOVERY_MANIFEST_CONSTRUCTION_FAILED',
             'RECOVERY_MANIFEST_VALIDATION_FAILED', 'DESTINATION_PUBLICATION_FAILED',
             'POST_NETWORK_UNEXPECTED_FAILURE', 'POST_NETWORK_SAFE_REPORT_INVALID')
-        if ($Stage -notin $knownStages -or $Reason -notin $knownReasons -or $Requests -ne 1) {
+        $statusReason = $Stage -eq 'SOURCE_ACQUISITION' -and $Reason -match '^SOURCE_(REDIRECT_HTTP|HTTP_STATUS)_\d{3}$'
+        if ($Stage -notin $knownStages -or (-not $statusReason -and $Reason -notin $knownReasons) -or $Requests -ne 1) {
             $Stage = 'RECOVERY_PIPELINE'
             $Reason = 'POST_NETWORK_UNEXPECTED_FAILURE'
         }
@@ -175,9 +204,17 @@ print("OPERATION_PARSER_PROBE_PASS")
         $request.Timeout = 120000
         $request.ReadWriteTimeout = 120000
         $request.UserAgent = 'stock-analyzer-v8-recovery/1.0'
-        $response = $request.GetResponse()
+        try { $response = Get-SourceResponseOrThrow $request }
+        catch {
+            $acquisitionReason = [string]$_.Exception.Message
+            if ($acquisitionReason -match '^SOURCE_(REDIRECT_HTTP|HTTP_STATUS)_\d{3}$' -or
+                $acquisitionReason -in @('SOURCE_TIMEOUT', 'SOURCE_TRANSPORT_FAILED', 'SOURCE_ACQUISITION_UNEXPECTED_FAILURE')) {
+                $postNetworkReason = $acquisitionReason
+            }
+            else { $postNetworkReason = 'SOURCE_ACQUISITION_UNEXPECTED_FAILURE' }
+            throw 'POST_GATE_SOURCE_ACQUISITION_BLOCKED'
+        }
         try {
-            if ([int]$response.StatusCode -ne 200) { throw 'POST_GATE_SOURCE_HTTP_STATUS_BLOCK' }
             $sourceStream = $response.GetResponseStream()
             $payloadStream = [System.IO.MemoryStream]::new()
             try {
@@ -346,7 +383,7 @@ finally:
         }
         elseif ($networkBoundaryCrossed) {
             if ($postNetworkReason) { $safeReason = $postNetworkReason }
-            elseif ($postNetworkStage -eq 'SOURCE_ACQUISITION') { $safeReason = 'SOURCE_TRANSPORT_OR_HTTP_FAILED' }
+            elseif ($postNetworkStage -eq 'SOURCE_ACQUISITION') { $safeReason = 'SOURCE_ACQUISITION_UNEXPECTED_FAILURE' }
             elseif ($postNetworkStage -eq 'SOURCE_BYTES_READY') { $safeReason = 'SOURCE_BYTES_HANDOFF_FAILED' }
             elseif ($postNetworkStage -eq 'SAFE_REPORT_VALIDATION') { $safeReason = 'POST_NETWORK_SAFE_REPORT_INVALID' }
             else { $safeReason = 'POST_NETWORK_UNEXPECTED_FAILURE' }

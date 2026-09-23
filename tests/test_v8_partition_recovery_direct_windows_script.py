@@ -1,14 +1,18 @@
 import atexit
 import base64
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import threading
 import tempfile
+import time
 
 import pytest
 from test_v8_partition_recovery import _fixture
@@ -95,7 +99,7 @@ def test_destination_is_mechanical_outside_repository_and_write_once():
 def test_request_guard_is_one_shot_and_no_redirect_or_retry():
     source = _script()
     assert source.count("$requestCount = 1") == 1
-    assert source.count("$request.GetResponse()") == 1
+    assert source.count("$Request.GetResponse()") == 1
     assert "$request.AllowAutoRedirect = $false" in source
     assert "ComputeHash($payloadBytes)" in source
     assert "hashlib.sha256(raw).hexdigest() != os.environ[\"V8_RECOVERY_TRANSIENT_SHA256\"]" in source
@@ -104,6 +108,17 @@ def test_request_guard_is_one_shot_and_no_redirect_or_retry():
     assert "while (" not in network_operation.lower()
     assert "foreach (" not in network_operation.lower()
     assert "retry" not in network_operation.lower()
+
+
+def test_source_acquisition_diagnostics_are_safe_and_keep_frozen_transport():
+    source = _script()
+    assert "$request.AllowAutoRedirect = $false" in source
+    assert source.count("$request.GetResponse()") == 0
+    assert source.count("$Request.GetResponse()") == 1
+    assert "SOURCE_TRANSPORT_OR_HTTP_FAILED" not in source
+    assert "$requestCount = 1" in source
+    assert "$sourceUrl = 'https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls'" in source
+    assert "$request.UserAgent = 'stock-analyzer-v8-recovery/1.0'" in source
 
 
 def test_safe_report_does_not_emit_paths_payload_or_member_assignments():
@@ -299,7 +314,11 @@ foreach ($case in $cases) {{
 @pytest.mark.parametrize(
     ("stage", "reason"),
     [
-        ("SOURCE_ACQUISITION", "SOURCE_TRANSPORT_OR_HTTP_FAILED"),
+        ("SOURCE_ACQUISITION", "SOURCE_HTTP_STATUS_403"),
+        ("SOURCE_ACQUISITION", "SOURCE_REDIRECT_HTTP_302"),
+        ("SOURCE_ACQUISITION", "SOURCE_TIMEOUT"),
+        ("SOURCE_ACQUISITION", "SOURCE_TRANSPORT_FAILED"),
+        ("SOURCE_ACQUISITION", "SOURCE_ACQUISITION_UNEXPECTED_FAILURE"),
         ("SOURCE_BYTES", "SOURCE_BYTES_VALIDATION_FAILED"),
         ("SOURCE_BYTES_READY", "SOURCE_BYTES_HANDOFF_FAILED"),
         ("SOURCE_PARSE", "SOURCE_PARSE_FAILED"),
@@ -339,6 +358,137 @@ def test_unexpected_post_network_failure_keeps_coarse_stage():
     source = _script()
     assert "$Stage = 'RECOVERY_PIPELINE'" in source
     assert "$Reason = 'POST_NETWORK_UNEXPECTED_FAILURE'" in source
+
+
+def _run_source_acquisition_helper(url: str | None, timeout_ms: int = 1000) -> subprocess.CompletedProcess[str]:
+    source = _script()
+    helper_start = source.index("    function Get-SourceResponseOrThrow(")
+    helper_end = source.index("\n\n    function Format-PostNetworkFailure", helper_start)
+    formatter_start = helper_end + 2
+    formatter_end = source.index("\n\n    function Invoke-OperationParserProbe", formatter_start)
+    helpers = source[helper_start:formatter_end]
+    url_expression = "$null" if url is None else "'" + url.replace("'", "''") + "'"
+    request_expression = "$null" if url is None else f"[System.Net.HttpWebRequest]::Create({url_expression})"
+    harness = f"""
+$ErrorActionPreference = 'Stop'
+{helpers}
+try {{
+    $request = {request_expression}
+    if ($request) {{ $request.AllowAutoRedirect = $false; $request.Timeout = {timeout_ms} }}
+    $response = Get-SourceResponseOrThrow $request
+    Write-Output "SOURCE_HANDOFF_HTTP_$([int]$response.StatusCode)"
+    $response.Dispose()
+}}
+catch {{
+    $reason = [string]$_.Exception.Message
+    Write-Output (Format-PostNetworkFailure 'SOURCE_ACQUISITION' $reason 1)
+}}
+"""
+    encoded = base64.b64encode(harness.encode("utf-16le")).decode("ascii")
+    powershell = _powershell_executable()
+    assert powershell is not None
+    return subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+
+
+def _loopback_response(status: int, delay_seconds: float = 0):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if delay_seconds:
+                time.sleep(delay_seconds)
+            body = b"SYNTHETIC_PRIVATE_BODY_MUST_NOT_BE_PRINTED"
+            self.send_response(status)
+            self.send_header("X-Synthetic-Secret", "SYNTHETIC_HEADER_MUST_NOT_BE_PRINTED")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                pass
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (200, "SOURCE_HANDOFF_HTTP_200"),
+        (301, "REASON=SOURCE_REDIRECT_HTTP_301"),
+        (302, "REASON=SOURCE_REDIRECT_HTTP_302"),
+        (403, "REASON=SOURCE_HTTP_STATUS_403"),
+        (404, "REASON=SOURCE_HTTP_STATUS_404"),
+        (500, "REASON=SOURCE_HTTP_STATUS_500"),
+    ],
+)
+def test_loopback_http_acquisition_classification(status, expected):
+    powershell = _powershell_executable()
+    if os.name != "nt" or powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    server, thread = _loopback_response(status)
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/SYNTHETIC_URL_MUST_NOT_BE_PRINTED"
+        result = _run_source_acquisition_helper(url)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert output.strip().endswith(expected)
+    if status != 200:
+        assert "NETWORK_BOUNDARY_CROSSED=true JPX_SOURCE_REQUESTS=1 STAGE=SOURCE_ACQUISITION" in output
+    for secret in ("SYNTHETIC_URL_MUST_NOT_BE_PRINTED", "SYNTHETIC_PRIVATE_BODY_MUST_NOT_BE_PRINTED",
+                   "SYNTHETIC_HEADER_MUST_NOT_BE_PRINTED", "127.0.0.1", "Exception"):
+        assert secret not in output
+
+
+def test_loopback_timeout_and_connection_failure_classification():
+    powershell = _powershell_executable()
+    if os.name != "nt" or powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+
+    server, thread = _loopback_response(200, delay_seconds=0.5)
+    try:
+        timeout_url = f"http://127.0.0.1:{server.server_port}/timeout"
+        timed_out = _run_source_acquisition_helper(timeout_url, timeout_ms=100)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    assert timed_out.returncode == 0, timed_out.stdout + timed_out.stderr
+    assert "REASON=SOURCE_TIMEOUT" in timed_out.stdout
+    assert "SYNTHETIC_PRIVATE_BODY_MUST_NOT_BE_PRINTED" not in timed_out.stdout + timed_out.stderr
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        unused_port = listener.getsockname()[1]
+    failed = _run_source_acquisition_helper(f"http://127.0.0.1:{unused_port}/unavailable", timeout_ms=5000)
+    assert failed.returncode == 0, failed.stdout + failed.stderr
+    assert "REASON=SOURCE_TRANSPORT_FAILED" in failed.stdout
+    assert "unavailable" not in failed.stdout + failed.stderr
+
+
+def test_unexpected_acquisition_exception_is_sanitized():
+    powershell = _powershell_executable()
+    if os.name != "nt" or powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    result = _run_source_acquisition_helper(None)
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "REASON=SOURCE_ACQUISITION_UNEXPECTED_FAILURE" in output
+    assert "Exception" not in output and "Object reference" not in output
 
 
 def _powershell_executable() -> str | None:
