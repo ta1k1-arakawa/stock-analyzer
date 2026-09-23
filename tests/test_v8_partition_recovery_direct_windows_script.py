@@ -1,4 +1,13 @@
+import base64
+import os
 from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +53,8 @@ def test_all_preflight_gates_precede_network_boundary():
         assert source.index(gate) < boundary
     assert "'ls-remote', '--exit-code'" in source
     assert "fetch" not in source.lower()
+    assert "Invoke-OperationParserProbe $pythonExe $temporaryProbePath $parserProbe" in source
+    assert "-c $parserProbe" not in source
 
 
 def test_review_binding_requires_remote_local_equality_ancestor_and_exact_script_blobs():
@@ -99,3 +110,93 @@ def test_safe_report_does_not_emit_paths_payload_or_member_assignments():
     assert "Write-Output $temporaryPayload" not in source
     assert "Write-Output $payloadBytes" not in source
     assert "RECOVERY_RESULT=NOT_EXECUTED NETWORK_BOUNDARY_CROSSED=false JPX_SOURCE_REQUESTS=0" in source
+
+
+def _powershell_executable() -> str | None:
+    return shutil.which("pwsh") or shutil.which("powershell")
+
+
+def _run_parser_probe_with_powershell(probe_text: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+    source = _script()
+    helper_start = source.index("    function Invoke-OperationParserProbe(")
+    helper_end = source.index("\n\n    try {", helper_start)
+    helper = source[helper_start:helper_end]
+    probe_match = re.search(r"\$parserProbe = @'\n(.*?)\n'@", source, re.DOTALL)
+    assert probe_match is not None
+    actual_probe = probe_match.group(1)
+    if probe_text == "__ACTUAL_PROBE__":
+        probe_text = actual_probe
+
+    probe_path = tmp_path / "operation-parser-probe.py"
+    python_exe = sys.executable.replace("'", "''")
+    probe_path_ps = str(probe_path).replace("'", "''")
+    probe_literal = "@'\n" + probe_text + "\n'@"
+    harness = f"""
+$ErrorActionPreference = 'Stop'
+{helper}
+$pythonExe = '{python_exe}'
+$probePath = '{probe_path_ps}'
+$probeText = {probe_literal}
+try {{
+    $result = Invoke-OperationParserProbe $pythonExe $probePath $probeText
+    Write-Output $result
+    Write-Output 'NETWORK_BOUNDARY_CROSSED=false JPX_SOURCE_REQUESTS=0'
+    if (Test-Path -LiteralPath $probePath) {{ throw 'PROBE_FILE_NOT_CLEANED' }}
+    Write-Output 'PROBE_FILE_CLEANED=true'
+}}
+catch {{
+    $reason = [string]$_.Exception.Message
+    if ($reason -notmatch '^PRE_GATE_[A-Z0-9_]+$') {{ $reason = 'PRE_GATE_OPERATION_PARSER_BLOCK' }}
+    Write-Output $reason
+    Write-Output 'NETWORK_BOUNDARY_CROSSED=false JPX_SOURCE_REQUESTS=0'
+    if (Test-Path -LiteralPath $probePath) {{ throw 'PROBE_FILE_NOT_CLEANED' }}
+    Write-Output 'PROBE_FILE_CLEANED=true'
+    exit 1
+}}
+"""
+    encoded = base64.b64encode(harness.encode("utf-16le")).decode("ascii")
+    powershell = _powershell_executable()
+    assert powershell is not None
+    return subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_windows_actual_native_python_probe_path_passes_without_network():
+    powershell = _powershell_executable()
+    if os.name != "nt" or powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+    dependencies = subprocess.run(
+        [sys.executable, "-c", "import pandas, xlrd"], capture_output=True, check=False
+    )
+    if dependencies.returncode != 0:
+        pytest.skip("The current Python environment lacks the parser dependencies")
+
+    temp_root = Path(os.environ["LOCALAPPDATA"]) / "Temp"
+    with tempfile.TemporaryDirectory(prefix="v8-parser-probe-test-", dir=temp_root) as directory:
+        result = _run_parser_probe_with_powershell("__ACTUAL_PROBE__", Path(directory))
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output
+        assert "OPERATION_PARSER_PROBE_PASS" in output
+        assert "NETWORK_BOUNDARY_CROSSED=false JPX_SOURCE_REQUESTS=0" in output
+        assert "PROBE_FILE_CLEANED=true" in output
+
+
+def test_windows_broken_probe_has_safe_pre_gate_reason_and_zero_requests():
+    powershell = _powershell_executable()
+    if os.name != "nt" or powershell is None:
+        pytest.skip("Windows PowerShell is unavailable")
+
+    temp_root = Path(os.environ["LOCALAPPDATA"]) / "Temp"
+    with tempfile.TemporaryDirectory(prefix="v8-parser-probe-test-", dir=temp_root) as directory:
+        result = _run_parser_probe_with_powershell("this is deliberately invalid Python !!!", Path(directory))
+        output = result.stdout + result.stderr
+        assert result.returncode != 0
+        assert "PRE_GATE_OPERATION_PARSER_BLOCK" in output
+        assert "NETWORK_BOUNDARY_CROSSED=false JPX_SOURCE_REQUESTS=0" in output
+        assert "PROBE_FILE_CLEANED=true" in output
+        assert "Traceback" not in output

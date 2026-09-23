@@ -20,6 +20,7 @@ param(
     $networkBoundaryCrossed = $false
     $temporaryDirectory = $null
     $temporaryPayload = $null
+    $temporaryProbePath = $null
     $pythonPayloadPath = 'V8_RECOVERY_TRANSIENT_PAYLOAD'
     $pythonArtifactPath = 'V8_RECOVERY_TRANSIENT_ARTIFACT'
     $pythonPayloadHash = 'V8_RECOVERY_TRANSIENT_SHA256'
@@ -28,6 +29,24 @@ param(
         $result = & git @GitArguments 2>$null
         if ($LASTEXITCODE -ne 0) { throw 'PRE_GATE_GIT_CHECK_FAILED' }
         return ($result -join "`n").Trim()
+    }
+
+    function Invoke-OperationParserProbe([string]$PythonExe, [string]$ProbePath, [string]$ProbeText) {
+        try {
+            [System.IO.File]::WriteAllText($ProbePath, $ProbeText, [System.Text.UTF8Encoding]::new($false))
+            $output = & $PythonExe -I -B $ProbePath 2>$null
+            if ($LASTEXITCODE -ne 0 -or ($output -join '') -cne 'OPERATION_PARSER_PROBE_PASS') {
+                throw 'PRE_GATE_OPERATION_PARSER_BLOCK'
+            }
+            return ($output -join '')
+        }
+        catch {
+            if ([string]$_.Exception.Message -match '^PRE_GATE_[A-Z0-9_]+$') { throw }
+            throw 'PRE_GATE_OPERATION_PARSER_BLOCK'
+        }
+        finally {
+            if (Test-Path -LiteralPath $ProbePath) { try { [System.IO.File]::Delete($ProbePath) } catch { } }
+        }
     }
 
     try {
@@ -98,11 +117,16 @@ param(
         & $pythonExe scripts/check_current_protected_environment.py *> $null
         if ($LASTEXITCODE -ne 0) { throw 'PRE_GATE_PROTECTED_ENVIRONMENT_BLOCK' }
 
+        $temporaryDirectory = Join-Path $localAppData ('Temp\v8-recovery-' + [guid]::NewGuid().ToString('N'))
+        [System.IO.Directory]::CreateDirectory($temporaryDirectory) | Out-Null
+        $temporaryProbePath = Join-Path $temporaryDirectory 'operation-parser-probe.py'
+
         $parserProbe = @'
 import io, sys
 from pathlib import Path
 import pandas as pd
 import xlrd
+sys.path.insert(0, str(Path.cwd()))
 from src import v8_partition_recovery, v8_partition
 fixture = Path("tests/fixtures/synthetic_jpx_source_snapshot.xls").read_bytes()
 frame = pd.read_excel(io.BytesIO(fixture), engine="xlrd")
@@ -111,14 +135,11 @@ assert rows and len(rows) == 5
 assert v8_partition_recovery.SCHEMA_VERSION == "V8_PARTITION_RECOVERY_MANIFEST_V1"
 print("OPERATION_PARSER_PROBE_PASS")
 '@
-        $probeOutput = & $pythonExe -c $parserProbe 2>$null
-        if ($LASTEXITCODE -ne 0 -or ($probeOutput -join '') -cne 'OPERATION_PARSER_PROBE_PASS') { throw 'PRE_GATE_OPERATION_PARSER_BLOCK' }
+        $probeOutput = Invoke-OperationParserProbe $pythonExe $temporaryProbePath $parserProbe
 
         # The root is created only after repository and environment preflight, before the request.
         [System.IO.Directory]::CreateDirectory($artifactRoot) | Out-Null
         if (Test-Path -LiteralPath $artifactPath) { throw 'PRE_GATE_ARTIFACT_ALREADY_EXISTS' }
-        $temporaryDirectory = Join-Path $localAppData ('Temp\v8-recovery-' + [guid]::NewGuid().ToString('N'))
-        [System.IO.Directory]::CreateDirectory($temporaryDirectory) | Out-Null
         $temporaryPayload = Join-Path $temporaryDirectory 'source.bin'
 
         # One non-redirecting HTTP request. A transport or semantic failure is terminal.
@@ -229,6 +250,7 @@ finally:
         [System.Environment]::SetEnvironmentVariable($pythonArtifactPath, $null, 'Process')
         [System.Environment]::SetEnvironmentVariable($pythonPayloadHash, $null, 'Process')
         if ($temporaryPayload -and (Test-Path -LiteralPath $temporaryPayload)) { try { [System.IO.File]::Delete($temporaryPayload) } catch { } }
+        if ($temporaryProbePath -and (Test-Path -LiteralPath $temporaryProbePath)) { try { [System.IO.File]::Delete($temporaryProbePath) } catch { } }
         if ($temporaryDirectory -and (Test-Path -LiteralPath $temporaryDirectory)) { try { [System.IO.Directory]::Delete($temporaryDirectory, $true) } catch { } }
         $request = $null
         $response = $null
@@ -247,6 +269,7 @@ finally:
         $safeReport = $null
         $runnerOutput = $null
         $temporaryPayload = $null
+        $temporaryProbePath = $null
         $temporaryDirectory = $null
         Pop-Location -ErrorAction SilentlyContinue
     }
