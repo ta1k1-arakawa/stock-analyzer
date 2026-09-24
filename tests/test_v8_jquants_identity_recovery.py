@@ -216,6 +216,138 @@ def test_retry_then_success_and_page_progression(tmp_path):
     assert len(attempts) == 3
 
 
+def test_page_receipt_is_durable_before_next_transport_and_matches_manifest(tmp_path, monkeypatch):
+    first = page(["1000"], "next")
+    second = page(["1001"])
+    writes = []
+    syncs = []
+    original_write = jq._write_new
+    original_fsync = jq.os.fsync
+
+    def tracked_write(path, raw):
+        writes.append(path.name)
+        original_write(path, raw)
+
+    def tracked_fsync(fd):
+        syncs.append(writes[-1])
+        original_fsync(fd)
+
+    monkeypatch.setattr(jq, "_write_new", tracked_write)
+    monkeypatch.setattr(jq.os, "fsync", tracked_fsync)
+
+    def transport(token, _key):
+        if token is None:
+            return 200, first
+        assert token == "next"
+        stage, = tmp_path.glob("staging-*")
+        body = (stage / "page-001.json").read_bytes()
+        receipt_raw = (stage / "page-001.meta.json").read_bytes()
+        receipt = json.loads(receipt_raw)
+        assert body == first
+        assert receipt_raw == jq.canonical(receipt)
+        assert receipt == {"index": 1, "byte_count": len(first), "sha256": jq.digest(first)}
+        assert writes[:2] == syncs[:2] == ["page-001.json", "page-001.meta.json"]
+        return 200, second
+
+    final = jq.acquire(tmp_path, "fake-key", COMMIT, BLOB, transport)
+    manifest, pages = jq.load_raw(final)
+    assert pages == [first, second]
+    assert manifest["pages"] == [
+        {"index": 1, "byte_count": len(first), "sha256": jq.digest(first)},
+        {"index": 2, "byte_count": len(second), "sha256": jq.digest(second)},
+    ]
+    assert {path.name for path in final.iterdir()} == {
+        "manifest.json", "page-001.json", "page-002.json"}
+    assert writes[:4] == syncs[:4] == [
+        "page-001.json", "page-001.meta.json", "page-002.json", "page-002.meta.json"]
+
+
+def test_later_page_failure_preserves_earlier_durable_receipt(tmp_path):
+    first = page([], "next")
+    got, calls, _, _ = acquire(tmp_path, [(200, first), (400, b"")])
+    assert got == "SOURCE_HTTP_4XX" and calls == [None, "next"]
+    stage, = tmp_path.glob("staging-*")
+    assert (stage / "page-001.json").read_bytes() == first
+    assert json.loads((stage / "page-001.meta.json").read_bytes()) == {
+        "index": 1, "byte_count": len(first), "sha256": jq.digest(first)}
+    assert not (tmp_path / "eq-master-20260731").exists()
+
+
+def test_receipt_fsync_failure_prevents_next_transport(tmp_path, monkeypatch):
+    original_fsync = jq.os.fsync
+    sync_count = 0
+    calls = []
+
+    def fail_receipt_fsync(fd):
+        nonlocal sync_count
+        sync_count += 1
+        if sync_count == 2:
+            raise OSError("fake-private-path fake-token")
+        original_fsync(fd)
+
+    def transport(token, _key):
+        calls.append(token)
+        return 200, page([], "next")
+
+    monkeypatch.setattr(jq.os, "fsync", fail_receipt_fsync)
+    line = jq.execute(tmp_path, COMMIT, BLOB, "fake-key", transport, root_override=tmp_path)
+    assert calls == [None] and sync_count == 2
+    assert "REASON=RAW_CONTENT_LOCK_PUBLICATION_FAILED" in line and "fake-" not in line
+    stage, = tmp_path.glob("staging-*")
+    assert (stage / "page-001.json").is_file()
+    assert (stage / "page-001.meta.json").is_file()
+    assert not (tmp_path / "eq-master-20260731").exists()
+
+
+def test_page_receipt_create_new_collision_blocks_without_overwrite(tmp_path):
+    planted = b"private-existing-receipt"
+
+    def transport(_token, _key):
+        stage, = tmp_path.glob("staging-*")
+        (stage / "page-001.meta.json").write_bytes(planted)
+        return 200, page([])
+
+    line = jq.execute(tmp_path, COMMIT, BLOB, "fake-key", transport, root_override=tmp_path)
+    stage, = tmp_path.glob("staging-*")
+    assert (stage / "page-001.meta.json").read_bytes() == planted
+    assert "REASON=RAW_CONTENT_LOCK_PUBLICATION_FAILED" in line
+    assert not (tmp_path / "eq-master-20260731").exists()
+
+
+def test_tampered_page_receipt_blocks_publication(tmp_path):
+    def transport(token, _key):
+        if token is None:
+            return 200, page([], "next")
+        stage, = tmp_path.glob("staging-*")
+        (stage / "page-001.meta.json").write_bytes(jq.canonical({
+            "index": 1, "byte_count": 1, "sha256": "0" * 64}))
+        return 200, page([])
+
+    line = jq.execute(tmp_path, COMMIT, BLOB, "fake-key", transport, root_override=tmp_path)
+    assert "REASON=RAW_CONTENT_LOCK_PUBLICATION_FAILED" in line
+    assert not (tmp_path / "eq-master-20260731").exists()
+    assert (next(tmp_path.glob("staging-*")) / "page-001.meta.json").is_file()
+
+
+def test_receipt_cleanup_failure_is_safe_and_leaves_staging(tmp_path, monkeypatch):
+    original_unlink = Path.unlink
+
+    def blocked_unlink(self, *args, **kwargs):
+        if self.name.endswith(".meta.json"):
+            raise OSError("fake-private-path fake-api-key fake-token fake-ticker")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", blocked_unlink)
+    line = jq.execute(tmp_path, COMMIT, BLOB, "fake-api-key",
+                      lambda _t, _k: (200, page([])), root_override=tmp_path)
+    assert "STAGE=RAW_CONTENT_LOCK REASON=RAW_CONTENT_LOCK_PUBLICATION_FAILED" in line
+    assert "fake-" not in line
+    stage, = tmp_path.glob("staging-*")
+    assert (stage / "manifest.json").is_file()
+    assert (stage / "page-001.meta.json").is_file()
+    assert not (tmp_path / "eq-master-20260731").exists()
+
+
 @pytest.mark.parametrize("responses,reason", [
     ([(200, page([], "repeat")), (200, page([], "repeat"))], "PAGINATION_LOOP"),
     ([(200, b"not-json")], "SOURCE_RESPONSE_SCHEMA_INVALID"),

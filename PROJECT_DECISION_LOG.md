@@ -4222,3 +4222,23 @@ transitions. This public log must not contain protected material.
   execution, API request, credential read, real private-content read, model
   fit, backtest, or trade occurred. Frozen source/date/filter/order/hash
   methodology and historical JPX request facts remain unchanged.
+
+## 2026-09-24 — Issue #69 per-page metadata durability remediation
+
+- GPT exact-SHA review of Issue #68 commit
+  `88d6d6d81b157c77c54b6be09d97f9e59d5a89f0` returned
+  `PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0`; the Issue #67 HIGH_1 is resolved.
+  The inherited Issue #67 MEDIUM_1 remained open until this remediation.
+- Each accepted HTTP-200 page now has a create-new, canonical private staging
+  receipt containing its sequential index, exact byte count, and SHA-256.
+  The page body and receipt are both flushed and fsynced before the next page
+  transport attempt. Receipts are verified against staged page bytes and the
+  final ordered manifest records. The manifest is durably written before
+  staging receipts are removed; only the original manifest and page layout
+  can be atomically published. Receipt write, verification, or cleanup failure
+  blocks publication with the closed raw-lock publication reason.
+- MEDIUM_1 is remediated awaiting GPT exact-SHA review. The originating Issue
+  #67 implementation remains blocked pending review of the full remediation
+  chain. No real J-Quants execution, API request, credential read, real
+  private-content read, model fit, backtest, or trade occurred. Frozen source,
+  date, filter, order, pins, and raw/recovery schemas are unchanged.

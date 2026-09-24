@@ -151,6 +151,10 @@ def _page_name(index: int) -> str:
     return f"page-{index:03d}.json"
 
 
+def _page_meta_name(index: int) -> str:
+    return f"page-{index:03d}.meta.json"
+
+
 def _write_new(path: Path, raw: bytes) -> None:
     with path.open("xb") as stream:
         stream.write(raw)
@@ -339,7 +343,12 @@ def acquire(root: Path, key: str, commit: str, source_blob: str,
         except OSError:
             raise Block("RAW_CONTENT_LOCK_PUBLICATION_FAILED") from None
         _, next_token = envelope(raw)
-        records.append({"index": index, "byte_count": len(raw), "sha256": digest(raw)})
+        record = {"index": index, "byte_count": len(raw), "sha256": digest(raw)}
+        try:
+            _write_new(stage / _page_meta_name(index), canonical(record))
+        except OSError:
+            raise Block("RAW_CONTENT_LOCK_PUBLICATION_FAILED") from None
+        records.append(record)
         if next_token is None:
             break
         if next_token in seen:
@@ -356,7 +365,15 @@ def acquire(root: Path, key: str, commit: str, source_blob: str,
             raw = (stage / _page_name(record["index"])).read_bytes()
             _schema(len(raw) == record["byte_count"] and digest(raw) == record["sha256"],
                     "RAW_CONTENT_LOCK_PUBLICATION_FAILED")
+            receipt_raw = (stage / _page_meta_name(record["index"])).read_bytes()
+            receipt = _exact_json(receipt_raw, "RAW_CONTENT_LOCK_PUBLICATION_FAILED")
+            _schema(set(receipt) == PAGE_KEYS and receipt_raw == canonical(receipt)
+                    and all(type(receipt[key]) is type(record[key]) and receipt[key] == record[key]
+                            for key in PAGE_KEYS), "RAW_CONTENT_LOCK_PUBLICATION_FAILED")
+        _schema(manifest["pages"] == records, "RAW_CONTENT_LOCK_PUBLICATION_FAILED")
         _write_new(stage / "manifest.json", canonical(manifest))
+        for record in records:
+            (stage / _page_meta_name(record["index"])).unlink()
         load_raw(stage)
         if repository_root is not None:
             _schema(private_root(repository_root) == root, "RAW_CONTENT_LOCK_PUBLICATION_FAILED")
