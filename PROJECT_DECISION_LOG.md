@@ -4242,3 +4242,21 @@ transitions. This public log must not contain protected material.
   chain. No real J-Quants execution, API request, credential read, real
   private-content read, model fit, backtest, or trade occurred. Frozen source,
   date, filter, order, pins, and raw/recovery schemas are unchanged.
+
+## 2026-09-24 — Issues #69–#71 J-Quants V8 identity recovery PASS
+
+- Issue #69 exact-SHA GPT review passed at
+  `7565ca723c76801d74d8d319d65d280a689b3cfa`, closing the Issue #67
+  HIGH_1 and MEDIUM_1 remediation chain. Human point-of-use authorization
+  was received for Issue #70, and the reviewed runner executed on direct
+  Windows.
+- The human-returned reviewed safe report recorded PASS after one logical
+  acquisition and one J-Quants HTTP request. The private raw content lock
+  and recovery artifact were published. Eligible count was 3110; the eligible,
+  T0, T1, T2, T3, and T_spare identity hashes all matched their frozen pins.
+  The V8 semantic eligible universe and every partition block identity are
+  recovered exactly under the approved
+  `SEMANTIC_UNIVERSE_PLUS_ALL_BLOCK_HASHES_EXACT` equivalence class.
+- Original raw XLS bytes and original manifest bytes were not recovered.
+  No model fit, backtest, forward-paper execution, or real trading occurred.
+  Next action is GPT repository-first determination of resumed V13 progression.
