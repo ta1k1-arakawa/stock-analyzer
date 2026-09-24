@@ -4131,3 +4131,26 @@ transitions. This public log must not contain protected material.
   backtest, or trade. Exact-byte recovery remains false; original block
   identity recovery remains false pending a later separately reviewed
   execution.
+
+## 2026-09-24 — Issue #65 eligible-list hash ordering remediation
+
+- Issue #64 GPT exact-SHA review of `615869fcca02232da9010be3302c62038189444c`
+  returned `RESULT=BLOCK`, `CRITICAL=0`, `HIGH=1`, `MEDIUM=0`, `LOW=0`;
+  `HIGH_1=ELIGIBLE_HASH_ORDERING_CONTRACT_MISMATCH`. The design had stated
+  lexicographic code order for the eligible-list hash, while historical V8
+  `canonical_order()` at `9b260e898aa019f8ee5102f3a00e7e1ec7a22584`
+  uses `(SHA-256(UTF-8 code), code)` ascending for that hash, T0, and fresh
+  block allocation.
+- Correct the J-Quants design to hash the normalized eligible codes in the
+  historical V8 canonical order with a final newline; T0 remains the first
+  300 of that same order. The pinned eligible-list and T0/T1/T2/T3/T_spare
+  hashes, query date, endpoint, eligibility mapping, and block allocation
+  remain unchanged. Status is `REMEDIATED_AWAITING_GPT_EXACT_SHA_REVIEW`.
+- During Issue #64 review, reviewer tooling created remote branch
+  `noop-review-do-not-use` at exactly
+  `615869fcca02232da9010be3302c62038189444c`. Issue #65 verified this
+  exact target before deleting only that accidental branch. The authoritative
+  branch and history were not rewritten.
+- No J-Quants, JPX, archive-payload, or market-data request occurred in this
+  remediation; no private or sealed content was read, and no model fit,
+  backtest, or trade occurred.

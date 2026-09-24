@@ -2,7 +2,7 @@
 
 ```text
 document_type=V8_JQUANTS_SEMANTIC_AND_BLOCK_IDENTITY_RECOVERY_DESIGN
-status=FROZEN_AWAITING_GPT_EXACT_SHA_REVIEW
+status=REMEDIATED_AWAITING_GPT_EXACT_SHA_REVIEW
 issue=64
 design_owner=GPT-5.6_SOL
 real_jquants_execution=false
@@ -74,8 +74,8 @@ Normalize `Code` as follows:
 4. Otherwise exclude it as non-canonical.
 5. Require the resulting code to match `[0-9A-Z]{4}`.
 6. De-duplicate by normalized code.
-7. Sort normalized eligible codes lexicographically only for canonical
-   eligible-list hashing.
+7. Sort normalized eligible codes by `(SHA-256(UTF-8 code), code)` ascending
+   for canonical eligible-list hashing and partition construction.
 
 Use only ticker membership for recovery. Company names, margin category,
 industry names, price/outcome fields, and other attributes do not affect
@@ -90,13 +90,21 @@ Preserve the existing V8 hash exactly:
 SHA256(UTF8("ticker1\nticker2\n...\n"))
 ```
 
-Sort the normalized eligible list by code before computing its hash. Rebuild
-the partition using the original deterministic algorithm:
+Use the same historical V8 canonical order for the eligible-list hash and
+partition construction:
+
+```text
+eligible_ordered = sort normalized eligible by (SHA-256(UTF-8 code), code) ascending
+ELIGIBLE_TICKER_LIST_SHA256 = SHA256(UTF8("\n".join(eligible_ordered) + "\n"))
+T0 = first 300 of eligible_ordered
+```
+
+Rebuild the remaining blocks using the original deterministic algorithm:
 
 ```text
 DETERMINISTIC_ORDERING_RULE=sort eligible by (SHA-256(UTF-8 code), code) ascending
 BLOCK_SIZE=300
-T0=first 300
+T0=first 300 of eligible_ordered
 LEGACY_EXPOSED_OUTSIDE_T0={1570,4689,5020,7211,7267,8306,9432}
 FRESH_POOL=ordered eligible excluding T0 and the seven legacy-exposed-outside-T0 codes
 T1=first 300 fresh
