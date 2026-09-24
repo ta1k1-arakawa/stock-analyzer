@@ -4154,3 +4154,29 @@ transitions. This public log must not contain protected material.
 - No J-Quants, JPX, archive-payload, or market-data request occurred in this
   remediation; no private or sealed content was read, and no model fit,
   backtest, or trade occurred.
+
+## 2026-09-24 — Issue #66 J-Quants real-execution content-lock design
+
+- Issue #65 exact-SHA independent review of
+  `4e6909acd35c52e1fa1188f23d8e5b3f4cc7273f` returned `RESULT=PASS`,
+  `CRITICAL=0`, `HIGH=0`, `MEDIUM=0`, `LOW=0`.
+- Freeze `V13_V8_JQUANTS_REAL_EXECUTION_DESIGN.md` as the direct-Windows
+  operational contract, awaiting GPT exact-SHA review. The single logical
+  fixed-date J-Quants acquisition permits at most 100 pages and three
+  transport attempts per page with 2- and 5-second backoff. The first
+  complete raw payload is privately, durably content-locked outside the
+  repository before semantic inspection. Semantic or downstream failure
+  never permits refetch; replay uses the exact locked pages offline.
+- The API key comes only from the `JQUANTS_API_KEY` process environment and
+  is never printed, persisted, committed, or passed on a command line. The
+  raw artifact and successful recovered-identity artifact are private and
+  write-once. The latter uses schema
+  `V8_JQUANTS_IDENTITY_RECOVERY_MANIFEST_V1` and contains actual block
+  assignments only after all accepted hashes match. Public reporting uses
+  closed safe fields without credentials, paths, tokens, or memberships.
+- This design changes no Issue #64/#65 source, date, filtering, ordering,
+  count, or hash pin. No J-Quants, JPX, Yahoo, archive, or other market-data
+  request occurred; no credential/private content was read and no model fit,
+  backtest, or trade occurred. The three historical JPX recovery requests
+  and their terminal chronology remain unchanged. Real J-Quants execution
+  remains false pending later review, implementation, and human gate.
