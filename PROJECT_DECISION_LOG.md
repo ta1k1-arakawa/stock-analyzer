@@ -4180,3 +4180,25 @@ transitions. This public log must not contain protected material.
   backtest, or trade occurred. The three historical JPX recovery requests
   and their terminal chronology remain unchanged. Real J-Quants execution
   remains false pending later review, implementation, and human gate.
+
+## 2026-09-24 — Issue #67 J-Quants identity recovery implementation
+
+- Issue #66 independent review of exact SHA
+  `33f6c55b55aa41f84602f68e1109756b6c2ae25f` returned
+  `PASS_CRITICAL_0_HIGH_0_MEDIUM_0_LOW_0`.
+- Implemented the frozen fixed-date V2 acquisition with explicit bounded
+  HTTP attempts, no redirects or hidden adapter retries, private write-once
+  raw content lock `V8_JQUANTS_RAW_CONTENT_LOCK_V1`, zero-network offline
+  replay, historical V8 identity primitives, and private successful recovery
+  schema `V8_JQUANTS_IDENTITY_RECOVERY_MANIFEST_V1`.
+- Added a protected direct-Windows runner with reviewed HEAD/blob, branch,
+  remote, clean-tree, environment, private-root, and synthetic readiness
+  preflight. The runner's real acquisition path was not executed in this
+  implementation issue. Synthetic injected-transport and temporary-filesystem
+  tests performed no market-data requests or real private-content reads.
+- Implementation awaits GPT exact-SHA independent review. Frozen date,
+  eligibility mapping, ordering, pins, and three historical JPX request
+  facts remain unchanged. `REAL_JQUANTS_EXECUTION=false`,
+  `JQUANTS_API_REQUESTS=0`, `PRIVATE_CREDENTIAL_READS=0`,
+  `REAL_PRIVATE_CONTENT_READS=0`, `MODEL_FITS=0`, `BACKTESTS=0`, and
+  `REAL_TRADING=0`.
