@@ -4260,3 +4260,25 @@ transitions. This public log must not contain protected material.
 - Original raw XLS bytes and original manifest bytes were not recovered.
   No model fit, backtest, forward-paper execution, or real trading occurred.
   Next action is GPT repository-first determination of resumed V13 progression.
+
+## 2026-09-24 — Issue #72 full recovered T1 exposure exclusion freeze
+
+- Issue #71 exact-SHA GPT review passed at
+  `0c961927b0f61fd1fdf23166a795d85acaa05b3e` with C0/H0/M0/L0.
+  The reviewed J-Quants recovery privately restored the exact original V8 T1
+  300-identity set under ticker-list SHA-256
+  `262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d`.
+- Attempt #1 definitely staged price payloads for the first 297 ordered T1
+  identities. The later attempt's exact acquired count remains unknown and
+  was not durably persisted; no further acquired identities are inferred.
+- GPT methodology freezes `EXCLUDE_FULL_RECOVERED_T1_BLOCK`: all 300 private
+  T1 identities are to be excluded during later V13 universe construction to
+  prevent possible historical-price exposure leakage. This resolves only the
+  deferred `297 vs 300` treatment. The earlier public-evidence audit's
+  blocked verdict remains a truthful historical record.
+- This task made no private identity read or path discovery, market-data
+  request, universe selection, historical-price read, model fit, backtest,
+  forward paper, or trade. No private identity or assignment was committed.
+  After GPT exact-SHA PASS, the next step is a separately reviewed protected
+  implementation/application of the private T1 exclusion in V13 universe
+  provenance construction.
