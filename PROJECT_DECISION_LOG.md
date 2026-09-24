@@ -4202,3 +4202,23 @@ transitions. This public log must not contain protected material.
   `JQUANTS_API_REQUESTS=0`, `PRIVATE_CREDENTIAL_READS=0`,
   `REAL_PRIVATE_CONTENT_READS=0`, `MODEL_FITS=0`, `BACKTESTS=0`, and
   `REAL_TRADING=0`.
+
+## 2026-09-24 — Issue #68 pre-gate private-content boundary remediation
+
+- GPT exact-SHA review of Issue #67 commit
+  `b9f546a5e78df62bc22f7fe959bcadd7df4935f7` returned
+  `BLOCK_CRITICAL_0_HIGH_1_MEDIUM_1_LOW_0`. HIGH_1 found that protected
+  preflight called `inspect_state()` and read raw page and recovery content
+  before point-of-use execution authority. MEDIUM_1 found that per-page
+  metadata was not durably flushed before advancing pagination.
+- Split durable-state discovery into a metadata-only topology probe and
+  post-gate private-content validation. Both PowerShell and Python protected
+  preflights use the metadata-only probe. The Python child repeats reviewed
+  provenance and execution binding before reaching full validation. Synthetic
+  tests instrument private content opens and cover topology failures and
+  zero-network offline replay.
+- HIGH_1 is remediated pending independent GPT exact-SHA review. MEDIUM_1
+  remains open and unchanged for a separate remediation. No real J-Quants
+  execution, API request, credential read, real private-content read, model
+  fit, backtest, or trade occurred. Frozen source/date/filter/order/hash
+  methodology and historical JPX request facts remain unchanged.

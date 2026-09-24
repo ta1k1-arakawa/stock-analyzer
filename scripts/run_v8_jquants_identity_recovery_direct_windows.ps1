@@ -52,9 +52,9 @@ param(
             $reason = 'PRE_GATE_PRIVATE_ROOT_BLOCK'
             $rootProbe = @'
 from pathlib import Path
-from src.v8_jquants_identity_recovery import private_root, inspect_state, Block
+from src.v8_jquants_identity_recovery import private_root, inspect_state_metadata, Block
 try:
-    state = inspect_state(private_root(Path.cwd()))
+    state = inspect_state_metadata(private_root(Path.cwd()))
     print('READY' if state in ('absent', 'raw') else 'PRE_GATE_EXISTING_ARTIFACT_BLOCK')
 except Block as exc:
     print(exc.reason if exc.reason in ('PRE_GATE_PRIVATE_ROOT_BLOCK', 'PRE_GATE_EXISTING_ARTIFACT_BLOCK') else 'PRE_GATE_EXISTING_ARTIFACT_BLOCK')

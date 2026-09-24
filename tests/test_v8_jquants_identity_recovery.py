@@ -1,3 +1,4 @@
+import builtins
 import json
 import socket
 import ssl
@@ -85,6 +86,104 @@ def test_valid_raw_lock_replays_without_network(tmp_path):
     assert line.startswith("JQUANTS_RECOVERY_RESULT=PASS NETWORK_BOUNDARY_CROSSED=false "
                            "JQUANTS_LOGICAL_ACQUISITIONS=0 JQUANTS_HTTP_REQUESTS=0 ")
     assert (tmp_path / "recovery.json").is_file()
+
+
+def test_metadata_preflight_never_opens_private_content(tmp_path, monkeypatch, capsys):
+    assert jq.inspect_state_metadata(tmp_path / "absent") == "absent"
+    final, _, _, _ = acquire(tmp_path, [(200, page(["1000"]))])
+    marker = "SYNTHETIC_PRIVATE_MARKER"
+    (final / "page-001.json").write_bytes(marker.encode())
+    (final / "manifest.json").write_bytes(marker.encode())
+    original_open = Path.open
+    def forbid_private_open(self, *args, **kwargs):
+        if self == tmp_path or tmp_path in self.parents:
+            pytest.fail("pre-gate private body opened")
+        return original_open(self, *args, **kwargs)
+    original_builtin_open = builtins.open
+    def forbid_builtin_open(file, *args, **kwargs):
+        if isinstance(file, (str, Path)):
+            path = Path(file)
+            if path == tmp_path or tmp_path in path.parents:
+                pytest.fail("pre-gate private body opened")
+        return original_builtin_open(file, *args, **kwargs)
+    monkeypatch.setattr(builtins, "open", forbid_builtin_open)
+    monkeypatch.setattr(Path, "open", forbid_private_open)
+    monkeypatch.setattr(Path, "read_bytes", lambda self: pytest.fail("private read_bytes invoked"))
+    monkeypatch.setattr(Path, "read_text", lambda self, *args, **kwargs: pytest.fail("private read_text invoked"))
+    assert jq.inspect_state_metadata(tmp_path) == "raw"
+    captured = capsys.readouterr()
+    assert marker not in captured.out + captured.err
+
+
+def test_metadata_preflight_recovery_and_conflicting_topology(tmp_path, monkeypatch, capsys):
+    final, _, _, _ = acquire(tmp_path, [(200, page(["1000"]))])
+    (tmp_path / "recovery.json").write_bytes(b"SYNTHETIC_PRIVATE_MARKER")
+    original_open = Path.open
+    def forbid_private_open(self, *args, **kwargs):
+        if self == tmp_path or tmp_path in self.parents:
+            pytest.fail("pre-gate private body opened")
+        return original_open(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", forbid_private_open)
+    assert jq.inspect_state_metadata(tmp_path) == "complete"
+    captured = capsys.readouterr()
+    assert "SYNTHETIC_PRIVATE_MARKER" not in captured.out + captured.err
+    monkeypatch.undo()
+    (tmp_path / "extra").mkdir()
+    with pytest.raises(jq.Block, match="PRE_GATE_EXISTING_ARTIFACT_BLOCK"):
+        jq.inspect_state_metadata(tmp_path)
+
+
+@pytest.mark.parametrize("mutation", ["extra", "raw_file", "recovery_dir", "missing_manifest",
+                                      "missing_page", "gap_page", "nested_page_dir"])
+def test_metadata_preflight_rejects_ambiguous_types(tmp_path, mutation):
+    root = tmp_path / "private"
+    root.mkdir()
+    raw = root / "eq-master-20260731"
+    if mutation == "raw_file":
+        raw.write_bytes(b"private")
+    else:
+        raw.mkdir()
+        if mutation != "missing_manifest":
+            (raw / "manifest.json").write_bytes(b"private")
+        if mutation == "gap_page":
+            (raw / "page-002.json").write_bytes(b"private")
+        elif mutation == "nested_page_dir":
+            (raw / "page-001.json").mkdir()
+        elif mutation != "missing_page":
+            (raw / "page-001.json").write_bytes(b"private")
+    if mutation == "extra":
+        (root / "unexpected").write_bytes(b"private")
+    if mutation == "recovery_dir":
+        (root / "recovery.json").mkdir()
+    with pytest.raises(jq.Block, match="PRE_GATE_EXISTING_ARTIFACT_BLOCK"):
+        jq.inspect_state_metadata(root)
+
+
+def test_metadata_preflight_rejects_symlink(tmp_path):
+    root = tmp_path / "private"
+    root.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    try:
+        (root / "eq-master-20260731").symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+    with pytest.raises(jq.Block, match="PRE_GATE_EXISTING_ARTIFACT_BLOCK"):
+        jq.inspect_state_metadata(root)
+
+
+def test_metadata_preflight_rejects_junction_metadata(tmp_path, monkeypatch):
+    root = tmp_path / "private"
+    raw = root / "eq-master-20260731"
+    raw.mkdir(parents=True)
+    (raw / "manifest.json").write_bytes(b"private")
+    (raw / "page-001.json").write_bytes(b"private")
+    if not hasattr(Path, "is_junction"):
+        pytest.skip("junction metadata unavailable")
+    original = Path.is_junction
+    monkeypatch.setattr(Path, "is_junction", lambda self: self == raw or original(self))
+    with pytest.raises(jq.Block, match="PRE_GATE_EXISTING_ARTIFACT_BLOCK"):
+        jq.inspect_state_metadata(root)
 
 
 @pytest.mark.parametrize("status,reason,retries", [

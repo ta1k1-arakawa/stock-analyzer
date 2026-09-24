@@ -190,32 +190,52 @@ def private_root(repo: Path) -> Path:
     return _safe_root(repo, Path(value))
 
 
-def inspect_state(root: Path) -> str:
-    """Return absent/raw/complete; all ambiguous durable state fails closed."""
-    _reject_reparse(root, "PRE_GATE_EXISTING_ARTIFACT_BLOCK")
-    if root.exists():
-        _schema(root.is_dir(), "PRE_GATE_EXISTING_ARTIFACT_BLOCK")
-        entries = {path.name for path in root.iterdir()}
-        _schema(entries <= {"eq-master-20260731", "recovery.json"},
-                "PRE_GATE_EXISTING_ARTIFACT_BLOCK")
-    for path in (root, root / "eq-master-20260731", root / "recovery.json"):
-        _reject_reparse(path, "PRE_GATE_EXISTING_ARTIFACT_BLOCK")
+def inspect_state_metadata(root: Path) -> str:
+    """Inspect durable-state topology only; never open a private artifact body."""
+    reason = "PRE_GATE_EXISTING_ARTIFACT_BLOCK"
+    _reject_reparse(root, reason)
+    if not root.exists():
+        return "absent"
+    _schema(root.is_dir(), reason)
+    children = list(root.iterdir())
+    _schema(len(children) == len({path.name for path in children}), reason)
+    _schema({path.name for path in children} <= {"eq-master-20260731", "recovery.json"}, reason)
     raw, recovered = root / "eq-master-20260731", root / "recovery.json"
-    if recovered.exists() and not raw.exists():
-        raise Block("PRE_GATE_EXISTING_ARTIFACT_BLOCK")
+    for path in children:
+        _reject_reparse(path, reason)
+    _schema(not recovered.exists() or recovered.is_file(), reason)
+    _schema(not raw.exists() or raw.is_dir(), reason)
+    _schema(not recovered.exists() or raw.exists(), reason)
     if raw.exists():
+        entries = list(raw.iterdir())
+        names = {path.name for path in entries}
+        _schema(len(entries) == len(names) and "manifest.json" in names, reason)
+        page_names = names - {"manifest.json"}
+        _schema(1 <= len(page_names) <= MAX_PAGES and
+                page_names == {_page_name(i) for i in range(1, len(page_names) + 1)}, reason)
+        for path in entries:
+            _reject_reparse(path, reason)
+            _schema(path.is_file(), reason)
+    return "complete" if recovered.exists() else "raw" if raw.exists() else "absent"
+
+
+def inspect_state(root: Path) -> str:
+    """Validate private artifact content after reviewed execution binding."""
+    state = inspect_state_metadata(root)
+    raw, recovered = root / "eq-master-20260731", root / "recovery.json"
+    if state in ("raw", "complete"):
         try:
             manifest, _ = load_raw(raw)
         except Block:
             raise Block("PRE_GATE_EXISTING_ARTIFACT_BLOCK") from None
-        if recovered.exists():
+        if state == "complete":
             try:
                 value = _exact_json(recovered.read_bytes(), "PRE_GATE_EXISTING_ARTIFACT_BLOCK")
                 validate_recovery(value, manifest)
                 _schema(recovered.read_bytes() == canonical(value), "PRE_GATE_EXISTING_ARTIFACT_BLOCK")
             except (Block, OSError, KeyError, TypeError, ValueError, historical.V8PartitionBlocked):
                 raise Block("PRE_GATE_EXISTING_ARTIFACT_BLOCK") from None
-        return "complete" if recovered.exists() else "raw"
+        return state
     return "absent"
 
 
@@ -601,7 +621,7 @@ def _protected_main_preflight(repo: Path, commit: str, source_blob: str, script_
     _schema(checker.returncode == 0, "PRE_GATE_ENVIRONMENT_BLOCK")
     _schema(readiness_probe(), "PRE_GATE_ENVIRONMENT_BLOCK")
     root = private_root(repo)
-    _schema(inspect_state(root) in ("absent", "raw"), "PRE_GATE_EXISTING_ARTIFACT_BLOCK")
+    _schema(inspect_state_metadata(root) in ("absent", "raw"), "PRE_GATE_EXISTING_ARTIFACT_BLOCK")
 
 
 def main() -> int:

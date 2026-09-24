@@ -20,7 +20,7 @@ def test_runner_has_closed_preboundary_order():
         "orca[\\/]workspaces", "branch', '--show-current'", "ls-remote",
         "status', '--porcelain'", "ExpectedScriptBlob", "ExpectedImplementationBlob",
         "check_current_protected_environment.py", "readiness_probe()",
-        "inspect_state(private_root(Path.cwd()))", "JQUANTS_API_KEY",
+        "inspect_state_metadata(private_root(Path.cwd()))", "JQUANTS_API_KEY",
         "ExecuteReviewedAcquisition", "-m src.v8_jquants_identity_recovery",
     ]
     positions = []
@@ -30,6 +30,8 @@ def test_runner_has_closed_preboundary_order():
         else:
             positions.append(source.index(check, positions[-1] + 1 if positions else 0))
     assert positions == sorted(positions)
+    assert "inspect_state(private_root(Path.cwd()))" not in source
+    assert source.index("if (-not $ExecuteReviewedAcquisition)") < source.index("-m src.v8_jquants_identity_recovery")
     assert "Write-Output $result" in source
     assert "2>$null" in source
     assert "V8_JQUANTS_REVIEWED_HEAD', $oldHead" in source
@@ -53,6 +55,7 @@ def test_runner_generated_worktree_blocks_before_network():
 
 
 @pytest.mark.parametrize("fault,reason", [
+    (None, None),
     ("branch", "PRE_GATE_REPOSITORY_BLOCK"),
     ("head", "PRE_GATE_REPOSITORY_BLOCK"),
     ("remote", "PRE_GATE_REPOSITORY_BLOCK"),
@@ -63,15 +66,26 @@ def test_runner_generated_worktree_blocks_before_network():
 ])
 def test_python_network_boundary_preflight_blocks(tmp_path, monkeypatch, fault, reason):
     (tmp_path / ".git").mkdir()
+    private = tmp_path / "private"
+    raw = private / "eq-master-20260731"
+    raw.mkdir(parents=True)
+    (raw / "manifest.json").write_bytes(b"SYNTHETIC_PRIVATE_MARKER")
+    (raw / "page-001.json").write_bytes(b"SYNTHETIC_PRIVATE_MARKER")
     expected_python = tmp_path / ".venv-real-execution" / "Scripts" / "python.exe"
     monkeypatch.setattr(jq.sys, "executable", str(expected_python))
     monkeypatch.setattr(jq, "readiness_probe", lambda: True)
     def root(_repo):
         if fault == "private":
             raise jq.Block("PRE_GATE_PRIVATE_ROOT_BLOCK")
-        return tmp_path / "private"
+        return private
     monkeypatch.setattr(jq, "private_root", root)
-    monkeypatch.setattr(jq, "inspect_state", lambda _root: "absent")
+    monkeypatch.setattr(jq, "inspect_state", lambda _root: pytest.fail("private content validator reached pre-gate"))
+    original_open = Path.open
+    def forbid_private_open(self, *args, **kwargs):
+        if self == private or private in self.parents:
+            pytest.fail("private content opened before child execution binding")
+        return original_open(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", forbid_private_open)
     def run(args, **_kwargs):
         if args[0] != "git":
             return SimpleNamespace(returncode=1 if fault == "environment" else 0, stdout=b"")
@@ -96,6 +110,18 @@ def test_python_network_boundary_preflight_blocks(tmp_path, monkeypatch, fault, 
             raise AssertionError(command)
         return SimpleNamespace(returncode=0, stdout=output)
     monkeypatch.setattr(jq.subprocess, "run", run)
-    with pytest.raises(jq.Block) as exc:
+    if fault is None:
         jq._protected_main_preflight(tmp_path, "a" * 40, "b" * 40, "c" * 40)
-    assert exc.value.reason == reason
+    else:
+        with pytest.raises(jq.Block) as exc:
+            jq._protected_main_preflight(tmp_path, "a" * 40, "b" * 40, "c" * 40)
+        assert exc.value.reason == reason
+
+
+def test_python_main_checks_binding_before_execute():
+    source = (ROOT / "src" / "v8_jquants_identity_recovery.py").read_text(encoding="utf-8")
+    main = source[source.index("def main() -> int:"):]
+    assert main.index("_protected_main_preflight(repo, commit, blob, script_blob)") < main.index("line = execute(repo, commit, blob, key)")
+    preflight = source[source.index("def _protected_main_preflight("):source.index("def main() -> int:")]
+    assert "inspect_state_metadata(root)" in preflight
+    assert "inspect_state(root)" not in preflight
