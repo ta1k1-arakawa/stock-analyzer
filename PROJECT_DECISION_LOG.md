@@ -4327,3 +4327,11 @@ transitions. This public log must not contain protected material.
   methodology or execution authority changes here.
 - Issue #75 remains queued and unexecuted. Rebind it to the authoritative
   HEAD only after this task receives GPT exact-SHA PASS.
+
+## 2026-09-25 — Issue #75 recovered J-Quants T1 exclusion application preparation
+
+- Issue #76 GPT exact-SHA independent review of `515130991ea023896520a446eab2621287480148` passed with C0/H0/M0/L0. The active branch-wide advisory was consulted. Its process-delay finding is accepted for cadence planning; the frozen V13 methodology stays unchanged for the first measurement. P2-a and P2-b were not implemented.
+- Prepared the source-bound, T1-only streaming scanner, one-shot consumed-receipt harness, and future direct-Windows pre-gate wrapper. The source binding is the reviewed J-Quants recovery artifact, schema `V8_JQUANTS_IDENTITY_RECOVERY_MANIFEST_V1`, eligible count 3110 and SHA-256 `37630f8f754c1a1f0f3e07f0ffc26711c83e635b5eaf24533659f37970263405`, T1 count 300 and SHA-256 `262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d`, implementation commit `7565ca723c76801d74d8d319d65d280a689b3cfa` and blob `f46ea0c304b0bbd2d230b9850acba9eada9f6908`.
+- The old T1 identity-only authorization remains unconsumed but is bound to the lost source. A fresh point-of-use human authorization and a later reviewed `DIRECT_WINDOWS_POWERSHELL` Issue are required before real recovery content access. This task used synthetic temporary data only: real private content reads 0, private path discovery 0, market-data requests 0, V13 ticker selections 0, model fits 0, backtests 0, and real trades 0. It grants no historical-viability, model, forward-paper, or trading authority.
+- The implementation awaits GPT exact-SHA review. Next action: `GPT_EXACT_SHA_INDEPENDENT_REVIEW`.
+- Issue #75 targeted synthetic tests passed (`29 passed`); PowerShell parsing and `git diff --check` passed. The tests exercise strict source bindings, T1 count/hash/format/uniqueness, duplicate relevant keys, sentinel non-leakage, one source open, receipt publication before remainder read, receipt failure after first byte, existing-output pre-gate stops, and the CLI wrapper gate.
