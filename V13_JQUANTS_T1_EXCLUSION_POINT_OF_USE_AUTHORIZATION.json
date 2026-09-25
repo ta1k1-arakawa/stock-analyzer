@@ -1,0 +1,22 @@
+{
+  "schema": "V13_JQUANTS_T1_EXCLUSION_POINT_OF_USE_AUTHORIZATION_V1",
+  "human_approved": true,
+  "authorization_scope": "V13_JQUANTS_RECOVERED_T1_IDENTITY_ONLY_PRIVATE_READ",
+  "single_use": true,
+  "authorization_consumed": false,
+  "private_boundary": "FIRST_CONTENT_BYTE_READ_FROM_VERIFIED_JQUANTS_RECOVERY_ARTIFACT",
+  "automatic_retry": false,
+  "second_private_source_read": false,
+  "source_schema": "V8_JQUANTS_IDENTITY_RECOVERY_MANIFEST_V1",
+  "source_contract": "V13_V8_JQUANTS_IDENTITY_RECOVERY_DESIGN",
+  "source_commit": "7565ca723c76801d74d8d319d65d280a689b3cfa",
+  "source_blob": "f46ea0c304b0bbd2d230b9850acba9eada9f6908",
+  "eligible_count": 3110,
+  "eligible_sha256": "37630f8f754c1a1f0f3e07f0ffc26711c83e635b5eaf24533659f37970263405",
+  "t1_count": 300,
+  "t1_ticker_list_sha256": "262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d",
+  "application_reviewed_head": "5e265ee6658c05cf796969070ed101752c0c44c3",
+  "runner_blob_sha1": "b8e8d21d097ae6a408a7935f3470895323b28760",
+  "resolver_blob_sha1": "f859c7998954445e2afe0800ecd861a2423f6a8e",
+  "harness_blob_sha1": "50b997b761ed539e25334838e6e09fe67c09e051"
+}
