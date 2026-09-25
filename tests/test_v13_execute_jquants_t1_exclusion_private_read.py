@@ -1,7 +1,10 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -134,3 +137,87 @@ def test_production_paths_are_narrow_and_pregate_wrapper_is_metadata_only():
     assert wrapper.index('if (-not $ExecuteReviewedPrivateRead)') < wrapper.index('v13_execute_jquants_t1_exclusion_private_read --repository-root')
     assert harness.APPROVAL_BLOB == "276feb56f417f9d5b931d594598a1d8591330bfd"
     assert resolver.T1_SHA == "262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d"
+
+
+def _run_synthetic_wrapper_topology(tmp_path, *, existing=None, execute=False, child_exit=1):
+    """Exercise the production topology and catch code with external gates stubbed."""
+    shell = shutil.which("pwsh") or shutil.which("powershell")
+    assert shell, "PowerShell is required for the direct-Windows wrapper tests"
+    repo = tmp_path / "repo"; repo.mkdir()
+    local = tmp_path / "local"; local.mkdir()
+    source = local / "stock-analyzer" / "private" / harness.SOURCE_ROOT_NAME / "recovery.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(SENTINEL)
+    output = local / "stock-analyzer" / "private" / harness.ROOT_NAME
+    if existing:
+        output.mkdir()
+        (output / existing).write_text("occupied")
+    wrapper = (Path(__file__).resolve().parents[1] / "scripts/run_v13_jquants_t1_exclusion_direct_windows.ps1").read_text()
+    marker = "$reason = 'PRE_GATE_PRIVATE_TOPOLOGY_BLOCK'"
+    body = wrapper[wrapper.index(marker):]
+    child = '$lines = @(& $python -E -B -m scripts.v13_execute_jquants_t1_exclusion_private_read --repository-root $repo 2>$null)'
+    keys = ("PRE_GATE_STATUS PRIVATE_BOUNDARY_CROSSED AUTHORIZATION_CONSUMED "
+            "AUTHORIZATION_REUSABLE SOURCE_OPENS PRIVATE_CONTENT_READS NETWORK_REQUESTS "
+            "PRICE_PAYLOAD_READS OUTCOME_READS NON_T1_IDENTITIES_RETAINED V13_UNIVERSE_SELECTED "
+            "SOURCE_BINDING_MATCH T1_HASH_MATCH CONSUMED_RECEIPT_WRITTEN PRIVATE_STATE_WRITTEN "
+            "EXECUTION_RESULT FAILURE_CLASS AUTOMATIC_RETRY SECOND_PRIVATE_SOURCE_READ").split()
+    values = {key: "false" for key in keys}
+    values.update(PRE_GATE_STATUS="PASS", EXECUTION_RESULT="PASS", FAILURE_CLASS="NONE")
+    report = ", ".join("'" + key + "=" + values[key] + "'" for key in keys)
+    fake_child = ("$lines = @(" + report + "); $global:LASTEXITCODE = " + str(child_exit) + "; "
+                  "[IO.File]::WriteAllText($env:V13_TEST_CHILD_MARKER, 'called')")
+    assert child in body
+    body = body.replace(child, fake_child)
+    prefix = ("& {\n$ErrorActionPreference = 'Stop'\n$repo = $env:V13_TEST_REPO\n"
+              "$python = 'synthetic'\n$reason = 'PRE_GATE_REPOSITORY_BLOCK'\n"
+              "$harnessCalled = $false\n$durableStateClear = $false\n$report = ''\n"
+              "$ExecuteReviewedPrivateRead = $env:V13_TEST_EXECUTE -eq '1'\ntry {\n")
+    script = tmp_path / "synthetic-wrapper.ps1"
+    script.write_text(prefix + body)
+    child_marker = tmp_path / "child-called"
+    env = os.environ.copy()
+    env.update(LOCALAPPDATA=str(local), V13_TEST_REPO=str(repo),
+               V13_TEST_EXECUTE="1" if execute else "0", V13_TEST_CHILD_MARKER=str(child_marker))
+    run = subprocess.run([shell, "-NoProfile", "-File", str(script)], env=env,
+                         capture_output=True, text=True, timeout=30)
+    return run, child_marker
+
+
+@pytest.mark.parametrize("existing", ["consumed-receipt.json", "t1-exclusion-state.json", "unexpected.txt"])
+def test_wrapper_durable_collision_is_unknown_and_does_not_call_child(tmp_path, existing):
+    run, child_marker = _run_synthetic_wrapper_topology(tmp_path, existing=existing, execute=True)
+    assert run.returncode != 0
+    assert "EXECUTION_RESULT=PRE_GATE_STOP" in run.stdout
+    assert "PRIVATE_BOUNDARY_CROSSED=unknown" in run.stdout
+    assert "AUTHORIZATION_CONSUMED=unknown" in run.stdout
+    assert "AUTHORIZATION_REUSABLE=false" in run.stdout
+    assert "SECOND_EXECUTION_ALLOWED=false" in run.stdout
+    assert "AUTHORIZATION_CONSUMED=false" not in run.stdout
+    assert SENTINEL not in run.stdout + run.stderr
+    assert not child_marker.exists()
+
+
+def test_wrapper_clear_topology_execute_switch_stop_is_safe(tmp_path):
+    run, child_marker = _run_synthetic_wrapper_topology(tmp_path)
+    assert run.returncode != 0
+    assert "FAILURE_CLASS=PRE_GATE_EXECUTION_SWITCH_REQUIRED" in run.stdout
+    assert "PRIVATE_BOUNDARY_CROSSED=false" in run.stdout
+    assert "AUTHORIZATION_CONSUMED=false" in run.stdout
+    assert not child_marker.exists()
+
+
+def test_wrapper_nonzero_child_with_pass_report_fails_closed(tmp_path):
+    run, child_marker = _run_synthetic_wrapper_topology(tmp_path, execute=True)
+    assert run.returncode != 0
+    assert child_marker.exists()
+    assert "EXECUTION_RESULT=POST_BOUNDARY_FAILURE" in run.stdout
+    assert "PRIVATE_BOUNDARY_CROSSED=unknown" in run.stdout
+    assert "AUTHORIZATION_CONSUMED=unknown" in run.stdout
+    assert "EXECUTION_RESULT=PASS" not in run.stdout
+
+
+def test_wrapper_clear_topology_execute_calls_child_once(tmp_path):
+    run, child_marker = _run_synthetic_wrapper_topology(tmp_path, execute=True, child_exit=0)
+    assert run.returncode == 0
+    assert child_marker.exists()
+    assert "EXECUTION_RESULT=PASS" in run.stdout

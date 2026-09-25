@@ -13,7 +13,8 @@ param(
     $ErrorActionPreference = 'Stop'
     $reason = 'PRE_GATE_REPOSITORY_BLOCK'
     $harnessCalled = $false
-    $report = 'EXECUTION_RESULT=PRE_GATE_STOP FAILURE_CLASS=PRE_GATE_REPOSITORY_BLOCK PRIVATE_BOUNDARY_CROSSED=false AUTHORIZATION_CONSUMED=false SOURCE_OPENS=0 NETWORK_REQUESTS=0 PRICE_PAYLOAD_READS=0 OUTCOME_READS=0 NON_T1_IDENTITIES_RETAINED=false V13_UNIVERSE_SELECTED=false'
+    $durableStateClear = $false
+    $report = ''
     function GitValue([string[]]$Argv) {
         $value = & git @Argv 2>$null
         if ($LASTEXITCODE -ne 0) { throw 'BLOCK' }
@@ -105,6 +106,7 @@ param(
                 $cursor = if ($null -eq $parent) { $null } else { $parent.FullName }
             }
         }
+        $durableStateClear = $true
         if (-not $ExecuteReviewedPrivateRead) { $reason = 'PRE_GATE_EXECUTION_SWITCH_REQUIRED'; throw 'BLOCK' }
         $report = ''
         $priorGate = [Environment]::GetEnvironmentVariable('V13_JQUANTS_T1_WRAPPER_GATE', 'Process')
@@ -125,7 +127,8 @@ param(
                 if ([string]$lines[$i] -cnotmatch $safePattern) { throw 'BLOCK' }
             }
             $report = $lines -join "`n"
-            if ($exit -ne 0 -and $report -match 'EXECUTION_RESULT=PASS') { throw 'BLOCK' }
+            $resultLine = @($lines | Where-Object { $_ -clike 'EXECUTION_RESULT=*' })
+            if ($resultLine.Count -ne 1 -or (($exit -eq 0) -ne ($resultLine[0] -ceq 'EXECUTION_RESULT=PASS'))) { throw 'BLOCK' }
         }
         finally {
             Pop-Location
@@ -134,11 +137,12 @@ param(
     }
     catch {
         if (-not $harnessCalled) {
-            $report = "EXECUTION_RESULT=PRE_GATE_STOP FAILURE_CLASS=$reason PRIVATE_BOUNDARY_CROSSED=false AUTHORIZATION_CONSUMED=false SOURCE_OPENS=0 NETWORK_REQUESTS=0 PRICE_PAYLOAD_READS=0 OUTCOME_READS=0 NON_T1_IDENTITIES_RETAINED=false V13_UNIVERSE_SELECTED=false"
-        } elseif ($report -notmatch 'EXECUTION_RESULT=(PASS|PRE_GATE_STOP|PRE_BOUNDARY_FAILURE|POST_BOUNDARY_FAILURE)') {
-            $report = 'EXECUTION_RESULT=POST_BOUNDARY_FAILURE FAILURE_CLASS=HARNESS_REPORT_UNKNOWN PRIVATE_BOUNDARY_CROSSED=unknown AUTHORIZATION_CONSUMED=unknown SOURCE_OPENS=unknown NETWORK_REQUESTS=0 PRICE_PAYLOAD_READS=0 OUTCOME_READS=0 NON_T1_IDENTITIES_RETAINED=false V13_UNIVERSE_SELECTED=false'
+            $boundary = if ($durableStateClear) { 'false' } else { 'unknown' }
+            $report = "EXECUTION_RESULT=PRE_GATE_STOP FAILURE_CLASS=$reason PRIVATE_BOUNDARY_CROSSED=$boundary AUTHORIZATION_CONSUMED=$boundary AUTHORIZATION_REUSABLE=false SECOND_EXECUTION_ALLOWED=false SOURCE_OPENS=0 NETWORK_REQUESTS=0 PRICE_PAYLOAD_READS=0 OUTCOME_READS=0 NON_T1_IDENTITIES_RETAINED=false V13_UNIVERSE_SELECTED=false"
+        } else {
+            $report = 'EXECUTION_RESULT=POST_BOUNDARY_FAILURE FAILURE_CLASS=HARNESS_REPORT_UNKNOWN PRIVATE_BOUNDARY_CROSSED=unknown AUTHORIZATION_CONSUMED=unknown AUTHORIZATION_REUSABLE=false SECOND_EXECUTION_ALLOWED=false SOURCE_OPENS=unknown NETWORK_REQUESTS=0 PRICE_PAYLOAD_READS=0 OUTCOME_READS=0 NON_T1_IDENTITIES_RETAINED=false V13_UNIVERSE_SELECTED=false'
         }
     }
     Write-Output $report
-    if ($report -notmatch 'EXECUTION_RESULT=PASS') { exit 1 }
+    if ($report -cnotmatch '(?m)^EXECUTION_RESULT=PASS$') { exit 1 }
 }
