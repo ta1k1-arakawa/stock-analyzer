@@ -1,0 +1,66 @@
+name: EXP-004 forward test
+
+on:
+  # 日本時間 20:00（UTC 11:00）の平日。J-Quants の当日データが出た後に動かす
+  schedule:
+    - cron: '0 11 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: exp004-forward
+  cancel-in-progress: false
+
+jobs:
+  forward:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: pip install pandas numpy requests lightgbm anthropic pypdf
+
+    # J-Quants の生データはリポジトリに入れず、Actions のキャッシュに置く
+    - name: Restore J-Quants cache
+      uses: actions/cache@v4
+      with:
+        path: data/jquants_exp002
+        key: jquants-exp004-${{ github.run_id }}
+        restore-keys: jquants-exp004-
+
+    - name: Update data (per code only)
+      env:
+        JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+      run: python experiments/exp004_forward.py update-data
+
+    - name: Claude reads new earnings reports
+      env:
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      run: python experiments/exp004_forward.py score
+
+    - name: Execute paper orders and decide the next ones
+      run: python experiments/exp004_forward.py step
+
+    - name: Send R's orders to Slack
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      run: python experiments/exp004_forward.py notify
+
+    - name: Commit forward records
+      run: |
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "actions@github.com"
+        git add forward/
+        if git diff --cached --quiet; then
+          echo "No changes"
+        else
+          git commit -m "EXP-004 forward update [skip ci]"
+          git push
+        fi

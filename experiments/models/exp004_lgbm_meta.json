@@ -1,0 +1,57 @@
+{
+ "trained_at_utc": "2026-09-25T22:42:35+00:00",
+ "signal_dates": [
+  "2017-01-04",
+  "2026-08-26"
+ ],
+ "every_n_days": 5,
+ "rows": 59552,
+ "features": [
+  "bp",
+  "roe",
+  "mom20",
+  "mom60",
+  "mom250",
+  "vol60",
+  "size",
+  "liq",
+  "roe_chg60"
+ ],
+ "target": "percentile rank of open(t+21)/open(t+1)-1 among eligible stocks",
+ "params": {
+  "boosting_type": "gbdt",
+  "class_weight": null,
+  "colsample_bytree": 0.8,
+  "importance_type": "split",
+  "learning_rate": 0.05,
+  "max_depth": -1,
+  "min_child_samples": 200,
+  "min_child_weight": 0.001,
+  "min_split_gain": 0.0,
+  "n_estimators": 300,
+  "n_jobs": null,
+  "num_leaves": 15,
+  "objective": null,
+  "random_state": 0,
+  "reg_alpha": 0.0,
+  "reg_lambda": 0.0,
+  "subsample": 0.8,
+  "subsample_for_bin": 200000,
+  "subsample_freq": 1,
+  "deterministic": true,
+  "force_row_wise": true,
+  "verbose": -1
+ },
+ "feature_importance_gain": {
+  "bp": 548.5,
+  "roe": 508.5,
+  "mom20": 261.8,
+  "mom60": 298.6,
+  "mom250": 438.3,
+  "vol60": 462.4,
+  "size": 562.1,
+  "liq": 446.9,
+  "roe_chg60": 586.5
+ },
+ "model_sha256": "fe7a147a7b13dafa785c5b33fc82c326ad3aefd9ea306df1dd3aa74dcf51184e"
+}
