@@ -6,7 +6,7 @@ code=experiments/exp003_rotation.py (commit 971aef051cf315d2c71871a5f461bf00ff46
 command=python experiments/exp003_rotation.py data/jquants_exp002
 data=docs/experiments/EXP-002_DATA_MANIFEST.json (combined_sha256 c965f57806dffd030c5539a02311088472e340640f3e74a1f60d172638374ac0)
 periods_evaluated=dev のみ (営業日 2017-01-04..2024-01-31)
-holdout_viewed=false
+holdout_viewed=false（この文書の時点）。その後、人間の判断で1回だけ評価した：EXP-003_HOLDOUT_DEVIATION.md（基準）、EXP-003_HOLDOUT_RESULTS.md（結果、合格）
 verdict=NOT_PROMISING_BY_PREREGISTERED_CRITERIA (4基準のうち3つは合格、t値 > 2 だけ不合格)
 ```
 
