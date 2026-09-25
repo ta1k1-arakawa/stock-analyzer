@@ -1,7 +1,7 @@
 # EXP-002 引き継ぎメモ：決算イベント型の短期売買（J-Quants）
 
 ```text
-status=NOT_STARTED_AWAITING_DATA_ACCESS
+status=DEV_EVALUATED_NO_PROMISING_CANDIDATE (docs/experiments/EXP-002_RESULTS.md)
 previous=docs/experiments/EXP-001_RESULTS.md (夜間保有・週次リバーサル、どちらも不合格)
 branch=claude/inspiring-hamilton-8xjk20
 ```
