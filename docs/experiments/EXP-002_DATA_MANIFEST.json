@@ -1,0 +1,3711 @@
+{
+ "experiment": "EXP-002",
+ "fetched_at_utc": "2026-09-25T14:26:13+00:00",
+ "api": "https://api.jquants.com/v2",
+ "endpoints": [
+  "/indices/bars/daily/topix",
+  "/equities/bars/daily?code=",
+  "/fins/summary?code="
+ ],
+ "universe_csv_sha256": "d40b1fcfd824822c7511f0d4f99445640706b7f5dfae08155636624704c41997",
+ "legacy_codes": [
+  "4188",
+  "4689",
+  "5020",
+  "7211",
+  "7267",
+  "8306",
+  "9432"
+ ],
+ "codes": 306,
+ "http_requests": 613,
+ "records_total": {
+  "bars/": 711566,
+  "fins/": 14429,
+  "topix": 2442
+ },
+ "codes_without_bars": [],
+ "codes_without_fins": [],
+ "cache_file_format": "json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(',', ':')) UTF-8",
+ "combined_sha256": "c965f57806dffd030c5539a02311088472e340640f3e74a1f60d172638374ac0",
+ "files": {
+  "topix.json": {
+   "records": 2442,
+   "sha256": "712a312ea7f99158747b0c53a5f0886add50e7f38385c936e5c20bddb0d0aabb",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "bars/1301.json": {
+   "records": 2442,
+   "sha256": "584e68d0ac2c0985b3fef45f04b5f506ab99736eebf8644fe447ade0b361f714",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/1301.json": {
+   "records": 50,
+   "sha256": "31ea9f9c01cf8e065114d8f80e55fe627fd25b50aff818d03f6ecd35423c4638",
+   "first": "2016-11-04",
+   "last": "2026-08-07"
+  },
+  "bars/1418.json": {
+   "records": 2442,
+   "sha256": "3862052f41f3c350d751f306987b34bcefa51182d8a6d1d726ec871cdd40eb15",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/1418.json": {
+   "records": 57,
+   "sha256": "bac9628cfe25ccc992cb598044e0bf3b9ab28f1746e5bcd05cd2fe9fa9d23148",
+   "first": "2016-10-11",
+   "last": "2026-07-15"
+  },
+  "bars/1438.json": {
+   "records": 976,
+   "sha256": "f7fd15a094ae6ae47799f7132fafda23b21aab7442ef2696996e761bde2ba9d0",
+   "first": "2022-09-28",
+   "last": "2026-09-25"
+  },
+  "fins/1438.json": {
+   "records": 48,
+   "sha256": "a1912bb467d4a6cc670698119c20353c3a0b8466478a60f57d1514009f23bb6d",
+   "first": "2016-11-14",
+   "last": "2026-08-07"
+  },
+  "bars/1808.json": {
+   "records": 2442,
+   "sha256": "2f563cfe1019ab63d6fe5bd6b8a9255792bfa7173d62a74511ec660b47a8b804",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/1808.json": {
+   "records": 46,
+   "sha256": "4d94ebc53fccc645623aca56e805da3c4e8afd94775086d2a2cd0779561f52a2",
+   "first": "2016-11-10",
+   "last": "2026-08-06"
+  },
+  "bars/1885.json": {
+   "records": 2442,
+   "sha256": "ccdfc5d0ed8e603c9bc36eea9b67d317ce64c706191028af585553c2429a3357",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/1885.json": {
+   "records": 59,
+   "sha256": "5e7945130e2c499fe786b2922a265864b818fff154157a8adaa65479480b07ee",
+   "first": "2016-11-11",
+   "last": "2026-08-06"
+  },
+  "bars/1897.json": {
+   "records": 2442,
+   "sha256": "6b6a6439caa507c699d44726ef15f25ceeadafdfd978805f0c99b1cbb525a397",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/1897.json": {
+   "records": 71,
+   "sha256": "cf24881d59702d5f7c9f574d851f7a6624ce467fd97ccb034dd016b7ccfe732b",
+   "first": "2016-11-10",
+   "last": "2026-08-07"
+  },
+  "bars/1945.json": {
+   "records": 2442,
+   "sha256": "ec8c715db7e90533782469d64f7e3e31c311d7d5cfc5af01e9bd889ddc513b9a",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/1945.json": {
+   "records": 49,
+   "sha256": "24a822e26242c19bb71ba438c9490a42e289dd77199823bdc04f223be22f2484",
+   "first": "2016-10-13",
+   "last": "2026-08-06"
+  },
+  "bars/1948.json": {
+   "records": 2441,
+   "sha256": "a1d17e239fb28a06fd4720168e60eaf94d6d5b66e5146838aed08626a0a965f5",
+   "first": "2016-09-26",
+   "last": "2026-09-24"
+  },
+  "fins/1948.json": {
+   "records": 54,
+   "sha256": "777756af66a0b9fd735aae6e1ff800d67fc8682ecc9b5054c4a402933f5cf63f",
+   "first": "2016-10-31",
+   "last": "2026-07-31"
+  },
+  "bars/1972.json": {
+   "records": 2442,
+   "sha256": "d2181551c64aec7135d605f7634f1e4038261b71e85764ab0085c637eb9b9b1c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/1972.json": {
+   "records": 48,
+   "sha256": "a7bbd1cd333d62886763b3a57e283dcea48525a94ce1c8d1a1560c54cc18476b",
+   "first": "2016-09-30",
+   "last": "2026-07-31"
+  },
+  "bars/1979.json": {
+   "records": 2442,
+   "sha256": "361fd82011deba930dc4d9736658c8092539ab16477757383da5b12c3f4c8d64",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/1979.json": {
+   "records": 55,
+   "sha256": "9bf40a4fe0b9046df51e1bfd1a9dd68cbd1da55ee84571f767a4ebe45eda19b2",
+   "first": "2016-10-31",
+   "last": "2026-08-07"
+  },
+  "bars/1980.json": {
+   "records": 2442,
+   "sha256": "64cc1dfa80e3626f98010140d5c4e30b059b773970c9e808adc1f077a1d19050",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/1980.json": {
+   "records": 56,
+   "sha256": "af091f71cb1d47e0d6c7f7123d61101c29df7ce7934bb4ff7c890ea61bc31050",
+   "first": "2016-10-27",
+   "last": "2026-08-05"
+  },
+  "bars/1997.json": {
+   "records": 2442,
+   "sha256": "a5ddae5e9c3612c5d0e9838c45581774c442427778bfe65fd453661be65b7c56",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/1997.json": {
+   "records": 54,
+   "sha256": "59cc678abfab0fa4cd143ab5e7546ae112c5ad2c062bfe4898003794602f5b23",
+   "first": "2016-10-14",
+   "last": "2026-07-03"
+  },
+  "bars/2108.json": {
+   "records": 2442,
+   "sha256": "b39ab97da749450bfcd17034e7e02fd98b0b5c76d8579a92fa6789170f5265ff",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2108.json": {
+   "records": 51,
+   "sha256": "0de3239c59a5b45de6eaa74bf342f3d7987df827b57da6c1b2488b637b9c0499",
+   "first": "2016-11-11",
+   "last": "2026-08-21"
+  },
+  "bars/211A.json": {
+   "records": 533,
+   "sha256": "d21f170ea69d9668ca538c765ea87ba604111a1b0174ed3ae4126842f4abd3e2",
+   "first": "2024-07-18",
+   "last": "2026-09-25"
+  },
+  "fins/211A.json": {
+   "records": 9,
+   "sha256": "5b6b780af1652a65988175f634afd70b5a98246b12a433b7018cc9974f8493fe",
+   "first": "2024-09-12",
+   "last": "2026-09-11"
+  },
+  "bars/2120.json": {
+   "records": 2442,
+   "sha256": "b60dbdc78154fed761702970ac4602c4c9aa0fabc1f936605ea1a4a16fd9b7c5",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2120.json": {
+   "records": 44,
+   "sha256": "cbb7c6aab53cd46cb7d964cc6bdd36d9e45ff0f2547b53131aead54e6e07b3be",
+   "first": "2016-11-10",
+   "last": "2026-08-12"
+  },
+  "bars/2127.json": {
+   "records": 2442,
+   "sha256": "07c1ff3600b2eb6b7e53ad7eb960b1a36caf6772076c139757b27b679237804c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2127.json": {
+   "records": 54,
+   "sha256": "1d808810a7f140d0a75dc734ed68affd53067242055916c8e087032cc7071ef0",
+   "first": "2016-10-17",
+   "last": "2026-07-30"
+  },
+  "bars/2156.json": {
+   "records": 2442,
+   "sha256": "063fa62f65847da6da9ad83817ec03bc9313911dec596ddbad3be35495fcca4e",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2156.json": {
+   "records": 51,
+   "sha256": "9b4268f91b811239327ab6be5848be76df3d9af44e1579574a4733973a3f5f43",
+   "first": "2016-11-09",
+   "last": "2026-08-10"
+  },
+  "bars/2206.json": {
+   "records": 2442,
+   "sha256": "37f421faa866b65097a584f3c6aa2e8ce957304b8ed1c61a32ced01e4507c337",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2206.json": {
+   "records": 41,
+   "sha256": "714b8830a121eb22dd6452bbbe6e972fc850e50e610b94648ff4bc30b79fe83a",
+   "first": "2016-11-07",
+   "last": "2026-08-05"
+  },
+  "bars/2212.json": {
+   "records": 2442,
+   "sha256": "41bbc01fd7c7a2b2076f758cc06d8e5ce195d38dab104179a7683dd6fb60cb66",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2212.json": {
+   "records": 45,
+   "sha256": "9a3a019dce5358ac66763c206229ea6d33e40eb8dbbf204236635cbe45e50057",
+   "first": "2016-10-28",
+   "last": "2026-07-31"
+  },
+  "bars/2221.json": {
+   "records": 2442,
+   "sha256": "282023061da3b3d842ae2bc1b45ddcd96fdfd0b1ed2457f6ee638fcd41ae6311",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2221.json": {
+   "records": 59,
+   "sha256": "7c71ee5a42c5d57d90603f2cd7c3eafeac74088e3ed3237e519bf3091348fafa",
+   "first": "2016-11-04",
+   "last": "2026-08-10"
+  },
+  "bars/2229.json": {
+   "records": 2442,
+   "sha256": "b3d9ba147e5308f2e96684080d4ca2706a9cd1a1581999f7eacd4c3aaf575542",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2229.json": {
+   "records": 41,
+   "sha256": "5cd955b5b1df041cc679004c180f99ca28737810f993775c2f66de9cf34da334",
+   "first": "2016-11-02",
+   "last": "2026-07-30"
+  },
+  "bars/2296.json": {
+   "records": 2442,
+   "sha256": "4a54a1edf217d71335a20a918dce0965ce8f78145d5759bb7d0b23ff6dddb4ae",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2296.json": {
+   "records": 52,
+   "sha256": "8c8ebb66bcd2012392b61d0337d371f5c323e0e924c218c258dedeecc6b2c46c",
+   "first": "2016-11-01",
+   "last": "2026-08-03"
+  },
+  "bars/2307.json": {
+   "records": 2442,
+   "sha256": "4ca8e41afe06b1e273cdff658c6c04783867ca373912c62b892dac6c46efd877",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2307.json": {
+   "records": 56,
+   "sha256": "5252c50703ad9358163e83e820e12b0e4d48c2a05a7eab48f2891e05ed88d9cf",
+   "first": "2016-11-08",
+   "last": "2026-08-05"
+  },
+  "bars/2315.json": {
+   "records": 2442,
+   "sha256": "47c5dcb264bff5653e132649c7762eaa26f4ac9cc5dbf3a5f9069505387076bf",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2315.json": {
+   "records": 53,
+   "sha256": "c719e69a3e695b18f21533291acd7bdc7747812c692f2af99c9d38bdeeb70577",
+   "first": "2016-12-20",
+   "last": "2026-09-14"
+  },
+  "bars/2330.json": {
+   "records": 2442,
+   "sha256": "d9de675fad72c80006fbba7c96c77d7ab9e0d414bb23f745eacba32015bf57f5",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2330.json": {
+   "records": 51,
+   "sha256": "d92ddad2ffac07a2b2a7ad246e90e8d8c374cbfb6fbe0fd247b5501d360b5512",
+   "first": "2016-11-07",
+   "last": "2026-08-14"
+  },
+  "bars/2379.json": {
+   "records": 2442,
+   "sha256": "b4a413e143b21dc8395c025369da7b3e57801bceadda5f62dee4c8de6422d998",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2379.json": {
+   "records": 48,
+   "sha256": "48a1f3b1f2410f84de287a9bbdcee79c7e73077931deb232dc8d21a60ce59e2a",
+   "first": "2016-09-27",
+   "last": "2026-07-10"
+  },
+  "bars/2384.json": {
+   "records": 2442,
+   "sha256": "528785994844bce5f9057b69d8a066b3f46e41fbc9d5ea1b639200e55757406c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2384.json": {
+   "records": 42,
+   "sha256": "9409ee508909c780eb228be0bc1aad6747317ad23db23e1bb4796b701150f238",
+   "first": "2016-11-14",
+   "last": "2026-08-07"
+  },
+  "bars/2436.json": {
+   "records": 2442,
+   "sha256": "edf45583705c7dd2c52c45291c8ce59e1424e3b113e3ab78b3e0b8d2b53c4fe1",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2436.json": {
+   "records": 54,
+   "sha256": "050d0214ec0c90ffd87cc09d5da9e180dd9e516efa9c683bf0b6006e5b685b37",
+   "first": "2016-11-11",
+   "last": "2026-08-13"
+  },
+  "bars/2440.json": {
+   "records": 2442,
+   "sha256": "2cbd4d37d8208bb20de8be96a6428fbcb3369be6283b7d7794add1b6b583da63",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2440.json": {
+   "records": 47,
+   "sha256": "4676d33adee395b42de731d6d62a7dbe1ef4450fa118569a61d3314f4895cdee",
+   "first": "2016-10-27",
+   "last": "2026-08-03"
+  },
+  "bars/2475.json": {
+   "records": 2442,
+   "sha256": "8ec848967ba84e2189954c6367f721bc78481a7de9f52b648acc21c409b56999",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2475.json": {
+   "records": 41,
+   "sha256": "a1a00c90ab044ce66278bb19f4c9b1a8cccd859b9bb008c57aa5406ace1b22bc",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/2480.json": {
+   "records": 2442,
+   "sha256": "82f748fb8ee38bdd87d29276d38c293f0916eee98ba8e1b04337d8d496200fab",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2480.json": {
+   "records": 58,
+   "sha256": "2313ed0ec626be8e900e0abbd9ec843fcee3c0288162614be34d0f16d7959760",
+   "first": "2016-09-30",
+   "last": "2026-08-07"
+  },
+  "bars/2488.json": {
+   "records": 2442,
+   "sha256": "f5f3a1a945f699bfbd5f1adc645cf6ba24762191f9e7caca81e9bbef48686252",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2488.json": {
+   "records": 43,
+   "sha256": "71aa052afa1563ac94e8af86cb2e48a2cc150bec4b54511b8fb9d7a9c839d660",
+   "first": "2016-11-11",
+   "last": "2026-08-10"
+  },
+  "bars/2493.json": {
+   "records": 2442,
+   "sha256": "fcef5b813659ee6037905d9d1e63cedeee0c69c27805de970f9cf6df5d161da6",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2493.json": {
+   "records": 45,
+   "sha256": "f277456c6b46d8cf0a05221ed440fa95285d3bd4069a270b3e131420d95464ae",
+   "first": "2016-10-05",
+   "last": "2026-07-02"
+  },
+  "bars/2498.json": {
+   "records": 2442,
+   "sha256": "bbbd9c303c358b2a2023991f549863c88b4c9dc2e9296af73fa414408edb7d34",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2498.json": {
+   "records": 46,
+   "sha256": "0f31b70c68dffeeb8d3d576513b2e3a0b48088c33ba4a518b1f87210dd25999d",
+   "first": "2016-11-14",
+   "last": "2026-08-21"
+  },
+  "bars/262A.json": {
+   "records": 471,
+   "sha256": "221f57dc53334ea2025b0d34a8cb940978d04ddd148e1afa884f49b286295480",
+   "first": "2024-10-18",
+   "last": "2026-09-25"
+  },
+  "fins/262A.json": {
+   "records": 9,
+   "sha256": "d875c72e5ef23da6c6ca90e7971ecec2e92ed71a86b9a19fde361458c73e9222",
+   "first": "2024-11-12",
+   "last": "2026-08-07"
+  },
+  "bars/2664.json": {
+   "records": 2442,
+   "sha256": "8f3cf634293dc2a2aee9e7e7abf30a46c1b2dedec7bb58e29ba95abbd76785ee",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2664.json": {
+   "records": 40,
+   "sha256": "859b717a03d2d368bc4e12f6f25310a703f351335ac1386966db74c518071ef6",
+   "first": "2016-10-27",
+   "last": "2026-07-29"
+  },
+  "bars/2669.json": {
+   "records": 2442,
+   "sha256": "f35cd15d4e7c1b61848788e863fe9ad0213a2d7615586ecf6c517a2de5f3cf69",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2669.json": {
+   "records": 49,
+   "sha256": "40ca26ddbae98572998de6d12573243cb99928fd3e10f0f978d38e19d4bed11b",
+   "first": "2016-11-07",
+   "last": "2026-07-10"
+  },
+  "bars/2673.json": {
+   "records": 2442,
+   "sha256": "97ed525433f82703e6fd03dd375fd66ae8c1f6afef2c17818078cc607327ccf5",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2673.json": {
+   "records": 46,
+   "sha256": "8ee75395a52138f927e715db1325ef143ceb04a5ad12054f1ba920fe94146c0b",
+   "first": "2016-11-14",
+   "last": "2026-08-14"
+  },
+  "bars/2726.json": {
+   "records": 2442,
+   "sha256": "9e7312e04a5cf26df707f5f2cdf402e3131af2886b06fcf0ad580dde44676902",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2726.json": {
+   "records": 43,
+   "sha256": "5b96cb255f7e0ab1eeddaf46695be3d4b013af936219c38ca2f4b1c063d3e33e",
+   "first": "2016-10-11",
+   "last": "2026-07-07"
+  },
+  "bars/2736.json": {
+   "records": 2442,
+   "sha256": "b45cc9fec9775d0b432f96b06ed41ebba055c9d6db65ff957714781740a07be1",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2736.json": {
+   "records": 48,
+   "sha256": "fed7b8afccdb87de88f68d16ee202df1b69f73e5c582fa4e6fb5cc1fca1aa8ee",
+   "first": "2016-10-14",
+   "last": "2026-07-13"
+  },
+  "bars/2790.json": {
+   "records": 2442,
+   "sha256": "c1a66f894d008f5617b9a1c404f0ba3f2aeb8ad7ce17b26c40e3b71701188600",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2790.json": {
+   "records": 47,
+   "sha256": "972efc1e1ebf0a4e97448296b9d39fdda8c271d585a3fc5df04c895d97017aa5",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/2796.json": {
+   "records": 2442,
+   "sha256": "e625128246ded542e389aa9b567b3e8d026598a9552eb3b9e3b87f7b78b11dcf",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2796.json": {
+   "records": 45,
+   "sha256": "52d74879caf5ee7aef8a6ea02933f37ad1eb5d9f603267b9a28f1b1c65b7359c",
+   "first": "2016-10-14",
+   "last": "2026-09-17"
+  },
+  "bars/2798.json": {
+   "records": 2442,
+   "sha256": "125ead33eacc58d00dff512a19dd318f66d5ba537f876ffe20f09a0241f1b4fb",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2798.json": {
+   "records": 41,
+   "sha256": "26b02fe5238e799e1c3086e22fd30488e97666fadb3669fcae4e68e25d71f918",
+   "first": "2016-10-13",
+   "last": "2026-07-15"
+  },
+  "bars/2931.json": {
+   "records": 2442,
+   "sha256": "3dd4ec975783e662e1d7de750839509306a39a34429f797356df425f6177403c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/2931.json": {
+   "records": 43,
+   "sha256": "80e0e3e6437ffa34fe9263c2f455aa9f72548ca3ae9ae7ebbe7a144ec2f6ca95",
+   "first": "2016-11-09",
+   "last": "2026-08-07"
+  },
+  "bars/2932.json": {
+   "records": 1467,
+   "sha256": "e56611fd7092dd5ad7370916713cf3b9ad83174233287187117a59330a9d0fd1",
+   "first": "2020-09-25",
+   "last": "2026-09-25"
+  },
+  "fins/2932.json": {
+   "records": 28,
+   "sha256": "4d9a8601077fb23ad6cba9172cc9acdab918afdebfac09db82ca24297edeb988",
+   "first": "2020-11-09",
+   "last": "2026-08-07"
+  },
+  "bars/2984.json": {
+   "records": 1044,
+   "sha256": "eafc2ff8f6eb09d93457fd2c7084f85f795c7f6d1854fb73498bde63f01e50a7",
+   "first": "2022-06-20",
+   "last": "2026-09-25"
+  },
+  "fins/2984.json": {
+   "records": 22,
+   "sha256": "9dc2cb78d77ebc758dea9f9c10786f93bb687359ccce1001fae5ebdb4a517e54",
+   "first": "2022-08-12",
+   "last": "2026-08-10"
+  },
+  "bars/2993.json": {
+   "records": 1160,
+   "sha256": "07c54b0284ff1162c4d66343acebea7e64aa1378ff4c4bfe2e7fc583a6f310e1",
+   "first": "2021-12-24",
+   "last": "2026-09-25"
+  },
+  "fins/2993.json": {
+   "records": 24,
+   "sha256": "29d6e2abc5a7ad9b0cfb5bcdf05c362e00b2f3f9dbfbd668fe46a470d3d40041",
+   "first": "2022-02-10",
+   "last": "2026-08-12"
+  },
+  "bars/2999.json": {
+   "records": 1041,
+   "sha256": "e8fd4d8ffd1f7288ed8adc04504c127e21bf9e0226bfc3cb12665c0e5de90809",
+   "first": "2022-06-23",
+   "last": "2026-09-25"
+  },
+  "fins/2999.json": {
+   "records": 17,
+   "sha256": "6a6895213e31fdfb29e32b2be33bcb30ab0b5170681c57f06b6fcb449e09398c",
+   "first": "2022-07-11",
+   "last": "2026-07-10"
+  },
+  "bars/3024.json": {
+   "records": 2442,
+   "sha256": "c13b3abb6fb0d2de810e322e2ae64551f69ade4d80abdf7658145575185f5ac5",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3024.json": {
+   "records": 56,
+   "sha256": "ee93a8bd2768e7de0c7eff7722860b50080e6e196cafc8819393da6fa6850249",
+   "first": "2016-11-02",
+   "last": "2026-08-06"
+  },
+  "bars/3034.json": {
+   "records": 2442,
+   "sha256": "140b2295d8521a6d8c6d9ee56beda1204bd1b8ecc609a1fd5c870b09e1e6203a",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3034.json": {
+   "records": 47,
+   "sha256": "222d5efee96f39e34a1e5a4e16716d8158c3fa0792f50b925dbc6ca0430ada2c",
+   "first": "2016-10-31",
+   "last": "2026-08-07"
+  },
+  "bars/3059.json": {
+   "records": 2442,
+   "sha256": "51b13e98ab6e39b0af2586fce3d6f75ba3e963f243dcfae4a1e419675a317816",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3059.json": {
+   "records": 42,
+   "sha256": "1a6948df0a535d8379b5b9f38ad9814fcab16b0d95a0bcc7c1e0e3e80e937b06",
+   "first": "2016-11-08",
+   "last": "2026-08-05"
+  },
+  "bars/3103.json": {
+   "records": 2442,
+   "sha256": "97346d5a6eb5fa2541d411d7e8ba4ca8f391eb0c398ec94c63663bd1a36deb75",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3103.json": {
+   "records": 48,
+   "sha256": "d18f6d65d731a5745a4aae8e53132ddfe55df54ceff08592a52ba69bf977656a",
+   "first": "2016-11-09",
+   "last": "2026-08-06"
+  },
+  "bars/3148.json": {
+   "records": 2442,
+   "sha256": "1d4ccd2c5026457292fbacccd765a75978aa663c364152017b624a7f1b4412e0",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3148.json": {
+   "records": 42,
+   "sha256": "64e572743403a078920a2b06e4f653b361be4728e14365b1fcdfbd4283eb2276",
+   "first": "2016-10-03",
+   "last": "2026-07-13"
+  },
+  "bars/3157.json": {
+   "records": 2442,
+   "sha256": "a39bd6dacc30b67528b341ceeea5e8cc09af3ac03ef07713da33dffb413b6c47",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3157.json": {
+   "records": 51,
+   "sha256": "91b7375ef8a6b0771008af01e3e89ebd27bce385adb6b978ca1e5797f7e9caf8",
+   "first": "2016-10-24",
+   "last": "2026-08-03"
+  },
+  "bars/3174.json": {
+   "records": 2442,
+   "sha256": "b6472f06db20b27582dd2590939d8180b1a40b710060d7a08232518550b1a477",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3174.json": {
+   "records": 54,
+   "sha256": "9c04dc9ef1d874ae1262f9cae688148fdfaf65b10644fe09e23bd2c73c699548",
+   "first": "2016-10-14",
+   "last": "2026-08-18"
+  },
+  "bars/3409.json": {
+   "records": 2442,
+   "sha256": "7b12920b1408d369a9dad0ad10ff5b3cd39ec2b1cbfb20c124ba079135d8f4d8",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3409.json": {
+   "records": 46,
+   "sha256": "b2605af574b5346a58c1c13237524c737d7d19530c0f8facd9eb6080f3e28aee",
+   "first": "2016-11-04",
+   "last": "2026-08-14"
+  },
+  "bars/3417.json": {
+   "records": 2442,
+   "sha256": "0404f90a5c0eefd71b3788c3a9200db182bce29b871f4510403ad4fc65c20473",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3417.json": {
+   "records": 42,
+   "sha256": "2d6a4f865b5700438cf1b4dc54138c24d6772afedaee10c153e343079dbfda5d",
+   "first": "2016-11-07",
+   "last": "2026-08-07"
+  },
+  "bars/3431.json": {
+   "records": 2442,
+   "sha256": "1065c0dc77707003e244e00b1d8e59bbd012636fd16d2fed608d2d673d08670b",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3431.json": {
+   "records": 51,
+   "sha256": "c7465f528467335ee6fa8b7a8990867716f2c43de3bbb711712186824843d34b",
+   "first": "2016-11-04",
+   "last": "2026-08-06"
+  },
+  "bars/3475.json": {
+   "records": 2392,
+   "sha256": "331e635f79f06bf19a4fdd32036cf0b5068e48c7d963b17bb6fa157e6687bc3d",
+   "first": "2016-12-08",
+   "last": "2026-09-25"
+  },
+  "fins/3475.json": {
+   "records": 58,
+   "sha256": "8f08150bf4d0f942a05c3e1de84da3625e87f91c34cd0a210e1bb6f211238988",
+   "first": "2016-12-12",
+   "last": "2026-09-14"
+  },
+  "bars/3482.json": {
+   "records": 2193,
+   "sha256": "251c28b86024057595436a3c2968ef010c0a7c9173d0db77d210361dd6ac935e",
+   "first": "2017-09-28",
+   "last": "2026-09-25"
+  },
+  "fins/3482.json": {
+   "records": 48,
+   "sha256": "7702f6170d176e1eaf91ef68ded2efaa9d562669a02fed668b86dd2b894427ec",
+   "first": "2017-11-10",
+   "last": "2026-08-06"
+  },
+  "bars/3513.json": {
+   "records": 2442,
+   "sha256": "1cac2d9884ba000eee2158838d2a18e50f72cb7a21843f4353eb05e82b993001",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3513.json": {
+   "records": 59,
+   "sha256": "3690dc6660737d9e77000d8ccade65d6b0bf95ecb65efd20e4825b9d7871e88d",
+   "first": "2016-10-28",
+   "last": "2026-08-07"
+  },
+  "bars/3538.json": {
+   "records": 2442,
+   "sha256": "d2d8f13f739edfc4aa25b2e0485f3aab832c6f86cdd4b8aca65fafd784db627a",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3538.json": {
+   "records": 51,
+   "sha256": "f46f7f56f200ae81ff08417fd99927d5f435d60f92630404581a19f52f7c254b",
+   "first": "2016-11-10",
+   "last": "2026-08-27"
+  },
+  "bars/3577.json": {
+   "records": 2442,
+   "sha256": "67c084a65150b36696aa6397bd86b433a7ea756bed4c7cf3f6c257f2a5b713c7",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3577.json": {
+   "records": 55,
+   "sha256": "fd9440ad0f5b6d27b6406876bf90a4da656c47c0b698280b7c97a61b8ad333e5",
+   "first": "2016-10-31",
+   "last": "2026-08-06"
+  },
+  "bars/3580.json": {
+   "records": 2442,
+   "sha256": "7e7510ebe8bc611770042b7d5ea42b3d416602960dd23d450c63d04ed9185edf",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3580.json": {
+   "records": 47,
+   "sha256": "6f2629b4cdf94541db780c5a6a6c6db643a9bc99c14157df51a05c43599232a5",
+   "first": "2016-10-21",
+   "last": "2026-07-31"
+  },
+  "bars/3627.json": {
+   "records": 2442,
+   "sha256": "7ba62a9d90525132524f08e4310100a2c49af766fad8f365f2dd2b49e73f0cd0",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3627.json": {
+   "records": 55,
+   "sha256": "1f76c23dd708bbfd79a093e5b7a7ff837fa628fe3199d5d4a3a70cbf945228c3",
+   "first": "2016-10-14",
+   "last": "2026-07-10"
+  },
+  "bars/3633.json": {
+   "records": 2442,
+   "sha256": "490002f253e17de1cdbd9c40b098fccbfe8722159c7b5edb73620b147c9b283f",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3633.json": {
+   "records": 49,
+   "sha256": "e948909a3bf536035b90a6cf2bbca0dc16d17949e97d06ca6049d8a826b7103d",
+   "first": "2016-10-27",
+   "last": "2026-08-13"
+  },
+  "bars/3660.json": {
+   "records": 2442,
+   "sha256": "20d3a65c840d8c5bb55aea393bc7a47bbd1667c74b60c7747fe7727afd94cbae",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3660.json": {
+   "records": 44,
+   "sha256": "c0222922f356cd39d8cc92ce47fe187b0a6371f69b1a2d09824b34606f379e2d",
+   "first": "2016-11-02",
+   "last": "2026-08-13"
+  },
+  "bars/3683.json": {
+   "records": 2442,
+   "sha256": "506b3aa361a88565082c0774463c35e43e0b6b7643a8608750445483e7bc15ce",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3683.json": {
+   "records": 47,
+   "sha256": "d01cc16bfd56b75c885f8267862ed347891b5073f4ae275ab91f5de050fce104",
+   "first": "2016-11-11",
+   "last": "2026-08-12"
+  },
+  "bars/3686.json": {
+   "records": 2442,
+   "sha256": "5d6bd39b1f77edde6328eab22a2f2f44c25f11a0684fd16d6b8480cccec10feb",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3686.json": {
+   "records": 65,
+   "sha256": "11ca9de0a00b780487442a6669d00e59a3992b9a6ee1af7d1ee7c69c4654c485",
+   "first": "2016-10-04",
+   "last": "2026-08-13"
+  },
+  "bars/3694.json": {
+   "records": 2442,
+   "sha256": "7a4db2c1472c5fec886573c1d920ebf3c6582b2f82094f61d4013f43c91a2ce4",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3694.json": {
+   "records": 41,
+   "sha256": "1602fbfcd0721864630803c73c0922c1bd203e5715a2ad079bdd3de1b31a64cd",
+   "first": "2016-11-14",
+   "last": "2026-08-14"
+  },
+  "bars/3696.json": {
+   "records": 2442,
+   "sha256": "1c3771ee1a5e228daf47777fcba906e0beb748bc44f315e03ecb8dfcb75a5476",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3696.json": {
+   "records": 62,
+   "sha256": "0d94fe2154ad02f165b769970ca3b99802034457356a2dd0e73ff99c8eb14d12",
+   "first": "2016-11-11",
+   "last": "2026-08-13"
+  },
+  "bars/3769.json": {
+   "records": 2442,
+   "sha256": "0a9576b7ab1d514b22e07ddbe24efab07414a6beb43e336c85e1d1a3390815f5",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3769.json": {
+   "records": 53,
+   "sha256": "983aa64a11449828d623d2e4110d48581108e048841f01a2c448184896bf1a42",
+   "first": "2016-10-31",
+   "last": "2026-08-14"
+  },
+  "bars/3816.json": {
+   "records": 2442,
+   "sha256": "de4616295580e271ca510d936c23ad4195ee8477220ad217580084a5c47f2b03",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3816.json": {
+   "records": 47,
+   "sha256": "b1979c64b9307bd7f491748c261a47e1321c831e902bf6d48353e52c2210c489",
+   "first": "2016-11-30",
+   "last": "2026-09-04"
+  },
+  "bars/3823.json": {
+   "records": 2442,
+   "sha256": "580dadef93bea63ac91d211edfa5d6f50e482b8ff135263476d8db3d1e55370a",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3823.json": {
+   "records": 53,
+   "sha256": "7a40039192afef3ea8b2d2f52f98c37a1e39523fd18d1362324922c47c3f8a87",
+   "first": "2016-10-17",
+   "last": "2026-09-14"
+  },
+  "bars/3839.json": {
+   "records": 2442,
+   "sha256": "9246cbbb64c0ffb9e23d6c5ee90c2ec676f218525eb5e85e243f30e5f799ad37",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3839.json": {
+   "records": 48,
+   "sha256": "aec0be45b1d5cdf85a37e098c65c5260405ec54da8b0f4c8c1a3dd3e37c5e00d",
+   "first": "2016-10-26",
+   "last": "2026-07-29"
+  },
+  "bars/3840.json": {
+   "records": 2442,
+   "sha256": "2481710622517a1a7954f9b79fb143771eff7254f1ab7002cf24594d71c0f770",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3840.json": {
+   "records": 53,
+   "sha256": "bfc75a0207149050e1c6c3a96d1649e908bf770ed1e93c6a0474d5a0667a3db2",
+   "first": "2016-11-14",
+   "last": "2026-08-13"
+  },
+  "bars/3841.json": {
+   "records": 2442,
+   "sha256": "916e99afb5ebee49d98e9488888d110b36799616bfb2dadf0c15d0284268b59e",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3841.json": {
+   "records": 45,
+   "sha256": "b34db38569c8919d78fab4bbf5bed5c5391b2bce174ff4c6e94c9a4fd27a07c5",
+   "first": "2016-10-28",
+   "last": "2026-07-31"
+  },
+  "bars/3842.json": {
+   "records": 2442,
+   "sha256": "58d2954fa4c06b79d6bc4c885017a91b2dbfa118c4b5723b0b5a8c4f039a081f",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3842.json": {
+   "records": 51,
+   "sha256": "4b855320bcad44fe4be05e9630a33cb61f68856ab35ac386ec7b0430445096bd",
+   "first": "2016-11-01",
+   "last": "2026-08-07"
+  },
+  "bars/3844.json": {
+   "records": 2442,
+   "sha256": "3cdac256c5ccdc74931c6b264e410a509f65dcb12c5409060875d536303b0174",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3844.json": {
+   "records": 47,
+   "sha256": "4c7b013f39281ab56988fbd85bc5f40d088ef8479b16c7be98028a7fab5a7714",
+   "first": "2016-10-31",
+   "last": "2026-08-14"
+  },
+  "bars/3903.json": {
+   "records": 2442,
+   "sha256": "e755b886f8941624c7dd94143bc5c150eb394c419498e6f0b9bffdd56c7f976f",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3903.json": {
+   "records": 46,
+   "sha256": "bdee0c8869fc9f52ca5a4f59edfc80bb9c7372c806593977b4e45b5002718b30",
+   "first": "2016-12-09",
+   "last": "2026-09-11"
+  },
+  "bars/3908.json": {
+   "records": 2442,
+   "sha256": "bcee45c9f9b37afe36000ec55a9f94b59fefdc67e2957a5e760797ed7afec508",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3908.json": {
+   "records": 42,
+   "sha256": "b157110d72814bfb0d0ed729dc9cfa899268fb18bbaabc8dbf043325870d67fa",
+   "first": "2016-11-04",
+   "last": "2026-08-03"
+  },
+  "bars/3920.json": {
+   "records": 2442,
+   "sha256": "efad6601764ad45e41f83c85506acc1c3ab0995178b1df9476bf286d80189ffe",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3920.json": {
+   "records": 47,
+   "sha256": "1a89ed79b51959e0e87b9a3afc3e0f2c9d251e465ba9aaa1fdea3fd8845ee49b",
+   "first": "2016-11-14",
+   "last": "2026-08-13"
+  },
+  "bars/3947.json": {
+   "records": 2442,
+   "sha256": "325dbc41ec79d72b406d0cce509c5b52b5aec8f0e04dd38f04669358bbb24d95",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3947.json": {
+   "records": 61,
+   "sha256": "15f05ce99499bc3a5b80d4bab8e632c91be38b02fa2dc2d87739c8c45d8f3348",
+   "first": "2016-11-02",
+   "last": "2026-08-10"
+  },
+  "bars/3954.json": {
+   "records": 2442,
+   "sha256": "addd4ef9e74713669dc251e0ec1340f52cabe755effb1bf7b4410a0a476e15e7",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/3954.json": {
+   "records": 45,
+   "sha256": "6ee5548593ff1e3ebee5486eeac8cb2bc2478c8504699d1ec54f93a277e3a463",
+   "first": "2016-11-08",
+   "last": "2026-08-10"
+  },
+  "bars/3958.json": {
+   "records": 733,
+   "sha256": "b753bb11367d1ddaa57658084f1e9ffe3bbc46d2cd4324c33a0ba90441e8410c",
+   "first": "2023-09-22",
+   "last": "2026-09-25"
+  },
+  "fins/3958.json": {
+   "records": 12,
+   "sha256": "848d44c68c715fc5a9f4ac5341414738d406e2388b5f1b8e02d6b7b2aea5de5e",
+   "first": "2023-11-13",
+   "last": "2026-08-07"
+  },
+  "bars/3969.json": {
+   "records": 2382,
+   "sha256": "44a4077e57e88fc4434e83b2ce1bac00173a3343ef324e29ccd15b46049fe516",
+   "first": "2016-12-22",
+   "last": "2026-09-25"
+  },
+  "fins/3969.json": {
+   "records": 40,
+   "sha256": "3dc7176b53ee1a78629394f005c9ce7a11f65a700f72ad70719649ea76a33a32",
+   "first": "2017-01-26",
+   "last": "2026-07-29"
+  },
+  "bars/3981.json": {
+   "records": 2325,
+   "sha256": "3343072cf6ca59471eb433133c0c723766cb532300c21f0c08fb401181615e55",
+   "first": "2017-03-17",
+   "last": "2026-09-25"
+  },
+  "fins/3981.json": {
+   "records": 43,
+   "sha256": "2fa7a9b14f67e07f4010e8f98125226c094d6001d8f6708123ff5e8d774af15d",
+   "first": "2017-05-15",
+   "last": "2026-08-14"
+  },
+  "bars/3996.json": {
+   "records": 2157,
+   "sha256": "6fb7158dcb8678eb0934030a39cea138b9487ae24130776207ffbe2a43ce7533",
+   "first": "2017-11-21",
+   "last": "2026-09-25"
+  },
+  "fins/3996.json": {
+   "records": 40,
+   "sha256": "48786ecb468623556e72eeed5810338a71d8540ff7c71e4a88a14907f530f310",
+   "first": "2018-01-15",
+   "last": "2026-07-10"
+  },
+  "bars/4061.json": {
+   "records": 2442,
+   "sha256": "aeda1441d86d8873c7219fbefa3445ac8d1121beb95393f1809393dd6703d1d3",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4061.json": {
+   "records": 51,
+   "sha256": "625610c2dffdb067204357fb4798eb8e2c689ed9fdebd3ace679284f501c3823",
+   "first": "2016-10-11",
+   "last": "2026-08-07"
+  },
+  "bars/4064.json": {
+   "records": 2442,
+   "sha256": "e1fd1032015ec0c1b04a14114c92dfb4cf146e73ecc4283a92b0bab7e5cca5bc",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4064.json": {
+   "records": 59,
+   "sha256": "71032f96e4a402b52d042d6401cf7552d9bbb5976718c5e5421e348499a14a2f",
+   "first": "2016-12-12",
+   "last": "2026-08-07"
+  },
+  "bars/4091.json": {
+   "records": 2442,
+   "sha256": "89b9822c4211a225710fed4830c246c1122314bf8861b9fb23eed5a12468daef",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4091.json": {
+   "records": 47,
+   "sha256": "288c4dbf066428df3e273a627929fc029aa74d2ee00a9e1dce2c3684a6b03249",
+   "first": "2016-11-02",
+   "last": "2026-08-06"
+  },
+  "bars/4112.json": {
+   "records": 2442,
+   "sha256": "ca3c2dd98cf66a2ae11e923790e00e39638ca0866a10b5fe9e543295e1735be9",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4112.json": {
+   "records": 46,
+   "sha256": "c10af3f46a94720140eda81a2467f09d502262834975b515663d02671206de0f",
+   "first": "2016-10-31",
+   "last": "2026-08-06"
+  },
+  "bars/4118.json": {
+   "records": 2442,
+   "sha256": "c50e79c7e7102d912b64659da0c8481490e681e9920b2c1fef40e46ccd46d028",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4118.json": {
+   "records": 40,
+   "sha256": "012de5f50fd50fbad4f7fbe655ba240f90b2001823e9b019452bf4e370d20f22",
+   "first": "2016-11-09",
+   "last": "2026-08-13"
+  },
+  "bars/4188.json": {
+   "records": 2442,
+   "sha256": "0c1c12f8ed56d477f4990bae1cea2b40f08ab72e216c926338c00d5ad2452612",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4188.json": {
+   "records": 52,
+   "sha256": "65555e7b6dc6ed35bbf4f88bbddd9c6356254472ba9920299532efa224f0adcb",
+   "first": "2016-10-28",
+   "last": "2026-08-07"
+  },
+  "bars/4208.json": {
+   "records": 2442,
+   "sha256": "9c1daf09be7fb532369fc1aaec589af5665abb49221054014d21b27f5d81baad",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4208.json": {
+   "records": 61,
+   "sha256": "342c2f9b5568e4f571b49fa798cd4c1b7913d3b22ed8905b1f942140b5003a8a",
+   "first": "2016-10-26",
+   "last": "2026-08-07"
+  },
+  "bars/4240.json": {
+   "records": 2442,
+   "sha256": "dd54f551d022a380f2d358c64b3f6d3790ce52574109d28323db19d2dd27b407",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4240.json": {
+   "records": 51,
+   "sha256": "83412f10190f8dffb855e07d1d5f498b779162987239d2846ad6fb9e5115a230",
+   "first": "2016-11-10",
+   "last": "2026-08-12"
+  },
+  "bars/4242.json": {
+   "records": 2442,
+   "sha256": "8d2207b0e551b10910905aa9b46e1db30e1cd3f8c3e8e4f7b5ed78537974dc4c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4242.json": {
+   "records": 66,
+   "sha256": "92b31ae51623a5d719d59d8152340a4e80ff02c0fbfd7da6d6ea5ee39630fef7",
+   "first": "2016-10-28",
+   "last": "2026-08-07"
+  },
+  "bars/4392.json": {
+   "records": 2008,
+   "sha256": "5d89df33b83145d6b892c2a8aeba7d81d2bf84c0b847ae14c5e7f14c9cc2d6af",
+   "first": "2018-07-02",
+   "last": "2026-09-25"
+  },
+  "fins/4392.json": {
+   "records": 44,
+   "sha256": "365f3133f22bc46047cbfd4502e5e0f4258e3b940696f349f0e0e9aae0267299",
+   "first": "2018-08-10",
+   "last": "2026-08-07"
+  },
+  "bars/4410.json": {
+   "records": 2442,
+   "sha256": "1e66351d52c8657a87f81446c640f1c6de617eb01ded158777b532ee16dd3042",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4410.json": {
+   "records": 41,
+   "sha256": "5b1e40a9f4adfca39cc9d82fa0e5dbd01e46b92be8f58aa7cbbc6c61d056f5b5",
+   "first": "2016-10-28",
+   "last": "2026-07-31"
+  },
+  "bars/4434.json": {
+   "records": 1838,
+   "sha256": "376fd61546764493b3f9510be18ad8db17e1a22aa941f802726ad93e47826640",
+   "first": "2019-03-13",
+   "last": "2026-09-25"
+  },
+  "fins/4434.json": {
+   "records": 38,
+   "sha256": "ec6c4e740f7f15e92b4b45a015e3ac9e9cc621d50c10127d174038bfc74e17ed",
+   "first": "2019-03-29",
+   "last": "2026-07-15"
+  },
+  "bars/4452.json": {
+   "records": 2442,
+   "sha256": "40b9b806eb8f1e73084af526cab7e5e63ff8434b33a01ac56297405ba4ed467e",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4452.json": {
+   "records": 40,
+   "sha256": "eadb96ca568f7d52d222f44a83f6f52a3e275bb3d08195874ec3131aa4404f3a",
+   "first": "2016-10-27",
+   "last": "2026-08-05"
+  },
+  "bars/4471.json": {
+   "records": 2442,
+   "sha256": "3e84b8a3ca1e846ca0e682eb5a8cc6daa425f1d0807908cedc36be0b02dc0bbf",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4471.json": {
+   "records": 51,
+   "sha256": "a1238431536a725df27ea1936d82bacd53ea79a7dc2f35200148e64492bd5959",
+   "first": "2016-10-31",
+   "last": "2026-08-05"
+  },
+  "bars/4503.json": {
+   "records": 2442,
+   "sha256": "3c0c9518734296cbf565d3264b4fdfc0f8fd312b9b3e6fcc4853b0a3fdb84a04",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4503.json": {
+   "records": 44,
+   "sha256": "46524fdcd20b11527eda16d2992bbeb88fa74c862a096e28e0bf128a47e6e504",
+   "first": "2016-10-28",
+   "last": "2026-08-05"
+  },
+  "bars/4512.json": {
+   "records": 2442,
+   "sha256": "291baf8799049e190c931097a09c41c0a24283e174b2852312cadaf31706fc2c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4512.json": {
+   "records": 60,
+   "sha256": "418b84056be03e041b7ca476a5bf27949b5d52482feb355e3af2e39c67653770",
+   "first": "2016-10-26",
+   "last": "2026-08-05"
+  },
+  "bars/4539.json": {
+   "records": 2442,
+   "sha256": "86e95ad1e8b86e745ccf3b044ab78ad5928d16de36710806e6d7cb9217b34d93",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4539.json": {
+   "records": 50,
+   "sha256": "9aa7ab13e7b55fc1fb7d6d2ec37e67d839448f4abb7c573b76287dadea197251",
+   "first": "2016-10-31",
+   "last": "2026-07-31"
+  },
+  "bars/4549.json": {
+   "records": 2442,
+   "sha256": "015d9971d725c12d1592b33b599387635887970ffb3cd2a24112f2618bf81130",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4549.json": {
+   "records": 47,
+   "sha256": "f7e650e908d13209617638186aebd237fff0b118a7392dff4960a3fe1bcb1d6f",
+   "first": "2016-10-25",
+   "last": "2026-07-30"
+  },
+  "bars/4565.json": {
+   "records": 2442,
+   "sha256": "dca53b925222e6465edd588b22aa6cb5812b7638cd5113658bf3f33b2d9bfdc8",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4565.json": {
+   "records": 46,
+   "sha256": "79f7202c52578a9e308d2f4a1c66759ed949352813952cff981239ba015f6078",
+   "first": "2016-11-14",
+   "last": "2026-08-07"
+  },
+  "bars/4569.json": {
+   "records": 2442,
+   "sha256": "d0f9c2eb1c5c53eb5f5e41a82648adf7b06947993ff925480ee42c17fc5786b4",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4569.json": {
+   "records": 51,
+   "sha256": "b70c84fc19227f9d1da92e507261a140018fe178f80125188a5a67ce8e33f83b",
+   "first": "2016-11-07",
+   "last": "2026-07-30"
+  },
+  "bars/4623.json": {
+   "records": 2442,
+   "sha256": "a719decce35ec1035cc31dfe9b3fd6457cea67345f6c49d941194c520bfb9313",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4623.json": {
+   "records": 45,
+   "sha256": "9c302201d31f47c692f8d98776d0723f6879c8e9d65c450b39647526f8121c06",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/4626.json": {
+   "records": 2442,
+   "sha256": "1fc154c8ee872648e762a3558d5cceb1d764b48c32615f1eec2a08fd669f04d8",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4626.json": {
+   "records": 54,
+   "sha256": "136ab53fc864b26f3ba3db2b5b6c02d9b401c24a4027feea64a500d1c122cb65",
+   "first": "2016-10-31",
+   "last": "2026-07-31"
+  },
+  "bars/463A.json": {
+   "records": 199,
+   "sha256": "233f4a434c52c030540de0eef122997cb45e516c5ee70f5ced4ca6430bb4ea08",
+   "first": "2025-12-01",
+   "last": "2026-09-25"
+  },
+  "fins/463A.json": {
+   "records": 4,
+   "sha256": "1764474c012a7c38fe08a10472cf42c10645b136b28be97f5f71a447177e0d80",
+   "first": "2026-01-13",
+   "last": "2026-07-13"
+  },
+  "bars/4667.json": {
+   "records": 2442,
+   "sha256": "595944292b67ab3e9a6d331b5e4a7c3d0d4c19e2712850232f4c0efc49499fda",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4667.json": {
+   "records": 43,
+   "sha256": "d3faef795b24bc03d0d844a187d4590f01ee0edb6dbbdf27277181299395b110",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/4681.json": {
+   "records": 2442,
+   "sha256": "d54861636e23ac2e7806c60581564190932346cab37ddbb95ffebe0587a42cdd",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4681.json": {
+   "records": 45,
+   "sha256": "8d5d8aae47ffc8ab3946bc3261ca73351d87afaf90e3f9b31a353a734119b981",
+   "first": "2016-10-28",
+   "last": "2026-08-12"
+  },
+  "bars/4689.json": {
+   "records": 2442,
+   "sha256": "014949b00eeba9820fde4b1fe03f93beca514be8586f2b932c3cdc5bad1ee9ca",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4689.json": {
+   "records": 45,
+   "sha256": "e60c8d505b3cc7aa2417bca2cafa0a230e494bed61c90c43111911906ec54ae5",
+   "first": "2016-11-01",
+   "last": "2026-08-03"
+  },
+  "bars/4752.json": {
+   "records": 2442,
+   "sha256": "79aaafef7ba00e00c1dc4d7362211f9d97d42599ffbb1c6bd7b36a81e165ff0c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4752.json": {
+   "records": 45,
+   "sha256": "1d266fd92cbb2c625806f02bceb59ae60cf7f640a5b429a72f3fa486fcf5399c",
+   "first": "2016-11-04",
+   "last": "2026-08-12"
+  },
+  "bars/4755.json": {
+   "records": 2442,
+   "sha256": "5a39d39ee80fdcebb149f1641d6549874975077c33dd26f97457ca52f73e17d1",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4755.json": {
+   "records": 40,
+   "sha256": "848ba3c51b87582f3e7028ed27ce84ed718aed70b496a45474be84f2702e0b2b",
+   "first": "2016-11-10",
+   "last": "2026-08-10"
+  },
+  "bars/4765.json": {
+   "records": 2442,
+   "sha256": "80777fdddc88f4a2cac975ed2e3ce341d7bc071624956df54fbb5aff2cfff2f0",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4765.json": {
+   "records": 59,
+   "sha256": "184aed866a21b5e501c984bb91ea1103c41dc0f18c95eaf99483e879f29f3638",
+   "first": "2016-10-25",
+   "last": "2026-07-27"
+  },
+  "bars/4768.json": {
+   "records": 2442,
+   "sha256": "ffc0e9ea3997748d8562f7e27ad4b70d82ac07542307b383cc3c6de71e38222e",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4768.json": {
+   "records": 42,
+   "sha256": "7340e37b376233b635203e1aa2d31447419ad1837f397ecf44d41dd6343b54fe",
+   "first": "2016-10-31",
+   "last": "2026-08-03"
+  },
+  "bars/4777.json": {
+   "records": 2442,
+   "sha256": "4f8ee8e9643c43f0938c3cc003e38dd8950d815d0e799abfaa68a4e69fae599c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4777.json": {
+   "records": 42,
+   "sha256": "af7ee4a0ccbb68494367a48b7f37dc0dba94ea45fc214216e2e97e5a4a42b086",
+   "first": "2016-11-11",
+   "last": "2026-08-14"
+  },
+  "bars/4826.json": {
+   "records": 2442,
+   "sha256": "f507def14d4533f11d0b8b94f3640fdf474a054f8174776873bb5703cd4de503",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4826.json": {
+   "records": 57,
+   "sha256": "35b28544d8fcffae5c8c683becd29adc4aaee3475af0573f3095803606ff5a78",
+   "first": "2016-10-28",
+   "last": "2026-08-05"
+  },
+  "bars/4886.json": {
+   "records": 1340,
+   "sha256": "45a04a16e467b0794825a49ec41ad79e7ab0dd3d77c54b5768dbaf29cd3596ae",
+   "first": "2021-04-01",
+   "last": "2026-09-25"
+  },
+  "fins/4886.json": {
+   "records": 29,
+   "sha256": "1e430ebdb9b133094b78070f909e5f84c29118a1078f717cb1c4b1b6b7163b39",
+   "first": "2021-04-23",
+   "last": "2026-08-04"
+  },
+  "bars/4902.json": {
+   "records": 2442,
+   "sha256": "5d95cf988ff489e0b148fe4affed8cf65d656cd813c299ec019be21782f53695",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/4902.json": {
+   "records": 48,
+   "sha256": "800e0b7fa60b5ef0d34e35130b650dc9908dc82b745bf07ceb2f5598007df74a",
+   "first": "2016-10-31",
+   "last": "2026-07-30"
+  },
+  "bars/5011.json": {
+   "records": 2442,
+   "sha256": "57ebf4b197ceb51ecf50f528c58f3eb2772cf0026002e4bd07a92f69c18d1515",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5011.json": {
+   "records": 54,
+   "sha256": "1d40786e1000610f41d7b09bbfc223870e70308876c4acd026bfabb14b98bb25",
+   "first": "2016-10-27",
+   "last": "2026-08-07"
+  },
+  "bars/5020.json": {
+   "records": 2442,
+   "sha256": "f0b9e627458e298b0260f4be76c1ab2fb8b30cc3aa2c71d0970259a3556fe49a",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5020.json": {
+   "records": 47,
+   "sha256": "71f12d3a6e99ccbd92f101c9cbf303be3b65566ed71e90682b1da19cb51f4acc",
+   "first": "2016-11-08",
+   "last": "2026-08-07"
+  },
+  "bars/5021.json": {
+   "records": 2442,
+   "sha256": "02211c3cc7240d650e1619576d0c8e133937e508f83e7b325c60d1ee52518191",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5021.json": {
+   "records": 41,
+   "sha256": "e7294aceb9193e55f69b9721706189d084f5a90d9d013abe6cdb79c85496fcb7",
+   "first": "2016-11-10",
+   "last": "2026-08-06"
+  },
+  "bars/5121.json": {
+   "records": 2442,
+   "sha256": "b881e072f116690ea55d39f355b24928d19424f10deb025880dd4ec111539f01",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5121.json": {
+   "records": 44,
+   "sha256": "5b919b29f6e84e21f70b911a55f3c66951d2d17670ebc0a09456c660bf503443",
+   "first": "2016-11-10",
+   "last": "2026-08-10"
+  },
+  "bars/5187.json": {
+   "records": 2442,
+   "sha256": "107106b5d15e11e21003a40ad30572554057c5362628ccd49bbe4a97c1e78e0d",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5187.json": {
+   "records": 42,
+   "sha256": "256d2a7191c8901fd8ef725139f1e58341c2b25acf1c0d11f36700dc17c88d16",
+   "first": "2016-10-31",
+   "last": "2026-08-05"
+  },
+  "bars/5194.json": {
+   "records": 2442,
+   "sha256": "e4faea4348b8be1e6ebbf040bf137b4fba3923d58764a853761ac71921a04e67",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5194.json": {
+   "records": 40,
+   "sha256": "0e2fc1b51c00ddcb44895cece500ff5095bb0dc4f2d7c211f9be018b006743a5",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/5283.json": {
+   "records": 2442,
+   "sha256": "4edaff1c69ce37018eb782f484c98e9036d94dbef9bc0e28980a7872e6f16c1d",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5283.json": {
+   "records": 50,
+   "sha256": "afcf3046cb74ab482cf8756c8b45ddbc78b5952372f3d3999a8502b276e1d0dd",
+   "first": "2016-11-07",
+   "last": "2026-09-10"
+  },
+  "bars/5351.json": {
+   "records": 2442,
+   "sha256": "0de158ade067f187076df39bfd5f4bc95e9514a3de36961fb5ee736033cc49b5",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5351.json": {
+   "records": 52,
+   "sha256": "db08b6577a5a7703df952173f22458296203867993a50042007d0e2f16a1ac1e",
+   "first": "2016-11-02",
+   "last": "2026-08-10"
+  },
+  "bars/5482.json": {
+   "records": 2442,
+   "sha256": "11ef1ffc7669181aad9fd22a8d9677fede80a5e9878367619be998bda97382a9",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5482.json": {
+   "records": 52,
+   "sha256": "800c60fef8d6f313e97c21b9c93607e75666580fa3a2a3290792d2d7c2bfbee3",
+   "first": "2016-10-28",
+   "last": "2026-07-31"
+  },
+  "bars/5703.json": {
+   "records": 2442,
+   "sha256": "07a43c96c73799904eb4efeac3fb7448a9b36e6b5729a021847c06e8b2f15486",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5703.json": {
+   "records": 44,
+   "sha256": "120ee3405b0e2532a4c47379ec124ed028d5bd28adc2f02a0b717950a4f18059",
+   "first": "2016-10-28",
+   "last": "2026-08-03"
+  },
+  "bars/5724.json": {
+   "records": 2442,
+   "sha256": "ad4f86c3cc6030503ef7932d8a9b5e4680473aa92f53922314458a15b74065a4",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5724.json": {
+   "records": 49,
+   "sha256": "1b216f33b8566333767a1c6359893059ce062a0635ef04710a19d8347b0edaea",
+   "first": "2016-11-04",
+   "last": "2026-08-10"
+  },
+  "bars/5741.json": {
+   "records": 2442,
+   "sha256": "466d3af3e111da7a4a815742dc4d457e8ea0e41ea40ab23733c3053a4592a239",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5741.json": {
+   "records": 48,
+   "sha256": "f31d2b2e3857100be43162e8890b098387063a5d48cdb1dea6d1a12a592099c8",
+   "first": "2016-11-02",
+   "last": "2026-08-06"
+  },
+  "bars/5803.json": {
+   "records": 2442,
+   "sha256": "331c57e59078827b463f1356b6ef5e50bf922d679305f0d718cec7e035351eb8",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5803.json": {
+   "records": 47,
+   "sha256": "ce8f0d39faaaa9ce66dee9f719b2402ea4b1a2e92b5f7d5ae354fa6860f7300b",
+   "first": "2016-10-28",
+   "last": "2026-08-07"
+  },
+  "bars/5830.json": {
+   "records": 973,
+   "sha256": "a0a27e21e30494893c754fa5e2e2e79d98ac8bb43291bb628e54b8d5e7dc47af",
+   "first": "2022-10-03",
+   "last": "2026-09-25"
+  },
+  "fins/5830.json": {
+   "records": 19,
+   "sha256": "f9638640a5919feb128106aad3447a405c1034355ab9e261fd64e871d45884b8",
+   "first": "2022-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/5871.json": {
+   "records": 642,
+   "sha256": "65913305978562e263e126faf39b58b12ac34d333c924341493779b5848bb852",
+   "first": "2024-02-07",
+   "last": "2026-09-25"
+  },
+  "fins/5871.json": {
+   "records": 12,
+   "sha256": "924c15a15e15abba72789c49755760f5a9cf9c1de4c5cfb1fc8a8240e43d8f74",
+   "first": "2024-02-14",
+   "last": "2026-08-06"
+  },
+  "bars/5911.json": {
+   "records": 2442,
+   "sha256": "2dc6d284f7024c8421d7ddc1eb73a3068234a063a2a17a1103c31a530883b17f",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5911.json": {
+   "records": 53,
+   "sha256": "9aa70c4377df13437de40a829a07bfd814fd9142d33aaecfe39ba9c66c6bffb0",
+   "first": "2016-10-26",
+   "last": "2026-07-27"
+  },
+  "bars/5966.json": {
+   "records": 2442,
+   "sha256": "d4d8cac9eadbd1e057d1b716e48a476505868cc8ef4f8b153e59ad46e56b5355",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/5966.json": {
+   "records": 52,
+   "sha256": "aa4b91646e3c0c060e0c0a43abb042dc13cf7d958805423bb3e9b476e33ea60f",
+   "first": "2016-11-04",
+   "last": "2026-09-14"
+  },
+  "bars/6016.json": {
+   "records": 2442,
+   "sha256": "fa193fa63e89c0dcb275f47f0f399598383c2dd320a98a3f190a7f617c0db103",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6016.json": {
+   "records": 46,
+   "sha256": "1381df78d7e54cbe24daaab2b4ec8a8e20d4c77b3ed89c61972c7b58441a6a6b",
+   "first": "2016-11-10",
+   "last": "2026-08-06"
+  },
+  "bars/6037.json": {
+   "records": 2442,
+   "sha256": "83fad6f338a0f15ca6a4d905420eff56b70030c14c275347bb76cf489d08ea5b",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6037.json": {
+   "records": 47,
+   "sha256": "f33af09b28f9bdb513e42f081bba1ab9cba3ea47498bd32bf9bf8b0b71f746a1",
+   "first": "2016-12-14",
+   "last": "2026-09-14"
+  },
+  "bars/6061.json": {
+   "records": 2442,
+   "sha256": "7afe54f468f42d7b499fd85ada36710dfcf1b6cf576b809acabff4ee1cdc728e",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6061.json": {
+   "records": 42,
+   "sha256": "10958c4b13db0b74f7fe7582927cb9a7ff5e64005af43e67efa203a89f66e3c9",
+   "first": "2016-11-11",
+   "last": "2026-08-17"
+  },
+  "bars/6090.json": {
+   "records": 2442,
+   "sha256": "0707ad52aae1b41d9276fb1764e8f5bdaf50d028531b454bb9a42de48692d052",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6090.json": {
+   "records": 45,
+   "sha256": "fc67debd6853b928030dd2828c704644090c26ca56a1c07670a289c2e18da189",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/6113.json": {
+   "records": 2442,
+   "sha256": "76876c081466adeabac422a4b8d049bd023331bf134ce13f59aa91a120819806",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6113.json": {
+   "records": 41,
+   "sha256": "85eaa2e9a5ace7e5add38f0ecbd84069c6a92815137acf2fdd3a8212cf297a56",
+   "first": "2016-11-10",
+   "last": "2026-08-06"
+  },
+  "bars/6138.json": {
+   "records": 2442,
+   "sha256": "8fbe433922ea12ce99d6800953c8f74cdc439a8c37d85e4d636d7c978d212e05",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6138.json": {
+   "records": 40,
+   "sha256": "d8e71d3567fd10589cba56018b509929305ad5348016d20847d91102f2cc2f75",
+   "first": "2016-11-04",
+   "last": "2026-08-07"
+  },
+  "bars/6144.json": {
+   "records": 2442,
+   "sha256": "d49449913a5089073edbbd808a1bf08ac198ce300644c2b2da60e649b3fe477c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6144.json": {
+   "records": 52,
+   "sha256": "261412722d5c84d1917360faf56015cf1a98489528b32b688bf0671f1be8e5d5",
+   "first": "2016-11-14",
+   "last": "2026-07-31"
+  },
+  "bars/6150.json": {
+   "records": 2442,
+   "sha256": "236ac7127ca5f3e88912568776d748b2ff00074106d663d0d6f59c758452bf93",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6150.json": {
+   "records": 43,
+   "sha256": "80581ec021f09a0c23b3e799d9dd001db921149502df27a2838e990d8b6cbe9a",
+   "first": "2016-10-14",
+   "last": "2026-07-15"
+  },
+  "bars/6151.json": {
+   "records": 2442,
+   "sha256": "239358dd3e5daceb6bb4e25d57ab409120b2b3b7a8432d9fbe2551cee515047a",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6151.json": {
+   "records": 57,
+   "sha256": "3e19526bae69d736d4ed8903bbff2746bdc27757a77bf2eccc49d57811ee35b9",
+   "first": "2016-11-07",
+   "last": "2026-08-07"
+  },
+  "bars/6167.json": {
+   "records": 2442,
+   "sha256": "18e0d3d44fd6508b0f84afef30b0c05e48185cd3afd93c55d35166d372a2eaec",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6167.json": {
+   "records": 49,
+   "sha256": "4f8625445a56d3fc7ca4384f24b46457e2048e5057e235b47fb42a2987aaebb3",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/6189.json": {
+   "records": 2442,
+   "sha256": "2194fffb1136b9d82d76e698720d6e4fe71e0f7dcb081eaf706cd5ce75d3fc6b",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6189.json": {
+   "records": 46,
+   "sha256": "f79563669bb2f9ccc51c8906a3902866378abf4b6ea7f26adb45c4b4bc555903",
+   "first": "2016-11-14",
+   "last": "2026-08-10"
+  },
+  "bars/6233.json": {
+   "records": 1948,
+   "sha256": "7eb5bbb22ea64edeb94138597e48ad572937248a5a210bdf1c9af8f297846baf",
+   "first": "2018-09-27",
+   "last": "2026-09-25"
+  },
+  "fins/6233.json": {
+   "records": 36,
+   "sha256": "b7bc40b4f27e52b9d4c24100d63ac286f3fdd63517430488ffa4dfa5533ad6fb",
+   "first": "2018-11-13",
+   "last": "2026-08-07"
+  },
+  "bars/6269.json": {
+   "records": 2442,
+   "sha256": "52aef8f3b9348e85b4444720defc1b51fc99c9e4fbf3d511a05079e6206d2926",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6269.json": {
+   "records": 52,
+   "sha256": "77f2907bdbd04a2201895ecfe545ebeaa824b88a49741731ce0c2a802a3c9b0f",
+   "first": "2016-11-04",
+   "last": "2026-08-07"
+  },
+  "bars/6276.json": {
+   "records": 2442,
+   "sha256": "1be226780d0b6ee457bdf6780117f24d55fa055ffa4fd9074c46789e8d041a6b",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6276.json": {
+   "records": 49,
+   "sha256": "82ee27245741496ef0f4aed448b545c02dcb5c7da3c6f8e475e4683737328f62",
+   "first": "2016-11-04",
+   "last": "2026-08-14"
+  },
+  "bars/6306.json": {
+   "records": 2442,
+   "sha256": "b31231bdabdcc6bc00bc0a13d5f713bcd471bc67f9a1c43adb5815840d392e44",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6306.json": {
+   "records": 43,
+   "sha256": "1194ebf85a880ba686f9c5aeeb2eec46066fe635045a5f75d94924df9e27a96b",
+   "first": "2016-11-09",
+   "last": "2026-08-10"
+  },
+  "bars/6361.json": {
+   "records": 2442,
+   "sha256": "bc5fe772faaa614766df020c1fe0a249250249d0343c448db6464e885ebf2f03",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6361.json": {
+   "records": 46,
+   "sha256": "185ec894402e38a357ec4a4e0e7fb14f0f3de99290dd32c32a0d81606132d01b",
+   "first": "2016-11-10",
+   "last": "2026-08-14"
+  },
+  "bars/6392.json": {
+   "records": 2442,
+   "sha256": "d3d131a87ec0686f1d0b61597d03cea3162f9791fe18b6b5db6a76345a695d49",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6392.json": {
+   "records": 69,
+   "sha256": "3e9f8c785eb33c6154ba04d1f8a19e48c7d8db8f289cabb4a8a09f7ddc233008",
+   "first": "2016-11-07",
+   "last": "2026-08-07"
+  },
+  "bars/6463.json": {
+   "records": 2442,
+   "sha256": "2321f1d669d5d616a943e3ed7dba13833e80e2602dabc4e60dbebfb7c058cd03",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6463.json": {
+   "records": 48,
+   "sha256": "b8a97bb85d9c76643218c477295aa876b7717afd537c93f8afa09228d7f5ffdf",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/6465.json": {
+   "records": 2442,
+   "sha256": "1b9592a51e3094f61be771f8c38aa60ef25ddfc1246bad0d5262f0c8d6743c7c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6465.json": {
+   "records": 45,
+   "sha256": "50c9f1e230e2c9c824f21cf1b0bf5f07cc61cbad340ae71da3c5157a8058fd2e",
+   "first": "2016-11-07",
+   "last": "2026-08-06"
+  },
+  "bars/6543.json": {
+   "records": 2346,
+   "sha256": "434148b0a9d4af25ce5f9ed255d31a50b2388d3a8e42baececaf0753b03272b0",
+   "first": "2017-02-16",
+   "last": "2026-09-25"
+  },
+  "fins/6543.json": {
+   "records": 44,
+   "sha256": "542e230709bd8d209e957287a970b7a64e8a63023c7b3b3b7d5b1b73b38792e5",
+   "first": "2017-04-14",
+   "last": "2026-08-20"
+  },
+  "bars/6564.json": {
+   "records": 1889,
+   "sha256": "89a1fb0f14ae597587fb40dc5b69bdbf84fe223fb60b128d0efff362c1972da5",
+   "first": "2018-12-21",
+   "last": "2026-09-25"
+  },
+  "fins/6564.json": {
+   "records": 45,
+   "sha256": "dfa79a2719c77a009cedb5121ba877b1a1bb8d72a3c2a8347675448864160fb7",
+   "first": "2018-02-13",
+   "last": "2026-08-10"
+  },
+  "bars/6566.json": {
+   "records": 2134,
+   "sha256": "0c2fb881474d5553693810a59151a4bc56bf963e6afab7276a350fd6d263458d",
+   "first": "2017-12-25",
+   "last": "2026-09-25"
+  },
+  "fins/6566.json": {
+   "records": 39,
+   "sha256": "62586804a9de722df94d417f04cbedcf75cb66e37ce94afd280aeb3589a9587d",
+   "first": "2018-02-14",
+   "last": "2026-08-10"
+  },
+  "bars/6572.json": {
+   "records": 2074,
+   "sha256": "18149b68c5073252db60abd33e8ab1702f8f4cac6c877e38d76753a470ea94c4",
+   "first": "2018-03-27",
+   "last": "2026-09-25"
+  },
+  "fins/6572.json": {
+   "records": 42,
+   "sha256": "c822084e3d98afc00e0b1862745fdd5c10a8ba0b404e24656d80c5633bdacf75",
+   "first": "2018-04-13",
+   "last": "2026-07-15"
+  },
+  "bars/6656.json": {
+   "records": 2442,
+   "sha256": "a35b23c33630f4fcf83a88e9a56cf6a0cca2e4af669c461e71c796785e41d651",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6656.json": {
+   "records": 48,
+   "sha256": "614bc32f8faa67f0c20454de73bfcb490f788845f12df3b70849fdbfd93872d1",
+   "first": "2016-12-09",
+   "last": "2026-09-11"
+  },
+  "bars/6659.json": {
+   "records": 2442,
+   "sha256": "73f4a473bdf257ea1df1a71a3b09eb63784baf5437f5a103bfc9381307f9a10a",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6659.json": {
+   "records": 51,
+   "sha256": "b91b2390673f9fed5c88b9b520b5926d9021bb436d0433fd5b701743e11ed430",
+   "first": "2016-10-26",
+   "last": "2026-07-30"
+  },
+  "bars/6662.json": {
+   "records": 2442,
+   "sha256": "1df3f10341ab91f597864c2f6bfadd1d427208d6ea910c9ea131184ebc71c34b",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6662.json": {
+   "records": 50,
+   "sha256": "6c9cb53c652164dfcbd442746ecec568a7986cf8d6f3c4c072b599a56ebe2637",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/6701.json": {
+   "records": 2442,
+   "sha256": "541955ffd23bb083e8223b6deec4c272d2eacbf3df771a239eeef6d3006b9413",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6701.json": {
+   "records": 44,
+   "sha256": "fceb49efb11e66aa9d17f414f25c00912ce88abcaee85992167cde9d93dee937",
+   "first": "2016-10-31",
+   "last": "2026-07-29"
+  },
+  "bars/6730.json": {
+   "records": 2442,
+   "sha256": "bc24366925eeaaeec204aa6b9467edbb9b1c48cf433dc7d637beef1577e86eff",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6730.json": {
+   "records": 53,
+   "sha256": "89aa469a19ca42119da969fcb4c65daf2a08a5fc2a3440ae8e5f7ca1ba06e8ef",
+   "first": "2016-10-25",
+   "last": "2026-08-05"
+  },
+  "bars/6736.json": {
+   "records": 2442,
+   "sha256": "fa1ed497b16f6b3047516c3dc092f92629c784a70ff9030a32cb207b636c2fd9",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6736.json": {
+   "records": 54,
+   "sha256": "f9d7fb66669d167a90d76344e364e30d9013ce4e579179502d2ccca15fca7e42",
+   "first": "2016-11-04",
+   "last": "2026-08-10"
+  },
+  "bars/6763.json": {
+   "records": 2442,
+   "sha256": "5b9e6235d02b35d5f3c1c66c12bc2379fe516f4980c813cf835451e1db36a550",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6763.json": {
+   "records": 45,
+   "sha256": "36221cb6154f0429af7c922aca809c5a9d289579e44b32e16008ef510f7aa955",
+   "first": "2016-11-11",
+   "last": "2026-08-06"
+  },
+  "bars/6769.json": {
+   "records": 2442,
+   "sha256": "7e80bd61df23c6c3fdcb6214220ac838ad77f289d01cfb5145eba5c71c21f69f",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6769.json": {
+   "records": 64,
+   "sha256": "3d182c4a97bdf6b64a6777c050ed9a727516057df64aab340c0ac42b1b8a6b48",
+   "first": "2016-11-04",
+   "last": "2026-08-06"
+  },
+  "bars/6775.json": {
+   "records": 2442,
+   "sha256": "99bb67e7bd2c726e2cfdbd89488d3fb0816b77f37b5e74a4c0c9f7677bdecdae",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6775.json": {
+   "records": 44,
+   "sha256": "d0fb827217b11e9d2374ee9a514fcaa7dc072b16e7b1c36ef9eed9380759f455",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/6776.json": {
+   "records": 2442,
+   "sha256": "45e8501b6d68de896883288a60aec0abddea0573b4203c120962c977540edc7e",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6776.json": {
+   "records": 44,
+   "sha256": "34f04df2596c7461e3feda69e251bab8f272d3a3387b659c93c49924d6fce8dd",
+   "first": "2016-11-04",
+   "last": "2026-08-06"
+  },
+  "bars/6777.json": {
+   "records": 2442,
+   "sha256": "90e30077e6891c19e75605069c537f7f54c85d23b5d6a50cf542455369cd130c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6777.json": {
+   "records": 47,
+   "sha256": "5b70f1db8de47ad23e4bbc673da3a6a423fab9c910909563ac0f9306ebeec4c4",
+   "first": "2016-10-14",
+   "last": "2026-08-07"
+  },
+  "bars/6779.json": {
+   "records": 2442,
+   "sha256": "8e5c8b3bd0bf8c151a971a33589923d7068a656ed3b467e3f6bfcc98bf96ae9b",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6779.json": {
+   "records": 48,
+   "sha256": "deaf6180581eba37746d6e4dd801abc07329294126f4a1ff6108c76f3bd123a0",
+   "first": "2016-11-07",
+   "last": "2026-08-07"
+  },
+  "bars/6806.json": {
+   "records": 2442,
+   "sha256": "8f9acde5ce2aa8790e22039271b714ad3bf8b89b1e24951e1b2205aad86b89b4",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6806.json": {
+   "records": 45,
+   "sha256": "69bc9f80a3f6d418f41dc899c020f57a8d97825f26011bb189308e7d26ba1d12",
+   "first": "2016-10-31",
+   "last": "2026-08-04"
+  },
+  "bars/6819.json": {
+   "records": 2442,
+   "sha256": "e1774c7f8690c575e034b066893d648f67563af2dfba38baacf5e1e48da2418f",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6819.json": {
+   "records": 43,
+   "sha256": "efccf7cb8c45098830f399e65a7fa1d0f46ce845611aa122760f363b627cea43",
+   "first": "2016-11-11",
+   "last": "2026-08-14"
+  },
+  "bars/6823.json": {
+   "records": 2442,
+   "sha256": "3cdb705f1c01bd09c665707be541c2dcad71448c31137f4ef5cbcb25cb59d193",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6823.json": {
+   "records": 50,
+   "sha256": "f9f3a9f98e4d3fbaaf9ac0b7a4349bbe225bda6513711b2d75c43666c075c274",
+   "first": "2016-10-28",
+   "last": "2026-07-30"
+  },
+  "bars/6849.json": {
+   "records": 2442,
+   "sha256": "8ac0f4eaacabd8e3e5cafff69d8336a2078ba1b15decbf69758dd745823348f2",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6849.json": {
+   "records": 56,
+   "sha256": "5f5856a4a93e6657554530cd4f73e5a1f5657045689217a694f5d3d19dc91d62",
+   "first": "2016-11-04",
+   "last": "2026-08-06"
+  },
+  "bars/6863.json": {
+   "records": 2442,
+   "sha256": "cfa09d5e7c63aa21ffc3e00293ecbe95ec4ce0e25af99274018c7ae0c711504d",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6863.json": {
+   "records": 47,
+   "sha256": "1b0bc2c59cce2bc6253ce317a8a09860900c40bd39fec29299bea69400b1b61e",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/6869.json": {
+   "records": 2442,
+   "sha256": "4928889647a1d57cda86bc4277c2d262df5da215f57d4e37ffdc810dd29669ab",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6869.json": {
+   "records": 41,
+   "sha256": "e99c4aeafe09d3b6b72528d884a3026b83cc2fdbcf406eea1b5c9488982a6d01",
+   "first": "2016-11-09",
+   "last": "2026-08-07"
+  },
+  "bars/6877.json": {
+   "records": 2442,
+   "sha256": "00777d37328c9b45f52efa11c10e6d462ed2893a0892789b3a00e53126188381",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6877.json": {
+   "records": 48,
+   "sha256": "0d2f3768c43506b2755bb6df4a846115cf2e3a819a365059a2f101d47ceb3e8f",
+   "first": "2016-11-07",
+   "last": "2026-08-05"
+  },
+  "bars/6890.json": {
+   "records": 2442,
+   "sha256": "631a4f1886bb4cabc79184372f0c79c8a9a3a019776fc2404335207d8cc83b8f",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6890.json": {
+   "records": 56,
+   "sha256": "3fc36fd88f180e695941011394e195ddfff7059582562b9cd272f9dbe717951a",
+   "first": "2016-11-11",
+   "last": "2026-08-14"
+  },
+  "bars/6912.json": {
+   "records": 2442,
+   "sha256": "bee48e4f923f2fb740522f975f85b34e92bc9fef85bad566ba41710e95690c46",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6912.json": {
+   "records": 52,
+   "sha256": "a16b4fdb48738a90a359fed96ca6d329bc8763fe1ce820aefc742e78922c002e",
+   "first": "2016-10-28",
+   "last": "2026-07-30"
+  },
+  "bars/6929.json": {
+   "records": 2442,
+   "sha256": "c6d90a0b3ca91401b954fb9f36a59e48ec3c1306825af2651239c66047ae9717",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6929.json": {
+   "records": 42,
+   "sha256": "12ccd129597b600ae73d8114daa5f4c0d278a9b35df97206f4c25d26335cfc92",
+   "first": "2016-11-04",
+   "last": "2026-08-07"
+  },
+  "bars/6932.json": {
+   "records": 2442,
+   "sha256": "ca2640194d7dfbfa6d468d62aace8b18b3447c1984622d827e596c36608df1b5",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6932.json": {
+   "records": 51,
+   "sha256": "183ca649ee91bddd4157fa992f132149e32c04d822a56059b4bd2ced8957fc3e",
+   "first": "2016-10-31",
+   "last": "2026-07-31"
+  },
+  "bars/6955.json": {
+   "records": 2442,
+   "sha256": "b7e8f1371368ab4c8822825a8e7786b39f03f370236559663c83c6af51395074",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/6955.json": {
+   "records": 56,
+   "sha256": "56f20eb925af6d04acc076f64987250ee262a28e7b203ebb0aca98cf8e3affd0",
+   "first": "2016-10-26",
+   "last": "2026-07-29"
+  },
+  "bars/7034.json": {
+   "records": 1990,
+   "sha256": "1048ee7035f79e8b0d3e1479a4a939adc8d04df0203d9118a0141d1d3339b8c0",
+   "first": "2018-07-27",
+   "last": "2026-09-25"
+  },
+  "fins/7034.json": {
+   "records": 37,
+   "sha256": "2c93087219d38f736c07101660a52ce73ae0664588ce9ee2ea1fc49741bc853b",
+   "first": "2018-09-13",
+   "last": "2026-09-14"
+  },
+  "bars/7058.json": {
+   "records": 1835,
+   "sha256": "d052b39541c077110a3df44d4669679e24563cbce8423ca60edfce3f74cdf69b",
+   "first": "2019-03-18",
+   "last": "2026-09-25"
+  },
+  "fins/7058.json": {
+   "records": 31,
+   "sha256": "686bf62d3901fbc4ab6bfa0bd7d778e19f2a06984bc018e0efa5df22f6ee7f1e",
+   "first": "2019-05-13",
+   "last": "2026-09-11"
+  },
+  "bars/7065.json": {
+   "records": 1780,
+   "sha256": "9d8af4df508651ded3c1ce2976ded1af04c18241c7698e8ac0ab6fc433265727",
+   "first": "2019-06-12",
+   "last": "2026-09-25"
+  },
+  "fins/7065.json": {
+   "records": 32,
+   "sha256": "3e0b869cc8c15c752a12a5642ebeea2be07cf3946e7e5ba4a2f8c1006f93f8d3",
+   "first": "2019-07-12",
+   "last": "2026-07-15"
+  },
+  "bars/7087.json": {
+   "records": 1602,
+   "sha256": "5114cae1c53055d665b67ab30e510af5d339e3e77888e68414b42669cc2055cc",
+   "first": "2020-03-06",
+   "last": "2026-09-25"
+  },
+  "fins/7087.json": {
+   "records": 29,
+   "sha256": "3e11d1230c15673fbaa8c1d89cc7384ddc7ac14a4bc3b5bd7eb52c40fffad6f4",
+   "first": "2020-05-12",
+   "last": "2026-08-12"
+  },
+  "bars/7129.json": {
+   "records": 1218,
+   "sha256": "af6a7b36842d44ae7428c14c2cc5b086ecf2af81c06a62e8f5ec0b6186ef4a00",
+   "first": "2021-10-01",
+   "last": "2026-09-25"
+  },
+  "fins/7129.json": {
+   "records": 22,
+   "sha256": "3272c02a5946cf3f07dc802d7d643b0cc1c2a32372133a6ccc248a87fc7219bf",
+   "first": "2021-10-01",
+   "last": "2026-08-10"
+  },
+  "bars/7150.json": {
+   "records": 2442,
+   "sha256": "c406d1a468c120de479ae61b7da96ef43095918f239a2dcfcfdfc0db65127988",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7150.json": {
+   "records": 57,
+   "sha256": "64d92eaff8c10c0c4eebff5d8fe2ec53c557d2e36a112f27526c0abf40b7e7a0",
+   "first": "2016-10-27",
+   "last": "2026-07-29"
+  },
+  "bars/7167.json": {
+   "records": 2442,
+   "sha256": "706c0b2860a600ca025b7bbee93aec875d7cc7350de318669a9a883a8944bb58",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7167.json": {
+   "records": 44,
+   "sha256": "7f75ac54d5e3a59000a162a38c3311c2d8fb3be602f2ade9d6ffdb950b6cbb4e",
+   "first": "2016-10-01",
+   "last": "2026-08-05"
+  },
+  "bars/7189.json": {
+   "records": 2437,
+   "sha256": "a58b77d52ba1528724ad71ad8620609b120555598ac2f34a85af42f042f20bcd",
+   "first": "2016-10-03",
+   "last": "2026-09-25"
+  },
+  "fins/7189.json": {
+   "records": 42,
+   "sha256": "1a2319d987d8df12f30499dd3b1ed203700177ab6186cfe01252ee181a4c129e",
+   "first": "2016-11-08",
+   "last": "2026-08-03"
+  },
+  "bars/7192.json": {
+   "records": 2385,
+   "sha256": "481f7de96845e9973ee801b197c02a365010562b0a6990f87c458c62affc3674",
+   "first": "2016-12-19",
+   "last": "2026-09-25"
+  },
+  "fins/7192.json": {
+   "records": 49,
+   "sha256": "6f68162c28dc610b112ec2db1bfe3d072964d11c829c7bbd94d97e884a3e00e0",
+   "first": "2017-02-13",
+   "last": "2026-08-07"
+  },
+  "bars/7198.json": {
+   "records": 2141,
+   "sha256": "ffaffe79c315da0255432a8236cf53ce79fac2a11ef61a25375251045d06e1f6",
+   "first": "2017-12-14",
+   "last": "2026-09-25"
+  },
+  "fins/7198.json": {
+   "records": 43,
+   "sha256": "9e61e5239132a9deda99bdb0957511fd29babb56cdde8ca5454dd32e3236793b",
+   "first": "2018-02-13",
+   "last": "2026-08-10"
+  },
+  "bars/7199.json": {
+   "records": 2136,
+   "sha256": "46e9be0674043bc277e00380304bac8b0ee1dfea923ee7182bb0dff6191803bd",
+   "first": "2017-12-21",
+   "last": "2026-09-25"
+  },
+  "fins/7199.json": {
+   "records": 40,
+   "sha256": "d4637d48d710e22d15fc7684c246e32e0cfff087025adb18d85dcdae17100d6b",
+   "first": "2018-02-14",
+   "last": "2026-08-10"
+  },
+  "bars/7208.json": {
+   "records": 2442,
+   "sha256": "d9a09a6a4a486130e07ea6fc7cce2cc37c3701ed12860a8aa17064371f3ec4ce",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7208.json": {
+   "records": 46,
+   "sha256": "8c5e407d66c1da45613d12f120202b8894b0a42ecac4d26ed71913ed1af64b64",
+   "first": "2016-11-10",
+   "last": "2026-08-06"
+  },
+  "bars/7211.json": {
+   "records": 2442,
+   "sha256": "a182614edcc2e302b5bba377c97acd32aff3b51605ae08dc1849473118a068f0",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7211.json": {
+   "records": 48,
+   "sha256": "72d87338c89b47439c700a89c06f83a7a7a0afdc01e9d20efd86225a8fc727d6",
+   "first": "2016-10-19",
+   "last": "2026-08-03"
+  },
+  "bars/7222.json": {
+   "records": 2442,
+   "sha256": "10d79b461d2e24d73086f9c288f9fcac69e173ffa318888b98bbd4e5f23854af",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7222.json": {
+   "records": 44,
+   "sha256": "bd91a8bddab29b7262b34444dc29863edf8304113a46b1e11d5904f97f428234",
+   "first": "2016-11-07",
+   "last": "2026-08-03"
+  },
+  "bars/7224.json": {
+   "records": 2442,
+   "sha256": "b9e49ec5514b278d7d327c36cdbff3d44daa8b3c648450aec0d08939c3a05af7",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7224.json": {
+   "records": 42,
+   "sha256": "06cd87f72472ec27d1f7ad117b3e20e7c29f59ca386f8eadd95b7a7df6f680fa",
+   "first": "2016-10-31",
+   "last": "2026-07-31"
+  },
+  "bars/7244.json": {
+   "records": 2442,
+   "sha256": "78245b07fcab9a4a66c11b75049a896402dbde2aae798e378a984455e1faa5ce",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7244.json": {
+   "records": 43,
+   "sha256": "2b22516831cb1b5ea004029e260ed3b7aa908b6f55e3d0ee9b24402fbcb87614",
+   "first": "2016-11-07",
+   "last": "2026-08-07"
+  },
+  "bars/7246.json": {
+   "records": 2442,
+   "sha256": "05093e043f1ede4fa4e7d9afe17de58c33678b6a91c3e9650070330c9e9f8ebe",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7246.json": {
+   "records": 42,
+   "sha256": "40703751c0c79b8a83f2afa937d569569123ec5119d502d7d9510bbdfeb263ef",
+   "first": "2016-11-08",
+   "last": "2026-08-05"
+  },
+  "bars/7261.json": {
+   "records": 2442,
+   "sha256": "a24d5a56bba7b508908c217b5adf8f0970699e4dbc54de1dd2eacbb033bad34c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7261.json": {
+   "records": 57,
+   "sha256": "9f813402d357f4df1a34aa7ae1f8ec86195a980295a74c0aff1348a461e723bf",
+   "first": "2016-11-02",
+   "last": "2026-08-04"
+  },
+  "bars/7267.json": {
+   "records": 2442,
+   "sha256": "7f5c3712c18bf2b93b53b75eba3f5e9d85f1ba3dad2f279c6e04037529a159b6",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7267.json": {
+   "records": 47,
+   "sha256": "7fa46201bb4265ae85b03930611e1ed5517209d504dc4323905dbd2b057ecbb4",
+   "first": "2016-10-31",
+   "last": "2026-08-05"
+  },
+  "bars/7354.json": {
+   "records": 1461,
+   "sha256": "f216c401be457d86f989f4002a00f38c105b8f40779befb68f71de4ffb992ba0",
+   "first": "2020-10-05",
+   "last": "2026-09-25"
+  },
+  "fins/7354.json": {
+   "records": 30,
+   "sha256": "5efd44e59511707ebf4c4afbc0429584502583328385f9d233fec3dca21d2e21",
+   "first": "2020-11-13",
+   "last": "2026-08-14"
+  },
+  "bars/7366.json": {
+   "records": 1340,
+   "sha256": "4717dc90e50c3e054c8b0c71ceea1b0d2e65336c6a4cdcdae9dc423d873687d8",
+   "first": "2021-04-01",
+   "last": "2026-09-25"
+  },
+  "fins/7366.json": {
+   "records": 26,
+   "sha256": "0a4e6c7a53305647802814a231bf35da72f7999d3d1ca3794851a736411646ed",
+   "first": "2021-05-10",
+   "last": "2026-08-03"
+  },
+  "bars/7384.json": {
+   "records": 1096,
+   "sha256": "eae941a39b02bc78c47818387e6c0f15c57d10509ab9f4df3a2ff037a679fa1b",
+   "first": "2022-04-01",
+   "last": "2026-09-25"
+  },
+  "fins/7384.json": {
+   "records": 22,
+   "sha256": "8fcc8ae7c45e82f2e26d84d2e737cc8a81f0bbbd8a88a1d18c577fab09aad7bc",
+   "first": "2022-04-01",
+   "last": "2026-08-05"
+  },
+  "bars/7413.json": {
+   "records": 2442,
+   "sha256": "eb10980bc33e08bcfdf7d061e5e1bb9b7984cc88f1ef41b23cc4f705b017056b",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7413.json": {
+   "records": 49,
+   "sha256": "1b29255a66b0b34f64f509cb403d7347993040793a2ec48c22b929cd8c1bfa04",
+   "first": "2016-11-10",
+   "last": "2026-08-07"
+  },
+  "bars/7416.json": {
+   "records": 2442,
+   "sha256": "805c45aa27dc02c0529ab150368747e96c4ea98330313b736ba33c6bc3d66313",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7416.json": {
+   "records": 56,
+   "sha256": "d44d557d7e30d54b2f0fd4cfec1d540ece3d831f078443a00b37abc5c8b6cfaa",
+   "first": "2016-11-04",
+   "last": "2026-08-07"
+  },
+  "bars/7435.json": {
+   "records": 2442,
+   "sha256": "c0c942ac7edc5cd9e61106e0a828095aa0bfed415a8f67a55ef24742858ed1a3",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7435.json": {
+   "records": 49,
+   "sha256": "5df31a769e836b77ed7013348fb9551be01295b63b52dd1316a4063f43ceea21",
+   "first": "2016-12-07",
+   "last": "2026-09-08"
+  },
+  "bars/7447.json": {
+   "records": 2442,
+   "sha256": "a7d077589aa6a2ab4a34dc0d820da1ab4c537565ca4cf8a7edc8d6d29aef0354",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7447.json": {
+   "records": 42,
+   "sha256": "cb0c7faec055d0227901fc8437574a2d510e2b2379eea7d0958c86e2fe6ba764",
+   "first": "2016-10-06",
+   "last": "2026-06-29"
+  },
+  "bars/7477.json": {
+   "records": 2442,
+   "sha256": "cc15d8dd3b93b7532f25b8ac824d8f24b088dabf80d261810b4a04b7c46c0490",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7477.json": {
+   "records": 50,
+   "sha256": "316ebaddf9b3407cb03e8131386165177bd1b5c6a7e30f9c3d9e602cfc5b48f1",
+   "first": "2016-10-25",
+   "last": "2026-08-21"
+  },
+  "bars/7480.json": {
+   "records": 2442,
+   "sha256": "ffebcf568aaef2c33763a1852a5bea349037af7101232dcaca650f211d1ad7c9",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7480.json": {
+   "records": 54,
+   "sha256": "53e49a428464a2cbee62f30f406f48cdae7f26ef476495b6f2946b3fd588699c",
+   "first": "2016-11-07",
+   "last": "2026-08-03"
+  },
+  "bars/7500.json": {
+   "records": 2442,
+   "sha256": "7fdbd6564583ba2e2067c33f4c42a62e92b30c4cde8a1fa5f63c6c2dedd704ce",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7500.json": {
+   "records": 42,
+   "sha256": "3957f3b1024826391459070a00b777bece3d0828904880e1c2a85fabbdc1b632",
+   "first": "2016-10-28",
+   "last": "2026-08-07"
+  },
+  "bars/7509.json": {
+   "records": 2442,
+   "sha256": "8afd48ddfd885783590e6d1388add543ee68e40025fdab6d3ef16229434b8db4",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7509.json": {
+   "records": 48,
+   "sha256": "7dd57ba94444f3c2ba910e600e8bdeba2b926e2c22844f7d622f6b58bb4362ea",
+   "first": "2016-11-04",
+   "last": "2026-08-21"
+  },
+  "bars/7527.json": {
+   "records": 2442,
+   "sha256": "37b2bba15738378157f90932d3b2f74ce8e7798731273e6988c5fceb05f77d06",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7527.json": {
+   "records": 56,
+   "sha256": "69846d1ba7a0fa3410e5e7f53877ee5202dd1c7c81b9ed7b1405cc6010e3892a",
+   "first": "2016-10-31",
+   "last": "2026-09-25"
+  },
+  "bars/7565.json": {
+   "records": 2442,
+   "sha256": "afdabc3192f35e3061d110cf7e5aea9b76eb2c4afbe28281fa06ead3643e3792",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7565.json": {
+   "records": 56,
+   "sha256": "e18424bd56e6675388e7fa586f7a91518a7dab26426ad1c369cd875601644c78",
+   "first": "2016-11-09",
+   "last": "2026-08-04"
+  },
+  "bars/7595.json": {
+   "records": 2442,
+   "sha256": "1615c97758211694f45022af070b936e848453c1c7a59e54ce260d1006e1a29a",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7595.json": {
+   "records": 49,
+   "sha256": "7cc0409bd3c5c4e4258150bf27778d7ff89fc9ffb0d22210455ac3c282e21854",
+   "first": "2016-10-28",
+   "last": "2026-07-31"
+  },
+  "bars/7599.json": {
+   "records": 2442,
+   "sha256": "165bab764ddcf52886e578327dacee51fb9d043251ddaa7aad9bd810f2aa2983",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7599.json": {
+   "records": 57,
+   "sha256": "5615c53bc0a44841284cd8fb065cf73f1a7882909f097b177643c01736516a68",
+   "first": "2016-10-13",
+   "last": "2026-07-14"
+  },
+  "bars/7607.json": {
+   "records": 2442,
+   "sha256": "4a5914739066675085629edc20b977389e9a3cb0d9dcc009e32e368ff478318c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7607.json": {
+   "records": 44,
+   "sha256": "1efffc926486566f2ae9819d3003766e5be51ef639a2c834eb30d4468d509a47",
+   "first": "2016-10-13",
+   "last": "2026-07-10"
+  },
+  "bars/7609.json": {
+   "records": 2442,
+   "sha256": "f96e41b4ee7e3903a83368b8add7838566f18c99fc566a37c18e339b2ec8f615",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7609.json": {
+   "records": 42,
+   "sha256": "7ff77a97000fc48a020d490be08d7a5a445e5f79347c0926ee9ab78b90727495",
+   "first": "2016-11-04",
+   "last": "2026-08-03"
+  },
+  "bars/7614.json": {
+   "records": 2442,
+   "sha256": "5b5cef148693d0d955152e9d077790e854ca3ec30f8ed6546956ad5383e93517",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7614.json": {
+   "records": 43,
+   "sha256": "5353eba8850d66890dbb972b829a65299e61a43c216ee8345555baa8afe79da6",
+   "first": "2016-12-12",
+   "last": "2026-09-14"
+  },
+  "bars/7615.json": {
+   "records": 2442,
+   "sha256": "c1db3099334fde85277d8d42703f85727e1ba95f90245693c466a352c39b5d30",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7615.json": {
+   "records": 49,
+   "sha256": "a0f4ca77e464b5593d9b9a29c84630126a143f3ad99ba98fe78495533bb9b352",
+   "first": "2016-10-13",
+   "last": "2026-08-10"
+  },
+  "bars/7616.json": {
+   "records": 2442,
+   "sha256": "f9aaea8906c87d6f6b83e759fb2da8ab2c48b58f9c7ce11f30d0820c6100c29e",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7616.json": {
+   "records": 65,
+   "sha256": "e337182ed89e52d9387f13c5697dde0e9e7f0b27c012ced4827c85162432e81a",
+   "first": "2016-11-02",
+   "last": "2026-08-12"
+  },
+  "bars/7628.json": {
+   "records": 2442,
+   "sha256": "be5764fb70ef4d2daa019f674d4a3f75601d9d2361c338c7798fe3b666d929d2",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7628.json": {
+   "records": 44,
+   "sha256": "4ea3dc8134e2c2841560efbeef0fb6f1685dec19adf6a2426933dda02dbca2f0",
+   "first": "2016-11-07",
+   "last": "2026-08-06"
+  },
+  "bars/7637.json": {
+   "records": 2442,
+   "sha256": "9f663a9762c4c2e9ad994f529346a0674aec0c4779844b5c224ba8a6db5fc6ca",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7637.json": {
+   "records": 49,
+   "sha256": "938f5c90ee774e3888081850c7dc9c024a2933e38f3dca09d5cc4142ada97ffa",
+   "first": "2016-11-09",
+   "last": "2026-08-07"
+  },
+  "bars/7643.json": {
+   "records": 2442,
+   "sha256": "a4128d66eae1e51e3eb125e25cae5fc617fae5e3ca0e8dc625c21fb1e680f96e",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7643.json": {
+   "records": 49,
+   "sha256": "2ee3a4d401fd6c8f56ac5246e2e6c9a229f9f4ce69f2ecee3da92da36de9a5a6",
+   "first": "2016-11-07",
+   "last": "2026-09-25"
+  },
+  "bars/7670.json": {
+   "records": 1895,
+   "sha256": "5526a3390e25dc491233afc5a190c71e0901aec1b1902fe09d1c4a9fa6cf05c6",
+   "first": "2018-12-13",
+   "last": "2026-09-25"
+  },
+  "fins/7670.json": {
+   "records": 36,
+   "sha256": "560bbe3bfe0e8d17b74306b98e747605a98faba27d53ac9f270a3dd81e309fe3",
+   "first": "2019-02-13",
+   "last": "2026-08-06"
+  },
+  "bars/7679.json": {
+   "records": 1724,
+   "sha256": "6224da4b660ed907fabbbf8b63f0a74e5f6ab698a00bb8a4a9031d3495a5d265",
+   "first": "2019-09-02",
+   "last": "2026-09-25"
+  },
+  "fins/7679.json": {
+   "records": 28,
+   "sha256": "935aac26a1c48a1618651091b31637c6510ce94d97f63b5017ab7c02a5b7a68c",
+   "first": "2019-09-02",
+   "last": "2026-07-06"
+  },
+  "bars/7713.json": {
+   "records": 2442,
+   "sha256": "671a02d0a26eff2d981cde2ad9c96741da67df3c77bcdf91235a13853c372107",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7713.json": {
+   "records": 47,
+   "sha256": "47a4b2088c8c1488bee05d2c79f07ac9354a22456eaca0a5155941b6866cbbe5",
+   "first": "2016-10-07",
+   "last": "2026-07-14"
+  },
+  "bars/7721.json": {
+   "records": 2442,
+   "sha256": "e6132ee4eb99360d47b6d104a797ba64a5971f81573abffcd6b7728b16aaf564",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7721.json": {
+   "records": 52,
+   "sha256": "fcf6fd1079bc4bbd470e8dff3acd7256dd51a79b6eaa3fa62f533fd7a6e2803c",
+   "first": "2016-11-09",
+   "last": "2026-08-10"
+  },
+  "bars/7744.json": {
+   "records": 2442,
+   "sha256": "1310261d809642b104d5a5192d9275f3f50f79849dbf950be4d09d890d25a8e4",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7744.json": {
+   "records": 54,
+   "sha256": "7ded1993914b3fb5fb95310248ba05bf20f617e7373120899942f311c2967d18",
+   "first": "2016-11-08",
+   "last": "2026-08-14"
+  },
+  "bars/7795.json": {
+   "records": 973,
+   "sha256": "60f673b69ce5f05ba7a2b808c2977056561b2005ee2cef48c5e8b522ccde2864",
+   "first": "2022-10-03",
+   "last": "2026-09-25"
+  },
+  "fins/7795.json": {
+   "records": 17,
+   "sha256": "6b4c250fed7323597e064b5a42051e99e3581a7b7f80f56830f58f2b36d429d0",
+   "first": "2022-10-03",
+   "last": "2026-07-31"
+  },
+  "bars/7810.json": {
+   "records": 2241,
+   "sha256": "626d0d6ab501d64dc58cf2c37bf95bf33cad3b42d62fa47d8f6fdb3571e9a0fa",
+   "first": "2017-07-20",
+   "last": "2026-09-25"
+  },
+  "fins/7810.json": {
+   "records": 47,
+   "sha256": "44e6b138182ff1deae9b23a5c0c3193c323aaef7b6392f52ed86d7c5fd80396a",
+   "first": "2017-09-12",
+   "last": "2026-09-14"
+  },
+  "bars/7815.json": {
+   "records": 2442,
+   "sha256": "914623b909b5998d59fc64eca34cd393b4c4f7e2ce935c44fd2693ecfca62c8d",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7815.json": {
+   "records": 50,
+   "sha256": "0eb2f760dff376272d14914bc9dea08134398df27e75811017a7af569070b0e8",
+   "first": "2016-11-14",
+   "last": "2026-07-13"
+  },
+  "bars/7821.json": {
+   "records": 2442,
+   "sha256": "b69504306675a659415e4e8111cddb84cfc1ccbce28861451b51c452d8c2b0e7",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7821.json": {
+   "records": 49,
+   "sha256": "c1ff4cf7c0b5a496f60fa1d130f49d301b790cd97856b07161a21bb51bad5526",
+   "first": "2016-11-02",
+   "last": "2026-08-07"
+  },
+  "bars/7857.json": {
+   "records": 2442,
+   "sha256": "c8abd0b82204227900828a52ada4592ccf03e758cf1c9d356f4406ff0686bb77",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7857.json": {
+   "records": 43,
+   "sha256": "7e3b7ec378b896a8bd0ecaeff84703b99f1934af71dfa4ad012483716a50f499",
+   "first": "2016-11-02",
+   "last": "2026-08-06"
+  },
+  "bars/7893.json": {
+   "records": 2442,
+   "sha256": "cab124f7a2c6091eec4995e4ef479fef26561691776162971a84f4163544d3f3",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7893.json": {
+   "records": 45,
+   "sha256": "95f595220a5779061140852ea4c6b15c06b9025930b3cfa29047a96df5be82ed",
+   "first": "2016-10-31",
+   "last": "2026-07-31"
+  },
+  "bars/7949.json": {
+   "records": 2442,
+   "sha256": "97c6837c26c3e3c792555012cfc27c9ffc3b6b3fd80d7060f1d385d73cc0fe28",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/7949.json": {
+   "records": 47,
+   "sha256": "1933f73aa6ef00424b7e039b79343a76dd6c73c821372d86c4fd2f9687a3628d",
+   "first": "2016-10-18",
+   "last": "2026-07-27"
+  },
+  "bars/8015.json": {
+   "records": 2442,
+   "sha256": "aa5735939aa641658a4cf62ba24b7e78fbf1e9283413dd792ba431a7125cb074",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8015.json": {
+   "records": 49,
+   "sha256": "8fab3a29e2245de846b8c16f59674b17a49ddc15d0b14fa530bf8d8a14629f7c",
+   "first": "2016-10-28",
+   "last": "2026-07-31"
+  },
+  "bars/8020.json": {
+   "records": 2442,
+   "sha256": "f0719cb008217440d3d8d260da1c1ee67471cec2dad8dc8404517bdd8a44f7d4",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8020.json": {
+   "records": 44,
+   "sha256": "7d62b3c4118da88f8c148bd0ea16f37f9420ae911481274a250866fbdebb4d20",
+   "first": "2016-11-02",
+   "last": "2026-08-04"
+  },
+  "bars/8022.json": {
+   "records": 2442,
+   "sha256": "657375fba7921766d23e93e2217ffdf5b0f7127653f59e9446f29a6d5df6f473",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8022.json": {
+   "records": 45,
+   "sha256": "9c6bc29ee381411398ef75e61e82995a1f8182ca327611fc333049bc5346c7c4",
+   "first": "2016-11-11",
+   "last": "2026-08-07"
+  },
+  "bars/8104.json": {
+   "records": 2078,
+   "sha256": "4a2ba700c7e65523424d0d5ba8cd4b30dd923c8eeba721264628b693c59d8b58",
+   "first": "2018-03-20",
+   "last": "2026-09-25"
+  },
+  "fins/8104.json": {
+   "records": 53,
+   "sha256": "1d80dd2b33d32ead143fd32eca3d05bb09142b6fac1757afdd7aaf67f8f4dbc8",
+   "first": "2016-11-04",
+   "last": "2026-08-07"
+  },
+  "bars/8115.json": {
+   "records": 2442,
+   "sha256": "fdb092c4f47cc5904985521e66a187acbab349b084ad1a048670d020d575e471",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8115.json": {
+   "records": 46,
+   "sha256": "de3d8573e79f7a2191b72d109d74333a5d55b6a3f176cbcf11a15df454217483",
+   "first": "2016-11-11",
+   "last": "2026-08-06"
+  },
+  "bars/8129.json": {
+   "records": 2442,
+   "sha256": "e578404a037eeac1de98c6db7f96eb877359909cb2d257a03d7ca9ca69bb0317",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8129.json": {
+   "records": 51,
+   "sha256": "a99cce90945b7985ff6bff8684d2ac0a45f84de72d53c19a417b28945a848454",
+   "first": "2016-11-09",
+   "last": "2026-08-05"
+  },
+  "bars/8136.json": {
+   "records": 2442,
+   "sha256": "6d4c99b1cab0a2a578d2fa0772baed8140a4b64b62ce9013475b5df85cd34493",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8136.json": {
+   "records": 50,
+   "sha256": "f40f15caca97876e6dd110b160b9d4bee436c283512373fe66cb6dd04311ee85",
+   "first": "2016-11-01",
+   "last": "2026-08-10"
+  },
+  "bars/8151.json": {
+   "records": 2442,
+   "sha256": "125a97641d88fbb18bd0d808b5f96a7157e1c821397e5638900f83b63cb4618d",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8151.json": {
+   "records": 43,
+   "sha256": "9794e64ba605b64587932859eb35b79fc03f2270dcb8e161ed3f6ee62c9ff9ad",
+   "first": "2016-10-31",
+   "last": "2026-08-05"
+  },
+  "bars/8152.json": {
+   "records": 2442,
+   "sha256": "c29403ae143096abb998e792449f5e54433c65864d9ca266649b81d2b781ff24",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8152.json": {
+   "records": 49,
+   "sha256": "359fc9dd8d2d2105c087bbacc8dfd42ee5bcbb3a2045c97388f8cfc32ca5c463",
+   "first": "2016-10-28",
+   "last": "2026-08-10"
+  },
+  "bars/8157.json": {
+   "records": 2442,
+   "sha256": "c8fa9ff4a05844a1680423608ae8fc584a134e26cf528586739aee298fcb4b38",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8157.json": {
+   "records": 50,
+   "sha256": "46998884a07e1288d6e49ec06d178e53c438d72330a92bd3fd9ffbc68abc55c9",
+   "first": "2016-10-28",
+   "last": "2026-07-31"
+  },
+  "bars/8242.json": {
+   "records": 2442,
+   "sha256": "d908c6e73416a0d2743957f9173a35a00fb39c3d6af59f68eaa9c81702169d71",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8242.json": {
+   "records": 42,
+   "sha256": "9f74e4cd0a80890efe2fd9bf924b8965bbbccb1b0054b395537052e02597f4a3",
+   "first": "2016-10-21",
+   "last": "2026-08-04"
+  },
+  "bars/8253.json": {
+   "records": 2442,
+   "sha256": "20f6f5a67f7d5e065a37ecccdb686c98989199405b5be01025d3aae7eea1f1a6",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8253.json": {
+   "records": 51,
+   "sha256": "f50df05a662f4f651bfdd24a9cc10adfe3a10777f94f08bfe2c0dfcbe528f459",
+   "first": "2016-11-09",
+   "last": "2026-08-12"
+  },
+  "bars/8276.json": {
+   "records": 2442,
+   "sha256": "e8e51f2724b73ff0c0a5e907729c059d5e421801f15ac070a9d8de727213d0f0",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8276.json": {
+   "records": 44,
+   "sha256": "c64bb61e5aab8cf0eae487032b8acedc7e840de12745c14dfddf274f358f478b",
+   "first": "2016-09-27",
+   "last": "2026-06-25"
+  },
+  "bars/8306.json": {
+   "records": 2442,
+   "sha256": "3ae8456e624dd862c9f43a33b36e1932c4eff8bf1cfd3a729c62b12243d9e168",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8306.json": {
+   "records": 47,
+   "sha256": "3a80d46cf7913a379c20f4939fbbadd716f77ff1dfa43f9b561e7c1e8e5fbd34",
+   "first": "2016-11-14",
+   "last": "2026-08-06"
+  },
+  "bars/8346.json": {
+   "records": 2442,
+   "sha256": "7c21ce9289ac1e8e687b702af1f2c1e6fef96f061e07aeeab8044b794a012423",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8346.json": {
+   "records": 52,
+   "sha256": "cbdb63c207174ffafa8f51738b85b9be57c4279fcaf733614745c63b6eed2e38",
+   "first": "2016-11-10",
+   "last": "2026-09-25"
+  },
+  "bars/8362.json": {
+   "records": 2442,
+   "sha256": "fe13729f8ad0415309da8e91d54414ed02543b8201f8ff0ce69afe9b89ef7cf9",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8362.json": {
+   "records": 57,
+   "sha256": "ad9133deb1eb6825e7542efb9daa5b502763b9e32de3f2ac93abda9faf9fe5be",
+   "first": "2016-10-27",
+   "last": "2026-08-03"
+  },
+  "bars/8364.json": {
+   "records": 2442,
+   "sha256": "c440ce15ce8ede1db76157dc5dd666a153615ac39a7c6df4e3482d19cb007709",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8364.json": {
+   "records": 45,
+   "sha256": "fb85b474682409321bc5685f8e82706079a13945dae9cbe57e7c60bce6bc2ea6",
+   "first": "2016-11-11",
+   "last": "2026-08-03"
+  },
+  "bars/8377.json": {
+   "records": 2442,
+   "sha256": "930c55b5998f65ddefad45ab3a6b413e466fd967c84e9e959bbd640eaaacff5c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8377.json": {
+   "records": 57,
+   "sha256": "c0abf54e2238bd029396cac8f02cfd07306a6e97b7c7a572eb7e02749dd9675d",
+   "first": "2016-10-24",
+   "last": "2026-07-29"
+  },
+  "bars/8522.json": {
+   "records": 2442,
+   "sha256": "c46d7d4676b39b5f55a7256b03eb448eb570685faee701dea5c5049ebf37083c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8522.json": {
+   "records": 62,
+   "sha256": "d947634b1465e0724fd2d7fdcc913ca7ae82f4245e71c045a687650a94f6869b",
+   "first": "2016-10-26",
+   "last": "2026-08-05"
+  },
+  "bars/8558.json": {
+   "records": 2442,
+   "sha256": "39a523d8491623cacd53fcd327fb3cc768c0903586377041861f4d1deb7571f0",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8558.json": {
+   "records": 65,
+   "sha256": "057674e02ee415fadfd149898a0afae542c1b612ca9d0ff2c9c374c5296c0fa9",
+   "first": "2016-11-04",
+   "last": "2026-08-04"
+  },
+  "bars/8591.json": {
+   "records": 2442,
+   "sha256": "6f7f04e788712b37524b764e099e8aa4eaa0e872ebb50cffb4c8c14720c5912d",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8591.json": {
+   "records": 41,
+   "sha256": "08f882a0c7461daec5e7ac9bfd47dec1171ddccf64cb7416ab2a1654b637e9c7",
+   "first": "2016-10-26",
+   "last": "2026-08-06"
+  },
+  "bars/8596.json": {
+   "records": 2401,
+   "sha256": "5dac93bf01a3ec4d94223af475d4361b1fd22374195c7daed9380744c89da1a2",
+   "first": "2016-11-25",
+   "last": "2026-09-25"
+  },
+  "fins/8596.json": {
+   "records": 50,
+   "sha256": "e43d99c894a4619ab9ef3834b44e456601f4a76d329bfa1bd7472ea96bea07f0",
+   "first": "2016-11-02",
+   "last": "2026-08-06"
+  },
+  "bars/8613.json": {
+   "records": 2442,
+   "sha256": "555fa0d3c26b492b32e4cf2d149c5ab1def18a0a3f5c81de611fac013d1ea111",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8613.json": {
+   "records": 93,
+   "sha256": "810e30d8e7eb5ae8aff18b5cee45ae456c9b1ea3d908eae72f7164c216637aac",
+   "first": "2016-10-17",
+   "last": "2026-09-15"
+  },
+  "bars/8616.json": {
+   "records": 2442,
+   "sha256": "642668f6734017fdd0e1dcbdcdce06372bd72448b9fb2b684b106922cd14b432",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8616.json": {
+   "records": 68,
+   "sha256": "9ec82f6cb591781e7a8eec575421c9e78ff2e22aeda0b9ddd8e48280557bd93b",
+   "first": "2016-10-28",
+   "last": "2026-09-18"
+  },
+  "bars/8707.json": {
+   "records": 2442,
+   "sha256": "55dd56e9fb51dc08b136012445f473faca3abc46dac213c477dec0174d8262e0",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8707.json": {
+   "records": 104,
+   "sha256": "926c18746c9555ae6039562a27e8f4e61001d53b14b8f8e0ac7cbf5451263415",
+   "first": "2016-10-17",
+   "last": "2026-09-18"
+  },
+  "bars/8715.json": {
+   "records": 2442,
+   "sha256": "489958a8ac324cc9b68a1398bb82f08a5bfb055a8d56f2c94e3aaa6f4dca43f3",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8715.json": {
+   "records": 44,
+   "sha256": "f1b18435269207acb697e7d8304e36cd345ef167f11c2b90e70f7224ece0c922",
+   "first": "2016-11-07",
+   "last": "2026-08-07"
+  },
+  "bars/8742.json": {
+   "records": 2442,
+   "sha256": "4a21c7c321727a70736b5cb5bf27aef9a571eddf02063da61dbb2cf02ea33087",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8742.json": {
+   "records": 92,
+   "sha256": "4a7c8a064cdd5d8b980aa2d70f17ee3e0ad712b23b139d5c406eb50dceca4bce",
+   "first": "2016-10-24",
+   "last": "2026-08-07"
+  },
+  "bars/8771.json": {
+   "records": 2442,
+   "sha256": "16e79e5fc4fa4ede1f9750d6c877f33ea7ff60e8ddb5de3cd0a24bd91d62fa1c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8771.json": {
+   "records": 46,
+   "sha256": "57fca14111c6f64931346bfc05e283716afee81d7291b944d1b83198b53b68ce",
+   "first": "2016-10-28",
+   "last": "2026-08-07"
+  },
+  "bars/8848.json": {
+   "records": 2442,
+   "sha256": "857a4e31dcaa455b59b38a591e436445bb42b0b66992dc11640ed12422f3f020",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8848.json": {
+   "records": 65,
+   "sha256": "9331ebbebbb035a46e127819b8f17de53a855c3bc5017223056d322ae028e710",
+   "first": "2016-11-04",
+   "last": "2026-09-14"
+  },
+  "bars/8908.json": {
+   "records": 2442,
+   "sha256": "38ac5d60ae4b5a910bf83ccb6bd788211c39c44585460743c72d0f5a47847b97",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8908.json": {
+   "records": 57,
+   "sha256": "e80e3bf42190c33acd16e189a2677ff3320a504b7776e4981a9c466176b289e2",
+   "first": "2016-10-13",
+   "last": "2026-07-10"
+  },
+  "bars/8927.json": {
+   "records": 2442,
+   "sha256": "33b0e7f0ff3d07ee11aa8e53a0335cd04e02db8a9ee479e5744ae61ab6a62d71",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8927.json": {
+   "records": 48,
+   "sha256": "473060d0b43ba6d4b5bf0d625e626257ffe1130a4c801ad7b0243502c6a504e0",
+   "first": "2016-12-15",
+   "last": "2026-09-14"
+  },
+  "bars/8929.json": {
+   "records": 2442,
+   "sha256": "545db005c7917272d32e905787d3f114ffc974d988b00064edcb65da8e4b4295",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/8929.json": {
+   "records": 51,
+   "sha256": "ac11d7ff175e05023f546f4038ab19b5531771abdc917cad69c9d992fadf83f3",
+   "first": "2016-11-08",
+   "last": "2026-08-07"
+  },
+  "bars/9001.json": {
+   "records": 2442,
+   "sha256": "694da6c622a3b8995d4e0bdf1da4025d385cf52b2020be6e6cb221218e78907b",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9001.json": {
+   "records": 50,
+   "sha256": "0978fab9b69d84c82df4b7bb368458e090310ae952534303891deb8cfb9ec103",
+   "first": "2016-10-31",
+   "last": "2026-08-04"
+  },
+  "bars/9021.json": {
+   "records": 2442,
+   "sha256": "54d5c1c715c703e9529779e538a0ce91f277b4eae5d3ac67d6cd67d5b7edbc2b",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9021.json": {
+   "records": 45,
+   "sha256": "9a9b3d65587cfdf15d60321cb46a066c6ac4f2435adc2287150bb352ebe6fa61",
+   "first": "2016-10-27",
+   "last": "2026-08-05"
+  },
+  "bars/9036.json": {
+   "records": 2442,
+   "sha256": "10fadcaf5d2d2d8706c7431ad6b1b494a583588e3353d4af9f85b2c5f051bba2",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9036.json": {
+   "records": 45,
+   "sha256": "bc6623ccc6f7767bf82000c7b4b9a2a2a77d2da975c3974c641985b1cc53aace",
+   "first": "2016-11-08",
+   "last": "2026-08-12"
+  },
+  "bars/9046.json": {
+   "records": 2442,
+   "sha256": "9c7b041830fa0399266ce34ba809ddc83535e6de413414ecdad6b020aced17c8",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9046.json": {
+   "records": 44,
+   "sha256": "d11caf575ae602d05d3f7acdccd969cf20c9c6a491286b6bf7f46a7d2b4045d0",
+   "first": "2016-10-26",
+   "last": "2026-07-30"
+  },
+  "bars/9273.json": {
+   "records": 2015,
+   "sha256": "4b86226ee7a9a8b8b17fb91edc9a8815d114497c93f3114e679412c4cc2e13f6",
+   "first": "2018-06-21",
+   "last": "2026-09-25"
+  },
+  "fins/9273.json": {
+   "records": 37,
+   "sha256": "62a251eb2027d2f8e1abc5cbd65de09d92f5e5783796ce47ffefc87b3800ae92",
+   "first": "2018-08-09",
+   "last": "2026-08-07"
+  },
+  "bars/9302.json": {
+   "records": 2442,
+   "sha256": "138bab41d75aec4e1c47ded8afb543ceb8ed6782787dbf8d91cf3bb0793d45f0",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9302.json": {
+   "records": 50,
+   "sha256": "e6828f0345dc33860d9f6286d31c883cb967756f41c4b2b642e8a2c9c3a0f51f",
+   "first": "2016-11-07",
+   "last": "2026-08-04"
+  },
+  "bars/9308.json": {
+   "records": 2442,
+   "sha256": "cdaaa99cf510dd55be6aad407f68de21cb0a2a379058ec8eeba3e5535a409005",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9308.json": {
+   "records": 51,
+   "sha256": "31eb72bdd71146652ad37561525550dd208993ff912e106fc053748791077f0a",
+   "first": "2016-11-10",
+   "last": "2026-08-07"
+  },
+  "bars/9347.json": {
+   "records": 851,
+   "sha256": "529d750b2e32436c792f2b59966ad64c5be549fe904eb87cb2067188a5c23723",
+   "first": "2023-04-03",
+   "last": "2026-09-25"
+  },
+  "fins/9347.json": {
+   "records": 19,
+   "sha256": "9b7ed9978ecad47c82352fae3a84469d51a50fa2ccaeb4b9eb9c6546f19ab6a4",
+   "first": "2023-05-09",
+   "last": "2026-08-12"
+  },
+  "bars/9351.json": {
+   "records": 2442,
+   "sha256": "cdb18cf6e84177dd3551e6630ec2eca02509a9e8e1b156c3e27b90cecbe5ea6a",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9351.json": {
+   "records": 40,
+   "sha256": "363d7a65d838a484addaa6cff828387bf71910eb6754865392f70910681a1123",
+   "first": "2016-11-01",
+   "last": "2026-07-31"
+  },
+  "bars/9367.json": {
+   "records": 2442,
+   "sha256": "50b1a18aea2bded0ae0570e3b17ec86ff167b1baec2bacaf172df77ad8fa33bd",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9367.json": {
+   "records": 48,
+   "sha256": "6ec439db7d6a1be45135f13a9d685e91e58d85afa585558d43055c193f2cc88d",
+   "first": "2016-11-02",
+   "last": "2026-08-10"
+  },
+  "bars/9380.json": {
+   "records": 2442,
+   "sha256": "1a1426614ed48cc2cfd138a5cbb446fea411020df17d3c6f92fa957de8b8f3ad",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9380.json": {
+   "records": 44,
+   "sha256": "63932ee889230eb3703a45e129c65a73942259e0050a0666fa03f1c9da21c1ff",
+   "first": "2016-10-31",
+   "last": "2026-08-12"
+  },
+  "bars/9404.json": {
+   "records": 2442,
+   "sha256": "1bb0b138ec646cc03e309508f1bcf14df47557d6cf835cf29ad5f5e803f90b29",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9404.json": {
+   "records": 43,
+   "sha256": "d9d892a857cc826e51396a9f1a88ec6644c57125dde7a7ea73071ff6bbb3f0d0",
+   "first": "2016-11-10",
+   "last": "2026-07-31"
+  },
+  "bars/9432.json": {
+   "records": 2442,
+   "sha256": "2a9b948535b32c0383368fd6ad9b657bc0e162dc9e96c79be2a4876ec496ac52",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9432.json": {
+   "records": 44,
+   "sha256": "4f9d26133df90786b6c7824605a36aa237dc0fe97425837d0e5d790a0a10b277",
+   "first": "2016-11-11",
+   "last": "2026-08-06"
+  },
+  "bars/9438.json": {
+   "records": 2442,
+   "sha256": "bf0b8f7206d3a669fbf978b8af334ee7dca42a961812026840c556fda4088a61",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9438.json": {
+   "records": 57,
+   "sha256": "65bed5dc34fda420d58b34f82e8c4ad2e5ba45d970f2499b6c912f315d4e5971",
+   "first": "2016-10-31",
+   "last": "2026-08-06"
+  },
+  "bars/9445.json": {
+   "records": 2442,
+   "sha256": "fae0b9d3b0b56e4a5478dd5837d37b421231f155827ef5dd740e65ef0d450eef",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9445.json": {
+   "records": 47,
+   "sha256": "5232a5b0909e555a604dd934fbaa9696d88b0a99b0f5e349111298fe27a6c155",
+   "first": "2016-11-10",
+   "last": "2026-08-10"
+  },
+  "bars/9466.json": {
+   "records": 2442,
+   "sha256": "1d0ce4519d718b480a75e1d79464fbfec425ca57a9efbf3c2b788d0ff04c7edc",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9466.json": {
+   "records": 48,
+   "sha256": "61431a0bd294737f156de840036ee0777d63d9942a8d076a245ab23b98e253a7",
+   "first": "2016-10-28",
+   "last": "2026-08-12"
+  },
+  "bars/9514.json": {
+   "records": 2442,
+   "sha256": "8f5e0404e6cf79cd97331d9ca7963cb823f426747c21351bebda090589cae751",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9514.json": {
+   "records": 43,
+   "sha256": "30a3289b5bf3d61efcd61de3e0d23ff8287a9a577cba43760769521675864f0b",
+   "first": "2016-11-04",
+   "last": "2026-08-12"
+  },
+  "bars/9519.json": {
+   "records": 2341,
+   "sha256": "e7ecc18950b6ca720ef668dbbe05bf885d5c6e9823696cbd3694c9930d7ec7eb",
+   "first": "2017-02-23",
+   "last": "2026-09-25"
+  },
+  "fins/9519.json": {
+   "records": 48,
+   "sha256": "951416f619775003a135ec6bafab03f5dbfb61557dcd08fcafa9063ecf4cf2d5",
+   "first": "2017-04-07",
+   "last": "2026-08-06"
+  },
+  "bars/9539.json": {
+   "records": 2442,
+   "sha256": "ad7382bbfd29f68e5447b6798efe8b6e927d96d0d1f4ffd801951eb09bbadca4",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9539.json": {
+   "records": 51,
+   "sha256": "b573aa9d8002ebfe0125e13f22f7e83c50b60430eda6895c83d4087487c53770",
+   "first": "2016-11-07",
+   "last": "2026-08-10"
+  },
+  "bars/9602.json": {
+   "records": 2442,
+   "sha256": "fdd3a2f5d98aa95776824452283e17b0a3ce80ceb486a45f23d509b0a20da230",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9602.json": {
+   "records": 44,
+   "sha256": "c46861aad05106fb4213d3ffc17517f3d272339c699897e69c8a5712e7cb8d3f",
+   "first": "2016-09-27",
+   "last": "2026-07-15"
+  },
+  "bars/9603.json": {
+   "records": 2442,
+   "sha256": "47e9738f6222ed821ddec04c00cfdee7f9f5a3b101734f543da2d4c1b4d2776c",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9603.json": {
+   "records": 54,
+   "sha256": "ef7309d5f2733a8977cf94ade2ef95961ff89b119b0de9062938a62ceb08ec29",
+   "first": "2016-11-25",
+   "last": "2026-09-11"
+  },
+  "bars/9622.json": {
+   "records": 2442,
+   "sha256": "0869a936bfd7f0e8b0c5ab339b349449d271047f8e0f224435864559354690fe",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9622.json": {
+   "records": 52,
+   "sha256": "f1d9506c69bcb7796ece10c8b6cdd1492d564db0d708f0ef60a47e6e0cf0c0cd",
+   "first": "2016-11-08",
+   "last": "2026-08-06"
+  },
+  "bars/9686.json": {
+   "records": 2442,
+   "sha256": "21c382fc4193d9a8fe71386176b916de6c0ccae1b1a810f8bfd759fd71880306",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9686.json": {
+   "records": 42,
+   "sha256": "c3f9443d24574bbbf55931fe7d6b43724bcdf9d5f54eebd6fed096e59c63e90e",
+   "first": "2016-11-02",
+   "last": "2026-07-31"
+  },
+  "bars/9691.json": {
+   "records": 2442,
+   "sha256": "e962c5cfb36985ceef44d54bcabe19f3d9f0839aa59f91e3b264c6a8e1a89698",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9691.json": {
+   "records": 53,
+   "sha256": "c80cde9cae1a2c8b67abaaa76e45955f600f43556bd09125ffb5dba330809d98",
+   "first": "2016-10-25",
+   "last": "2026-07-28"
+  },
+  "bars/9716.json": {
+   "records": 2442,
+   "sha256": "475cb6f2d3801d3f63b6306759fe2b9a70c1fd754901dd59ca2a7be7967da663",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9716.json": {
+   "records": 52,
+   "sha256": "eac6f47cb75b53d15b602a38fdb5324c4f7cfc35a291d381458c173f5aabe70a",
+   "first": "2016-10-04",
+   "last": "2026-07-09"
+  },
+  "bars/9720.json": {
+   "records": 2442,
+   "sha256": "f4fc13ebfd33d0401b2ebe02eccf3a3543e44ca23724bb325d74a0766bebe552",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9720.json": {
+   "records": 62,
+   "sha256": "0054c558e99adbfc8a6ab78c6b832e758767ed683cb99135ca721ffba28f2291",
+   "first": "2016-10-06",
+   "last": "2026-07-10"
+  },
+  "bars/9733.json": {
+   "records": 2442,
+   "sha256": "569b43f47f36a4b88b11c621197aab5485dd9fa82f7b1f169c107b126f2933e8",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9733.json": {
+   "records": 47,
+   "sha256": "0d97636167c5defadb597e87a3d19017043d8400f554ca4fce86f8c30c9c1493",
+   "first": "2016-11-01",
+   "last": "2026-07-23"
+  },
+  "bars/9755.json": {
+   "records": 2442,
+   "sha256": "5234b325043ae75bf1456b0b3159d358aa8918658c705716721e5d4a30a973c2",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9755.json": {
+   "records": 49,
+   "sha256": "f8b0a4359dbebf6974d20601e11ac554fc5f502e7da651e67e3cee85e1016302",
+   "first": "2016-11-08",
+   "last": "2026-08-12"
+  },
+  "bars/9790.json": {
+   "records": 2442,
+   "sha256": "64d8c1627a0f9ed041a26e1709adfa37c9f273b98be90ad910deb64066a2dbad",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9790.json": {
+   "records": 47,
+   "sha256": "b24ff74e4c2000d56d96a61727e39a72cc5dcd28829231d3d86ac1b1188d13ca",
+   "first": "2016-10-21",
+   "last": "2026-08-07"
+  },
+  "bars/9830.json": {
+   "records": 2442,
+   "sha256": "40f113702723a787f185879559dfa73b58407a428337bd3569409482b449ded3",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9830.json": {
+   "records": 48,
+   "sha256": "af4f03a7fd6785fdc250faf9d35066d76d7dcc395a957cbface200082336c2d6",
+   "first": "2016-11-04",
+   "last": "2026-08-07"
+  },
+  "bars/9845.json": {
+   "records": 2442,
+   "sha256": "4b03b895add11391acb8982e362c298368d6b5d4e4a767faedc509c474738478",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9845.json": {
+   "records": 48,
+   "sha256": "479f6e2545874f8db9fec0f2d2d8b97615cb62d496f1085b1aeeb3cea4ab2179",
+   "first": "2016-11-08",
+   "last": "2026-08-03"
+  },
+  "bars/9856.json": {
+   "records": 2442,
+   "sha256": "24acfe3cc8a0475407f497566ba8fa78eb29c09d8ddb8ccd22368a4d6f8deeed",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9856.json": {
+   "records": 45,
+   "sha256": "b653ea8a8237e3f116fdfa38403d5d7548410500911894653e59b0afb5ecd1e7",
+   "first": "2016-11-11",
+   "last": "2026-08-12"
+  },
+  "bars/9902.json": {
+   "records": 2442,
+   "sha256": "5be01fc2674137209c8b472c67eef7c77623b952af82d3ec48701d59d3c28c4a",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9902.json": {
+   "records": 45,
+   "sha256": "e873fcff1e8453a3de00627ccd4805c5c1cb83f8c8e760392639462f17c96c38",
+   "first": "2016-11-07",
+   "last": "2026-07-31"
+  },
+  "bars/9982.json": {
+   "records": 2442,
+   "sha256": "9f9f27239158065d65c4bb1d6372b59fedcfdb9eb5402ce1065c02eda6ce750f",
+   "first": "2016-09-26",
+   "last": "2026-09-25"
+  },
+  "fins/9982.json": {
+   "records": 58,
+   "sha256": "ea9dd29fd2f03790bcaec225b9572b6edf98434956ab110ba1cb35d9f527ae5d",
+   "first": "2016-09-30",
+   "last": "2026-07-10"
+  }
+ }
+}
