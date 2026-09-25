@@ -4282,3 +4282,25 @@ transitions. This public log must not contain protected material.
   After GPT exact-SHA PASS, the next step is a separately reviewed protected
   implementation/application of the private T1 exclusion in V13 universe
   provenance construction.
+
+## 2026-09-25 — Issue #73 human approval of full recovered T1 exclusion
+
+- Issue #72 exact-SHA GPT review of `98db82f100ba923a50bba236444a340d28fdd1fd`
+  returned BLOCK with C/H/M/L=0/1/0/0. Its sole finding was missing explicit
+  human amendment-freeze approval for excluding all 300 recovered T1
+  identities, rather than only the 297 definitely evidenced as acquired.
+- On 2026-09-25, the human explicitly approved and froze the conservative
+  `EXCLUDE_FULL_RECOVERED_T1_BLOCK` amendment before observing V13 outcomes.
+  The approval binds that exact decision commit and blob
+  `276feb56f417f9d5b931d594598a1d8591330bfd`, T1 count 300, and T1
+  SHA-256 `262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d`.
+  Historical evidence remains 297 definitely acquired identities; the later
+  attempt's exact acquired count is `UNKNOWN_NOT_PERSISTED`.
+- Approval scope is `V13_FULL_RECOVERED_T1_300_EXCLUSION_AMENDMENT_FREEZE_ONLY`.
+  This approval-record task makes no private content read or path discovery,
+  V13 universe selection, market-data network request, historical-price
+  access, model fit, backtest, forward paper, or trade. The historical public
+  exposure audit remains blocked pending a separate protected application.
+- The approval record awaits GPT exact-SHA review. After PASS, the next
+  action is repository-first design and review of the protected application
+  step; private access does not automatically follow.
