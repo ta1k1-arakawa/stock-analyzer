@@ -4304,3 +4304,26 @@ transitions. This public log must not contain protected material.
 - The approval record awaits GPT exact-SHA review. After PASS, the next
   action is repository-first design and review of the protected application
   step; private access does not automatically follow.
+
+## 2026-09-25 — Issue #76 branch-wide V13 advisory review registration
+
+- Issue #73 exact-SHA content review passed at
+  `bfde3d609cf965d3be3666264de73ea13966e04e` (C0/H0/M0/L0), including
+  the human-approved full recovered T1 exclusion record. Issue #74 adjudicated
+  four subsequent reviewer no-op commits as a tooling incident without a tree
+  change. The authoritative transport HEAD at registration is
+  `ee20c2d226964612e3af09f6c997ec0927149934`; its tree
+  `924187e777e34d167eb030a6fd0519c516516bfa` equals the reviewed tree.
+- The user requested durable cross-chat access to Claude's branch-wide V13
+  review. Only `docs/REVIEW_V13_2026-09-25.md` was imported from source commit
+  `b0940e3006d0b9135642e09d51bd470e70615fb8`, with exact blob
+  `d45007c2b86b95fa67ec3c90eef1fd3b526a7300`. The review examined V13
+  HEAD `bfde3d609cf965d3be3666264de73ea13966e04e`.
+- The imported document is `NON_AUTHORITATIVE_ADVISORY` evidence only.
+  `PROJECT_STATE.md` registers the active file and `AGENTS.md` requires its
+  consultation for important direction, methodology, expected-value,
+  process-efficiency, and next-action work. Recommendations require separate
+  methodology, human, and freeze decisions before becoming binding; no
+  methodology or execution authority changes here.
+- Issue #75 remains queued and unexecuted. Rebind it to the authoritative
+  HEAD only after this task receives GPT exact-SHA PASS.

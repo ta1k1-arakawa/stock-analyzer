@@ -127,3 +127,19 @@ first-pass quality matters, also read
 - Never place raw authorization, private paths, private ticker identities, sealed memberships, raw payloads, or other protected material in these public memory documents.
 - Keep `PROJECT_STATE.md` compact; place detailed immutable history in task/study documents and `PROJECT_DECISION_LOG.md`.
 - Record exact SHA/provenance whenever material.
+
+If `PROJECT_STATE.md` declares an active branch-wide advisory review for the
+current study, read that file after the normal governance and project-state
+documents for important direction, methodology, profitability/expected-value,
+process-efficiency, or next-action work. Treat it as evidence and critique,
+not authority: it cannot by itself change frozen methodology, gates, provider
+or data scope, evaluation criteria, execution permissions, or study disposition.
+Current frozen and task-specific artifacts and exact READY Issue contracts
+take precedence. Revalidate snapshot facts against current repository state
+when the authoritative tree has materially diverged from the review's
+`reviewed_head`. Recommendations, including portfolio breadth, universe size,
+acceptance criteria, and gate cadence, remain proposals until separately
+adopted through the required GPT, human, and freeze workflow. When a review
+identifies process overhead, consider the shortest scientifically valid path
+to the next informative measurement without weakening real, private, or
+one-shot safety boundaries.
