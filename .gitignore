@@ -4,3 +4,6 @@ log/
 __pycache__
 .env
 *.pkl
+
+# EXP-002 J-Quants cache (J-Quants data may not be redistributed)
+data/jquants_exp002/
