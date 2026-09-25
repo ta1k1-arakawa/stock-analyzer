@@ -1,0 +1,254 @@
+"""Offline V13 public data locks. Callers must preserve bytes before parsing.
+
+This module performs no network access, private-path discovery, or outcome work.
+Identity-bearing return values must stay in protected local storage; only the
+``*_manifest`` dictionaries are suitable for public reports.
+"""
+from __future__ import annotations
+
+import csv
+import hashlib
+import io
+import json
+import math
+import re
+from dataclasses import dataclass
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Iterable
+from zoneinfo import ZoneInfo
+
+START = date(2015, 1, 1)
+END = date(2025, 12, 31)
+SEED = "V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON|f9c38ad771710ffd157ac4fad0da15185db82707"
+T1_SHA256 = "262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d"
+SOURCE_SHA256 = "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62"
+LEGACY_OUTSIDE_V4 = frozenset("1570 4689 5020 7211 7267 8306 9432".split())
+ORDER = 'SHA256(UTF8(seed + "|" + code)), then numeric code ascending'
+JPX_PAGE = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
+
+
+def digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def code_hash(codes: Iterable[str]) -> str:
+    """V8 identity format: ordered UTF-8 codes, newline delimited and terminated."""
+    return digest(("\n".join(codes) + "\n").encode("utf-8"))
+
+
+def _codes(values: Iterable[str], *, numeric: bool = False) -> list[str]:
+    pattern = r"[0-9]{4}" if numeric else r"[0-9A-Z]{4}"
+    result = list(values)
+    if any(not isinstance(c, str) or re.fullmatch(pattern, c) is None for c in result):
+        raise ValueError("INVALID_CODE")
+    if len(set(result)) != len(result):
+        raise ValueError("DUPLICATE_CODE")
+    return result
+
+
+def validate_t1_state(state: Any, *, expected_hash: str = T1_SHA256,
+                      expected_source: str = SOURCE_SHA256) -> tuple[str, ...]:
+    if not isinstance(state, dict) or set(state) != {
+        "schema", "source_partition_manifest_stated_sha256", "t1_ticker_list_sha256",
+        "t1_count", "known_definitely_acquired_prefix_count", "t1_membership"
+    }:
+        raise ValueError("T1_STATE_SCHEMA_MISMATCH")
+    if (state["schema"] != "V13_V8_T1_IDENTITY_STATE_V1"
+            or state["source_partition_manifest_stated_sha256"] != expected_source
+            or state["t1_ticker_list_sha256"] != expected_hash
+            or type(state["t1_count"]) is not int or state["t1_count"] != 300
+            or type(state["known_definitely_acquired_prefix_count"]) is not int
+            or state["known_definitely_acquired_prefix_count"] != 297
+            or not isinstance(state["t1_membership"], list)):
+        raise ValueError("T1_STATE_PROVENANCE_MISMATCH")
+    members = _codes(state["t1_membership"])
+    if len(members) != 300 or code_hash(members) != expected_hash:
+        raise ValueError("T1_STATE_MEMBERSHIP_MISMATCH")
+    return tuple(members)
+
+
+def read_v4_codes(raw: bytes) -> tuple[str, ...]:
+    rows = csv.DictReader(io.StringIO(raw.decode("utf-8-sig"), newline=""))
+    if rows.fieldnames != ["ticker", "market", "industry"]:
+        raise ValueError("V4_SCHEMA_MISMATCH")
+    result = _codes(row["ticker"] for row in rows)
+    if len(result) != 300:
+        raise ValueError("V4_COUNT_MISMATCH")
+    return tuple(result)
+
+
+def build_exclusions(v4: Iterable[str], t1: Iterable[str]) -> tuple[set[str], dict[str, Any]]:
+    v4_codes = _codes(v4)
+    t1_codes = _codes(t1)
+    if len(v4_codes) != 300 or len(t1_codes) != 300:
+        raise ValueError("EXCLUSION_SOURCE_COUNT_MISMATCH")
+    merged = set(v4_codes) | LEGACY_OUTSIDE_V4 | set(t1_codes)
+    ordered = sorted(merged)
+    return merged, {"exclusion_count": len(merged), "exclusion_sha256": code_hash(ordered),
+                    "v4_count": 300, "legacy_outside_v4_count": 7, "t1_count": 300,
+                    "t1_sha256": code_hash(t1_codes)}
+
+
+@dataclass(frozen=True)
+class RawLock:
+    raw: bytes
+    sha256: str
+    byte_count: int
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "RawLock":
+        if not isinstance(raw, bytes) or not raw:
+            raise ValueError("EMPTY_RAW_PAYLOAD")
+        return cls(raw, digest(raw), len(raw))
+
+    def manifest(self) -> dict[str, Any]:
+        return {"raw_sha256": self.sha256, "raw_byte_count": self.byte_count}
+
+
+def lock_payload(raw: bytes, destination: Path) -> RawLock:
+    """Publish the first complete response without overwrite, then allow parse.
+
+    A failed write is terminal for this payload. The caller must not reacquire
+    after any complete response, even if semantic parsing later fails.
+    """
+    lock = RawLock.from_bytes(raw)
+    with destination.open("xb") as stream:
+        stream.write(raw)
+        stream.flush()
+        import os
+        os.fsync(stream.fileno())
+    return lock
+
+
+def parse_jpx(lock: RawLock) -> dict[str, str]:
+    """Parse locked official listed-issues XLS/XLSX or UTF-8 CSV fixture.
+
+    Returns code to current 33-sector label. Unknown/blank sectors fail closed.
+    """
+    raw = lock.raw
+    if raw.startswith(b"PK\x03\x04") or raw.startswith(b"\xd0\xcf\x11\xe0"):
+        import pandas as pd
+        frame = pd.read_excel(io.BytesIO(raw), dtype=str, engine="openpyxl" if raw.startswith(b"PK") else "xlrd")
+        rows = frame.fillna("").to_dict("records")
+    else:
+        rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"), newline="")))
+    if not rows:
+        raise ValueError("JPX_EMPTY")
+    aliases = (("コード", "code", "ticker"),
+               ("市場・商品区分", "市場・区分", "market"),
+               ("33業種区分", "industry"))
+    columns = []
+    for candidates in aliases:
+        column = next((c for c in candidates if c in rows[0]), None)
+        if column is None:
+            raise ValueError("JPX_SCHEMA_MISMATCH")
+        columns.append(column)
+    result: dict[str, str] = {}
+    for row in rows:
+        code, market, sector = (str(row[c]).strip() for c in columns)
+        if not (re.search(r"プライム|Prime|スタンダード|Standard", market, re.I)
+                and re.search(r"内国株式|Domestic Stocks", market, re.I)):
+            continue
+        if re.fullmatch(r"[0-9]{4}", code) is None:
+            continue
+        if not sector or sector in {"-", "MISSING", "nan"}:
+            raise ValueError("JPX_MISSING_SECTOR")
+        if code in result and result[code] != sector:
+            raise ValueError("JPX_CONFLICTING_DUPLICATE")
+        result[code] = sector
+    if not result:
+        raise ValueError("JPX_NO_ELIGIBLE_CODES")
+    return result
+
+
+def select_universe(eligible: dict[str, str], excluded: set[str], jpx_lock: RawLock,
+                    implementation_sha: str, acquired_at_utc: str) -> tuple[list[str], dict[str, Any]]:
+    from src.v13_feasibility import select_universe as frozen_select_universe
+    _codes(eligible, numeric=True)
+    selected = frozen_select_universe(eligible, excluded, SEED)
+    manifest = {"source_page": JPX_PAGE, "acquired_at_utc": acquired_at_utc,
+                **jpx_lock.manifest(), "eligible_count": len(eligible),
+                "eligible_sha256": code_hash(sorted(eligible)),
+                "exclusion_count": len(excluded), "exclusion_sha256": code_hash(sorted(excluded)),
+                "selection_seed": SEED, "ordering": ORDER, "selected_count": 500,
+                "selected_sha256": digest("|".join(selected).encode("utf-8")),
+                "implementation_sha": implementation_sha}
+    return selected, manifest
+
+
+def parse_yahoo(lock: RawLock, code: str) -> tuple[dict[date, dict[str, float]], dict[str, Any]]:
+    """Parse a locked chart response; split factors exclude dividend adjustments."""
+    _codes([code], numeric=True)
+    root = json.loads(lock.raw)
+    chart = root["chart"]
+    if chart.get("error") is not None or len(chart["result"]) != 1:
+        raise ValueError("YAHOO_CHART_ERROR")
+    result = chart["result"][0]
+    if result.get("meta", {}).get("symbol") != code + ".T":
+        raise ValueError("YAHOO_SYMBOL_MISMATCH")
+    timestamps = result["timestamp"]
+    quote = result["indicators"]["quote"][0]
+    if not timestamps or any(len(quote[k]) != len(timestamps) for k in ("open", "high", "low", "close", "volume")):
+        raise ValueError("YAHOO_LENGTH_MISMATCH")
+    zone = ZoneInfo("Asia/Tokyo")
+    observations: dict[date, dict[str, float]] = {}
+    for i, timestamp in enumerate(timestamps):
+        day = datetime.fromtimestamp(timestamp, zone).date()
+        if not START <= day <= END:
+            raise ValueError("YAHOO_DATE_OUT_OF_WINDOW")
+        if day in observations:
+            raise ValueError("YAHOO_DUPLICATE_SESSION")
+        raw_values = [quote[k][i] for k in ("open", "high", "low", "close", "volume")]
+        if any(type(v) not in (float, int) or not math.isfinite(v) or v < 0 for v in raw_values):
+            raise ValueError("YAHOO_INVALID_OHLCV")
+        opening, high, low, close, volume = map(float, raw_values)
+        if min(opening, high, low, close) <= 0 or high < max(opening, close, low) or low > min(opening, close):
+            raise ValueError("YAHOO_INVALID_OHLCV")
+        observations[day] = {"open": opening, "high": high, "low": low,
+                             "close": close, "volume": volume, "traded_value": close * volume}
+    split_events = result.get("events", {}).get("splits", {})
+    splits: list[tuple[date, float]] = []
+    for event in split_events.values():
+        day = datetime.fromtimestamp(event["date"], zone).date()
+        numerator, denominator = event["numerator"], event["denominator"]
+        if not START <= day <= END or any(type(x) not in (int, float) or not math.isfinite(x) or x <= 0 for x in (numerator, denominator)):
+            raise ValueError("YAHOO_INVALID_SPLIT")
+        splits.append((day, numerator / denominator))
+    for day, row in observations.items():
+        factor = math.prod(1 / ratio for split_day, ratio in splits if day < split_day)
+        row["adj_open"] = row["open"] * factor
+        row["adj_high"] = row["high"] * factor
+        row["adj_low"] = row["low"] * factor
+        row["adj_close"] = row["close"] * factor
+    return observations, {**lock.manifest(), "observation_count": len(observations),
+                          "split_event_count": len(splits), "start": START.isoformat(),
+                          "end_inclusive": END.isoformat(), "period2_exclusive": "2026-01-01"}
+
+
+def parse_calendar(lock: RawLock) -> tuple[tuple[date, ...], dict[str, Any]]:
+    """Offline ordered exchange-session list, one ISO date per line."""
+    lines = lock.raw.decode("utf-8-sig").splitlines()
+    if any(re.fullmatch(r"\d{4}-\d{2}-\d{2}", line) is None for line in lines):
+        raise ValueError("CALENDAR_FORMAT_MISMATCH")
+    sessions = tuple(date.fromisoformat(line) for line in lines)
+    if not sessions or any(not START <= d <= END for d in sessions) or tuple(sorted(set(sessions))) != sessions:
+        raise ValueError("CALENDAR_ORDER_OR_RANGE_MISMATCH")
+    return sessions, {**lock.manifest(), "input_type": "ORDERED_EXCHANGE_SESSION_LIST",
+                      "session_count": len(sessions), "session_sha256": code_hash(d.isoformat() for d in sessions),
+                      "real_acquisition_scope_extension_required": True}
+
+
+def session_offset(sessions: tuple[date, ...], signal: date, offset: int) -> date | None:
+    if offset < 0:
+        raise ValueError("NEGATIVE_OFFSET")
+    try:
+        position = sessions.index(signal) + offset
+    except ValueError:
+        return None
+    return sessions[position] if position < len(sessions) else None
+
+
+def retry_class(failure: str, *, complete_content_locked: bool) -> str:
+    return ("PLUMBING_FAILURE_RETRIABLE" if not complete_content_locked and
+            failure in {"PUBLIC_TRANSPORT", "PUBLIC_SETUP"} else "NO_RETRY_AUTHORITY")
