@@ -31,12 +31,12 @@ A historical PASS may justify designing later point-in-time/forward confirmation
 
 ## Universe and provenance contract
 
-The starting pool uses the V8 audited `ELIGIBLE_CURRENT_ONLY` semantics: current JPX Prime/Standard domestic common stocks with a 4-character code. Before any future real acquisition, rerun and reconcile exposure provenance at the then-current exact HEAD. Exclude all `FIXED_V4_300`, all `LEGACY_8` outside that set, and any additional ticker that the updated exposure audit proves had historical price outcomes acquired before V13 universe creation. No ticker identity is selected or exposed by this design task.
+The starting pool uses the V8 audited `ELIGIBLE_CURRENT_ONLY` semantics: current JPX Prime/Standard domestic common stocks with a canonical 4-character code. `CANONICAL_SECURITY_CODE_REGEX=[0-9A-Z]{4}`; normalize ASCII lowercase letters to uppercase before selection. This includes valid current JPX alphanumeric codes. Before any future real acquisition, rerun and reconcile exposure provenance at the then-current exact HEAD. Exclude all `FIXED_V4_300`, all `LEGACY_8` outside that set, and any additional ticker that the updated exposure audit proves had historical price outcomes acquired before V13 universe creation. No ticker identity is selected or exposed by this design task.
 
 ```text
 V13_UNIVERSE_SIZE=500
 V13_UNIVERSE_SEED=V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON|f9c38ad771710ffd157ac4fad0da15185db82707
-ORDER_KEY=SHA256(UTF8(V13_UNIVERSE_SEED + "|" + code)), then numeric code ascending
+ORDER_KEY=SHA256(UTF8(V13_UNIVERSE_SEED + "|" + code)), then canonical 4-character code ascending by ASCII/UTF-8 byte order
 SELECTION=first 500 after exclusions
 ```
 
@@ -235,7 +235,7 @@ For every exchange session `d`, process events in this exact order:
    and creates no pending order.
 
 When flat after signal date `t`, sort `RANK_ELIGIBLE(t)` by LightGBM predicted
-net-return score descending, numeric code ascending on exact ties. Only scores
+net-return score descending, canonical 4-character code ascending by ASCII/UTF-8 byte order on exact ties. Only scores
 strictly greater than zero qualify. At `t+1` Open, traverse the ranking and buy
 the largest affordable multiple of 100 shares for the first valid candidate.
 If none is executable, record `NO_FILL` and remain in cash. Negative cash,

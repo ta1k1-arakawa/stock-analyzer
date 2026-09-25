@@ -22,9 +22,13 @@ START = date(2015, 1, 1)
 END = date(2025, 12, 31)
 SEED = "V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON|f9c38ad771710ffd157ac4fad0da15185db82707"
 T1_SHA256 = "262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d"
-SOURCE_SHA256 = "0a8632804eb1b629ca2d5f3c3b679e3f9b1094b668a7f44b00b35acc2b70ca62"
+SOURCE_SCHEMA = "V8_JQUANTS_IDENTITY_RECOVERY_MANIFEST_V1"
+SOURCE_CONTRACT = "V13_V8_JQUANTS_IDENTITY_RECOVERY_DESIGN"
+SOURCE_COMMIT = "7565ca723c76801d74d8d319d65d280a689b3cfa"
+SOURCE_BLOB = "f46ea0c304b0bbd2d230b9850acba9eada9f6908"
+ELIGIBLE_SHA256 = "37630f8f754c1a1f0f3e07f0ffc26711c83e635b5eaf24533659f37970263405"
 LEGACY_OUTSIDE_V4 = frozenset("1570 4689 5020 7211 7267 8306 9432".split())
-ORDER = 'SHA256(UTF8(seed + "|" + code)), then numeric code ascending'
+ORDER = 'SHA256(UTF8(seed + "|" + code)), then canonical code ascending by ASCII/UTF-8 byte order'
 JPX_PAGE = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
 
 
@@ -37,32 +41,40 @@ def code_hash(codes: Iterable[str]) -> str:
     return digest(("\n".join(codes) + "\n").encode("utf-8"))
 
 
-def _codes(values: Iterable[str], *, numeric: bool = False) -> list[str]:
-    pattern = r"[0-9]{4}" if numeric else r"[0-9A-Z]{4}"
+def _codes(values: Iterable[str]) -> list[str]:
     result = list(values)
-    if any(not isinstance(c, str) or re.fullmatch(pattern, c) is None for c in result):
+    if any(not isinstance(c, str) or re.fullmatch(r"[0-9A-Za-z]{4}", c) is None for c in result):
         raise ValueError("INVALID_CODE")
+    result = [c.upper() for c in result]
     if len(set(result)) != len(result):
         raise ValueError("DUPLICATE_CODE")
     return result
 
 
-def validate_t1_state(state: Any, *, expected_hash: str = T1_SHA256,
-                      expected_source: str = SOURCE_SHA256) -> tuple[str, ...]:
+def validate_t1_state(state: Any, *, expected_hash: str = T1_SHA256) -> tuple[str, ...]:
     if not isinstance(state, dict) or set(state) != {
-        "schema", "source_partition_manifest_stated_sha256", "t1_ticker_list_sha256",
-        "t1_count", "known_definitely_acquired_prefix_count", "t1_membership"
+        "schema", "source_schema", "source_contract", "source_commit", "source_blob",
+        "eligible_count", "eligible_sha256", "t1_ticker_list_sha256", "t1_count",
+        "known_definitely_acquired_prefix_count", "exclusion_disposition", "t1_membership"
     }:
         raise ValueError("T1_STATE_SCHEMA_MISMATCH")
-    if (state["schema"] != "V13_V8_T1_IDENTITY_STATE_V1"
-            or state["source_partition_manifest_stated_sha256"] != expected_source
+    if (state["schema"] != "V13_JQUANTS_T1_EXCLUSION_STATE_V1"
+            or state["source_schema"] != SOURCE_SCHEMA
+            or state["source_contract"] != SOURCE_CONTRACT
+            or state["source_commit"] != SOURCE_COMMIT
+            or state["source_blob"] != SOURCE_BLOB
+            or type(state["eligible_count"]) is not int or state["eligible_count"] != 3110
+            or state["eligible_sha256"] != ELIGIBLE_SHA256
             or state["t1_ticker_list_sha256"] != expected_hash
             or type(state["t1_count"]) is not int or state["t1_count"] != 300
             or type(state["known_definitely_acquired_prefix_count"]) is not int
             or state["known_definitely_acquired_prefix_count"] != 297
+            or state["exclusion_disposition"] != "EXCLUDE_FULL_RECOVERED_T1_BLOCK"
             or not isinstance(state["t1_membership"], list)):
         raise ValueError("T1_STATE_PROVENANCE_MISMATCH")
     members = _codes(state["t1_membership"])
+    if members != state["t1_membership"]:
+        raise ValueError("T1_STATE_MEMBERSHIP_MISMATCH")
     if len(members) != 300 or code_hash(members) != expected_hash:
         raise ValueError("T1_STATE_MEMBERSHIP_MISMATCH")
     return tuple(members)
@@ -147,10 +159,13 @@ def parse_jpx(lock: RawLock) -> dict[str, str]:
     result: dict[str, str] = {}
     for row in rows:
         code, market, sector = (str(row[c]).strip() for c in columns)
+        code = code.upper()
         if not (re.search(r"プライム|Prime|スタンダード|Standard", market, re.I)
                 and re.search(r"内国株式|Domestic Stocks", market, re.I)):
             continue
-        if re.fullmatch(r"[0-9]{4}", code) is None:
+        if re.search(r"ETF|ETP|REIT|投資信託|不動産投資信託|外国株式|Foreign|優先株|Preferred|新株|New Shares", market, re.I):
+            continue
+        if re.fullmatch(r"[0-9A-Z]{4}", code) is None:
             continue
         if not sector or sector in {"-", "MISSING", "nan"}:
             raise ValueError("JPX_MISSING_SECTOR")
@@ -165,7 +180,8 @@ def parse_jpx(lock: RawLock) -> dict[str, str]:
 def select_universe(eligible: dict[str, str], excluded: set[str], jpx_lock: RawLock,
                     implementation_sha: str, acquired_at_utc: str) -> tuple[list[str], dict[str, Any]]:
     from src.v13_feasibility import select_universe as frozen_select_universe
-    _codes(eligible, numeric=True)
+    eligible = dict(zip(_codes(eligible), eligible.values()))
+    excluded = set(_codes(excluded))
     selected = frozen_select_universe(eligible, excluded, SEED)
     manifest = {"source_page": JPX_PAGE, "acquired_at_utc": acquired_at_utc,
                 **jpx_lock.manifest(), "eligible_count": len(eligible),
@@ -179,7 +195,7 @@ def select_universe(eligible: dict[str, str], excluded: set[str], jpx_lock: RawL
 
 def parse_yahoo(lock: RawLock, code: str) -> tuple[dict[date, dict[str, float]], dict[str, Any]]:
     """Parse a locked chart response; split factors exclude dividend adjustments."""
-    _codes([code], numeric=True)
+    code = _codes([code])[0]
     root = json.loads(lock.raw)
     chart = root["chart"]
     if chart.get("error") is not None or len(chart["result"]) != 1:

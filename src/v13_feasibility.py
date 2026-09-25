@@ -1,7 +1,7 @@
 """Deterministic, offline implementation of the frozen V13 feasibility path."""
 from __future__ import annotations
 
-import hashlib, json, math, subprocess, warnings
+import hashlib, json, math, re, subprocess, warnings
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
@@ -24,14 +24,17 @@ RANDOM_SEEDS = tuple(range(202609220000, 202609220500))
 YEARS = tuple(range(2020, 2026))
 Q_KEYS = tuple(f"Q{i}_{name}" for i, name in enumerate(("FEATURE_CAUSALITY", "MONTHLY_ASOF_LABEL_CUTOFF", "NO_CURRENT_MONTH_LEARNING", "STAGE_B_REFERENCE_FROZEN", "NO_2026_PRICE_READ", "RANKING_FROZEN_BEFORE_OPEN", "SINGLE_POSITION_AND_CASH_SAFETY", "EXIT_EVENT_ORDER", "REQUIRED_EXIT_DATA", "STRESS_NO_RETRAIN_OR_RERANK", "MODEL_FEATURE_CONTRACT", "COMPARATOR_CONTRACT"), 1))
 
-def numeric_code(code: str) -> int:
-    if not (isinstance(code, str) and len(code) == 4 and code.isdigit()): raise ValueError("code must be a four-digit string")
-    return int(code)
+def canonical_code(code: str) -> str:
+    if not isinstance(code, str) or re.fullmatch(r"[0-9A-Za-z]{4}", code) is None:
+        raise ValueError("code must be a canonical four-character string")
+    return code.upper()
 
 def sha256_text(value: str) -> str: return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 def select_universe(eligible_codes: Iterable[str], excluded_codes: Iterable[str], seed: str) -> list[str]:
-    excluded = set(excluded_codes); pool = sorted({c for c in eligible_codes if c not in excluded}, key=lambda c: (sha256_text(seed + "|" + c), numeric_code(c)))
+    eligible = {canonical_code(c) for c in eligible_codes}
+    excluded = {canonical_code(c) for c in excluded_codes}
+    pool = sorted(eligible - excluded, key=lambda c: (sha256_text(seed + "|" + c), c))
     if len(pool) < 500: raise ValueError("INSUFFICIENT_ELIGIBLE_CODES")
     return pool[:500]
 
@@ -69,10 +72,10 @@ def rank_candidates(rows: Iterable[dict[str, Any]], strategy: str, signal_day: d
     rows = list(rows)
     if strategy in {"LIGHTGBM", "RIDGE"}:
         field = "lightgbm_score" if strategy == "LIGHTGBM" else "ridge_score"
-        return sorted([r for r in rows if _finite((r.get(field, float("nan")),)) and r[field] > 0], key=lambda r: (-r[field], numeric_code(r["code"])))
-    if strategy == "SECTOR_REL_REVERSAL_1D": return sorted(rows, key=lambda r: (r["sector_rel_ret_1"], numeric_code(r["code"])))
-    if strategy == "SECTOR_REL_MOMENTUM_20D": return sorted(rows, key=lambda r: (-r["sector_rel_ret_20"], numeric_code(r["code"])))
-    if strategy == "RANDOM_500" and signal_day is not None and seed is not None: return sorted(rows, key=lambda r: (random_key(seed, signal_day, r["code"]), numeric_code(r["code"])))
+        return sorted([r for r in rows if _finite((r.get(field, float("nan")),)) and r[field] > 0], key=lambda r: (-r[field], canonical_code(r["code"])))
+    if strategy == "SECTOR_REL_REVERSAL_1D": return sorted(rows, key=lambda r: (r["sector_rel_ret_1"], canonical_code(r["code"])))
+    if strategy == "SECTOR_REL_MOMENTUM_20D": return sorted(rows, key=lambda r: (-r["sector_rel_ret_20"], canonical_code(r["code"])))
+    if strategy == "RANDOM_500" and signal_day is not None and seed is not None: return sorted(rows, key=lambda r: (random_key(seed, signal_day, r["code"]), canonical_code(r["code"])))
     raise ValueError("unknown ranking")
 
 def ranking_hash(ranking: Iterable[dict[str, Any]]) -> str: return sha256_text("|".join(r["code"] for r in ranking))
@@ -118,11 +121,11 @@ def _stage_reference(stage_a: list[dict[str, Any]]) -> tuple[list[dict[str, Any]
                 for r in eligible: r[f"sector_rel_ret_{window}"], r[f"market_rel_ret_{window}"] = r[key] - sector, r[key] - market
     r1, r5 = [r["ret_1"] for r in stage_b], [r["ret_5"] for r in stage_b]; values = {"breadth_1": sum(v > 0 for v in r1) / len(r1), "breadth_5": sum(v > 0 for v in r5) / len(r5), "market_median_ret_1": float(np.median(r1)), "market_median_ret_5": float(np.median(r5)), "cross_section_dispersion_1": float(np.std(r1, ddof=1)), "market_median_volatility_20": float(np.median([r["volatility_20"] for r in stage_b]))}
     for r in stage_b: r.update(values)
-    identity = sha256_text(canonical_json([{k: r[k] for k in ("code", "signal", "sector") + STAGE_A_FEATURES} for r in sorted(stage_b, key=lambda x: numeric_code(x["code"]))]))
+    identity = sha256_text(canonical_json([{k: r[k] for k in ("code", "signal", "sector") + STAGE_A_FEATURES} for r in sorted(stage_b, key=lambda x: canonical_code(x["code"]))]))
     return stage_b, identity
 
 def _ordered_population_identity(rows: Iterable[dict[str, Any]]) -> tuple[tuple[str, str, str], ...]:
-    return tuple((r["code"], r["signal"].isoformat(), r["sector"]) for r in sorted(rows, key=lambda x: (numeric_code(x["code"]), x["signal"], x["sector"])))
+    return tuple((r["code"], r["signal"].isoformat(), r["sector"]) for r in sorted(rows, key=lambda x: (canonical_code(x["code"]), x["signal"], x["sector"])))
 
 def _identity_hash(identity: tuple[tuple[str, str, str], ...]) -> str:
     return sha256_text(canonical_json(identity))
@@ -146,7 +149,7 @@ def build_rank_population_audit(stage_a: Iterable[dict[str, Any]], stage_c_omit_
     omitted = set(stage_c_omit_codes or ())
     rank = [r for r in stage_b if r["code"] not in omitted and _finite(r.get(k, float("nan")) for k in FEATURES)]
     rank_identity = _ordered_population_identity(rank)
-    base_audit.update({"transforms": transforms, "stage_b_count": len(stage_b), "rank_count": len(rank), "stage_b_hash_after": stage_b_hash_after, "stage_b_identity_after": stage_b_identity_after, "rank_eligible_identity": rank_identity, "rank_eligible_hash": _identity_hash(rank_identity), "stage_c_omitted_codes": tuple(sorted(omitted, key=numeric_code))})
+    base_audit.update({"transforms": transforms, "stage_b_count": len(stage_b), "rank_count": len(rank), "stage_b_hash_after": stage_b_hash_after, "stage_b_identity_after": stage_b_identity_after, "rank_eligible_identity": rank_identity, "rank_eligible_hash": _identity_hash(rank_identity), "stage_c_omitted_codes": tuple(sorted(omitted, key=canonical_code))})
     return "OK", rank, base_audit
 
 def build_rank_population(stage_a: Iterable[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
@@ -198,7 +201,7 @@ def linear_percentile(values: Iterable[float], percentile: float) -> float | Non
 def _diagnostic_date(rows: list[dict[str, Any]], score: str) -> dict[str, Any]:
     valid = [r for r in rows if _finite((r.get(score, float("nan")), r.get("target", float("nan"))))]
     if len(valid) < 2: return {"ic": "UNDEFINED", "top_decile_mean": "UNDEFINED", "full_mean": "UNDEFINED", "spread": "UNDEFINED"}
-    raw = float(spearmanr([r[score] for r in valid], [r["target"] for r in valid]).statistic); ic = raw if math.isfinite(raw) else "UNDEFINED"; ordered = sorted(valid, key=lambda r: (-r[score], numeric_code(r["code"]))); n = max(1, math.ceil(.1 * len(ordered))); top, full = float(np.mean([r["target"] for r in ordered[:n]])), float(np.mean([r["target"] for r in ordered])); return {"ic": ic, "top_decile_mean": top, "full_mean": full, "spread": top - full}
+    raw = float(spearmanr([r[score] for r in valid], [r["target"] for r in valid]).statistic); ic = raw if math.isfinite(raw) else "UNDEFINED"; ordered = sorted(valid, key=lambda r: (-r[score], canonical_code(r["code"]))); n = max(1, math.ceil(.1 * len(ordered))); top, full = float(np.mean([r["target"] for r in ordered[:n]])), float(np.mean([r["target"] for r in ordered])); return {"ic": ic, "top_decile_mean": top, "full_mean": full, "spread": top - full}
 
 def diagnostics(rows: list[dict[str, Any]], score: str = "lightgbm_score") -> dict[str, Any]:
     grouped: dict[date, list[dict[str, Any]]] = {}

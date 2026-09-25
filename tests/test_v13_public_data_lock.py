@@ -10,6 +10,7 @@ import pytest
 
 from src import v13_public_data_lock as p
 from src.v13_feasibility import select_universe as frozen_select
+from scripts import v13_resolve_jquants_t1_exclusion_state as producer
 
 
 def _t1():
@@ -17,21 +18,39 @@ def _t1():
 
 
 def _state(codes):
-    return {"schema": "V13_V8_T1_IDENTITY_STATE_V1",
-            "source_partition_manifest_stated_sha256": p.SOURCE_SHA256,
+    return {"schema": "V13_JQUANTS_T1_EXCLUSION_STATE_V1",
+            "source_schema": p.SOURCE_SCHEMA, "source_contract": p.SOURCE_CONTRACT,
+            "source_commit": p.SOURCE_COMMIT, "source_blob": p.SOURCE_BLOB,
+            "eligible_count": 3110, "eligible_sha256": p.ELIGIBLE_SHA256,
             "t1_ticker_list_sha256": p.code_hash(codes), "t1_count": 300,
-            "known_definitely_acquired_prefix_count": 297, "t1_membership": codes}
+            "known_definitely_acquired_prefix_count": 297,
+            "exclusion_disposition": "EXCLUDE_FULL_RECOVERED_T1_BLOCK", "t1_membership": codes}
 
 
 def test_t1_contract_and_exclusions():
+    assert (p.SOURCE_SCHEMA, p.SOURCE_CONTRACT, p.SOURCE_COMMIT, p.SOURCE_BLOB,
+            p.ELIGIBLE_SHA256, p.T1_SHA256) == (
+                producer.SCHEMA, producer.CONTRACT, producer.SOURCE_COMMIT,
+                producer.SOURCE_BLOB, producer.ELIGIBLE_SHA, producer.T1_SHA)
     codes = _t1()
     state = _state(codes)
     assert p.validate_t1_state(state, expected_hash=p.code_hash(codes)) == tuple(codes)
-    for change in ({"t1_count": True}, {"known_definitely_acquired_prefix_count": 296},
-                   {"source_partition_manifest_stated_sha256": "wrong"},
-                   {"t1_membership": codes[:-1] + [codes[0]]}):
+    for change in ({"schema": "V13_V8_T1_IDENTITY_STATE_V1"},
+                   {"source_schema": "wrong"}, {"source_contract": "wrong"},
+                   {"source_commit": "wrong"}, {"source_blob": "wrong"},
+                   {"eligible_count": 3109}, {"eligible_sha256": "wrong"},
+                   {"t1_count": True}, {"t1_count": 299},
+                   {"t1_ticker_list_sha256": "wrong"},
+                   {"known_definitely_acquired_prefix_count": 296},
+                   {"exclusion_disposition": "wrong"},
+                   {"t1_membership": codes[:-1] + [codes[0]]},
+                   {"t1_membership": codes[:-1] + ["@BAD"]},
+                   {"t1_membership": codes[::-1]},
+                   {"extra": "wrong"}):
         with pytest.raises(ValueError):
             p.validate_t1_state({**state, **change}, expected_hash=p.code_hash(codes))
+    with pytest.raises(ValueError):
+        p.validate_t1_state({k: v for k, v in state.items() if k != "source_blob"}, expected_hash=p.code_hash(codes))
     v4 = [f"{n:04d}" for n in range(1200, 1500)]
     excluded, manifest = p.build_exclusions(v4, codes)
     assert len(excluded) == 507  # 100 T1/V4 overlap plus seven legacy codes
@@ -51,35 +70,52 @@ def test_v4_csv_and_universe_selector(tmp_path: Path):
     assert "selected" not in manifest and "eligible" not in manifest
 
 
+def test_selector_mixed_codes_deterministic_and_numeric_compatible(monkeypatch):
+    numeric = [f"{n:04d}" for n in range(1000, 1600)]
+    mixed = numeric + ["130A", "130B", "1A30"]
+    seed = p.SEED
+    expected_numeric = sorted(numeric, key=lambda c: (hashlib.sha256((seed + "|" + c).encode()).hexdigest(), int(c)))[:500]
+    assert frozen_select(numeric, [], seed) == expected_numeric
+    expected_mixed = sorted(mixed, key=lambda c: (hashlib.sha256((seed + "|" + c).encode()).hexdigest(), c))[:500]
+    assert frozen_select(reversed(mixed), [], seed) == frozen_select(mixed, [], seed) == expected_mixed
+    assert any(code in expected_mixed for code in ("130A", "130B", "1A30"))
+    assert frozen_select([c.lower() for c in mixed], [], seed) == expected_mixed
+    monkeypatch.setattr("src.v13_feasibility.sha256_text", lambda value: "same")
+    assert frozen_select(mixed, [], seed) == sorted(mixed)[:500]
+
+
 def test_jpx_filter_sector_and_lock(tmp_path: Path):
     raw = ("コード,市場・区分,33業種区分\n"
            "1000,プライム（内国株式）,機械\n"
            "1001,Standard Domestic Stocks,Services\n"
            "1002,グロース（内国株式）,機械\n"
            "1003,Prime Foreign Stocks,機械\n"
-           "100A,Prime Domestic Stocks,機械\n").encode()
+           "100a,Prime Domestic Stocks,機械\n"
+           "1005,Prime Domestic Stocks ETF,機械\n"
+           "1004,Prime ETF,機械\n").encode()
     lock = p.lock_payload(raw, tmp_path / "jpx.raw")
     assert (tmp_path / "jpx.raw").read_bytes() == raw
     assert lock.sha256 == hashlib.sha256(raw).hexdigest()
-    assert p.parse_jpx(lock) == {"1000": "機械", "1001": "Services"}
+    assert p.parse_jpx(lock) == {"1000": "機械", "1001": "Services", "100A": "機械"}
     with pytest.raises(FileExistsError):
         p.lock_payload(raw, tmp_path / "jpx.raw")
 
 
 def test_existing_offline_jpx_workbook_fixture():
     source = Path(__file__).parent / "fixtures" / "synthetic_jpx_source_snapshot.xls"
-    # This older fixture intentionally uses alphanumeric identities.
-    with pytest.raises(ValueError, match="JPX_NO_ELIGIBLE_CODES"):
-        p.parse_jpx(p.RawLock.from_bytes(source.read_bytes()))
+    eligible = p.parse_jpx(p.RawLock.from_bytes(source.read_bytes()))
+    assert eligible == {"ZZA1": "SYNTHETIC_SECTOR_A", "ZZB2": "SYNTHETIC_SECTOR_A",
+                        "ZZC3": "SYNTHETIC_SECTOR_B", "ZZD4": "SYNTHETIC_SECTOR_B",
+                        "ZZE5": "SYNTHETIC_SECTOR_C"}
 
 
 def _timestamp(day):
     return int(datetime(day.year, day.month, day.day, 15, tzinfo=ZoneInfo("Asia/Tokyo")).timestamp())
 
 
-def _yahoo(days):
+def _yahoo(days, code="1000"):
     return {"chart": {"error": None, "result": [{
-        "meta": {"symbol": "1000.T"}, "timestamp": [_timestamp(d) for d in days],
+        "meta": {"symbol": code + ".T"}, "timestamp": [_timestamp(d) for d in days],
         "indicators": {"quote": [{"open": [100.0, 51.0], "high": [110.0, 55.0],
                                   "low": [95.0, 49.0], "close": [100.0, 50.0],
                                   "volume": [1000, 2000]}],
@@ -104,6 +140,9 @@ def test_yahoo_split_only_raw_execution_and_2026_rejection(tmp_path: Path):
     bad = _yahoo([date(2025, 12, 31), date(2026, 1, 2)])
     with pytest.raises(ValueError, match="OUT_OF_WINDOW"):
         p.parse_yahoo(p.RawLock.from_bytes(json.dumps(bad).encode()), "1000")
+    alpha = p.RawLock.from_bytes(json.dumps(_yahoo(days, "130A")).encode())
+    alpha_rows, _ = p.parse_yahoo(alpha, "130a")
+    assert len(alpha_rows) == 2
 
 
 def test_calendar_exact_offsets_and_retry(tmp_path: Path):

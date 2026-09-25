@@ -12,7 +12,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -88,7 +88,7 @@ def main() -> int:
     jpx = _fetch(candidates[0], args.output / "jpx-listed-issues.raw")
     eligible = pipeline.parse_jpx(jpx)
     selected, universe_manifest = pipeline.select_universe(
-        eligible, excluded, jpx, args.implementation_sha, datetime.now().astimezone().isoformat())
+        eligible, excluded, jpx, args.implementation_sha, datetime.now(timezone.utc).isoformat())
     universe_manifest["jpx_payload_url_sha256"] = pipeline.digest(candidates[0].encode("utf-8"))
     universe_manifest["jpx_page_raw_sha256"] = page.sha256
     # Identity-bearing output is local and must never be committed or printed.

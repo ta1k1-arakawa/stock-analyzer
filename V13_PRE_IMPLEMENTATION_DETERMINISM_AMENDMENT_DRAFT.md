@@ -52,22 +52,22 @@ Use these exact rankings on `RANK_ELIGIBLE(t)`:
 ```text
 LIGHTGBM:
   predicted base-cost net-return score descending
-  exact tie -> numeric code ascending
+  exact tie -> canonical 4-character code ascending by ASCII/UTF-8 byte order
   qualify only score > 0
 
 RIDGE:
   predicted base-cost net-return score descending
-  exact tie -> numeric code ascending
+  exact tie -> canonical 4-character code ascending by ASCII/UTF-8 byte order
   qualify only score > 0
 
 SECTOR_REL_REVERSAL_1D:
   sector_rel_ret_1 ascending
-  exact tie -> numeric code ascending
+  exact tie -> canonical 4-character code ascending by ASCII/UTF-8 byte order
   no sign gate
 
 SECTOR_REL_MOMENTUM_20D:
   sector_rel_ret_20 descending
-  exact tie -> numeric code ascending
+  exact tie -> canonical 4-character code ascending by ASCII/UTF-8 byte order
   no sign gate
 ```
 
@@ -88,7 +88,7 @@ For each signal date and path:
 
 1. Include every `RANK_ELIGIBLE(t)` ticker.
 2. Sort `random_key` ascending as lowercase 64-hex.
-3. Break an exact hash tie with numeric code ascending.
+3. Break an exact hash tie with canonical 4-character code ascending by ASCII/UTF-8 byte order.
 4. Apply no sign or score gate.
 5. When flat, freeze the full ranking after Close and traverse it at next
    Open with the same missing-Open and affordability fallback.
