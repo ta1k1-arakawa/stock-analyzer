@@ -6,6 +6,7 @@ The default command is an offline rehearsal. No candidate is installed here.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import re
 import stat
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 from scripts import check_current_protected_environment as current
@@ -28,6 +30,7 @@ PHASE_A = "5280e95915c9b194147a61f1156fb045e0abc48e"
 AUTH = Path("docs/v13/V13_XLSX_SUCCESSOR_PHASE_B_RESOLUTION_AUTHORIZATION.json")
 INDEX = "https://pypi.org/simple"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
+AUTH_BLOB = "6826344839b5ba738c74e371bbccf9ab06346207"
 
 
 def _git(*args: str) -> bytes:
@@ -129,6 +132,7 @@ def preflight(head: str, *, remote: bool = True) -> dict[str, str]:
     if remote:
         _require(_review_pass(head), "AUTHORIZATION_COMMIT_GPT_PASS_MISSING")
     auth_raw = _git("show", f"{head}:{AUTH.as_posix()}")
+    _require(_blob(auth_raw) == AUTH_BLOB, "AUTH_ARTIFACT_IDENTITY_MISMATCH")
     _require((ROOT / AUTH).is_file(), "AUTH_ARTIFACT_MISSING")
     _require(_git("hash-object", "--", str(ROOT / AUTH)).decode().strip() == _blob(auth_raw),
              "AUTH_ARTIFACT_MISMATCH")
@@ -143,20 +147,69 @@ def preflight(head: str, *, remote: bool = True) -> dict[str, str]:
     return {"authorization_blob": _blob(auth_raw), "execution_head": head}
 
 
+def _local_state_base() -> Path:
+    # Query the Windows current-user known folder directly. LOCALAPPDATA is
+    # process-controlled and could otherwise produce a second one-shot root.
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", ctypes.c_uint32), ("Data2", ctypes.c_uint16),
+                    ("Data3", ctypes.c_uint16), ("Data4", ctypes.c_ubyte * 8)]
+
+    identity = GUID.from_buffer_copy(uuid.UUID("f1b32785-6fba-4fcf-9d55-7b8e7f157091").bytes_le)
+    path = ctypes.c_wchar_p()
+    api = ctypes.windll.shell32.SHGetKnownFolderPath
+    api.argtypes = [ctypes.POINTER(GUID), ctypes.c_uint32, ctypes.c_void_p,
+                    ctypes.POINTER(ctypes.c_wchar_p)]
+    api.restype = ctypes.c_long
+    result = api(ctypes.byref(identity), 0, None, ctypes.byref(path))
+    _require(result == 0 and bool(path.value), "LOCAL_STATE_BASE_INVALID")
+    try:
+        return Path(path.value)
+    finally:
+        free = ctypes.windll.ole32.CoTaskMemFree
+        free.argtypes = [ctypes.c_void_p]
+        free.restype = None
+        free(ctypes.cast(path, ctypes.c_void_p))
+
+
+def _canonical_root(authorization_blob: str) -> Path:
+    _require(authorization_blob == AUTH_BLOB, "AUTH_ARTIFACT_IDENTITY_MISMATCH")
+    base = _local_state_base()
+    _require(base.is_absolute() and not base.drive.startswith("\\\\"), "LOCAL_STATE_BASE_INVALID")
+    _require(".." not in base.parts and "." not in base.parts, "LOCAL_STATE_BASE_AMBIGUOUS")
+    _require(base.is_dir(), "LOCAL_STATE_BASE_INVALID")
+    return base / "stock-analyzer" / "protected-execution" / "v13-xlsx-phase-b" / authorization_blob
+
+
 def _safe_root(root: Path) -> None:
-    _require(root.is_absolute(), "OPERATION_ROOT_NOT_ABSOLUTE")
+    _require(root.is_absolute() and ".." not in root.parts and "." not in root.parts,
+             "OPERATION_ROOT_INVALID")
     _require(not os.path.lexists(root), "ONE_SHOT_ALREADY_STARTED")
-    _require(root.parent.is_dir(), "OPERATION_PARENT_MISSING")
-    for candidate in (root, root.parent):
-        node = candidate
-        while node != node.parent:
-            if os.path.lexists(node):
-                mode = os.lstat(node)
-                _require(not stat.S_ISLNK(mode.st_mode) and not (getattr(mode, "st_file_attributes", 0) & 0x400), "REPARSE_PATH_BLOCKED")
-            node = node.parent
+    node = root.parent
+    while True:
+        if os.path.lexists(node):
+            mode = os.lstat(node)
+            _require(not stat.S_ISLNK(mode.st_mode) and not (getattr(mode, "st_file_attributes", 0) & 0x400),
+                     "REPARSE_PATH_BLOCKED")
+            _require(stat.S_ISDIR(mode.st_mode), "LOCAL_STATE_PATH_INVALID")
+        if node == node.parent:
+            break
+        node = node.parent
     real = Path(os.path.realpath(root))
     repo = Path(os.path.realpath(ROOT))
     _require(not real.is_relative_to(repo) and not repo.is_relative_to(real), "GOVERNED_PATH_OVERLAP")
+
+
+def _prepare_operation_parent(root: Path) -> None:
+    # Parent directories are safe to create before the one-shot boundary.
+    _safe_root(root)
+    missing = []
+    node = root.parent
+    while not os.path.lexists(node):
+        missing.append(node)
+        node = node.parent
+    for node in reversed(missing):
+        node.mkdir()
+        _safe_root(root)
 
 
 def _write_json(path: Path, value: dict) -> None:
@@ -205,18 +258,22 @@ def inspect_wheels(wheelhouse: Path, base: dict[str, str]) -> dict:
     }
 
 
-def execute(head: str, operation_root: Path) -> dict:
+def execute(head: str) -> dict:
     _require(sys.platform == "win32", "DIRECT_WINDOWS_REQUIRED")
     binding = preflight(head)
+    operation_root = _canonical_root(binding["authorization_blob"])
+    _prepare_operation_parent(operation_root)
     _safe_root(operation_root)
+    # mkdir is exclusive. If the process dies before attempt.json is durable,
+    # the existing canonical root is still a non-reusable consumed state.
     operation_root.mkdir()
-    wheelhouse = operation_root / "wheelhouse"
-    wheelhouse.mkdir()
     _write_json(operation_root / "attempt.json", {
         "schema_version": "V13_XLSX_PHASE_B_ATTEMPT_V1", "status": "CONSUMED_PENDING",
         "execution_head": head, "authorization_blob": binding["authorization_blob"],
         "one_shot": True, "reusable": False, "package_installations": 0,
     })
+    wheelhouse = operation_root / "wheelhouse"
+    wheelhouse.mkdir()
     pip_log = operation_root / "resolver_pip.local.log"
     argv = [str(current.CANONICAL_INTERPRETER), "-m", "pip", "download", "--dest", str(wheelhouse),
             "--only-binary=:all:", "--no-cache-dir", "--disable-pip-version-check", "--no-input",
@@ -256,21 +313,27 @@ def execute(head: str, operation_root: Path) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    class SafeArgumentParser(argparse.ArgumentParser):
+        def error(self, message: str) -> None:
+            raise ValueError("ARGUMENTS_INVALID")
+
+    parser = SafeArgumentParser()
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--execution-head")
-    parser.add_argument("--operation-root", type=Path)
-    args = parser.parse_args()
-    if not args.execute:
-        print(json.dumps({"rehearsal": True, "package_index_requests": 0, "wheel_downloads": 0,
-                          "environment_mutations": 0, "private_reads": 0, "jpx_yahoo_requests": 0}))
-        return 0
     try:
-        _require(args.execution_head is not None and args.operation_root is not None, "EXPLICIT_INPUT_REQUIRED")
-        print(json.dumps(execute(args.execution_head, args.operation_root), sort_keys=True))
+        args = parser.parse_args()
+        if not args.execute:
+            print(json.dumps({"rehearsal": True, "package_index_requests": 0, "wheel_downloads": 0,
+                              "environment_mutations": 0, "private_reads": 0, "jpx_yahoo_requests": 0}))
+            return 0
+        _require(args.execution_head is not None, "EXPLICIT_INPUT_REQUIRED")
+        print(json.dumps(execute(args.execution_head), sort_keys=True))
         return 0
     except (ValueError, OSError, subprocess.CalledProcessError, ContractValidationError, KeyError, json.JSONDecodeError) as error:
-        print(json.dumps({"status": "FAIL", "reason": str(error).split(":", 1)[0]}))
+        reason = str(error) if type(error) is ValueError else type(error).__name__
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", reason):
+            reason = "EXECUTION_FAILED"
+        print(json.dumps({"status": "FAIL", "reason": reason}))
         return 1
 
 

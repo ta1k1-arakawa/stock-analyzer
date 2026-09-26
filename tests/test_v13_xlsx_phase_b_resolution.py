@@ -12,6 +12,7 @@ from scripts import v13_xlsx_successor_contract as successor
 
 def test_approval_exact_and_frozen_bindings() -> None:
     record = json.loads((phase_b.ROOT / phase_b.AUTH).read_text(encoding="utf-8"))
+    assert phase_b._blob((phase_b.ROOT / phase_b.AUTH).read_bytes()) == phase_b.AUTH_BLOB
     phase_b._approval(record)
     assert phase_b._bound_file(phase_b.PHASE_A, record["current_authority_lock"])
     assert phase_b._bound_file(phase_b.PHASE_A, record["successor_direct_spec"])
@@ -43,15 +44,83 @@ def test_rehearsal_has_no_side_effects(monkeypatch, capsys) -> None:
     assert result["environment_mutations"] == 0
 
 
-def test_existing_operation_root_blocks_second_resolution(tmp_path: Path, monkeypatch) -> None:
+def test_canonical_operation_identity_and_consumption(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(phase_b.sys, "platform", "win32")
-    monkeypatch.setattr(phase_b, "preflight", lambda *a, **k: {"authorization_blob": "a" * 40})
-    monkeypatch.setattr(phase_b.subprocess, "run", lambda *a, **k: pytest.fail("resolver called"))
-    root = tmp_path / "consumed"
-    root.mkdir()
-    (root / "receipt.json").write_text('{"status":"PASS_CONSUMED"}', encoding="utf-8")
+    monkeypatch.setattr(phase_b, "_local_state_base", lambda: tmp_path)
+    monkeypatch.setattr(phase_b, "preflight", lambda *a, **k: {"authorization_blob": phase_b.AUTH_BLOB})
+    root = phase_b._canonical_root(phase_b.AUTH_BLOB)
+    assert root == phase_b._canonical_root(phase_b.AUTH_BLOB)
+    assert root.parent == tmp_path / "stock-analyzer" / "protected-execution" / "v13-xlsx-phase-b"
+
+    calls = []
+
+    def resolver_boundary(*args, **kwargs):
+        calls.append(1)
+        attempt = json.loads((root / "attempt.json").read_text(encoding="utf-8"))
+        assert attempt["status"] == "CONSUMED_PENDING"
+        assert attempt["authorization_blob"] == phase_b.AUTH_BLOB
+        raise RuntimeError("synthetic resolver stop")
+
+    monkeypatch.setattr(phase_b.subprocess, "run", resolver_boundary)
+    with pytest.raises(RuntimeError, match="synthetic resolver stop"):
+        phase_b.execute("b" * 40)
+    assert calls == [1]
+    assert root.is_dir()
+    monkeypatch.setattr(phase_b.subprocess, "run", lambda *a, **k: pytest.fail("resolver called twice"))
     with pytest.raises(ValueError, match="ONE_SHOT_ALREADY_STARTED"):
-        phase_b.execute("b" * 40, root)
+        phase_b.execute("b" * 40)
+    assert calls == [1]
+
+
+@pytest.mark.parametrize("state", ["empty", "malformed", "completed"])
+def test_existing_canonical_state_blocks_without_deletion(tmp_path: Path, monkeypatch, state: str) -> None:
+    monkeypatch.setattr(phase_b.sys, "platform", "win32")
+    monkeypatch.setattr(phase_b, "_local_state_base", lambda: tmp_path)
+    monkeypatch.setattr(phase_b, "preflight", lambda *a, **k: {"authorization_blob": phase_b.AUTH_BLOB})
+    root = phase_b._canonical_root(phase_b.AUTH_BLOB)
+    root.parent.mkdir(parents=True)
+    root.mkdir()
+    if state != "empty":
+        (root / "receipt.json").write_text("{" if state == "malformed" else '{"status":"PASS_CONSUMED"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="ONE_SHOT_ALREADY_STARTED"):
+        phase_b.execute("b" * 40)
+    assert root.exists()
+    assert (root / "receipt.json").exists() == (state != "empty")
+
+
+def test_caller_cannot_select_another_root(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(phase_b, "_local_state_base", lambda: tmp_path)
+    original = phase_b._canonical_root(phase_b.AUTH_BLOB)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "alternate"))
+    assert phase_b._canonical_root(phase_b.AUTH_BLOB) == original
+    with pytest.raises(TypeError):
+        phase_b.execute("b" * 40, tmp_path / "alternate")
+    monkeypatch.setattr("sys.argv", ["phase_b", "--execute", "--execution-head", "b" * 40,
+                                    "--operation-root", str(tmp_path / "alternate")])
+    assert phase_b.main() == 1
+    output = capsys.readouterr()
+    assert json.loads(output.out) == {"status": "FAIL", "reason": "ARGUMENTS_INVALID"}
+    assert str(tmp_path) not in output.out + output.err
+    wrapper = (phase_b.ROOT / "scripts/run_v13_xlsx_phase_b_resolution_direct_windows.ps1").read_text(encoding="utf-8")
+    assert "OperationRoot" not in wrapper and "--operation-root" not in wrapper
+
+
+def test_unsafe_local_state_fails_closed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(phase_b, "_local_state_base", lambda: Path("relative-local"))
+    with pytest.raises(ValueError, match="LOCAL_STATE_BASE_INVALID"):
+        phase_b._canonical_root(phase_b.AUTH_BLOB)
+    monkeypatch.setattr(phase_b, "_local_state_base", lambda: tmp_path)
+    with pytest.raises(ValueError, match="AUTH_ARTIFACT_IDENTITY_MISMATCH"):
+        phase_b._canonical_root("a" * 40)
+    root = phase_b._canonical_root(phase_b.AUTH_BLOB)
+    root.parent.parent.mkdir(parents=True)
+    root.parent.write_text("ambiguous", encoding="utf-8")
+    with pytest.raises(ValueError, match="LOCAL_STATE_PATH_INVALID"):
+        phase_b._prepare_operation_parent(root)
+    assert root.parent.read_text(encoding="utf-8") == "ambiguous"
+    monkeypatch.setattr(phase_b, "_local_state_base", lambda: phase_b.ROOT)
+    with pytest.raises(ValueError, match="GOVERNED_PATH_OVERLAP"):
+        phase_b._prepare_operation_parent(phase_b._canonical_root(phase_b.AUTH_BLOB))
 
 
 def test_resolver_command_is_download_only() -> None:
