@@ -48,6 +48,7 @@ param(
     if ($LASTEXITCODE -ne 0 -or $dirty) { throw "WORKTREE_NOT_CLEAN" }
     Require-GitValue @("rev-parse", "HEAD:V13_MASTER_CALENDAR_AUTHORITY_DESIGN.md") "390a6ad8e8994f0ed6921183f581c43496eac1e3"
     Require-GitValue @("rev-parse", "HEAD:docs/v13/V13_MASTER_CALENDAR_AUTHORITY_DESIGN_HUMAN_FREEZE_APPROVAL.json") "f7b0e09b350acd365ef51e0f925fa71c88b5bae3"
+    Require-GitValue @("rev-parse", "HEAD:docs/v13/V13_MASTER_CALENDAR_POINT_OF_USE_AUTHORIZATION.json") "2ccb3283fbc212d8f5d942237da79924e7a2ccf5"
     $null = & git merge-base --is-ancestor $approvedImplementation HEAD
     if ($LASTEXITCODE -ne 0) { throw "APPROVED_IMPLEMENTATION_NOT_ANCESTOR" }
     if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw "CANONICAL_INTERPRETER_MISSING" }
@@ -71,7 +72,6 @@ param(
     $required = @{
         schema = "V13_MASTER_CALENDAR_POINT_OF_USE_AUTHORIZATION_V1"
         github_issue = 90
-        human_approval_evidence = "Issue #90 の V13 master-calendar 1回生成を承認します"
         predecessor_gpt_review_issue = 89
         predecessor_gpt_review_result = "PASS"
         reviewed_implementation_sha = $approvedImplementation
@@ -98,9 +98,9 @@ param(
         paper_trading_authorized = $false
         real_trading_authorized = $false
     }
-    if (@($authorization.PSObject.Properties).Count -ne ($required.Count + 1)) { throw "POINT_OF_USE_AUTHORITY_SCHEMA_MISMATCH" }
+    if (@($authorization.PSObject.Properties).Count -ne ($required.Count + 2)) { throw "POINT_OF_USE_AUTHORITY_SCHEMA_MISMATCH" }
     foreach ($key in $authorization.PSObject.Properties.Name) {
-        if ($key -cne "human_approval_recorded_utc" -and -not $required.ContainsKey($key)) { throw "POINT_OF_USE_AUTHORITY_SCHEMA_MISMATCH" }
+        if ($key -cne "human_approval_recorded_utc" -and $key -cne "human_approval_evidence" -and -not $required.ContainsKey($key)) { throw "POINT_OF_USE_AUTHORITY_SCHEMA_MISMATCH" }
     }
     if (([DateTimeOffset]$authorization.human_approval_recorded_utc).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") -cne "2026-09-26T02:55:23Z") { throw "POINT_OF_USE_AUTHORITY_TIME_MISMATCH" }
     foreach ($key in $required.Keys) {

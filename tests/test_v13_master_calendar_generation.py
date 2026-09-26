@@ -4,6 +4,8 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -15,6 +17,8 @@ from src import v13_public_data_lock as lock
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "v13_master_calendar_generate.py"
 WRAPPER = ROOT / "scripts" / "run_v13_master_calendar_generation_direct_windows.ps1"
+AUTHORIZATION = ROOT / "docs" / "v13" / "V13_MASTER_CALENDAR_POINT_OF_USE_AUTHORIZATION.json"
+AUTHORIZATION_BLOB = "2ccb3283fbc212d8f5d942237da79924e7a2ccf5"
 
 
 def load_runner():
@@ -86,9 +90,44 @@ def test_wrapper_static_gate_and_protected_bindings():
     assert "GENERATION_GATE_ALREADY_CONSUMED" in script
     assert "GENERATION_RESULT_ALREADY_EXISTS" in script
     assert "POST_GATE_FAILURE_NO_RETRY" in script
-    approval = json.loads((ROOT / "docs/v13/V13_MASTER_CALENDAR_POINT_OF_USE_AUTHORIZATION.json").read_text(encoding="utf-8"))
+    blob_check = 'Require-GitValue @("rev-parse", "HEAD:docs/v13/V13_MASTER_CALENDAR_POINT_OF_USE_AUTHORIZATION.json") "2ccb3283fbc212d8f5d942237da79924e7a2ccf5"'
+    assert blob_check in script
+    assert script.index(blob_check) < script.index("Write-NewDurableJson $gatePath")
+    assert "human_approval_evidence =" not in script
+    approval = json.loads(AUTHORIZATION.read_text(encoding="utf-8"))
     assert approval["reviewed_implementation_sha"] == "983c3c6da51865a46a8bb9361bb13604a5b0c112"
     assert approval["authorization_scope"] == "MASTER_CALENDAR_GENERATION_ONLY"
     assert all(value is False for key, value in approval.items() if key.endswith("_authorized"))
     for forbidden in ("Install-Module", "pip install", "Invoke-WebRequest", "Invoke-RestMethod", "git pull ", "git merge ", "git rebase ", "git cherry-pick ", "--force"):
         assert forbidden.lower() not in script.lower()
+
+
+def test_wrapper_ascii_and_authorization_artifact_unchanged():
+    source = WRAPPER.read_bytes()
+    assert all(byte < 128 for byte in source)
+    assert "human_approval_evidence" not in source.decode("ascii").split("$required = @{", 1)[1].split("}", 1)[0]
+    for args in (
+        ["rev-parse", "HEAD:docs/v13/V13_MASTER_CALENDAR_POINT_OF_USE_AUTHORIZATION.json"],
+        ["hash-object", "--", str(AUTHORIZATION)],
+    ):
+        result = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True)
+        assert result.stdout.strip() == AUTHORIZATION_BLOB
+    assert "Issue #90 の V13 master-calendar 1回生成を承認します" in AUTHORIZATION.read_text(encoding="utf-8")
+
+
+def test_windows_powershell_51_parse_only():
+    executable = shutil.which("powershell.exe")
+    if executable is None:
+        pytest.skip("Windows PowerShell 5.1 unavailable")
+    path = str(WRAPPER).replace("'", "''")
+    command = (
+        "if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) { exit 2 }; "
+        "$tokens = $null; $errors = $null; "
+        f"[System.Management.Automation.Language.Parser]::ParseFile('{path}', [ref]$tokens, [ref]$errors) | Out-Null; "
+        "if ($errors.Count -gt 0) { $errors | Out-String | Write-Error; exit 1 }"
+    )
+    result = subprocess.run(
+        [executable, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
