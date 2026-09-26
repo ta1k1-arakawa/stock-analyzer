@@ -153,3 +153,120 @@ def test_synthetic_wheelhouse_rejects_missing_extra_and_tampered(tmp_path):
     (wheelhouse / "another.whl").write_bytes(b"extra")
     with pytest.raises(ValueError):
         run.verify_wheelhouse(wheelhouse, manifest)
+
+
+def test_current_process_identity_requires_exact_canonical_path(tmp_path, monkeypatch):
+    canonical = tmp_path / "canonical" / "python.exe"
+    canonical.parent.mkdir()
+    canonical.touch()
+    other = tmp_path / "other" / "python.exe"
+    other.parent.mkdir()
+    other.touch()
+    monkeypatch.setattr(run.current, "CANONICAL_INTERPRETER", canonical)
+    monkeypatch.setattr(run.sys, "version_info", (3, 12, 10))
+    monkeypatch.setattr(run.sysconfig, "get_platform", lambda: "win-amd64")
+    run.canonical_process_interpreter(canonical)
+    with pytest.raises(ValueError, match="PRE_GATE_WRONG_PYTHON_ENVIRONMENT"):
+        run.canonical_process_interpreter(other)
+
+
+def test_wrong_process_never_reaches_preflight_or_durable_root(tmp_path, monkeypatch):
+    canonical = tmp_path / "canonical.exe"
+    other = tmp_path / "other.exe"
+    canonical.touch()
+    other.touch()
+    monkeypatch.setattr(run.current, "CANONICAL_INTERPRETER", canonical)
+    monkeypatch.setattr(run.sys, "executable", str(other))
+    monkeypatch.setattr(run, "preflight", lambda _: pytest.fail("preflight reached"))
+    monkeypatch.setattr(run.phase_b, "_prepare_operation_parent",
+                        lambda _: pytest.fail("durable root reached"))
+    with pytest.raises(ValueError, match="PRE_GATE_WRONG_PYTHON_ENVIRONMENT"):
+        run.realize("synthetic-head")
+
+
+@pytest.mark.parametrize("change", ["missing", "open_version", "xml_version", "failed", "false"])
+def test_pre_gate_probe_fails_closed_on_manifest_or_parser_result(tmp_path, monkeypatch, change):
+    canonical = tmp_path / "python.exe"
+    canonical.touch()
+    monkeypatch.setattr(run.current, "CANONICAL_INTERPRETER", canonical)
+    wheels = ({"name": "openpyxl", "version": "3.1.5", "filename": "open.whl"},
+              {"name": "et-xmlfile", "version": "2.0.0", "filename": "xml.whl"})
+    if change == "missing":
+        wheels = wheels[:1]
+    elif change in {"open_version", "xml_version"}:
+        target = 0 if change == "open_version" else 1
+        wheels = tuple({**w, "version": "0"} if i == target else w
+                       for i, w in enumerate(wheels))
+
+    class Result:
+        returncode = 1 if change == "failed" else 0
+        stderr = ""
+        stdout = json.dumps({"ready": change != "false", "executable": str(canonical),
+                             "isolated": True})
+
+    def child(argv, **kwargs):
+        assert argv[0] == str(canonical)
+        assert argv[1:3] == ["-I", "-B"]
+        assert "--no-index" not in argv  # This probe never invokes pip.
+        return Result()
+
+    monkeypatch.setattr(run.subprocess, "run", child)
+    with pytest.raises(ValueError, match="PRE_GATE_XLSX_"):
+        run.probe_frozen_wheel_xlsx(tmp_path, wheels)
+
+
+def test_pre_gate_probe_accepts_only_verified_archive_route(tmp_path, monkeypatch):
+    canonical = tmp_path / "python.exe"
+    canonical.touch()
+    monkeypatch.setattr(run.current, "CANONICAL_INTERPRETER", canonical)
+    wheels = ({"name": "openpyxl", "version": "3.1.5", "filename": "open.whl"},
+              {"name": "et-xmlfile", "version": "2.0.0", "filename": "xml.whl"})
+
+    def child(argv, **kwargs):
+        assert argv[:4] == [str(canonical), "-I", "-B", "-c"]
+        assert "probe_production_xlsx_route" in argv[4]
+        assert argv[-2:] == [str(tmp_path / "open.whl"), str(tmp_path / "xml.whl")]
+        assert kwargs["env"]["PIP_NO_INDEX"] == "1"
+        return subprocess.CompletedProcess(argv, 0, json.dumps({
+            "ready": True, "executable": str(canonical), "isolated": True}), "")
+
+    monkeypatch.setattr(run.subprocess, "run", child)
+    run.probe_frozen_wheel_xlsx(tmp_path, wheels)
+
+
+def test_verified_wheels_precedes_probe_and_probe_precedes_root(tmp_path, monkeypatch):
+    events = []
+    candidate = tmp_path / "candidate"
+    wheelhouse = tmp_path / "wheels"
+    monkeypatch.setattr(run, "canonical_process_interpreter", lambda: events.append("identity"))
+    monkeypatch.setattr(run, "preflight", lambda _: {})
+    monkeypatch.setattr(run, "canonical_candidate_root", lambda: candidate)
+    monkeypatch.setattr(run, "verified_wheels", lambda: (events.append("wheels") or
+                                                          (wheelhouse, ())))
+    monkeypatch.setattr(run, "precheck_paths", lambda *args: None)
+    monkeypatch.setattr(run.sys, "_base_executable", str(tmp_path / "base.exe"), raising=False)
+    (tmp_path / "base.exe").touch()
+    monkeypatch.setattr(run.current, "CANONICAL_INTERPRETER", tmp_path / "canonical.exe")
+    monkeypatch.setattr(run.sys, "version_info", (3, 12, 10))
+    def probe(*args):
+        events.append("probe")
+        raise ValueError("PRE_GATE_XLSX_PROBE_FAILED")
+    monkeypatch.setattr(run, "probe_frozen_wheel_xlsx", probe)
+    monkeypatch.setattr(run.phase_b, "_prepare_operation_parent",
+                        lambda _: pytest.fail("durable parent reached"))
+    with pytest.raises(ValueError, match="PRE_GATE_XLSX_PROBE_FAILED"):
+        run.realize("synthetic-head")
+    assert events == ["identity", "wheels", "probe"]
+    assert not candidate.exists()
+
+
+def test_probe_failure_reports_reusable_pre_gate_authority(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["realize", "--execute", "--execution-head", "synthetic"])
+    monkeypatch.setattr(run.sys, "platform", "win32")
+    monkeypatch.setattr(run, "canonical_candidate_root", lambda: tmp_path / "candidate")
+    monkeypatch.setattr(run, "realize", lambda _: (_ for _ in ()).throw(
+        ValueError("PRE_GATE_XLSX_PROBE_FAILED")))
+    assert run.main() == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "FAIL", "failure_class": "PRE_GATE_FAILURE",
+        "reason": "PRE_GATE_XLSX_PROBE_FAILED", "authorization_reusable": True}

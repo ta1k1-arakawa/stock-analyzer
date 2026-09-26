@@ -10,6 +10,7 @@ import re
 import stat
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 from scripts import check_current_protected_environment as current
@@ -196,6 +197,70 @@ def validate_installed(records: list[dict], expected: dict[str, str]) -> None:
             actual.get("et-xmlfile") == "2.0.0", "INSTALLED_SET_MISMATCH")
 
 
+def canonical_process_interpreter(executable: str | Path | None = None) -> None:
+    """Bind this process, not a separately checked environment, to current authority."""
+    try:
+        actual = Path(sys.executable if executable is None else executable).resolve(strict=True)
+        canonical = current.CANONICAL_INTERPRETER.resolve(strict=True)
+        require(actual.is_file() and canonical.is_file() and
+                os.path.normcase(str(actual)) == os.path.normcase(str(canonical)),
+                "PRE_GATE_WRONG_PYTHON_ENVIRONMENT")
+    except (OSError, RuntimeError):
+        raise ValueError("PRE_GATE_WRONG_PYTHON_ENVIRONMENT") from None
+    require(sys.version_info[:3] == (3, 12, 10) and sysconfig.get_platform() == "win-amd64",
+            "CANONICAL_RUNTIME_INVALID")
+
+
+PRE_GATE_XLSX_CHILD = r'''
+import importlib.metadata as md
+import json, os, sys
+from pathlib import Path
+repo, open_wheel, xml_wheel = map(Path, sys.argv[1:])
+for wheel, name, version in ((open_wheel, "openpyxl", "3.1.5"),
+                             (xml_wheel, "et-xmlfile", "2.0.0")):
+    distributions = list(md.distributions(path=[str(wheel)]))
+    assert len(distributions) == 1
+    assert distributions[0].metadata["Name"].lower().replace("_", "-") == name
+    assert distributions[0].version == version
+sys.path[:0] = [str(open_wheel), str(xml_wheel), str(repo)]
+import openpyxl, et_xmlfile
+for module, wheel in ((openpyxl, open_wheel), (et_xmlfile, xml_wheel)):
+    assert os.path.normcase(module.__file__).startswith(os.path.normcase(str(wheel) + os.sep))
+assert openpyxl.__version__ == "3.1.5"
+from scripts.v13_xlsx_readiness import probe_production_xlsx_route
+print(json.dumps({"ready": probe_production_xlsx_route() is True,
+                  "executable": sys.executable, "isolated": sys.flags.isolated == 1}))
+'''
+
+
+def probe_frozen_wheel_xlsx(wheelhouse: Path, wheels: tuple[dict, ...]) -> None:
+    """Exercise production XLSX parsing directly from the two verified archives."""
+    selected = {}
+    for wheel in wheels:
+        if wheel["name"] in {"openpyxl", "et-xmlfile"}:
+            require(wheel["name"] not in selected, "PRE_GATE_XLSX_WHEEL_IDENTITY_INVALID")
+            selected[wheel["name"]] = wheel
+    require(set(selected) == {"openpyxl", "et-xmlfile"} and
+            selected["openpyxl"]["version"] == "3.1.5" and
+            selected["et-xmlfile"]["version"] == "2.0.0",
+            "PRE_GATE_XLSX_WHEEL_IDENTITY_INVALID")
+    result = subprocess.run(
+        [str(current.CANONICAL_INTERPRETER), "-I", "-B", "-c", PRE_GATE_XLSX_CHILD,
+         str(ROOT), str(wheelhouse / selected["openpyxl"]["filename"]),
+         str(wheelhouse / selected["et-xmlfile"]["filename"])],
+        capture_output=True, text=True, env=child_environment(), check=False)
+    require(result.returncode == 0 and not result.stderr.strip(), "PRE_GATE_XLSX_PROBE_FAILED")
+    try:
+        observation = json.loads(result.stdout, object_pairs_hook=unique)
+        require(set(observation) == {"ready", "executable", "isolated"} and
+                observation["ready"] is True and observation["isolated"] is True and
+                os.path.normcase(str(Path(observation["executable"]).resolve(strict=True))) ==
+                os.path.normcase(str(current.CANONICAL_INTERPRETER.resolve(strict=True))),
+                "PRE_GATE_XLSX_PROBE_FAILED")
+    except (OSError, RuntimeError, KeyError, TypeError, json.JSONDecodeError):
+        raise ValueError("PRE_GATE_XLSX_PROBE_FAILED") from None
+
+
 CHILD = r'''
 import importlib.metadata as md
 import json, os, platform, sys, sysconfig
@@ -237,6 +302,7 @@ def inspect_candidate(interpreter: Path, expected: dict[str, str]) -> None:
 
 
 def realize(head: str) -> dict:
+    canonical_process_interpreter()
     auth = preflight(head)
     candidate_root = canonical_candidate_root()
     wheelhouse, wheels = verified_wheels()
@@ -245,6 +311,7 @@ def realize(head: str) -> dict:
     runtime = Path(sys._base_executable).resolve(strict=True)
     require(runtime.is_file() and runtime != current.CANONICAL_INTERPRETER.resolve() and
             sys.version_info[:3] == (3, 12, 10), "CANONICAL_RUNTIME_INVALID")
+    probe_frozen_wheel_xlsx(wheelhouse, wheels)
     # All checks above are pre-gate. Exclusive mkdir is the one-shot boundary.
     phase_b._prepare_operation_parent(candidate_root)
     precheck_paths(candidate_root, wheelhouse)
