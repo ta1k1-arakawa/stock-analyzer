@@ -226,6 +226,73 @@ def _synthetic_run(tmp_path, monkeypatch):
     return args, output, counts, fail_code, semantic_code, fetch
 
 
+@pytest.mark.parametrize("filename", ["data_j.xls", "data_j.xlsx"])
+def test_official_jpx_listed_issue_filename_forms(filename):
+    href = f"/markets/statistics-equities/misc/{filename}"
+    links = runner._OfficialLinks()
+    links.feed(f'<a href="{href}">listed</a>')
+    assert links.links == [href]
+
+
+@pytest.mark.parametrize("filename", [
+    "data_j.xlsm", "data_j.csv", "data_j.xlsx.bak", "other_data_j.xlsx",
+    "unrelated.xlsx", "data_j.xls-extra",
+])
+def test_official_jpx_listed_issue_lookalikes_rejected(filename):
+    links = runner._OfficialLinks()
+    links.feed(f'<a href="/markets/statistics-equities/misc/{filename}">listed</a>')
+    assert links.links == []
+
+
+@pytest.mark.parametrize("hrefs", [
+    [],
+    ["/first/data_j.xlsx", "/second/data_j.xls"],
+    ["https://example.com/data_j.xlsx"],
+    ["https://www.jpx.co.jp.evil.example/data_j.xlsx"],
+])
+def test_jpx_candidate_ambiguity_and_exact_host_fail_closed(tmp_path, monkeypatch, hrefs):
+    args, _, counts, _, _, _ = _synthetic_run(tmp_path, monkeypatch)
+    page = "".join(f'<a href="{href}">listed</a>' for href in hrefs).encode()
+
+    def fetch(url):
+        counts[url] = counts.get(url, 0) + 1
+        assert url == p.JPX_PAGE
+        return io.BytesIO(page)
+
+    with pytest.raises(ValueError, match="JPX_SOURCE_AMBIGUOUS"):
+        runner.execute(**args, fetch=fetch)
+    assert counts == {p.JPX_PAGE: 1}
+
+
+def test_locked_xlsx_page_resume_does_not_refetch_page(tmp_path, monkeypatch):
+    args, output, counts, _, _, _ = _synthetic_run(tmp_path, monkeypatch)
+    href = "/markets/statistics-equities/misc/data_j.xlsx"
+    listed_url = "https://www.jpx.co.jp" + href
+    page = f'<a href="{href}">listed</a>'.encode()
+
+    def first_fetch(url):
+        counts[url] = counts.get(url, 0) + 1
+        if url == p.JPX_PAGE:
+            return io.BytesIO(page)
+        assert url == listed_url
+        raise OSError("synthetic listed issues transport")
+
+    with pytest.raises(OSError, match="synthetic listed issues transport"):
+        runner.execute(**args, fetch=first_fetch)
+    assert (output / "jpx-page.raw").read_bytes() == page
+    assert counts == {p.JPX_PAGE: 1, listed_url: 1}
+
+    def resumed_fetch(url):
+        assert url == listed_url
+        counts[url] += 1
+        return io.BytesIO(b"invalid synthetic workbook")
+
+    with pytest.raises(ValueError):
+        runner.execute(**args, fetch=resumed_fetch)
+    assert counts == {p.JPX_PAGE: 1, listed_url: 2}
+    assert (output / "jpx-page.raw").read_bytes() == page
+
+
 def test_resume_only_fetches_missing_payloads(tmp_path, monkeypatch, capsys):
     args, output, counts, fail_code, _, fetch = _synthetic_run(tmp_path, monkeypatch)
     selected = frozen_select({f"{n:04d}": "Sector" for n in range(2000, 2600)},

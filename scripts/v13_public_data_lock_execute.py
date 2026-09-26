@@ -30,7 +30,7 @@ class _OfficialLinks(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag == "a":
             href = dict(attrs).get("href", "")
-            if re.search(r"(?:^|/)data_j\.xls(?:\?|$)", href, re.I):
+            if re.search(r"(?:^|/)data_j\.xlsx?(?:\?|$)", href, re.I):
                 self.links.append(href)
 
 
