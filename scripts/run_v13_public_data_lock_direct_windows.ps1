@@ -116,31 +116,62 @@ param(
         $authorization.real_trading_authorized -cne $false) {
         throw 'BLOCK_AUTHORIZATION_OR_CALENDAR_SCOPE'
     }
+    $localAppData = [Environment]::GetEnvironmentVariable('LOCALAPPDATA', 'Process')
+    if ([string]::IsNullOrWhiteSpace($localAppData) -or
+        -not [IO.Path]::IsPathRooted($localAppData)) { throw 'BLOCK_LOCALAPPDATA' }
+    try {
+        $expectedT1State = [IO.Path]::GetFullPath((Join-Path $localAppData 'stock-analyzer\private\v13-t1-exclusion-provenance\t1-exclusion-state.json'))
+        $suppliedT1State = [IO.Path]::GetFullPath($PrivateT1State)
+        $calendarFullPath = [IO.Path]::GetFullPath($CalendarLock)
+        $outputFullPath = [IO.Path]::GetFullPath($OutputDirectory)
+    }
+    catch { throw 'BLOCK_PROTECTED_PATH' }
+    if (-not [IO.Path]::IsPathRooted($PrivateT1State) -or
+        -not [string]::Equals($suppliedT1State, $expectedT1State,
+            [StringComparison]::OrdinalIgnoreCase)) { throw 'BLOCK_T1_STATE_IDENTITY' }
+
+    function Assert-NoReparseAncestor([string] $protectedPath) {
+        $cursor = $protectedPath
+        while ($null -ne $cursor) {
+            try { $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop }
+            catch [System.Management.Automation.ItemNotFoundException] { $item = $null }
+            catch { throw 'BLOCK_PROTECTED_PATH_TOPOLOGY' }
+            if ($null -ne $item -and
+                ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw 'BLOCK_PROTECTED_PATH_REPARSE'
+            }
+            $parent = [IO.Directory]::GetParent($cursor)
+            $cursor = if ($null -eq $parent) { $null } else { $parent.FullName }
+        }
+    }
+    foreach ($protectedPath in @($expectedT1State, $calendarFullPath, $outputFullPath)) {
+        Assert-NoReparseAncestor $protectedPath
+    }
     if (-not (Test-Path -LiteralPath $CalendarLock -PathType Leaf)) {
         throw 'BLOCK_CALENDAR_INPUT'
     }
     $calendarResolved = (Resolve-Path -LiteralPath $CalendarLock).Path
     if ($calendarResolved.StartsWith($repoRoot + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
         $calendarResolved -ceq $repoRoot) { throw 'BLOCK_CALENDAR_PATH_IN_REPOSITORY' }
-    $pythonExe = Join-Path $repoRoot '.venv-real-execution\Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw 'BLOCK_CANONICAL_ENVIRONMENT' }
-    & $pythonExe scripts/check_current_protected_environment.py
-    if ($LASTEXITCODE -ne 0) { throw 'BLOCK_CANONICAL_ENVIRONMENT' }
-    & $pythonExe scripts/v13_public_data_lock_execute.py --preflight-calendar $CalendarLock $CalendarSha256
-    if ($LASTEXITCODE -ne 0) { throw 'BLOCK_MASTER_CALENDAR_INPUT' }
     if (-not (Test-Path -LiteralPath $PrivateT1State -PathType Leaf) -or
         ((Test-Path -LiteralPath $OutputDirectory) -and
          -not (Test-Path -LiteralPath $OutputDirectory -PathType Container))) {
         throw 'BLOCK_INPUT_OR_OUTPUT_TOPOLOGY'
     }
     $privateResolved = (Resolve-Path -LiteralPath $PrivateT1State).Path
-    $outputParent = Split-Path -Parent $OutputDirectory
+    $outputParent = Split-Path -Parent $outputFullPath
     if (-not (Test-Path -LiteralPath $outputParent -PathType Container)) { throw 'BLOCK_OUTPUT_PARENT' }
     $outputParentResolved = (Resolve-Path -LiteralPath $outputParent).Path
-    foreach ($candidatePath in @($privateResolved, $outputParentResolved)) {
+    foreach ($candidatePath in @($privateResolved, $outputFullPath, $outputParentResolved)) {
         if ($candidatePath.StartsWith($repoRoot + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
             $candidatePath -ceq $repoRoot) { throw 'BLOCK_PRIVATE_OR_RAW_PATH_IN_REPOSITORY' }
     }
+    $pythonExe = Join-Path $repoRoot '.venv-real-execution\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw 'BLOCK_CANONICAL_ENVIRONMENT' }
+    & $pythonExe scripts/check_current_protected_environment.py
+    if ($LASTEXITCODE -ne 0) { throw 'BLOCK_CANONICAL_ENVIRONMENT' }
+    & $pythonExe scripts/v13_public_data_lock_execute.py --preflight-calendar $CalendarLock $CalendarSha256
+    if ($LASTEXITCODE -ne 0) { throw 'BLOCK_MASTER_CALENDAR_INPUT' }
     & $pythonExe scripts/v13_public_data_lock_execute.py --t1-state $PrivateT1State --v4-csv V4_UNIVERSE.csv --calendar-lock $CalendarLock --calendar-sha256 $CalendarSha256 --output $OutputDirectory --implementation-sha $ApprovedImplementationSha
     if ($LASTEXITCODE -ne 0) { throw 'BLOCK_PUBLIC_DATALOCK' }
 }
