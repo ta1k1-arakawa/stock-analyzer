@@ -54,13 +54,66 @@ param(
         (& git hash-object -- $resultPath).Trim() -cne '336e5dd6141230b95fa4548231b0a137be6a15cb') {
         throw 'BLOCK_MASTER_CALENDAR_RESULT_BLOB'
     }
-    $authorization = Get-Content -LiteralPath $AuthorizationRecord -Raw | ConvertFrom-Json
+    $authorizationRelative = 'docs/v13/V13_PUBLIC_DATALOCK_POINT_OF_USE_AUTHORIZATION.json'
+    $authorizationPath = Join-Path $repoRoot $authorizationRelative
+    $authorizationBlob = '980fb0c764d9495f8e298865fe1f48373ac84281'
+    if (-not (Test-Path -LiteralPath $AuthorizationRecord -PathType Leaf) -or
+        -not [string]::Equals([System.IO.Path]::GetFullPath($AuthorizationRecord),
+            [System.IO.Path]::GetFullPath($authorizationPath),
+            [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals((Resolve-Path -LiteralPath $AuthorizationRecord).Path,
+            (Resolve-Path -LiteralPath $authorizationPath).Path,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'BLOCK_AUTHORIZATION_PATH'
+    }
+    $authorizationTree = & git ls-tree HEAD -- $authorizationRelative
+    if (@($authorizationTree).Count -ne 1 -or
+        $authorizationTree -cnotmatch ('^100644 blob ' + $authorizationBlob + '\s') -or
+        (& git hash-object -- $authorizationPath).Trim() -cne $authorizationBlob) {
+        throw 'BLOCK_AUTHORIZATION_BLOB'
+    }
+    $standingRelative = 'V13_PUBLIC_ACQUISITION_AUTHORIZATION.json'
+    $standingPath = Join-Path $repoRoot $standingRelative
+    $standingBlob = '291eda465ae26f86bbe8540f12551e1f40283d5b'
+    $standingTree = & git ls-tree HEAD -- $standingRelative
+    if (@($standingTree).Count -ne 1 -or
+        $standingTree -cnotmatch ('^100644 blob ' + $standingBlob + '\s') -or
+        -not (Test-Path -LiteralPath $standingPath -PathType Leaf) -or
+        (& git hash-object -- $standingPath).Trim() -cne $standingBlob) {
+        throw 'BLOCK_STANDING_PUBLIC_AUTHORIZATION_BLOB'
+    }
+    $authorization = Get-Content -LiteralPath $authorizationPath -Raw | ConvertFrom-Json
     if ($authorization.schema -cne 'V13_PUBLIC_DATALOCK_POINT_OF_USE_AUTHORIZATION_V1' -or
+        $authorization.study -cne 'V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON' -or
+        $authorization.authoritative_branch -cne 'v13-conditional-cross-sectional-short-horizon' -or
+        $authorization.authorization_scope -cne 'SELECTED500_PUBLIC_DATALOCK_ONLY' -or
+        $authorization.github_issue -cne 95 -or
+        $authorization.human_approval_comment_id -cne 5843355424 -or
+        $authorization.human_approval_comment_url -cne 'https://github.com/ta1k1-arakawa/stock-analyzer/issues/95#issuecomment-5843355424' -or
+        $authorization.predecessor_gpt_pass_issue -cne 94 -or
+        $authorization.reviewed_implementation_sha -cne '6b4454aafc05c66c37d75e33a586d79653c1a413' -or
         $authorization.reviewed_implementation_sha -cne $ApprovedImplementationSha -or
-        $authorization.execution_head -cne $ExecutionHead -or
         $authorization.master_calendar_sha256 -cne $CalendarSha256 -or
         $authorization.master_calendar_safe_result_blob -cne '336e5dd6141230b95fa4548231b0a137be6a15cb' -or
-        $authorization.public_datalock_execution_approved -cne $true) {
+        $authorization.public_acquisition_authorization_blob -cne $standingBlob -or
+        $authorization.operation_class -cne 'RETRIABLE_PUBLIC_PLUMBING' -or
+        @($authorization.providers).Count -ne 2 -or
+        $authorization.providers[0] -cne 'JPX_CURRENT_LISTED_ISSUES' -or
+        $authorization.providers[1] -cne 'YAHOO_FINANCE_CHART' -or
+        $authorization.price_window_start -cne '2015-01-01' -or
+        $authorization.price_window_end -cne '2025-12-31' -or
+        $authorization.selected_universe_size -cne 500 -or
+        $authorization.public_datalock_execution_approved -cne $true -or
+        $authorization.derived_t1_state_read_for_deterministic_exclusion_selection_resume_authorized -cne $true -or
+        $authorization.original_private_source_reopen_authorized -cne $false -or
+        $authorization.selected500_identity_print_authorized -cne $false -or
+        $authorization.selected500_identity_commit_authorized -cne $false -or
+        $authorization.model_fit_authorized -cne $false -or
+        $authorization.historical_backtest_authorized -cne $false -or
+        $authorization.a_to_q_execution_authorized -cne $false -or
+        $authorization.forward_paper_authorized -cne $false -or
+        $authorization.broker_access_authorized -cne $false -or
+        $authorization.real_trading_authorized -cne $false) {
         throw 'BLOCK_AUTHORIZATION_OR_CALENDAR_SCOPE'
     }
     if (-not (Test-Path -LiteralPath $CalendarLock -PathType Leaf)) {
