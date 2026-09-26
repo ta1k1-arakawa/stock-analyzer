@@ -1,0 +1,23 @@
+# GitGuardian configuration
+# https://docs.gitguardian.com/ggshield-docs/reference/gitguardian-yaml
+#
+# Human approval / authorization records pin reviewed artifacts by Git commit
+# and blob SHA and store SHA-256 digests of approval statements. These hex
+# digests trip the "Generic High Entropy Secret" detector but are not secrets.
+# Keep the ignores narrow: only these record files and known digest values.
+version: 2
+
+secret:
+  ignored_paths:
+    - "**/*_APPROVAL.json"
+    - "**/*_AUTHORIZATION.json"
+
+  ignored_matches:
+    # Git blob SHA of docs/v13/V13_MASTER_CALENDAR_POINT_OF_USE_AUTHORIZATION.json
+    # pinned in tests and the Direct Windows wrapper (commit d71a840).
+    - name: v13-master-calendar-authorization-blob-sha
+      match: 2ccb3283fbc212d8f5d942237da79924e7a2ccf5
+    # Git blob SHA of the Phase B resolution authorization record pinned in
+    # tests (commit a337fa0).
+    - name: v13-xlsx-phase-b-authorization-blob-sha
+      match: 6826344839b5ba738c74e371bbccf9ab06346207
