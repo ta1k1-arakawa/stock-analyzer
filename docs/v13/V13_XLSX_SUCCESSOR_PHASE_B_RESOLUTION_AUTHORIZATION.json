@@ -1,0 +1,43 @@
+{
+  "schema_version": "V13_XLSX_PHASE_B_RESOLUTION_AUTHORIZATION_V1",
+  "status": "AUTHORIZED",
+  "authoritative_branch": "v13-conditional-cross-sectional-short-horizon",
+  "github_issue": 100,
+  "predecessor_issue": 99,
+  "predecessor_gpt_result": "PASS",
+  "approved_phase_a_sha": "5280e95915c9b194147a61f1156fb045e0abc48e",
+  "human_approval_text": "V13 XLSX successor Phase B の1回限りの package-index resolution を承認します．",
+  "current_authority_lock": {
+    "path": "V10C_T0_CANONICAL_ML_ENVIRONMENT_SUCCESSOR_LOCK.txt",
+    "git_blob_sha1": "13636e58fbe40071be04cbfa57c3990c1d8ff2e0",
+    "sha256": "f38dd4c7319465bb7e6ff429e8dff4a476d9966c744b19e50264dcc0b18e8300",
+    "package_count": 27
+  },
+  "successor_direct_spec": {
+    "path": "V13_PROTECTED_XLSX_ENVIRONMENT_SUCCESSOR_DIRECT_SPEC.txt",
+    "git_blob_sha1": "a238aef7c30ef3ba2632a12b4d746203d55bc138",
+    "sha256": "c3373c96db07587e947f816504ff72383542e706e4b1cbb34ac38cbe710d918a"
+  },
+  "historical_20_package_authority_current": false,
+  "one_shot": true,
+  "consumed": false,
+  "authorization_reusable_after_success": false,
+  "package_index_resolution_approved": true,
+  "official_index_url": "https://pypi.org/simple",
+  "metadata_distribution_wheel_retrieval_and_content_lock_allowed": true,
+  "current_27_direct_pins_preserved_exactly": true,
+  "openpyxl_direct_version": "UNRESOLVED_BY_RESOLVER",
+  "transitive_closure": "RESOLVER_DERIVED_ONLY",
+  "candidate_installation_allowed": false,
+  "active_venv_real_execution_mutation_allowed": false,
+  "successor_promotion_allowed": false,
+  "jpx_yahoo_public_data_lock_execution_allowed": false,
+  "private_read_allowed": false,
+  "selected_500_construction_allowed": false,
+  "model_fit_backtest_aq_paper_live_trading_allowed": false,
+  "locked_jpx_listed_sha256": "fff94dd14057c8bfa36a3fbabd8e228bbed63751c7ecd10c1a8281f5385fcb78",
+  "locked_jpx_refetch_allowed": false,
+  "locked_jpx_reuse_required": true,
+  "public_datalock_reauthorization_required": false,
+  "production_xlsx_readiness": "NOT_YET_PROVEN"
+}
