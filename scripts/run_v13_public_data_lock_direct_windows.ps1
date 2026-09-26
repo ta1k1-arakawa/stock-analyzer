@@ -170,6 +170,8 @@ param(
     if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) { throw 'BLOCK_CANONICAL_ENVIRONMENT' }
     & $pythonExe scripts/check_current_protected_environment.py
     if ($LASTEXITCODE -ne 0) { throw 'BLOCK_CANONICAL_ENVIRONMENT' }
+    & $pythonExe -m scripts.v13_xlsx_readiness
+    if ($LASTEXITCODE -ne 0) { throw 'BLOCK_JPX_XLSX_READER' }
     & $pythonExe scripts/v13_public_data_lock_execute.py --preflight-calendar $CalendarLock $CalendarSha256
     if ($LASTEXITCODE -ne 0) { throw 'BLOCK_MASTER_CALENDAR_INPUT' }
     & $pythonExe scripts/v13_public_data_lock_execute.py --t1-state $PrivateT1State --v4-csv V4_UNIVERSE.csv --calendar-lock $CalendarLock --calendar-sha256 $CalendarSha256 --output $OutputDirectory --implementation-sha $ApprovedImplementationSha
