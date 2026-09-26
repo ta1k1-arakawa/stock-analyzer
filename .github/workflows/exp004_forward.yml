@@ -48,6 +48,9 @@ jobs:
     - name: Execute paper orders and decide the next ones
       run: python experiments/exp004_forward.py step
 
+    - name: Check Claude ratings (amendment 1)
+      run: python experiments/exp004_forward.py eval-l
+
     - name: Send R's orders to Slack
       env:
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

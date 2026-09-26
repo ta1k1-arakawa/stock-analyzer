@@ -11,6 +11,7 @@ Commands (run in this order every trading day after the data is published, ~20:0
   python experiments/exp004_forward.py score         # Claude reads new 決算短信 (needs ANTHROPIC_API_KEY)
   python experiments/exp004_forward.py step          # executes today's paper orders, decides tomorrow's
   python experiments/exp004_forward.py notify        # sends R's order sheet to Slack (SLACK_WEBHOOK_URL)
+  python experiments/exp004_forward.py eval-l        # Amendment 1: rating-level check of Claude (L)
 One-time, before the start:
   python experiments/exp004_forward.py train         # fits and freezes the LightGBM model
 """
@@ -465,6 +466,51 @@ def write_order_sheet(state: dict, today, nxt, due) -> None:
     out.write_text("\n".join(lines) + "\n")
 
 
+L_EVAL_FROM = pd.Timestamp("2026-09-28")
+
+
+def eval_l() -> None:
+    """Amendment 1: judge Claude's ratings directly, report by report (much faster than portfolio profit).
+
+    For each scored report disclosed on or after L_EVAL_FROM: buy at the open of the first trading day after
+    the disclosure, sell at the open 20 trading days later; subtract the equal-weight return of all liquid
+    universe stocks over the same days. Compare ratings 1-2 (low trap risk) with 4-5 (high trap risk).
+    """
+    topix, panel, fins = E3.load(CACHE)
+    dates = topix.index
+    o = panel["O"]
+    liquid = panel["Va"].fillna(0.0).rolling(E3.LIQ_DAYS, min_periods=E3.LIQ_DAYS).mean() >= E3.LIQ_MIN
+    rows = []
+    if SCORE_FILE.exists():
+        for line in SCORE_FILE.read_text().splitlines():
+            r = json.loads(line)
+            d = pd.Timestamp(r["disc_date"])
+            if r.get("status") != "ok" or d < L_EVAL_FROM:
+                continue
+            e = int(dates.searchsorted(d, side="right"))
+            x = e + HOLD_DAYS
+            if x >= len(dates) or not o.iat[e, o.columns.get_loc(r["code"])] > 0:
+                continue
+            gross = o.iloc[x] / o.iloc[e] - 1
+            bench = gross[liquid.iloc[e - 1]].mean()
+            ret = gross[r["code"]]
+            if np.isfinite(ret):
+                rows.append({"code": r["code"], "disc_date": r["disc_date"], "trap_risk": r["trap_risk"],
+                             "excess": float(ret - bench)})
+    df = pd.DataFrame(rows, columns=["code", "disc_date", "trap_risk", "excess"])
+    low, high = df[df.trap_risk <= 2]["excess"], df[df.trap_risk >= 4]["excess"]
+    out = {"reports_evaluated": int(len(df)), "by_rating": {int(k): {"n": int(len(g)), "mean_excess_pct": round(float(g.mean()) * 100, 3)}
+                                                            for k, g in df.groupby("trap_risk")["excess"]}}
+    if len(low) >= 2 and len(high) >= 2:
+        diff = low.mean() - high.mean()
+        se = np.sqrt(low.var(ddof=1) / len(low) + high.var(ddof=1) / len(high))
+        out["low_minus_high_pct"] = round(float(diff) * 100, 3)
+        out["welch_t"] = round(float(diff / se), 2)
+        out["enough_data"] = bool(len(low) >= 30 and len(high) >= 30)
+    (FWD / "l_eval.json").write_text(json.dumps(out, ensure_ascii=False, indent=1) + "\n")
+    print(json.dumps(out, ensure_ascii=False))
+
+
 def notify() -> None:
     """Send the real-money (R) part of tomorrow's order sheet to Slack, once per sheet."""
     url = os.environ.get("SLACK_WEBHOOK_URL")
@@ -484,5 +530,5 @@ def notify() -> None:
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    {"update-data": update_data, "train": train, "score": score, "step": step, "notify": notify}.get(
+    {"update-data": update_data, "train": train, "score": score, "step": step, "notify": notify, "eval-l": eval_l}.get(
         cmd, lambda: sys.exit(__doc__))()
