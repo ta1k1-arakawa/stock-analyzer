@@ -97,8 +97,8 @@ def _publish_failure(output_root: Path, implementation_sha: str) -> None:
     _write_new(receipt_path, (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"))
 
 
-def generate(wheel_path: Path, output_root: Path, implementation_sha: str) -> dict[str, object]:
-    """Production path. The reviewed PowerShell wrapper must pass every preflight first."""
+def validate_generation_preflight(wheel_path: Path, output_root: Path, implementation_sha: str) -> None:
+    """Validate the real source without importing or constructing the provider."""
     canonical_python = REPO_ROOT / ".venv-real-execution" / "Scripts" / "python.exe"
     if Path(sys.executable).resolve() != canonical_python.resolve():
         raise ValueError("CANONICAL_INTERPRETER_REQUIRED")
@@ -120,6 +120,11 @@ def generate(wheel_path: Path, output_root: Path, implementation_sha: str) -> di
     wheel = wheel_path.read_bytes()
     validate_calendar_release_artifact(wheel, installed_sources, expected)
 
+
+def generate(wheel_path: Path, output_root: Path, implementation_sha: str) -> dict[str, object]:
+    """Production path. The reviewed PowerShell wrapper must pass every preflight first."""
+    validate_generation_preflight(wheel_path, output_root, implementation_sha)
+
     # The provider import and construction are strictly beyond source validation.
     try:
         import pandas_market_calendars as mcal
@@ -135,8 +140,13 @@ def main() -> int:
     parser.add_argument("--official-wheel", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--implementation-sha", required=True)
+    parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args()
     try:
+        if args.preflight_only:
+            validate_generation_preflight(args.official_wheel, args.output_root, args.implementation_sha)
+            print(json.dumps({"status": "PASS", "stage": "PRE_GATE_SOURCE_PREFLIGHT"}, sort_keys=True))
+            return 0
         receipt = generate(args.official_wheel, args.output_root, args.implementation_sha)
     except Exception:
         print(json.dumps({"status": "FAIL", "failure_class": "GENERATION_OR_PREFLIGHT_FAILURE"}, sort_keys=True))
