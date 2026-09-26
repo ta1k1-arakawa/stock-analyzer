@@ -7,22 +7,23 @@
 
 Pre-registration: docs/experiments/EXP-004_PREREGISTRATION.md
 Commands (run in this order every trading day after the data is published, ~20:00 JST):
-  python experiments/exp004_forward.py update-data   # J-Quants, per code only
-  python experiments/exp004_forward.py score         # Claude reads new 決算短信 (needs ANTHROPIC_API_KEY)
+  python experiments/exp004_forward.py update-data   # free data: yfinance prices + TDnet XBRL summaries
+  python experiments/exp004_forward.py score         # Claude Code (your Claude subscription) reads new 決算短信
   python experiments/exp004_forward.py step          # executes today's paper orders, decides tomorrow's
   python experiments/exp004_forward.py notify        # sends R's order sheet to Slack (SLACK_WEBHOOK_URL)
   python experiments/exp004_forward.py eval-l        # Amendment 1: rating-level check of Claude (L)
-One-time, before the start:
+One-time, before the start (used the J-Quants cache while the subscription was active):
   python experiments/exp004_forward.py train         # fits and freezes the LightGBM model
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import io
 import json
 import os
 import re
+import subprocess
+import tempfile
 import sys
 import time
 from datetime import datetime, timezone
@@ -34,6 +35,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import exp003_rotation as E3  # noqa: E402
+import free_data as FD  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / "data" / "jquants_exp002"
@@ -48,9 +50,8 @@ N_TRANCHES, PER_TRANCHE, HOLD_DAYS = 10, 2, 20
 SPARE = 2  # extra names per tranche in case an open does not trade
 TRAIN_END = pd.Timestamp("2026-08-26")  # last signal date whose 20-day target is fully known
 TRAP_MAX = 3  # L keeps stocks with trap_risk <= 3; unscored stocks count as 3
-CLAUDE_MODEL = "claude-opus-5"
 PDF_PAGES = 6  # the summary and the management discussion come first in a 決算短信
-MAX_CALLS_PER_RUN = 80  # cost cap per daily run
+MAX_CALLS_PER_RUN = 25  # stay well inside the subscription's usage limits per daily run
 PORTFOLIOS = ("R", "M", "L")
 
 
@@ -58,76 +59,22 @@ PORTFOLIOS = ("R", "M", "L")
 # data update (per code only; never date-wide requests)
 # ----------------------------------------------------------------------------
 
-def jq_get(session: requests.Session, path: str, params: dict) -> list[dict]:
-    out, params = [], dict(params)
-    while True:
-        for attempt in range(5):
-            try:
-                r = session.get(f"{JQ}{path}", params=params, timeout=60)
-            except requests.RequestException:
-                r = None
-            if r is not None and r.status_code == 200:
-                break
-            if r is not None and r.status_code not in (429, 500, 502, 503, 504):
-                raise SystemExit(f"{path} {params.get('code', '')}: HTTP {r.status_code}")
-            time.sleep(2 ** (attempt + 1))
-        else:
-            raise SystemExit(f"{path} {params.get('code', '')}: failed after retries")
-        body = r.json()
-        out += body.get("data", [])
-        time.sleep(0.3)
-        if not body.get("pagination_key"):
-            return out
-        params["pagination_key"] = body["pagination_key"]
-
-
-def dump(path: Path, records: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode())
-
-
 def update_data() -> None:
-    key = os.environ.get("JQUANTS_API_KEY")
-    if not key:
-        raise SystemExit("JQUANTS_API_KEY is not set")
-    s = requests.Session()
-    s.headers["x-api-key"] = key
     codes = (FWD / "universe.txt").read_text().split()
-    dump(CACHE / "topix.json", jq_get(s, "/indices/bars/daily/topix", {}))
-    today = pd.Timestamp.now(tz="Asia/Tokyo").tz_localize(None).normalize()
-    cal = jq_get(s, "/markets/calendar", {"from": str((today - pd.Timedelta(days=10)).date()),
-                                         "to": str((today + pd.Timedelta(days=40)).date())})
-    dump(CACHE / "calendar.json", cal)
-    names_file = FWD / "names.json"
-    if not names_file.exists():
-        names = {}
-        for code in codes:
-            rec = jq_get(s, "/equities/master", {"code": code})
-            names[code] = rec[-1]["CoName"] if rec else ""
-        names_file.write_text(json.dumps(names, ensure_ascii=False, indent=0, sort_keys=True) + "\n")
-    for i, code in enumerate(codes, 1):
-        f = CACHE / "bars" / f"{code}.json"
-        old = json.loads(f.read_text()) if f.exists() else []
-        params = {"code": code}
-        if old:
-            params["from"] = max(r["Date"] for r in old)
-        new = jq_get(s, "/equities/bars/daily", params)
-        merged = {r["Date"]: r for r in old}
-        merged.update({r["Date"]: r for r in new})
-        dump(f, [merged[d] for d in sorted(merged)])
-        dump(CACHE / "fins" / f"{code}.json", jq_get(s, "/fins/summary", {"code": code}))
-        if i % 50 == 0:
-            print(f"{i}/{len(codes)} codes", file=sys.stderr)
-    print(json.dumps({"updated_codes": len(codes), "topix_last": json.loads((CACHE / "topix.json").read_text())[-1]["Date"]}))
+    print(json.dumps({"prices": FD.update_prices(codes), "fundamentals": FD.update_fundamentals(codes, days=10)},
+                     ensure_ascii=False))
 
 
 def next_trading_day(after: pd.Timestamp) -> pd.Timestamp:
-    cal = json.loads((CACHE / "calendar.json").read_text())
-    days = sorted(pd.Timestamp(r["Date"]) for r in cal if r["HolDiv"] in ("1", "2"))
-    later = [d for d in days if d > after]
-    if not later:
-        raise SystemExit("calendar does not cover the next trading day; run update-data")
-    return later[0]
+    """Next weekday that is not a TSE holiday (forward/tse_holidays.txt)."""
+    lines = (FWD / "tse_holidays.txt").read_text().splitlines()
+    holidays = {pd.Timestamp(x) for x in lines if x and not x.startswith("#")}
+    if after >= max(holidays):
+        raise SystemExit("forward/tse_holidays.txt does not cover the next trading day; add the next year's holidays")
+    d = after + pd.Timedelta(days=1)
+    while d.weekday() >= 5 or d in holidays:
+        d += pd.Timedelta(days=1)
+    return d
 
 
 # ----------------------------------------------------------------------------
@@ -223,29 +170,6 @@ SYSTEM = (
     "継続企業の前提に注記がある、など）、3=どちらとも言えない、1=非常に低い（需要が堅調で予想も保守的）。"
     "書かれていることだけを根拠にし、株価の動きは考えないでください。"
 )
-SCHEMA = {
-    "type": "object",
-    "properties": {"trap_risk": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
-                   "reason": {"type": "string"}},
-    "required": ["trap_risk", "reason"],
-    "additionalProperties": False,
-}
-
-
-def tdnet_pdf(disc_no: str, disc_date: str) -> bytes | None:
-    """Find the report PDF on TDnet (kept there for about 30 days after the disclosure)."""
-    base = "https://www.release.tdnet.info/inbs/"
-    for page in range(1, 30):
-        url = f"{base}I_list_{page:03d}_{disc_date.replace('-', '')}.html"
-        r = requests.get(url, timeout=30)
-        if r.status_code != 200:
-            return None
-        m = re.search(r'href="(\d*' + re.escape(disc_no) + r'\d*\.pdf)"', r.text)
-        if m:
-            pdf = requests.get(base + m.group(1), timeout=60)
-            return pdf.content if pdf.status_code == 200 else None
-        time.sleep(0.5)
-    return None
 
 
 def first_pages(pdf: bytes, n: int) -> bytes:
@@ -259,74 +183,77 @@ def first_pages(pdf: bytes, n: int) -> bytes:
     return buf.getvalue()
 
 
-def ask_claude(client, pdf: bytes) -> dict:
-    import anthropic
+def ask_claude(pdf_path: Path) -> dict:
+    """Run Claude Code headless (authenticated with CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`)."""
+    prompt = (SYSTEM + f"\n\n決算短信の PDF：{pdf_path}\nこのファイルを読み、次の JSON だけを1行で答えてください："
+              '{"trap_risk": 1〜5 の整数, "reason": "日本語で1〜2文"}')
+    try:
+        run = subprocess.run(["claude", "-p", prompt, "--output-format", "json", "--allowedTools", "Read",
+                              "--max-turns", "4"], capture_output=True, text=True, timeout=600)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return {"status": f"cli_{type(e).__name__}"}
+    if run.returncode != 0:
+        return {"status": "cli_error", "detail": run.stderr[-300:]}
+    try:
+        result = json.loads(run.stdout).get("result", "")
+        m = re.search(r"\{[^{}]*\"trap_risk\"[^{}]*\}", result)
+        out = json.loads(m.group(0))
+        risk = int(out["trap_risk"])
+        if risk not in (1, 2, 3, 4, 5):
+            raise ValueError
+    except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
+        return {"status": "bad_output"}
+    return {"status": "ok", "trap_risk": risk, "reason": str(out.get("reason", ""))[:300]}
 
-    try:
-        resp = client.beta.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=4000,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            thinking={"type": "adaptive"},
-            output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
-            system=SYSTEM,
-            messages=[{"role": "user", "content": [
-                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
-                                                 "data": base64.standard_b64encode(pdf).decode()}},
-                {"type": "text", "text": "この決算短信を評価してください。"},
-            ]}],
-        )
-    except anthropic.RateLimitError:
-        return {"status": "rate_limited"}
-    except anthropic.APIStatusError as e:
-        return {"status": f"api_error_{e.status_code}"}
-    except anthropic.APIConnectionError:
-        return {"status": "connection_error"}
-    if resp.stop_reason == "refusal":
-        return {"status": "refusal"}
-    text = next((b.text for b in resp.content if b.type == "text"), "")
-    try:
-        out = json.loads(text)
-    except json.JSONDecodeError:
-        return {"status": "bad_json"}
-    return {"status": "ok", "trap_risk": int(out["trap_risk"]), "reason": out["reason"], "model": resp.model}
+
+def liquid_now(code: str) -> bool:
+    f = FD.PRICES / f"{code}.csv"
+    if not f.exists():
+        return False
+    px = pd.read_csv(f).tail(E3.LIQ_DAYS)
+    return len(px) == E3.LIQ_DAYS and float((px["Close"] * px["Volume"]).mean()) >= E3.LIQ_MIN
 
 
 def score() -> None:
-    """Score financial statements disclosed in the last 20 days that are not scored yet."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print(json.dumps({"skipped": "ANTHROPIC_API_KEY is not set"}))
+    """Score 決算短信 disclosed in the last 20 days that are not scored yet (liquid stocks only)."""
+    if not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        print(json.dumps({"skipped": "CLAUDE_CODE_OAUTH_TOKEN is not set"}))
         return
-    import anthropic
-
-    client = anthropic.Anthropic()
+    index = FWD / "tdnet_pdfs.csv"
+    if not index.exists():
+        print(json.dumps({"scored": {}}))
+        return
     done = set()
     if SCORE_FILE.exists():
         done = {json.loads(line)["disc_no"] for line in SCORE_FILE.read_text().splitlines() if line.strip()}
     today = pd.Timestamp.now(tz="Asia/Tokyo").tz_localize(None).normalize()
+    oldest = max(START - pd.Timedelta(days=20), today - pd.Timedelta(days=20))
     counts, calls = {}, 0
-    for f in sorted((CACHE / "fins").glob("*.json")):
-        bars = json.loads((CACHE / "bars" / f.name).read_text())[-E3.LIQ_DAYS:]
-        if sum(float(b["Va"] or 0) for b in bars) / E3.LIQ_DAYS < E3.LIQ_MIN:
-            continue  # only stocks that can enter the portfolio (same liquidity rule)
-        for r in json.loads(f.read_text()):
-            if calls >= MAX_CALLS_PER_RUN:
-                break
-            if "FinancialStatements" not in r["DocType"] or r["DiscNo"] in done:
-                continue
-            if pd.Timestamp(r["DiscDate"]) < max(START - pd.Timedelta(days=20), today - pd.Timedelta(days=20)):
-                continue
-            pdf = tdnet_pdf(r["DiscNo"], r["DiscDate"])
-            calls += pdf is not None
-            res = {"status": "pdf_not_found"} if pdf is None else ask_claude(client, first_pages(pdf, PDF_PAGES))
-            counts[res["status"]] = counts.get(res["status"], 0) + 1
-            if res["status"] in ("rate_limited", "connection_error") or res["status"].startswith("api_error_5"):
-                continue  # retry on the next run
-            rec = {"disc_no": r["DiscNo"], "code": f.stem, "disc_date": r["DiscDate"], "doc_type": r["DocType"],
-                   "scored_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"), **res}
-            with SCORE_FILE.open("a") as out:
-                out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    docs = pd.read_csv(index, dtype=str)
+    for r in docs.itertuples(index=False):
+        if calls >= MAX_CALLS_PER_RUN:
+            break
+        if "FinancialStatements" not in r.doc_type or r.disc_no in done or pd.Timestamp(r.disc_date) < oldest:
+            continue
+        if not liquid_now(r.code):
+            continue
+        resp = requests.get(FD.TDNET + r.pdf, headers=FD.UA, timeout=60)
+        if resp.status_code != 200:
+            res = {"status": "pdf_not_found"}
+        else:
+            calls += 1
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / f"{r.code}_{r.disc_no}.pdf"
+                path.write_bytes(first_pages(resp.content, PDF_PAGES))
+                res = ask_claude(path)
+        counts[res["status"]] = counts.get(res["status"], 0) + 1
+        if res["status"] != "ok" and res["status"] != "bad_output":
+            continue  # retry on the next run (usage limit, network, CLI problems)
+        rec = {"disc_no": r.disc_no, "code": r.code, "disc_date": r.disc_date, "doc_type": r.doc_type,
+               "scored_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"), **res}
+        with SCORE_FILE.open("a") as out:
+            out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        done.add(r.disc_no)
     print(json.dumps({"scored": counts}, ensure_ascii=False))
 
 
@@ -365,7 +292,7 @@ def due_tranches(day: pd.Timestamp, trading_days: list[pd.Timestamp]) -> list[in
 
 def step() -> None:
     """Process every trading day after the last processed one, in order (catches up missed runs)."""
-    topix_all, panel_all, fins = E3.load(CACHE)
+    topix_all, panel_all, fins = FD.load()
     state = load_state()
     last = pd.Timestamp(state["last_step"]) if state["last_step"] else topix_all.index[-2]
     todo = [d for d in topix_all.index if d > last]
@@ -407,9 +334,7 @@ def step_day(state: dict, topix: pd.DataFrame, panel: dict, fins: dict) -> None:
         ledger_rows.append((name, value, sum(len(t["holdings"]) for t in pf["tranches"])))
 
     nxt = next_trading_day(today)
-    cal = json.loads((CACHE / "calendar.json").read_text())
-    trading_days = sorted(set(dates[dates >= START]) | {pd.Timestamp(r["Date"]) for r in cal
-                                                         if r["HolDiv"] in ("1", "2") and pd.Timestamp(r["Date"]) >= START})
+    trading_days = sorted(set(dates[dates >= START]) | {nxt})
     due = due_tranches(nxt, trading_days)
     if due:
         sig = E3.signals(panel, fins, dates)
@@ -476,7 +401,7 @@ def eval_l() -> None:
     the disclosure, sell at the open 20 trading days later; subtract the equal-weight return of all liquid
     universe stocks over the same days. Compare ratings 1-2 (low trap risk) with 4-5 (high trap risk).
     """
-    topix, panel, fins = E3.load(CACHE)
+    topix, panel, fins = FD.load()
     dates = topix.index
     o = panel["O"]
     liquid = panel["Va"].fillna(0.0).rolling(E3.LIQ_DAYS, min_periods=E3.LIQ_DAYS).mean() >= E3.LIQ_MIN

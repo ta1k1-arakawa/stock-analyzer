@@ -1,9 +1,9 @@
 name: EXP-004 forward test
 
 on:
-  # 日本時間 20:00（UTC 11:00）の平日。J-Quants の当日データが出た後に動かす
+  # 日本時間 19:00（UTC 10:00）の平日。当日の株価と夕方の決算短信が出た後に動かす
   schedule:
-    - cron: '0 11 * * 1-5'
+    - cron: '0 10 * * 1-5'
   workflow_dispatch:
 
 permissions:
@@ -25,24 +25,18 @@ jobs:
         python-version: '3.12'
 
     - name: Install dependencies
-      run: pip install pandas numpy requests lightgbm anthropic pypdf
+      run: |
+        pip install pandas numpy requests lightgbm yfinance pypdf
+        npm install -g @anthropic-ai/claude-code
 
-    # J-Quants の生データはリポジトリに入れず、Actions のキャッシュに置く
-    - name: Restore J-Quants cache
-      uses: actions/cache@v4
-      with:
-        path: data/jquants_exp002
-        key: jquants-exp004-${{ github.run_id }}
-        restore-keys: jquants-exp004-
-
-    - name: Update data (per code only)
-      env:
-        JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+    # 無料のデータ：株価は yfinance、決算データは TDnet（東証の適時開示）
+    - name: Update data
       run: python experiments/exp004_forward.py update-data
 
+    # Claude の契約（Pro/Max）の利用枠で決算短信を読む。API の従量課金は使わない
     - name: Claude reads new earnings reports
       env:
-        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       run: python experiments/exp004_forward.py score
 
     - name: Execute paper orders and decide the next ones
