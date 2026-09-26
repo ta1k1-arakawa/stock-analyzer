@@ -11,7 +11,7 @@ import urllib.request
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Callable
+from typing import BinaryIO, Callable
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -34,15 +34,16 @@ class _OfficialLinks(HTMLParser):
                 self.links.append(href)
 
 
-def _network_fetch(url: str) -> bytes:
+def _network_fetch(url: str) -> BinaryIO:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or parsed.hostname not in {"www.jpx.co.jp", "query1.finance.yahoo.com"}:
         raise ValueError("PROVIDER_MISMATCH")
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "*/*"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        if urllib.parse.urlparse(response.geturl()).hostname != parsed.hostname:
-            raise ValueError("REDIRECT_HOST_MISMATCH")
-        return response.read()
+    response = urllib.request.urlopen(request, timeout=30)
+    if urllib.parse.urlparse(response.geturl()).hostname != parsed.hostname:
+        response.close()
+        raise ValueError("REDIRECT_HOST_MISMATCH")
+    return response
 
 
 def _json_bytes(obj: dict) -> bytes:
@@ -83,11 +84,11 @@ def _bound_json(path: Path, expected: dict) -> None:
         raise ValueError("DURABLE_STATE_MISMATCH")
 
 
-def _raw(url: str, path: Path, fetch: Callable[[str], bytes]) -> pipeline.RawLock:
+def _raw(url: str, path: Path, fetch: Callable[[str], BinaryIO]) -> pipeline.RawLock:
     existing = pipeline.existing_raw_lock(path)
     if existing is not None:
         return existing
-    return pipeline.lock_payload(fetch(url), path)
+    return pipeline.acquire_raw_lock(path, lambda: fetch(url))
 
 
 def _operation(implementation_sha: str) -> dict:
@@ -110,7 +111,7 @@ def preflight_calendar(calendar_lock: Path, calendar_sha256: str,
 
 def execute(*, t1_state: Path, v4_csv: Path, calendar_lock: Path,
             calendar_sha256: str, output: Path, implementation_sha: str,
-            fetch: Callable[[str], bytes] = _network_fetch,
+            fetch: Callable[[str], BinaryIO] = _network_fetch,
             safe_result_path: Path | None = None) -> dict:
     """Resume the same operation root. Tests inject a fake transport."""
     if not re.fullmatch(r"[0-9a-f]{40}", implementation_sha):
@@ -132,7 +133,7 @@ def execute(*, t1_state: Path, v4_csv: Path, calendar_lock: Path,
         output.mkdir(mode=0o700)
         _publish_json(output / "operation.json", operation)
     if completed_present:
-        def no_fetch(_url: str) -> bytes:
+        def no_fetch(_url: str) -> BinaryIO:
             raise ValueError("COMPLETED_OPERATION_RAW_LOCK_MISSING")
         fetch = no_fetch
     # Selection is always recomputed from the bound private T1 state and

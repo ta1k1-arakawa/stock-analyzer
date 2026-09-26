@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -208,20 +209,20 @@ def _synthetic_run(tmp_path, monkeypatch):
         counts[url] = counts.get(url, 0) + 1
         if "jpx.co.jp" in url:
             if url == p.JPX_PAGE:
-                return b'<a href="/data_j.xls">listed</a>'
-            return ("コード,市場・区分,33業種区分\n" +
-                    "".join(f"{n:04d},Prime Domestic Stocks,Sector\n" for n in range(2000, 2600))).encode()
+                return io.BytesIO(b'<a href="/data_j.xls">listed</a>')
+            return io.BytesIO(("コード,市場・区分,33業種区分\n" +
+                    "".join(f"{n:04d},Prime Domestic Stocks,Sector\n" for n in range(2000, 2600))).encode())
         code = url.split("/chart/")[1].split(".T")[0]
         if code == fail_code[0]:
             raise OSError("synthetic transport")
         if code == semantic_code[0]:
-            return b'{"chart":{"error":"synthetic","result":[]}}'
+            return io.BytesIO(b'{"chart":{"error":"synthetic","result":[]}}')
         timestamp = _timestamp(date(2025, 12, 30))
-        return json.dumps({"chart": {"error": None, "result": [{
+        return io.BytesIO(json.dumps({"chart": {"error": None, "result": [{
             "meta": {"symbol": code + ".T"}, "timestamp": [timestamp],
             "indicators": {"quote": [{"open": [10], "high": [11],
                                       "low": [9], "close": [10], "volume": [100]}]}
-        }]}}).encode()
+        }]}}).encode())
     return args, output, counts, fail_code, semantic_code, fetch
 
 
@@ -306,3 +307,97 @@ def test_empty_complete_response_is_locked(tmp_path: Path):
     assert p.existing_raw_lock(destination).raw == b""
     with pytest.raises(FileExistsError):
         p.lock_payload(b"later", destination)
+
+
+def test_streamed_complete_response_has_pending_before_final_publish(tmp_path, monkeypatch):
+    destination = tmp_path / "stream.raw"
+    pending = tmp_path / "stream.raw.pending"
+    payload = b"synthetic response" * 5000
+    opens = []
+
+    class Response(io.BytesIO):
+        def read(self, size=-1):
+            assert pending.exists()
+            return super().read(size)
+
+    def fetch(_url):
+        assert pending.exists() and pending.read_bytes() == b""
+        opens.append(1)
+        return Response(payload)
+
+    real_replace = p.os.replace
+
+    def interrupted_publish(source, target):
+        assert source == pending and target == destination
+        assert pending.read_bytes() == payload
+        raise OSError("synthetic interruption after EOF")
+
+    monkeypatch.setattr(p.os, "replace", interrupted_publish)
+    with pytest.raises(OSError, match="synthetic interruption"):
+        runner._raw("synthetic", destination, fetch)
+    assert pending.read_bytes() == payload and not destination.exists()
+    monkeypatch.setattr(p.os, "replace", real_replace)
+    with pytest.raises(ValueError, match="AMBIGUOUS_PENDING_RAW_LOCK"):
+        runner._raw("synthetic", destination, fetch)
+    assert len(opens) == 1
+
+
+def test_streamed_setup_failure_retries_and_final_lock_precedes_parse(tmp_path):
+    destination = tmp_path / "stream.raw"
+    attempts = []
+
+    def setup_failure(_url):
+        attempts.append(1)
+        raise OSError("synthetic pre-response setup failure")
+
+    with pytest.raises(OSError, match="pre-response"):
+        runner._raw("synthetic", destination, setup_failure)
+    assert not destination.exists()
+    assert not (tmp_path / "stream.raw.pending").exists()
+
+    def complete(_url):
+        attempts.append(1)
+        return io.BytesIO(b"semantically invalid")
+
+    lock = runner._raw("synthetic", destination, complete)
+    assert destination.read_bytes() == lock.raw == b"semantically invalid"
+    with pytest.raises(ValueError):
+        p.parse_yahoo(lock, "1000")
+    assert runner._raw("synthetic", destination, setup_failure).raw == lock.raw
+    assert len(attempts) == 2
+
+
+def test_stream_exception_retains_ambiguous_attempt(tmp_path):
+    destination = tmp_path / "interrupted.raw"
+    pending = tmp_path / "interrupted.raw.pending"
+    opens = []
+
+    class Interrupted(io.BytesIO):
+        def read(self, size=-1):
+            if self.tell():
+                raise OSError("synthetic stream interruption")
+            return super().read(4)
+
+    def fetch(_url):
+        opens.append(1)
+        assert pending.exists()
+        return Interrupted(b"synthetic payload")
+
+    with pytest.raises(OSError, match="stream interruption"):
+        runner._raw("synthetic", destination, fetch)
+    assert pending.read_bytes() == b"synt"
+    with pytest.raises(ValueError, match="AMBIGUOUS_PENDING_RAW_LOCK"):
+        runner._raw("synthetic", destination, fetch)
+    assert len(opens) == 1
+
+
+def test_short_response_length_never_publishes_final_lock(tmp_path):
+    destination = tmp_path / "short.raw"
+
+    class ShortResponse(io.BytesIO):
+        headers = {"Content-Length": "10"}
+
+    with pytest.raises(ValueError, match="INCOMPLETE_RESPONSE_LENGTH"):
+        runner._raw("synthetic", destination, lambda _url: ShortResponse(b"short"))
+    assert not destination.exists()
+    assert (tmp_path / "short.raw.pending").read_bytes() == b"short"

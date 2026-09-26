@@ -14,11 +14,12 @@ import math
 import os
 import re
 import zipfile
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, BinaryIO, Callable, Iterable
 from zoneinfo import ZoneInfo
 
 START = date(2015, 1, 1)
@@ -291,7 +292,7 @@ class RawLock:
 
 
 def lock_payload(raw: bytes, destination: Path) -> RawLock:
-    """Publish the first complete response without overwrite, then allow parse.
+    """Publish already available offline bytes; never use for live acquisition.
 
     A pending publication is ambiguous and blocks automatic reacquisition.
     A final lock is reused exactly after semantic failure.
@@ -308,6 +309,54 @@ def lock_payload(raw: bytes, destination: Path) -> RawLock:
         raise FileExistsError("RAW_LOCK_COLLISION")
     os.replace(pending, destination)
     return lock
+
+
+def acquire_raw_lock(destination: Path, open_response: Callable[[], BinaryIO]) -> RawLock:
+    """Stream one response into a durable attempt before it can complete.
+
+    Only a setup failure (before a response is returned) is conclusively
+    pre-complete. Once reading starts, an exception may race with the final
+    response byte, so its pending evidence is retained for manual adjudication.
+    """
+    pending = destination.with_name(destination.name + ".pending")
+    if destination.exists() or pending.exists():
+        raise FileExistsError("RAW_LOCK_COLLISION")
+    with pending.open("xb") as stream:
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        response = open_response()
+    except Exception:
+        # No response object was returned, so this attempt could not
+        # consume a complete payload under the transport contract.
+        pending.unlink()
+        raise
+    with pending.open("ab") as stream:
+        with closing(response):
+            headers = getattr(response, "headers", None)
+            length_text = headers.get("Content-Length") if headers is not None else None
+            expected_length = None
+            if length_text is not None:
+                if not length_text.isdecimal():
+                    raise ValueError("INVALID_RESPONSE_LENGTH")
+                expected_length = int(length_text)
+            byte_count = 0
+            while True:
+                chunk = response.read(64 * 1024)
+                if not isinstance(chunk, bytes):
+                    raise ValueError("INVALID_RESPONSE_CHUNK")
+                if not chunk:
+                    break
+                stream.write(chunk)
+                byte_count += len(chunk)
+            if expected_length is not None and byte_count != expected_length:
+                raise ValueError("INCOMPLETE_RESPONSE_LENGTH")
+        stream.flush()
+        os.fsync(stream.fileno())
+    if destination.exists():
+        raise FileExistsError("RAW_LOCK_COLLISION")
+    os.replace(pending, destination)
+    return RawLock.from_bytes(destination.read_bytes())
 
 
 def existing_raw_lock(destination: Path) -> RawLock | None:
