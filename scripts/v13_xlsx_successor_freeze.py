@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from pathlib import Path
 
 from scripts import check_current_protected_environment as current
@@ -52,6 +53,14 @@ def validate_freeze(*, lock_path: Path = LOCK, record_path: Path = RECORD) -> di
     _require(authority["historical_predecessor_package_count"] == 20,
              "CURRENT_AUTHORITY_INVALID")
     lock = lock_path.read_bytes()
+    if lock_path == LOCK:
+        canonical = subprocess.run(["git", "-C", str(ROOT), "show", f"HEAD:{LOCK.name}"],
+                                   capture_output=True, check=True).stdout
+        worktree_blob = subprocess.run(
+            ["git", "-C", str(ROOT), "hash-object", "--path", LOCK.name, "--", str(LOCK)],
+            capture_output=True, check=True, text=True).stdout.strip()
+        _require(worktree_blob == _blob(canonical), "CANDIDATE_WORKTREE_BLOB_MISMATCH")
+        lock = canonical
     _require(_sha(lock) == LOCK_SHA256 and lock.endswith(b"\n") and b"\r" not in lock,
              "CANDIDATE_LOCK_MISMATCH")
     pins = lock.decode("ascii").splitlines()
