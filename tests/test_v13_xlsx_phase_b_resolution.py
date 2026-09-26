@@ -1,6 +1,8 @@
 """Offline authorization and one-shot resolution boundary checks."""
 
 import json
+import hashlib
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,35 @@ def test_approval_exact_and_frozen_bindings() -> None:
     changed = dict(record, consumed=True)
     with pytest.raises(ValueError, match="AUTH_SCOPE_INVALID"):
         phase_b._approval(changed)
+
+
+@pytest.mark.parametrize("name", [current.CURRENT_AUTHORITY_LOCK_PATH, successor.SPEC.name])
+def test_bound_file_accepts_only_git_normalized_identity(tmp_path: Path, monkeypatch, name: str) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitattributes").write_text(f"{name} text\n", encoding="ascii")
+    canonical = b"package==1.0\nother==2.0\n"
+    worktree = tmp_path / name
+    worktree.write_bytes(canonical.replace(b"\n", b"\r\n"))
+    expected = phase_b._blob(canonical)
+    binding = {"path": name, "git_blob_sha1": expected,
+               "sha256": hashlib.sha256(canonical).hexdigest()}
+    assert worktree.read_bytes() != canonical
+
+    def fake_git(*args: str) -> bytes:
+        if args[0] == "show":
+            return canonical
+        return subprocess.run(["git", "-C", str(tmp_path), *args],
+                              capture_output=True, check=True).stdout
+
+    monkeypatch.setattr(phase_b, "ROOT", tmp_path)
+    monkeypatch.setattr(phase_b, "_git", fake_git)
+    assert phase_b._bound_file("a" * 40, binding) == canonical
+    assert current._working_blob_sha1(tmp_path, name, worktree) == expected
+
+    worktree.write_bytes(b"package==1.1\r\nother==2.0\r\n")
+    with pytest.raises(ValueError, match="WORKTREE_BLOB_MISMATCH"):
+        phase_b._bound_file("a" * 40, binding)
+    assert current._working_blob_sha1(tmp_path, name, worktree) != expected
 
 
 def test_current_authority_and_unresolved_successor_spec() -> None:
@@ -150,6 +181,40 @@ def test_dirty_tree_blocks_before_remote_or_review(monkeypatch) -> None:
         phase_b.preflight("a" * 40)
     assert observed == [("branch", "--show-current"), ("rev-parse", "HEAD"),
                         ("status", "--porcelain", "--untracked-files=all")]
+
+
+@pytest.mark.parametrize("stage,code", [
+    ("branch", "BRANCH_MISMATCH"),
+    ("head", "HEAD_MISMATCH"),
+    ("remote", "REMOTE_HEAD_MISMATCH"),
+    ("review", "AUTHORIZATION_COMMIT_GPT_PASS_MISSING"),
+])
+def test_repository_and_review_gates_fail_closed(monkeypatch, stage: str, code: str) -> None:
+    head = "a" * 40
+    responses = {
+        ("branch", "--show-current"): (phase_b.BRANCH + "\n").encode(),
+        ("rev-parse", "HEAD"): (head + "\n").encode(),
+        ("status", "--porcelain", "--untracked-files=all"): b"",
+        ("ls-remote", "origin", f"refs/heads/{phase_b.BRANCH}"):
+            (f"{head}\trefs/heads/{phase_b.BRANCH}\n").encode(),
+        ("merge-base", phase_b.PHASE_A, head): (phase_b.PHASE_A + "\n").encode(),
+    }
+    if stage == "branch":
+        responses[("branch", "--show-current")] = b"other\n"
+    elif stage == "head":
+        responses[("rev-parse", "HEAD")] = ("b" * 40 + "\n").encode()
+    elif stage == "remote":
+        responses[("ls-remote", "origin", f"refs/heads/{phase_b.BRANCH}")] = b""
+
+    def fake_git(*args: str) -> bytes:
+        if args not in responses:
+            pytest.fail("artifact access reached")
+        return responses[args]
+
+    monkeypatch.setattr(phase_b, "_git", fake_git)
+    monkeypatch.setattr(phase_b, "_review_pass", lambda reviewed: stage != "review")
+    with pytest.raises(ValueError, match=code):
+        phase_b.preflight(head)
 
 
 def test_review_pass_requires_exact_sha_and_issue(monkeypatch) -> None:

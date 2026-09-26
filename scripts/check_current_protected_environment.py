@@ -120,6 +120,24 @@ def _git_blob_sha1(blob_bytes: bytes) -> str:
     return hashlib.sha1(header + blob_bytes).hexdigest()
 
 
+def _working_blob_sha1(repo_root: Path, relative_name: str, path: Path) -> str | None:
+    """Hash a tracked worktree artifact using its Git path's clean rules."""
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "hash-object", "--path", relative_name,
+             "--", str(path)],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    blob = result.stdout.decode("ascii", errors="replace").strip()
+    return blob if re.fullmatch(r"[0-9a-f]{40}", blob) else None
+
+
 def _git_commit_parent(repo_root: Path, commit_sha: str) -> str | None:
     try:
         result = subprocess.run(
@@ -247,11 +265,9 @@ def resolve_current_authority(
         reviewed = git_blob_reader(repo_root, f"{CURRENT_AUTHORITY_REVIEWED_SHA}:{relative_name}")
         if reviewed is None or _git_blob_sha1(reviewed) != expected_blob:
             return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_REVIEWED_ARTIFACT_UNAVAILABLE", "artifact": label}
-        try:
-            working = path.read_bytes()
-        except OSError:
+        if not path.is_file():
             return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_WORKING_ARTIFACT_UNREADABLE", "artifact": label}
-        if working != reviewed:
+        if _working_blob_sha1(repo_root, relative_name, path) != expected_blob:
             return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_WORKING_ARTIFACT_MISMATCH", "artifact": label}
         artifacts[label] = reviewed
 
@@ -259,7 +275,7 @@ def resolve_current_authority(
     package_map, invalid_lines, duplicate_lines = _parse_pinned_lines(lock_text)
     if invalid_lines or duplicate_lines or len(package_map) != CURRENT_AUTHORITY_LOCK_PACKAGE_COUNT:
         return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_LOCK_SCHEMA_INVALID"}
-    if hashlib.sha256(lock_text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")).hexdigest() != CURRENT_AUTHORITY_LOCK_SHA256:
+    if hashlib.sha256(artifacts["lock"]).hexdigest() != CURRENT_AUTHORITY_LOCK_SHA256:
         return {"status": "FAIL", "reason": "CURRENT_AUTHORITY_LOCK_SHA256_MISMATCH"}
 
     record = json.loads(artifacts["final_freeze_record"].decode("utf-8"))

@@ -50,12 +50,13 @@ def _blob(raw: bytes) -> str:
 def _bound_file(head: str, binding: dict) -> bytes:
     path = binding["path"]
     _require(path in {current.CURRENT_AUTHORITY_LOCK_PATH, successor.SPEC.name}, "BOUND_PATH_INVALID")
-    raw = (ROOT / path).read_bytes()
-    _require(raw == _git("show", f"{head}:{path}"), "WORKTREE_BLOB_MISMATCH")
-    _require(_blob(raw) == binding["git_blob_sha1"], "GIT_BLOB_MISMATCH")
-    _require(hashlib.sha256(raw).hexdigest() == binding["sha256"], "SHA256_MISMATCH")
-    _require(raw == _git("show", f"{PHASE_A}:{path}"), "PHASE_A_FILE_MISMATCH")
-    return raw
+    canonical = _git("show", f"{head}:{path}")
+    worktree_blob = _git("hash-object", "--path", path, "--", str(ROOT / path)).decode("ascii").strip()
+    _require(worktree_blob == _blob(canonical), "WORKTREE_BLOB_MISMATCH")
+    _require(_blob(canonical) == binding["git_blob_sha1"], "GIT_BLOB_MISMATCH")
+    _require(hashlib.sha256(canonical).hexdigest() == binding["sha256"], "SHA256_MISMATCH")
+    _require(canonical == _git("show", f"{PHASE_A}:{path}"), "PHASE_A_FILE_MISMATCH")
+    return canonical
 
 
 def _review_pass(head: str) -> bool:

@@ -184,6 +184,20 @@ def test_current_lock_drift_fails_closed(tmp_path: Path) -> None:
     assert result["reason"] == "CURRENT_AUTHORITY_WORKING_ARTIFACT_MISMATCH"
 
 
+def test_current_artifact_normalized_identity_is_required(monkeypatch) -> None:
+    original = checker._working_blob_sha1
+
+    def wrong_lock(repo_root: Path, relative_name: str, path: Path) -> str | None:
+        if relative_name == checker.CURRENT_AUTHORITY_LOCK_PATH:
+            return "0" * 40
+        return original(repo_root, relative_name, path)
+
+    monkeypatch.setattr(checker, "_working_blob_sha1", wrong_lock)
+    result = checker.resolve_current_authority()
+    assert result == {"status": "FAIL", "reason": "CURRENT_AUTHORITY_WORKING_ARTIFACT_MISMATCH",
+                      "artifact": "lock"}
+
+
 def test_wrong_interpreter_fails_closed(monkeypatch) -> None:
     monkeypatch.setattr(checker.sys, "executable", str(checker.REPO_ROOT / ".venv" / "Scripts" / "python.exe"))
     result = checker.check_interpreter_identity()
