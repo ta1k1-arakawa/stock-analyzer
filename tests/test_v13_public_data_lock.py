@@ -11,6 +11,7 @@ import pytest
 from src import v13_public_data_lock as p
 from src.v13_feasibility import select_universe as frozen_select
 from scripts import v13_resolve_jquants_t1_exclusion_state as producer
+from scripts import v13_public_data_lock_execute as runner
 
 
 def _t1():
@@ -151,7 +152,157 @@ def test_calendar_exact_offsets_and_retry(tmp_path: Path):
     assert p.session_offset(sessions, date(2025, 12, 26), 1) == date(2025, 12, 29)
     assert p.session_offset(sessions, date(2025, 12, 26), 3) == date(2025, 12, 31)
     assert p.session_offset(sessions, date(2025, 12, 29), 3) is None
-    assert manifest["real_acquisition_scope_extension_required"] is True
+    assert manifest["real_acquisition_scope_extension_required"] is False
     assert p.retry_class("PUBLIC_TRANSPORT", complete_content_locked=False) == "PLUMBING_FAILURE_RETRIABLE"
     for failure, locked in (("PUBLIC_TRANSPORT", True), ("SEMANTIC", False), ("MODEL", False)):
         assert p.retry_class(failure, complete_content_locked=locked) == "NO_RETRY_AUTHORITY"
+
+
+def test_frozen_calendar_result_binding(monkeypatch):
+    result_path = Path(__file__).resolve().parents[1] / "docs/v13/V13_MASTER_CALENDAR_REAL_GENERATION_SAFE_RESULT.json"
+    raw = result_path.read_bytes()
+    assert p._git_blob_sha1(raw) == p.MASTER_CALENDAR_SAFE_RESULT_BLOB
+    p.validate_generated_calendar_result(raw)
+    result = json.loads(raw)
+    for key, value in (("schema", "bad"), ("status", "FAIL"), ("gate_consumed", False),
+                       ("source_identity", "OTHER"), ("session_count", 2686),
+                       ("anchor_2020_10_01", "ELIGIBLE"),
+                       ("calendar_sha256", "0" * 64)):
+        altered = {**result, key: value}
+        with pytest.raises(ValueError):
+            p.validate_generated_calendar_result(json.dumps(altered).encode())
+    with pytest.raises(ValueError, match="CALENDAR_LOCK_MISMATCH"):
+        p.validate_generated_calendar(b"synthetic", "0" * 64)
+    monkeypatch.setattr(p, "digest", lambda raw: p.MASTER_CALENDAR_SHA256)
+    monkeypatch.setattr(p, "parse_canonical_calendar",
+                        lambda lock: ((date(2020, 10, 2),), {}))
+    with pytest.raises(ValueError, match="COUNT_OR_SPAN"):
+        p.validate_generated_calendar(b"synthetic", p.MASTER_CALENDAR_SHA256)
+    monkeypatch.setattr(p, "parse_canonical_calendar",
+                        lambda lock: ((date(2020, 10, 1), date(2020, 10, 2)), {}))
+    with pytest.raises(ValueError, match="ANCHOR"):
+        p.validate_generated_calendar(b"synthetic", p.MASTER_CALENDAR_SHA256)
+
+
+def _synthetic_run(tmp_path, monkeypatch):
+    calendar = tmp_path / "calendar.txt"
+    calendar.write_text("synthetic")
+    t1 = tmp_path / "t1.json"
+    t1.write_text("{}")
+    v4 = tmp_path / "v4.csv"
+    v4.write_text("synthetic")
+    monkeypatch.setattr(p, "validate_generated_calendar",
+                        lambda raw, sha: ((date(2025, 12, 30),),
+                                          {"session_count": 2687, "session_sha256": p.MASTER_CALENDAR_SHA256,
+                                           "real_acquisition_scope_extension_required": False}))
+    monkeypatch.setattr(p, "validate_t1_state", lambda state: tuple(_t1()))
+    monkeypatch.setattr(p, "read_v4_codes", lambda raw: tuple(f"{n:04d}" for n in range(1200, 1500)))
+    output = tmp_path / "output"
+    args = {"t1_state": t1, "v4_csv": v4, "calendar_lock": calendar,
+            "calendar_sha256": p.MASTER_CALENDAR_SHA256, "output": output,
+            "implementation_sha": "a" * 40}
+    counts = {}
+    fail_code = [None]
+    semantic_code = [None]
+    def fetch(url):
+        counts[url] = counts.get(url, 0) + 1
+        if "jpx.co.jp" in url:
+            if url == p.JPX_PAGE:
+                return b'<a href="/data_j.xls">listed</a>'
+            return ("コード,市場・区分,33業種区分\n" +
+                    "".join(f"{n:04d},Prime Domestic Stocks,Sector\n" for n in range(2000, 2600))).encode()
+        code = url.split("/chart/")[1].split(".T")[0]
+        if code == fail_code[0]:
+            raise OSError("synthetic transport")
+        if code == semantic_code[0]:
+            return b'{"chart":{"error":"synthetic","result":[]}}'
+        timestamp = _timestamp(date(2025, 12, 30))
+        return json.dumps({"chart": {"error": None, "result": [{
+            "meta": {"symbol": code + ".T"}, "timestamp": [timestamp],
+            "indicators": {"quote": [{"open": [10], "high": [11],
+                                      "low": [9], "close": [10], "volume": [100]}]}
+        }]}}).encode()
+    return args, output, counts, fail_code, semantic_code, fetch
+
+
+def test_resume_only_fetches_missing_payloads(tmp_path, monkeypatch, capsys):
+    args, output, counts, fail_code, _, fetch = _synthetic_run(tmp_path, monkeypatch)
+    selected = frozen_select({f"{n:04d}": "Sector" for n in range(2000, 2600)},
+                             set(_t1()) | set(f"{n:04d}" for n in range(1200, 1500))
+                             | p.LEGACY_OUTSIDE_V4, p.SEED)
+    fail_code[0] = selected[4]
+    with pytest.raises(OSError):
+        runner.execute(**args, fetch=fetch)
+    before = dict(counts)
+    assert len(before) == 7  # two JPX and five Yahoo attempts
+    fail_code[0] = None
+    safe = runner.execute(**args, fetch=fetch)
+    assert safe["yahoo_payload_count"] == 500
+    for url, count in before.items():
+        assert counts[url] == (count + 1 if selected[4] in url else count)
+    assert counts[p.JPX_PAGE] == 1
+    assert sum(counts.values()) == 502 + 1
+    assert "selected" not in safe and "t1_membership" not in json.dumps(safe)
+    assert selected[0] not in json.dumps(safe)
+    assert capsys.readouterr().out == ""
+    previous = dict(counts)
+    runner.execute(**args, fetch=fetch)
+    assert counts == previous
+    missing = output / f"price-{selected[0]}.private.json"
+    missing.unlink()
+    runner.execute(**args, fetch=fetch)
+    assert missing.exists() and counts == previous
+    selected_state = output / "selected.private.json"
+    selected_state.write_text(json.dumps({"selected": selected[::-1]}))
+    with pytest.raises(ValueError, match="DURABLE_STATE_MISMATCH"):
+        runner.execute(**args, fetch=fetch)
+    assert counts == previous
+
+
+def test_semantic_failure_and_pending_fail_closed(tmp_path, monkeypatch):
+    args, output, counts, _, semantic_code, fetch = _synthetic_run(tmp_path, monkeypatch)
+    selected = frozen_select({f"{n:04d}": "Sector" for n in range(2000, 2600)},
+                             set(_t1()) | set(f"{n:04d}" for n in range(1200, 1500))
+                             | p.LEGACY_OUTSIDE_V4, p.SEED)
+    semantic_code[0] = selected[0]
+    with pytest.raises(ValueError, match="YAHOO_CHART_ERROR"):
+        runner.execute(**args, fetch=fetch)
+    semantic_code[0] = None
+    previous = dict(counts)
+    with pytest.raises(ValueError, match="YAHOO_CHART_ERROR"):
+        runner.execute(**args, fetch=fetch)
+    assert counts == previous
+    raw = output / f"yahoo-{selected[0]}.raw"
+    pending = raw.with_name(raw.name + ".pending")
+    pending.write_bytes(b"ambiguous")
+    with pytest.raises(ValueError, match="AMBIGUOUS_PENDING_RAW_LOCK"):
+        runner.execute(**args, fetch=fetch)
+    assert pending.exists() and counts == previous
+
+
+def test_runner_rejects_calendar_drift_before_network(tmp_path, monkeypatch):
+    args, output, counts, _, _, fetch = _synthetic_run(tmp_path, monkeypatch)
+    def validate(raw, sha):
+        if sha != p.MASTER_CALENDAR_SHA256:
+            raise ValueError("CALENDAR_LOCK_MISMATCH")
+        return ((), {"session_count": 2687})
+    monkeypatch.setattr(p, "validate_generated_calendar", validate)
+    result = tmp_path / "wrong-result.json"
+    original = Path(__file__).resolve().parents[1] / "docs/v13/V13_MASTER_CALENDAR_REAL_GENERATION_SAFE_RESULT.json"
+    changed = json.loads(original.read_bytes())
+    changed["source_identity"] = "OTHER"
+    result.write_text(json.dumps(changed))
+    with pytest.raises(ValueError, match="CALENDAR_RESULT_BLOB_MISMATCH"):
+        runner.execute(**args, fetch=fetch, safe_result_path=result)
+    with pytest.raises(ValueError, match="CALENDAR_LOCK_MISMATCH"):
+        runner.execute(**{**args, "calendar_sha256": "0" * 64}, fetch=fetch)
+    assert not output.exists() and counts == {}
+
+
+def test_empty_complete_response_is_locked(tmp_path: Path):
+    destination = tmp_path / "empty.raw"
+    lock = p.lock_payload(b"", destination)
+    assert lock.byte_count == 0 and destination.exists()
+    assert p.existing_raw_lock(destination).raw == b""
+    with pytest.raises(FileExistsError):
+        p.lock_payload(b"later", destination)

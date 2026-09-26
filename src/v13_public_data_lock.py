@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import math
+import os
 import re
 import zipfile
 from dataclasses import dataclass
@@ -23,6 +24,9 @@ from zoneinfo import ZoneInfo
 START = date(2015, 1, 1)
 END = date(2025, 12, 31)
 V13_MASTER_CALENDAR_SOURCE_IDENTITY = "PANDAS_MARKET_CALENDARS_JPX_5_4_0_RELEASE_ARTIFACT"
+MASTER_CALENDAR_SAFE_RESULT_BLOB = "336e5dd6141230b95fa4548231b0a137be6a15cb"
+MASTER_CALENDAR_SHA256 = "30ad5d66c6c3b8bd2c71a814309e6133a03331437089103799551fa72150c44c"
+MASTER_CALENDAR_SESSION_COUNT = 2687
 CALENDAR_PROVENANCE = (
     ("source_identity", V13_MASTER_CALENDAR_SOURCE_IDENTITY),
     ("calendar_name", "JPX"),
@@ -68,6 +72,58 @@ def validate_calendar_provenance(observed: Any) -> None:
 
 def _git_blob_sha1(raw: bytes) -> str:
     return hashlib.sha1(f"blob {len(raw)}\0".encode("ascii") + raw).hexdigest()
+
+
+def validate_generated_calendar_result(raw: bytes) -> None:
+    """Bind the published safe result to the consumed one-shot generation."""
+    if _git_blob_sha1(raw) != MASTER_CALENDAR_SAFE_RESULT_BLOB:
+        raise ValueError("CALENDAR_RESULT_BLOB_MISMATCH")
+    result = json.loads(raw)
+    if not isinstance(result, dict) or set(result) != {
+        "schema", "status", "failure_class", "evidence_origin",
+        "point_of_use_authorization_issue", "powershell51_remediation_issue",
+        "execution_sha", "gate_consumed", "result_present", "safe_receipt_present",
+        "source_identity", "coverage_start", "coverage_end", "calendar_sha256",
+        "session_count", "anchor_2020_10_01", "anchor_2020_10_02", "completed_utc",
+        "generation_authorization_reusable", "selected500_public_datalock_authorized",
+        "model_fit_authorized", "backtest_authorized", "a_to_q_authorized",
+        "real_trading_authorized",
+    }:
+        raise ValueError("CALENDAR_RESULT_SCHEMA_MISMATCH")
+    expected = {
+        "schema": "V13_MASTER_CALENDAR_REAL_GENERATION_SAFE_RESULT_V1",
+        "status": "PASS", "failure_class": "NONE",
+        "evidence_origin": "HUMAN_RETURNED_DIRECT_WINDOWS_SAFE_OUTPUT",
+        "point_of_use_authorization_issue": 90, "powershell51_remediation_issue": 91,
+        "execution_sha": "d71a8401c8681f02725b2c4933acb169a64e41e3",
+        "gate_consumed": True, "result_present": True, "safe_receipt_present": True,
+        "source_identity": V13_MASTER_CALENDAR_SOURCE_IDENTITY,
+        "coverage_start": START.isoformat(), "coverage_end": END.isoformat(),
+        "calendar_sha256": MASTER_CALENDAR_SHA256,
+        "session_count": MASTER_CALENDAR_SESSION_COUNT,
+        "anchor_2020_10_01": "INELIGIBLE", "anchor_2020_10_02": "ELIGIBLE",
+        "generation_authorization_reusable": False,
+        "selected500_public_datalock_authorized": False,
+        "model_fit_authorized": False, "backtest_authorized": False,
+        "a_to_q_authorized": False, "real_trading_authorized": False,
+    }
+    if any(type(result[k]) is not type(v) or result[k] != v for k, v in expected.items()):
+        raise ValueError("CALENDAR_RESULT_STATUS_MISMATCH")
+    try:
+        datetime.fromisoformat(result["completed_utc"].replace("Z", "+00:00"))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("CALENDAR_RESULT_COMPLETION_MISMATCH") from exc
+
+
+def validate_generated_calendar(raw: bytes, supplied_sha256: str) -> tuple[tuple[date, ...], dict[str, Any]]:
+    if supplied_sha256 != MASTER_CALENDAR_SHA256 or digest(raw) != MASTER_CALENDAR_SHA256:
+        raise ValueError("CALENDAR_LOCK_MISMATCH")
+    sessions, manifest = parse_canonical_calendar(RawLock.from_bytes(raw))
+    validate_calendar_anchors(sessions)
+    if (len(sessions) != MASTER_CALENDAR_SESSION_COUNT
+            or sessions[0].year != START.year or sessions[-1].year != END.year):
+        raise ValueError("CALENDAR_SESSION_COUNT_OR_SPAN_MISMATCH")
+    return sessions, manifest
 
 
 def _validate_wheel_source_bytes(
@@ -226,8 +282,8 @@ class RawLock:
 
     @classmethod
     def from_bytes(cls, raw: bytes) -> "RawLock":
-        if not isinstance(raw, bytes) or not raw:
-            raise ValueError("EMPTY_RAW_PAYLOAD")
+        if not isinstance(raw, bytes):
+            raise ValueError("INVALID_RAW_PAYLOAD")
         return cls(raw, digest(raw), len(raw))
 
     def manifest(self) -> dict[str, Any]:
@@ -237,16 +293,32 @@ class RawLock:
 def lock_payload(raw: bytes, destination: Path) -> RawLock:
     """Publish the first complete response without overwrite, then allow parse.
 
-    A failed write is terminal for this payload. The caller must not reacquire
-    after any complete response, even if semantic parsing later fails.
+    A pending publication is ambiguous and blocks automatic reacquisition.
+    A final lock is reused exactly after semantic failure.
     """
     lock = RawLock.from_bytes(raw)
-    with destination.open("xb") as stream:
+    pending = destination.with_name(destination.name + ".pending")
+    if destination.exists() or pending.exists():
+        raise FileExistsError("RAW_LOCK_COLLISION")
+    with pending.open("xb") as stream:
         stream.write(raw)
         stream.flush()
-        import os
         os.fsync(stream.fileno())
+    if destination.exists():
+        raise FileExistsError("RAW_LOCK_COLLISION")
+    os.replace(pending, destination)
     return lock
+
+
+def existing_raw_lock(destination: Path) -> RawLock | None:
+    """An unfinished publication is ambiguous even when a final file exists."""
+    if destination.with_name(destination.name + ".pending").exists():
+        raise ValueError("AMBIGUOUS_PENDING_RAW_LOCK")
+    if not destination.exists():
+        return None
+    if not destination.is_file():
+        raise ValueError("RAW_LOCK_NOT_FILE")
+    return RawLock.from_bytes(destination.read_bytes())
 
 
 def parse_jpx(lock: RawLock) -> dict[str, str]:
@@ -368,7 +440,7 @@ def parse_calendar(lock: RawLock) -> tuple[tuple[date, ...], dict[str, Any]]:
         raise ValueError("CALENDAR_ORDER_OR_RANGE_MISMATCH")
     return sessions, {**lock.manifest(), "input_type": "ORDERED_EXCHANGE_SESSION_LIST",
                       "session_count": len(sessions), "session_sha256": code_hash(d.isoformat() for d in sessions),
-                      "real_acquisition_scope_extension_required": True}
+                      "real_acquisition_scope_extension_required": False}
 
 
 def session_offset(sessions: tuple[date, ...], signal: date, offset: int) -> date | None:
