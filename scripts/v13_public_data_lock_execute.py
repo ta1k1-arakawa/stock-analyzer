@@ -75,7 +75,8 @@ def main() -> int:
     calendar_raw = args.calendar_lock.read_bytes()
     if pipeline.digest(calendar_raw) != args.calendar_sha256:
         raise ValueError("CALENDAR_LOCK_MISMATCH")
-    calendar, calendar_manifest = pipeline.parse_calendar(pipeline.RawLock.from_bytes(calendar_raw))
+    calendar, calendar_manifest = pipeline.parse_canonical_calendar(pipeline.RawLock.from_bytes(calendar_raw))
+    pipeline.validate_calendar_anchors(calendar)
     if calendar[0].year != 2015 or calendar[-1].year != 2025:
         raise ValueError("CALENDAR_SPAN_INCOMPLETE")
     args.output.mkdir(mode=0o700)

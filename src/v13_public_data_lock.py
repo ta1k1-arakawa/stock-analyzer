@@ -12,14 +12,33 @@ import io
 import json
 import math
 import re
+import zipfile
 from dataclasses import dataclass
 from datetime import date, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 START = date(2015, 1, 1)
 END = date(2025, 12, 31)
+V13_MASTER_CALENDAR_SOURCE_IDENTITY = "PANDAS_MARKET_CALENDARS_JPX_5_4_0_RELEASE_ARTIFACT"
+CALENDAR_PROVENANCE = (
+    ("source_identity", V13_MASTER_CALENDAR_SOURCE_IDENTITY),
+    ("calendar_name", "JPX"),
+    ("pandas_market_calendars_version", "5.4.0"),
+    ("exchange_calendars_version", "4.13.2"),
+    ("release_tag", "v5.4.0"),
+    ("release_tag_commit", "275890784073a3a3a347e4f05f4dc986456e6a75"),
+    ("jpx_source_file", "pandas_market_calendars/calendars/jpx.py"),
+    ("jpx_source_blob", "a7a59b6cf910e325c85fc042459ff57ca8f70613"),
+    ("holiday_source_file", "pandas_market_calendars/holidays/jp.py"),
+    ("holiday_source_blob", "4c34214d06862e02ac22e946757463f748074fde"),
+    ("official_pypi_wheel", "pandas_market_calendars-5.4.0-py3-none-any.whl"),
+    ("official_pypi_wheel_sha256", "bb2b93b28d496cab173b41c7d120fd5cd9d506b31f3bb0ad3d1d9f2b60d9d9e3"),
+    ("coverage_start", "2015-01-01"),
+    ("coverage_end", "2025-12-31"),
+)
 SEED = "V13_CONDITIONAL_CROSS_SECTIONAL_SHORT_HORIZON|f9c38ad771710ffd157ac4fad0da15185db82707"
 T1_SHA256 = "262201792183776e3bead4638646ee949c05d35c894c7a4053556befa6230e1d"
 SOURCE_SCHEMA = "V8_JQUANTS_IDENTITY_RECOVERY_MANIFEST_V1"
@@ -39,6 +58,103 @@ def digest(raw: bytes) -> str:
 def code_hash(codes: Iterable[str]) -> str:
     """V8 identity format: ordered UTF-8 codes, newline delimited and terminated."""
     return digest(("\n".join(codes) + "\n").encode("utf-8"))
+
+
+def validate_calendar_provenance(observed: Any) -> None:
+    """Require the complete frozen source claim; no provider substitution."""
+    if not isinstance(observed, dict) or observed != dict(CALENDAR_PROVENANCE):
+        raise ValueError("CALENDAR_PROVENANCE_MISMATCH")
+
+
+def _git_blob_sha1(raw: bytes) -> str:
+    return hashlib.sha1(f"blob {len(raw)}\0".encode("ascii") + raw).hexdigest()
+
+
+def _validate_wheel_source_bytes(
+    wheel: bytes, installed_sources: dict[str, bytes],
+    expected_wheel_sha256: str, expected_blobs: dict[str, str],
+) -> None:
+    """Pure V10A-style wheel SHA, unique ZIP entry, and Git-blob binding."""
+    if digest(wheel) != expected_wheel_sha256 or set(installed_sources) != set(expected_blobs):
+        raise ValueError("CALENDAR_SOURCE_MISMATCH")
+    try:
+        with zipfile.ZipFile(BytesIO(wheel)) as archive:
+            for name, expected_blob in expected_blobs.items():
+                matches = [info for info in archive.infolist() if info.orig_filename == name]
+                if len(matches) != 1:
+                    raise ValueError("CALENDAR_SOURCE_MISMATCH")
+                entry = archive.read(matches[0])
+                if entry != installed_sources[name] or _git_blob_sha1(entry) != expected_blob:
+                    raise ValueError("CALENDAR_SOURCE_MISMATCH")
+    except (OSError, RuntimeError, zipfile.BadZipFile, KeyError, TypeError,
+            ValueError, AttributeError, UnicodeError) as exc:
+        raise ValueError("CALENDAR_SOURCE_MISMATCH") from exc
+
+
+def validate_calendar_release_artifact(wheel: bytes, installed_sources: dict[str, bytes],
+                                       observed_provenance: Any) -> None:
+    """Offline source check to run before any later authorized calendar creation."""
+    validate_calendar_provenance(observed_provenance)
+    expected = dict(CALENDAR_PROVENANCE)
+    _validate_wheel_source_bytes(wheel, installed_sources,
+                                 expected["official_pypi_wheel_sha256"], {
+                                     expected["jpx_source_file"]: expected["jpx_source_blob"],
+                                     expected["holiday_source_file"]: expected["holiday_source_blob"],
+                                 })
+
+
+def serialize_calendar(sessions: Iterable[date]) -> bytes:
+    """Canonical V13 RawLock payload, without acquiring any sessions."""
+    ordered = tuple(sessions)
+    if (not ordered or any(type(day) is not date or not START <= day <= END for day in ordered)
+            or any(left >= right for left, right in zip(ordered, ordered[1:]))):
+        raise ValueError("CALENDAR_ORDER_OR_RANGE_MISMATCH")
+    return ("\n".join(day.isoformat() for day in ordered) + "\n").encode("utf-8")
+
+
+def serialize_calendar_schedule(schedule: Any) -> bytes:
+    """Port V10A emitted-label and market-close checks for a supplied schedule."""
+    import pandas as pd
+
+    if not isinstance(schedule, pd.DataFrame) or "market_close" not in schedule.columns:
+        raise ValueError("CALENDAR_SCHEDULE_MISMATCH")
+    labels: list[date] = []
+    for value in schedule.index:
+        try:
+            label = pd.Timestamp(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("CALENDAR_SCHEDULE_MISMATCH") from exc
+        if (pd.isna(label) or label.tzinfo is not None
+                or any((label.hour, label.minute, label.second,
+                        label.microsecond, label.nanosecond))):
+            raise ValueError("CALENDAR_SCHEDULE_MISMATCH")
+        labels.append(label.date())
+    if len(set(labels)) != len(labels):
+        raise ValueError("CALENDAR_SCHEDULE_MISMATCH")
+    for value in schedule["market_close"]:
+        try:
+            close = pd.Timestamp(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("CALENDAR_SCHEDULE_MISMATCH") from exc
+        if pd.isna(close) or close.tzinfo is None:
+            raise ValueError("CALENDAR_SCHEDULE_MISMATCH")
+    ordered = tuple(sorted(labels))
+    validate_calendar_anchors(ordered)
+    return serialize_calendar(ordered)
+
+
+def parse_canonical_calendar(lock: "RawLock") -> tuple[tuple[date, ...], dict[str, Any]]:
+    """Bridge exact canonical bytes to the existing V13 parser."""
+    sessions, manifest = parse_calendar(lock)
+    if (serialize_calendar(sessions) != lock.raw or manifest["session_sha256"] != lock.sha256
+            or digest(lock.raw) != lock.sha256):
+        raise ValueError("CALENDAR_CANONICAL_BYTES_MISMATCH")
+    return sessions, manifest
+
+
+def validate_calendar_anchors(sessions: tuple[date, ...]) -> None:
+    if date(2020, 10, 1) in sessions or date(2020, 10, 2) not in sessions:
+        raise ValueError("CALENDAR_ANCHOR_MISMATCH")
 
 
 def _codes(values: Iterable[str]) -> list[str]:
