@@ -129,7 +129,7 @@ def serialize_calendar_schedule(schedule: Any) -> bytes:
                         label.microsecond, label.nanosecond))):
             raise ValueError("CALENDAR_SCHEDULE_MISMATCH")
         labels.append(label.date())
-    if len(set(labels)) != len(labels):
+    if any(left >= right for left, right in zip(labels, labels[1:])):
         raise ValueError("CALENDAR_SCHEDULE_MISMATCH")
     for value in schedule["market_close"]:
         try:
@@ -138,7 +138,7 @@ def serialize_calendar_schedule(schedule: Any) -> bytes:
             raise ValueError("CALENDAR_SCHEDULE_MISMATCH") from exc
         if pd.isna(close) or close.tzinfo is None:
             raise ValueError("CALENDAR_SCHEDULE_MISMATCH")
-    ordered = tuple(sorted(labels))
+    ordered = tuple(labels)
     validate_calendar_anchors(ordered)
     return serialize_calendar(ordered)
 

@@ -64,9 +64,9 @@ def test_canonical_round_trip_and_anchor_states():
 
 def test_synthetic_schedule_to_existing_parser():
     schedule = pd.DataFrame(
-        {"market_close": [pd.Timestamp("2020-10-02T15:00:00+09:00"),
-                          pd.Timestamp("2015-01-05T15:00:00+09:00")]},
-        index=pd.DatetimeIndex(["2020-10-02", "2015-01-05"]),
+        {"market_close": [pd.Timestamp("2015-01-05T15:00:00+09:00"),
+                          pd.Timestamp("2020-10-02T15:00:00+09:00")]},
+        index=pd.DatetimeIndex(["2015-01-05", "2020-10-02"]),
     )
     raw = calendar.serialize_calendar_schedule(schedule)
     assert raw == b"2015-01-05\n2020-10-02\n"
@@ -75,7 +75,9 @@ def test_synthetic_schedule_to_existing_parser():
 
     for bad in (
         schedule.drop(columns="market_close"),
+        schedule.iloc[::-1],
         schedule.set_axis(pd.DatetimeIndex(["2020-10-02", "2020-10-02"])),
+        schedule.set_axis(pd.DatetimeIndex(["2015-01-05", "2020-10-02"], tz="Asia/Tokyo")),
         schedule.set_axis(pd.DatetimeIndex(["2020-10-02 01:00", "2015-01-05"])),
         schedule.assign(market_close=[pd.Timestamp("2020-10-02 15:00"),
                                       pd.Timestamp("2015-01-05T15:00:00+09:00")]),
@@ -83,7 +85,7 @@ def test_synthetic_schedule_to_existing_parser():
         with pytest.raises(ValueError, match="CALENDAR_SCHEDULE_MISMATCH"):
             calendar.serialize_calendar_schedule(bad)
     with pytest.raises(ValueError, match="CALENDAR_ANCHOR_MISMATCH"):
-        calendar.serialize_calendar_schedule(schedule.set_axis(pd.DatetimeIndex(["2020-10-01", "2015-01-05"])))
+        calendar.serialize_calendar_schedule(schedule.set_axis(pd.DatetimeIndex(["2015-01-05", "2020-10-01"])))
 
 
 @pytest.mark.parametrize("days", [
@@ -108,7 +110,7 @@ def test_bridge_rejects_noncanonical_or_invalid_bytes(raw):
         calendar.parse_canonical_calendar(calendar.RawLock.from_bytes(raw))
 
 
-def test_synthetic_release_byte_binding_rejects_substitution():
+def test_synthetic_release_byte_binding_rejects_substitution(monkeypatch):
     paths = ["pandas_market_calendars/calendars/jpx.py", "pandas_market_calendars/holidays/jp.py"]
     sources = {paths[0]: b"synthetic jpx", paths[1]: b"synthetic holidays"}
     output = io.BytesIO()
@@ -119,6 +121,11 @@ def test_synthetic_release_byte_binding_rejects_substitution():
     blobs = {path: calendar._git_blob_sha1(raw) for path, raw in sources.items()}
     wheel_sha = hashlib.sha256(wheel).hexdigest()
     calendar._validate_wheel_source_bytes(wheel, sources, wheel_sha, blobs)
+    synthetic_provenance = dict(calendar.CALENDAR_PROVENANCE)
+    synthetic_provenance.update(official_pypi_wheel_sha256=wheel_sha,
+                                jpx_source_blob=blobs[paths[0]], holiday_source_blob=blobs[paths[1]])
+    monkeypatch.setattr(calendar, "CALENDAR_PROVENANCE", tuple(synthetic_provenance.items()))
+    calendar.validate_calendar_release_artifact(wheel, sources, synthetic_provenance)
     with pytest.raises(ValueError, match="CALENDAR_SOURCE_MISMATCH"):
         calendar._validate_wheel_source_bytes(wheel, sources, "0" * 64, blobs)
     with pytest.raises(ValueError, match="CALENDAR_SOURCE_MISMATCH"):
@@ -126,7 +133,14 @@ def test_synthetic_release_byte_binding_rejects_substitution():
     with pytest.raises(ValueError, match="CALENDAR_SOURCE_MISMATCH"):
         calendar._validate_wheel_source_bytes(wheel, sources, wheel_sha, {**blobs, paths[1]: "0" * 40})
     with pytest.raises(ValueError, match="CALENDAR_SOURCE_MISMATCH"):
-        calendar.validate_calendar_release_artifact(wheel, sources, dict(calendar.CALENDAR_PROVENANCE))
+        calendar.validate_calendar_release_artifact(wheel, {**sources, paths[0]: b"changed"}, synthetic_provenance)
+
+    missing = io.BytesIO()
+    with zipfile.ZipFile(missing, "w") as archive:
+        archive.writestr(paths[0], sources[paths[0]])
+    missing_raw = missing.getvalue()
+    with pytest.raises(ValueError, match="CALENDAR_SOURCE_MISMATCH"):
+        calendar._validate_wheel_source_bytes(missing_raw, sources, hashlib.sha256(missing_raw).hexdigest(), blobs)
 
     duplicate = io.BytesIO()
     with zipfile.ZipFile(duplicate, "w") as archive:
