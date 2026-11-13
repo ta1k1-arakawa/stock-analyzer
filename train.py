@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import joblib
 import lightgbm as lgb
@@ -31,7 +32,8 @@ def train_ai_model(config: AppConfig) -> bool:
     data_to = config.training_settings.get("data_to")
 
     if data_to == "auto":
-        data_to = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+        # ランナーは UTC で動くため、日本時間 (JST) 基準で「明日」を決める
+        data_to = (datetime.now(ZoneInfo("Asia/Tokyo")) + timedelta(days=1)).strftime("%Y-%m-%d")
         logger.info("終了日(data_to)を自動で %s (明日) に設定しました。", data_to)
 
     # データ取得
