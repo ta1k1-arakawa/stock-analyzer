@@ -1,12 +1,31 @@
 name: Daily Stock AI Prediction
 
 on:
-  # スケジュール実行: 日本時間 16:07 (UTC 7:07)
+  # 主な起動は外部スケジューラ (Muse の cron) が平日 16:07 JST に
+  # workflow_dispatch API を叩く形に移した。
+  # GitHub の schedule は時刻保証がなく、実測で 5〜10 時間遅れるため、
+  # ここでは保険としてだけ残す (16:07 本命 + 19:07 再試行)。
+  # predict.py 側に「同じデータ日付は処理済み」ガードがあるので、
+  # 起動が重なっても通知・記録は二重にならない。
   schedule:
-    - cron: '7 7 * * 1-5'
-  
-  # 手動実行ボタン (テスト用)
+    - cron: '7 16 * * 1-5'
+      timezone: "Asia/Tokyo"
+    - cron: '7 19 * * 1-5'
+      timezone: "Asia/Tokyo"
+
+  # 手動実行 / 外部スケジューラからの起動
   workflow_dispatch:
+    inputs:
+      force:
+        description: '処理済みガードを無効にして再通知する'
+        required: false
+        type: boolean
+        default: false
+
+# 同じワークフローの同時実行を防ぐ (終わるまで次を待たせる)
+concurrency:
+  group: daily-stock-ai-prediction
+  cancel-in-progress: false
 
 # GitHubの権限設定 (CSVを保存するために必要)
 permissions:
@@ -16,7 +35,9 @@ jobs:
   run-prediction:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    
+    env:
+      TZ: Asia/Tokyo
+
     steps:
     # 1. コードを取得
     - name: Checkout code
@@ -46,15 +67,18 @@ jobs:
     - name: Predict and Notify
       env:
         SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        FORCE_PREDICTION: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
       run: python main.py
 
-    # ★重要追加: CSV(成績表)をリポジトリに保存する
+    # ★重要追加: CSV(成績表)と処理済みマーカーをリポジトリに保存する
     - name: Commit and Push Trade Log
       run: |
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
-        git add -f data/trade_log_*.csv
-        
+        for f in data/trade_log_*.csv data/prediction_done_*.txt; do
+          if [ -e "$f" ]; then git add -f "$f"; fi
+        done
+
         # 変更がある場合のみコミットしてプッシュ
         if git diff --cached --quiet; then
           echo "No changes to trade logs"
